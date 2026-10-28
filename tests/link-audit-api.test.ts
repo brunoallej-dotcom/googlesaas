@@ -221,7 +221,8 @@ test('métodos diferentes de POST não existem nas rotas', async () => {
 test('as rotas não usam rede nem DNS e não criam nenhum arquivo', async () => {
   setEnv();
   const dataDir = path.join(process.cwd(), '.data');
-  const listing = (): string[] => fs.readdirSync(dataDir).sort();
+  // `.data/` é ignorada pelo Git: numa cópia limpa ela não existe (ausente = lista vazia).
+  const listing = (): string[] => (fs.existsSync(dataDir) ? fs.readdirSync(dataDir).sort() : []);
   const before = listing();
   const trap = (name: string) => () => {
     throw new Error(`rede proibida: ${name}`);

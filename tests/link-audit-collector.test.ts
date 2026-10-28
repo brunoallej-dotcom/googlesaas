@@ -60,7 +60,9 @@ const guards = [
   mock.method(http, 'request', trap('http.request') as never),
   mock.method(https, 'request', trap('https.request') as never),
 ];
-const dataBefore = fs.readdirSync(path.join(process.cwd(), '.data')).sort();
+// `.data/` é ignorada pelo Git: numa cópia limpa ela não existe (ausente = lista vazia).
+const listData = (): string[] => (fs.existsSync(path.join(process.cwd(), '.data')) ? fs.readdirSync(path.join(process.cwd(), '.data')).sort() : []);
+const dataBefore = listData();
 after(() => {
   for (const guard of guards) guard.mock.restore();
 });
@@ -656,6 +658,6 @@ test('INVARIANTES de todos os cenários: nunca NOT_FOUND, nunca nativo vindo de 
 
 test('nenhuma chamada de rede, DNS ou disco em toda a coleta simulada', () => {
   for (const guard of guards) assert.equal(guard.mock.callCount(), 0);
-  assert.deepEqual(fs.readdirSync(path.join(process.cwd(), '.data')).sort(), dataBefore);
+  assert.deepEqual(listData(), dataBefore);
   assert.equal(fs.existsSync(path.join(process.cwd(), '.data', 'link-audits')), false);
 });
