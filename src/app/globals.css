@@ -1,0 +1,227 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --gmn-bg: theme('colors.gmn.bg');
+  --gmn-accent: theme('colors.gmn.accent');
+  --gmn-border: theme('colors.gmn.border');
+  --gmn-text: theme('colors.gmn.text');
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--gmn-bg);
+  color: var(--gmn-text);
+  font-feature-settings: 'cv11', 'ss01';
+}
+
+:focus-visible {
+  outline: 2px solid var(--gmn-accent);
+  outline-offset: 2px;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--gmn-border) transparent;
+}
+
+/* Textura sutil para áreas de mapa vazias (decorativa, sem dados). */
+.gmn-grid-bg {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+/* ---- Mapa do Campo de Batalha (Leaflet), escopado em .gmn-map ---- */
+.gmn-map {
+  background: #0a1427;
+  font-family: inherit;
+}
+.gmn-map .leaflet-control-zoom {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+.gmn-map .leaflet-control-zoom a {
+  width: 32px;
+  height: 32px;
+  line-height: 32px;
+  background: #0f1b30;
+  color: #f3f7ff;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.gmn-map .leaflet-control-zoom a:hover {
+  background: #17263e;
+}
+.gmn-map.leaflet-container .leaflet-control-attribution {
+  background: rgba(10, 20, 39, 0.85);
+  color: #c6d3e6;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 8px 0 0 0;
+}
+.gmn-map.leaflet-container .leaflet-control-attribution a {
+  color: #7cc4ff;
+}
+.gmn-reframe button {
+  background: #0f1b30;
+  color: #f3f7ff;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+.gmn-reframe button:hover {
+  background: #17263e;
+}
+.gmn-marker {
+  background: transparent;
+  border: 0;
+}
+.gmn-pin {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 9999px;
+  border: 2px solid #fff;
+  font: 700 11px/1 var(--font-inter), system-ui, sans-serif;
+  letter-spacing: -0.02em;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+  transition: transform 0.12s ease;
+}
+.gmn-marker:hover .gmn-pin {
+  transform: scale(1.1);
+}
+/* Telas estreitas: marcadores menores (escala centralizada) para os 49 pontos não se sobreporem. */
+@media (max-width: 480px) {
+  .gmn-pin {
+    transform: scale(0.82);
+  }
+  .gmn-marker:hover .gmn-pin {
+    transform: scale(0.9);
+  }
+}
+.gmn-marker:focus-visible {
+  outline: none;
+}
+.gmn-marker:focus-visible .gmn-pin,
+.gmn-marker:focus-visible .gmn-company-pin {
+  outline: 3px solid #36a3ff;
+  outline-offset: 2px;
+}
+.gmn-pin--company {
+  box-shadow:
+    0 0 0 4px rgba(255, 255, 255, 0.95),
+    0 0 0 8px rgba(255, 255, 255, 0.28),
+    0 2px 8px rgba(0, 0, 0, 0.5);
+}
+.gmn-company-pin {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 9999px;
+  background: #0a1427;
+  color: #fff;
+  border: 3px solid #fff;
+  box-shadow:
+    0 0 0 4px rgba(255, 255, 255, 0.28),
+    0 2px 8px rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+}
+.gmn-map .leaflet-popup-content-wrapper {
+  background: #0f1b30;
+  color: #f3f7ff;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+.gmn-map .leaflet-popup-content {
+  margin: 14px 16px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.gmn-map .leaflet-popup-tip {
+  background: #0f1b30;
+}
+.gmn-map.leaflet-container a.leaflet-popup-close-button {
+  color: #91a3bf;
+}
+.gmn-map.leaflet-container a.leaflet-popup-close-button:hover {
+  color: #f3f7ff;
+}
+.gmn-map .gmn-popup p {
+  margin: 0;
+}
+.gmn-popup__title {
+  font-size: 13px;
+  font-weight: 600;
+}
+.gmn-popup__tier {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px !important;
+  color: #c6d3e6;
+}
+.gmn-popup__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 9999px;
+  display: inline-block;
+}
+.gmn-popup__list {
+  margin: 10px 0 0;
+}
+.gmn-popup__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.gmn-popup__row dt {
+  color: #91a3bf;
+}
+.gmn-popup__row dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.gmn-popup__footer {
+  margin-top: 10px !important;
+  color: #c6d3e6;
+}
+.gmn-popup__company {
+  margin-top: 8px !important;
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: rgba(54, 163, 255, 0.15);
+  color: #7cc4ff;
+  font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

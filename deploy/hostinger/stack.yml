@@ -1,0 +1,264 @@
+# GMN Intelligence Platform — stack Docker Swarm INDEPENDENTE (web + worker + redis exclusivo).
+# Não altera Traefik, n8n, Evolution, Portainer, PostgreSQL nem o VRA Worker: só se conecta à rede externa já existente
+# (e SOMENTE o serviço web). Usa imagens PRÉ-CONSTRUÍDAS (sem `build:`).
+#
+# Uso (ver GUIA-DE-IMPLANTACAO.md):  set -a; . ./.env.production; set +a
+#   docker stack config -c stack.yml > /dev/null            # validação
+#   docker stack deploy --resolve-image never -c stack.yml gmn
+#
+# Os segredos NÃO ficam aqui: são `docker secret` externos criados antes do deploy.
+
+services:
+  gmn-web:
+    image: gmn-web:${GMN_IMAGE_TAG:?defina GMN_IMAGE_TAG}
+    hostname: gmn-web
+    environment:
+      GMN_ROLE: web
+      GMN_HOST: ${GMN_HOST:?defina GMN_HOST}
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: "1"
+      NODE_OPTIONS: --max-old-space-size=768
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+      GMN_OPERATOR_EMAILS: ${GMN_OPERATOR_EMAILS}
+      SUPABASE_PRIVATE_AUDIT_BUCKET: ${SUPABASE_PRIVATE_AUDIT_BUCKET:-gmn-audit-pdfs-private}
+      GMN_LINK_AUDIT_EVIDENCE_DIR: /data/evidence
+      SUPABASE_SERVICE_ROLE_KEY_FILE: /run/secrets/gmn_supabase_service_role
+      NEXT_PUBLIC_SUPABASE_ANON_KEY_FILE: /run/secrets/gmn_supabase_anon
+      SERPER_API_KEY_FILE: /run/secrets/gmn_serper_api_key
+      REDIS_URL_FILE: /run/secrets/gmn_redis_url
+    secrets:
+      - gmn_supabase_service_role
+      - gmn_supabase_anon
+      - gmn_serper_api_key
+      - gmn_redis_url
+    volumes:
+      - type: bind
+        source: ${GMN_DATA_ROOT:-/srv/gmn}/audits
+        target: /app/.data/audits
+      - type: bind
+        source: ${GMN_DATA_ROOT:-/srv/gmn}/link-audits
+        target: /app/.data/link-audits
+      - type: bind
+        source: ${GMN_DATA_ROOT:-/srv/gmn}/evidence
+        target: /data/evidence
+        read_only: true
+      # tmpfs em forma longa (a forma curta `tmpfs:` pode ser ignorada pelo Swarm); o Next grava cache em /app/.next/cache
+      - type: tmpfs
+        target: /tmp
+      - type: tmpfs
+        target: /app/.next/cache
+    networks:
+      - gmn_internal
+      - automacaotrafegopagoredeinterna
+    read_only: true
+    cap_drop:
+      - ALL
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/login').then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 45s
+      retries: 3
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.hostname == ${GMN_NODE_HOSTNAME:?defina GMN_NODE_HOSTNAME}
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1024M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+      restart_policy:
+        condition: any
+        delay: 10s
+        window: 120s
+      update_config:
+        order: start-first
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 60s
+      rollback_config:
+        order: stop-first
+        parallelism: 1
+      labels:
+        - traefik.enable=true
+        # Provider SWARM do Traefik (v3.5): a rede é escolhida pela label `traefik.swarm.network` (o web está em 2 redes;
+        # sem ela o Traefik escolheria uma ao acaso). A label `traefik.docker.network` é do provider Docker e não vale aqui.
+        - traefik.swarm.network=automacaotrafegopagoredeinterna
+        # HTTPS (router exclusivo da GMN)
+        - traefik.http.routers.gmn.rule=Host(`${GMN_HOST}`)
+        - traefik.http.routers.gmn.entrypoints=websecure
+        - traefik.http.routers.gmn.tls=true
+        - traefik.http.routers.gmn.tls.certresolver=letsencryptresolver
+        - traefik.http.routers.gmn.service=gmn
+        - traefik.http.routers.gmn.middlewares=gmn-headers
+        - traefik.http.services.gmn.loadbalancer.server.port=3000
+        - traefik.http.services.gmn.loadbalancer.passhostheader=true
+        # Cabeçalhos de segurança (HSTS só deste host; o Next acrescenta os demais)
+        - traefik.http.middlewares.gmn-headers.headers.stsSeconds=31536000
+        - traefik.http.middlewares.gmn-headers.headers.stsIncludeSubdomains=false
+        - traefik.http.middlewares.gmn-headers.headers.stsPreload=false
+        - traefik.http.middlewares.gmn-headers.headers.contentTypeNosniff=true
+        # Redirecionamento HTTP -> HTTPS (nome do entrypoint HTTP configurável; ver o guia)
+        - traefik.http.routers.gmn-http.rule=Host(`${GMN_HOST}`)
+        - traefik.http.routers.gmn-http.entrypoints=${GMN_HTTP_ENTRYPOINT:-web}
+        - traefik.http.routers.gmn-http.middlewares=gmn-redirect-https
+        - traefik.http.routers.gmn-http.service=gmn
+        - traefik.http.middlewares.gmn-redirect-https.redirectscheme.scheme=https
+        - traefik.http.middlewares.gmn-redirect-https.redirectscheme.permanent=true
+
+  gmn-worker:
+    image: gmn-worker:${GMN_IMAGE_TAG:?defina GMN_IMAGE_TAG}
+    hostname: gmn-worker
+    environment:
+      GMN_ROLE: worker
+      NODE_ENV: production
+      NODE_OPTIONS: --max-old-space-size=768
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+      GMN_OPERATOR_EMAILS: ${GMN_OPERATOR_EMAILS}
+      SUPABASE_PRIVATE_AUDIT_BUCKET: ${SUPABASE_PRIVATE_AUDIT_BUCKET:-gmn-audit-pdfs-private}
+      GMN_WORKER_CONCURRENCY: ${GMN_WORKER_CONCURRENCY:-1}
+      SUPABASE_SERVICE_ROLE_KEY_FILE: /run/secrets/gmn_supabase_service_role
+      NEXT_PUBLIC_SUPABASE_ANON_KEY_FILE: /run/secrets/gmn_supabase_anon
+      SERPER_API_KEY_FILE: /run/secrets/gmn_serper_api_key
+      REDIS_URL_FILE: /run/secrets/gmn_redis_url
+    secrets:
+      - gmn_supabase_service_role
+      - gmn_supabase_anon
+      - gmn_serper_api_key
+      - gmn_redis_url
+    volumes:
+      - type: bind
+        source: ${GMN_DATA_ROOT:-/srv/gmn}/audits
+        target: /app/.data/audits
+      - type: tmpfs
+        target: /tmp
+    networks:
+      - gmn_internal
+    read_only: true
+    cap_drop:
+      - ALL
+    # Uma auditoria leva minutos: o SIGTERM precisa de tempo para o encerramento gracioso (padrão do Docker: 10 s).
+    stop_grace_period: 30m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      # TRAVA DE ATIVAÇÃO: o Worker nasce DESLIGADO (padrão 0). Ao iniciar ele consome na hora os jobs já enfileirados (custo Serper).
+      # Ative só depois da validação:  docker service scale gmn_gmn-worker=1  e registre GMN_WORKER_REPLICAS=1 no .env.production,
+      # senão um novo `docker stack deploy` volta a 0 e interrompe uma auditoria em andamento.
+      replicas: ${GMN_WORKER_REPLICAS:-0}
+      placement:
+        constraints:
+          - node.hostname == ${GMN_NODE_HOSTNAME:?defina GMN_NODE_HOSTNAME}
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1024M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+      restart_policy:
+        condition: on-failure
+        delay: 30s
+        max_attempts: 3
+        window: 300s
+      update_config:
+        order: stop-first
+        parallelism: 1
+        failure_action: pause
+
+  gmn-redis:
+    image: redis:7.4.11-alpine
+    hostname: gmn-redis
+    # Exclusivo da GMN: não compartilha filas com n8n, Evolution ou VRA. BullMQ exige `noeviction`.
+    user: "999:1000"
+    # A senha vem de um arquivo de configuração entregue por secret (nunca na linha de comando); o 1º argumento é o arquivo.
+    command:
+      - redis-server
+      - /run/secrets/gmn_redis_conf
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - noeviction
+      - --save
+      - ""
+    secrets:
+      - gmn_redis_conf
+      - gmn_redis_password
+    cap_drop:
+      - ALL
+    volumes:
+      - type: bind
+        source: ${GMN_DATA_ROOT:-/srv/gmn}/redis
+        target: /data
+    networks:
+      - gmn_internal
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$(cat /run/secrets/gmn_redis_password)\" redis-cli ping | grep -q PONG"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.hostname == ${GMN_NODE_HOSTNAME:?defina GMN_NODE_HOSTNAME}
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+        reservations:
+          cpus: "0.1"
+          memory: 64M
+      restart_policy:
+        condition: any
+        delay: 10s
+
+networks:
+  # Rede privada GMN <-> Redis (stack-scoped; ninguém de fora participa).
+  gmn_internal:
+    driver: overlay
+  # Rede EXTERNA já usada pelo Traefik: só o serviço web entra nela. Não é criada nem alterada por esta stack.
+  automacaotrafegopagoredeinterna:
+    external: true
+
+secrets:
+  gmn_supabase_service_role:
+    external: true
+  gmn_supabase_anon:
+    external: true
+  gmn_serper_api_key:
+    external: true
+  gmn_redis_url:
+    external: true
+  gmn_redis_password:
+    external: true
+  gmn_redis_conf:
+    external: true

@@ -1,0 +1,30 @@
+# Nada de segredos, dados ou lixo de desenvolvimento entra na imagem (contexto = raiz do projeto).
+.env
+.env.*
+!.env.example
+.data
+.cache
+.next
+node_modules
+*.tsbuildinfo
+next-env.d.ts
+
+# Testes, documentação, scripts de manutenção e material do Windows/WSL
+tests
+docs
+scripts
+supabase
+data
+sed
+*.md
+!README.md
+*.pdf
+**/*.log
+.git
+.gitignore
+.vscode
+.idea
+
+# Implantação: só o entrypoint vai para a imagem
+deploy/*
+!deploy/hostinger/docker-entrypoint.sh

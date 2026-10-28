@@ -1,0 +1,49 @@
+# Segredos: nunca versionar
+.env
+.env.*
+!.env.example
+
+# Dependências e build
+node_modules/
+.next/
+*.tsbuildinfo
+next-env.d.ts
+
+# Dados gerados em tempo de execução
+.data/
+.cache/
+# Extratos de mapa-base (MBTiles) são grandes: ficam fora do repositório
+data/basemap/
+public/audits/*.pdf
+
+# Pacotes de imagens Docker gerados localmente (deploy/hostinger/build-images.sh)
+deploy/hostinger/dist/
+
+# --- Reforço do repositório local (baseline v1.0.1; só acrescenta, nada acima mudou) ---
+# PDFs podem conter auditorias reais de clientes; os exemplos ficam fora do Git
+*.pdf
+*.layout-antigo
+# Pacotes, logs e temporários
+*.tar
+*.tar.gz
+*.tgz
+*.log
+*.tmp
+.tmp-*
+.vscode/
+.idea/
+/sed
+# Evidências, decisões e capturas de provedores: dados privados, sempre fora do repositório
+/evidence/
+/evidences/
+/decisions/
+/backups/
+/gmn-evidencias-privadas/
+**/serper-*.json
+# Variáveis de desenvolvimento ficam FORA da árvore do projeto (~/.gmn-dev/); estes nomes nunca entram
+/.gmn-dev/
+*.pem
+*.key
+
+# Modelo de implantação (somente marcadores de exemplo; segredos reais são Docker secrets)
+!/deploy/hostinger/.env.production.example

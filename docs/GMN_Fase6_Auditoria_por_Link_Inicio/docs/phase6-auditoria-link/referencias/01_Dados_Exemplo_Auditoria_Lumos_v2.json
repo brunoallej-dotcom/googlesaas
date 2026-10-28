@@ -1,0 +1,111 @@
+{
+  "metadata": {
+    "company_name": "Empresa Exemplo Industrial",
+    "cover_title": "Empresa Exemplo Industrial",
+    "segment": "Industria metalmecanica",
+    "city": "Limeira, SP",
+    "profile_url": "https://www.google.com/maps",
+    "analysis_date": "04 de agosto de 2026",
+    "mode": "Auditoria Publica",
+    "snapshot_label": "Snapshot gerado em 04 de agosto de 2026",
+    "index": 72,
+    "classification": "Em desenvolvimento",
+    "coverage": 78,
+    "confidence": "Media",
+    "base_observed": "54/75",
+    "score_label": "Indice Lumos"
+  },
+  "executive_summary": {
+    "situation": "A empresa apresenta boa reputacao e oferta clara, mas ainda possui lacunas de consistencia e conversao no ecossistema local.",
+    "main_strength": "Reputacao positiva e especializacao tecnica reconhecivel.",
+    "main_weakness": "Informacoes comerciais e ativos de conversao ainda nao estao totalmente padronizados.",
+    "major_opportunity": "Transformar reputacao e conhecimento tecnico em uma jornada local mais completa.",
+    "central_opportunity": "Consolidar o perfil como vitrine comercial permanente para buscas de alta intencao.",
+    "urgency": "Alta",
+    "verdict": "A empresa ja possui autoridade; o proximo salto depende de organizacao, evidencia e conversao."
+  },
+  "snapshot": [
+    {"label": "Nome do perfil", "value": "Empresa Exemplo Industrial", "status": "Verificado"},
+    {"label": "Cidade", "value": "Limeira, SP", "status": "Verificado"},
+    {"label": "Categoria principal", "value": "Fabricante", "status": "Parcial"},
+    {"label": "Nota no Google", "value": "4,8", "status": "Verificado"},
+    {"label": "Avaliacoes", "value": "86", "status": "Verificado"},
+    {"label": "Google Posts", "value": "Nao verificado", "status": "Nao verificado"},
+    {"label": "Site", "value": "Site oficial identificado", "status": "Verificado"},
+    {"label": "WhatsApp", "value": "Disponivel no site", "status": "Verificado"}
+  ],
+  "score_breakdown": [
+    {"criterion": "Dados essenciais e consistencia NAP", "points": 11, "max_points": 15, "status": "Parcial", "evidence": "Nome, cidade e site confirmados; horarios nao verificados.", "recommendation": "Padronizar NAP e revisar horarios especiais."},
+    {"criterion": "Categorias e relevancia comercial", "points": 7, "max_points": 10, "status": "Parcial", "evidence": "Categoria principal observada, adicionais nao verificadas.", "recommendation": "Validar categorias adicionais realmente oferecidas."},
+    {"criterion": "Servicos, produtos, descricao e atributos", "points": 8, "max_points": 12, "status": "Parcial", "evidence": "Servicos claros no site, cadastro nativo parcialmente acessivel.", "recommendation": "Cadastrar servicos prioritarios com descricoes curtas."},
+    {"criterion": "Avaliacoes e reputacao", "points": 14, "max_points": 18, "status": "Verificado", "evidence": "Nota alta, volume consistente e avaliacoes recentes.", "recommendation": "Manter rotina continua de solicitacao de avaliacoes."},
+    {"criterion": "Respostas as avaliacoes", "points": 5, "max_points": 8, "status": "Parcial", "evidence": "Parte das avaliacoes possui resposta.", "recommendation": "Responder todas as avaliacoes com personalizacao."},
+    {"criterion": "Fotos, videos e identidade visual", "points": 7, "max_points": 10, "status": "Parcial", "evidence": "Fotos reais identificadas, atualizacao recente nao confirmada.", "recommendation": "Criar rotina mensal de fotos de estrutura, equipe e aplicacoes."},
+    {"criterion": "Publicacoes e atividade", "points": 3, "max_points": 8, "status": "Nao verificado", "evidence": "Google Posts nao ficaram acessiveis nesta coleta.", "recommendation": "Publicar atualizacoes semanais no perfil."},
+    {"criterion": "Conversao e jornada", "points": 7, "max_points": 10, "status": "Verificado", "evidence": "Site, WhatsApp e formulario disponiveis.", "recommendation": "Adicionar CTA mais direto para orcamento."},
+    {"criterion": "Autoridade local e competitividade", "points": 6, "max_points": 9, "status": "Parcial", "evidence": "Presenca externa coerente e concorrencia ativa.", "recommendation": "Criar estudos de caso e paginas locais de servico."}
+  ],
+  "diagnostics": {
+    "nap_categories": {
+      "found": ["Nome e cidade confirmados", "Site oficial identificado", "Categorias adicionais nao verificadas"],
+      "impact": ["Inconsistencias podem reduzir confianca e relevancia local"],
+      "actions": ["Padronizar NAP", "Revisar categoria principal e adicionais", "Confirmar horarios especiais"]
+    },
+    "reputation": {
+      "found": ["Nota media elevada", "Volume relevante de avaliacoes", "Respostas parciais"],
+      "impact": ["A reputacao ja influencia decisao e competitividade"],
+      "actions": ["Responder pendencias", "Criar rotina de solicitacao", "Monitorar temas recorrentes"]
+    },
+    "visual_activity": {
+      "found": ["Fotos reais identificadas", "Atualizacao do Google Posts nao verificada"],
+      "impact": ["Perfil visualmente ativo transmite estrutura e confianca"],
+      "actions": ["Publicar fotos mensais", "Criar post semanal", "Atualizar capa"]
+    },
+    "conversion_authority": {
+      "found": ["Site e WhatsApp disponiveis", "Prova social presente", "Poucas paginas locais especificas"],
+      "impact": ["A jornada funciona, mas pode capturar melhor buscas de alta intencao"],
+      "actions": ["Criar landing page local", "Adicionar CTA de orcamento", "Publicar estudos de caso"]
+    }
+  },
+  "competitors": [
+    {"name": "Concorrente Alfa", "region": "Limeira, SP", "equivalence": "Mesmo segmento e publico", "rating": "4,7", "reviews": "120", "conversion": "Site com WhatsApp", "differential": "Maior volume de avaliacoes", "source": "https://example.com/alfa"},
+    {"name": "Concorrente Beta", "region": "Limeira, SP", "equivalence": "Servico principal semelhante", "rating": "4,9", "reviews": "52", "conversion": "Formulario e telefone", "differential": "Identidade visual atualizada", "source": "https://example.com/beta"},
+    {"name": "Concorrente Gama", "region": "Regiao de Limeira", "equivalence": "Operacao e publico comparaveis", "rating": "Nao verificado", "reviews": "Nao verificado", "conversion": "Site institucional", "differential": "Conteudo tecnico frequente", "source": "https://example.com/gama"}
+  ],
+  "priorities": [
+    {"level": "P0", "title": "Corrigir eventual conflito de NAP", "problem": "Informacoes podem divergir entre fontes.", "impact": "Reduz confianca e pode prejudicar a experiencia do cliente.", "action": "Conferir e padronizar nome, endereco, telefone e horarios.", "difficulty": "Baixa", "deadline": "Semana 1"},
+    {"level": "P1", "title": "Completar servicos e categorias", "problem": "Oferta nativa parcialmente verificada.", "impact": "Menor relevancia para buscas especificas.", "action": "Cadastrar servicos prioritarios e validar categorias.", "difficulty": "Baixa", "deadline": "Semana 1"},
+    {"level": "P1", "title": "Fortalecer respostas as avaliacoes", "problem": "Existem respostas pendentes.", "impact": "Perda de relacionamento e contexto comercial.", "action": "Responder todas as avaliacoes com personalizacao.", "difficulty": "Baixa", "deadline": "Semana 2"},
+    {"level": "P2", "title": "Criar rotina visual", "problem": "Atualizacao recente de fotos nao confirmada.", "impact": "O perfil pode parecer menos ativo do que a operacao real.", "action": "Publicar fotos reais mensalmente.", "difficulty": "Media", "deadline": "Semana 2"},
+    {"level": "P2", "title": "Melhorar conversao local", "problem": "CTA ainda pode ser mais direto.", "impact": "Visitantes podem abandonar antes do contato.", "action": "Criar landing page local com WhatsApp e formulario.", "difficulty": "Media", "deadline": "Semana 3"}
+  ],
+  "plan_30_days": {
+    "week_1": ["Padronizar NAP", "Validar categorias", "Cadastrar servicos", "Revisar horarios"],
+    "week_2": ["Responder avaliacoes", "Solicitar novas avaliacoes", "Atualizar capa", "Subir fotos reais"],
+    "week_3": ["Criar landing page local", "Reforcar WhatsApp e CTA", "Organizar estudo de caso"],
+    "week_4": ["Publicar Google Posts", "Registrar metricas", "Definir rotina mensal", "Criar snapshot de evolucao"]
+  },
+  "deliverables": {
+    "description_suggestion": "Solucoes industriais com atendimento tecnico, qualidade e agilidade para empresas de Limeira e regiao.",
+    "services_suggestion": ["Servico tecnico A", "Servico industrial B", "Projeto personalizado C"],
+    "review_request_message": "Ola! Sua avaliacao sobre nosso atendimento ajuda outras empresas a conhecerem nosso trabalho. Voce pode compartilhar sua experiencia pelo link?",
+    "post_ideas": ["Caso real de aplicacao", "Bastidores da equipe", "Erro comum do cliente", "Diferencial tecnico"],
+    "photo_checklist": ["Fachada ou estrutura", "Equipe", "Produtos e servicos", "Aplicacoes", "Bastidores"],
+    "cta_suggestion": "Fale com nossa equipe e solicite uma avaliacao tecnica."
+  },
+  "limitations": [
+    "Categorias adicionais nao ficaram publicamente acessiveis.",
+    "Google Posts nao foram confirmados nesta coleta.",
+    "A ordem observada em buscas pode variar por localizacao, dispositivo e horario."
+  ],
+  "conclusion": {
+    "summary": "A empresa possui base reputacional e tecnica consistente, mas ainda pode transformar esses ativos em uma presenca local mais completa e orientada a conversao.",
+    "central_opportunity": "Consolidar o perfil como vitrine comercial permanente para buscas de alta intencao.",
+    "sources": [
+      "https://www.google.com/maps",
+      "https://example.com/empresa",
+      "https://example.com/alfa"
+    ],
+    "disclaimer": "Analise independente desenvolvida pela Lumos Marketing com base nas informacoes disponiveis na data indicada."
+  }
+}

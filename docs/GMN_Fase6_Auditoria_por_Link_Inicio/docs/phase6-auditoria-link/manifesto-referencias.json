@@ -1,0 +1,27 @@
+[
+  {
+    "arquivo": "01_Dados_Exemplo_Auditoria_Lumos_v2.json",
+    "sha256": "6ace13cdc5f2336589a06cd1e8987cf985c9e505a9b1f9567319d995a6c20f27",
+    "bytes": 9757
+  },
+  {
+    "arquivo": "02_Manual_Visual_e_Qualidade_Lumos_v2.md",
+    "sha256": "452ea3f59d42d66dfbe4fa1d6ec8dbc902772aa30e7e468837ba36fc6b66679e",
+    "bytes": 6142
+  },
+  {
+    "arquivo": "03_Guia_de_Espelhar_Modelos_Aprovados_Lumos.md",
+    "sha256": "05589fb2342af3ebbc27f2834bd880d39d83bde003fe12fad484d480c1541039",
+    "bytes": 7106
+  },
+  {
+    "arquivo": "04_Referencia_Principal_Lumos_Marketing.pdf",
+    "sha256": "63ee1b5def5fe160b61ea7bf956db5048cab2ec5ba75d3ca1031bd0b5f63d546",
+    "bytes": 125226
+  },
+  {
+    "arquivo": "05_Referencia_Secundaria_Rio_Radical.pdf",
+    "sha256": "37bfd9c4a2a8c1e1779848e8f193f6355f584dc92eae1461e870fd20b8ff4eff",
+    "bytes": 118820
+  }
+]
