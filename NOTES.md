@@ -1,6 +1,16 @@
 # GMN Intelligence Platform: notas do projeto
 
-Uso **interno** (não é SaaS). Documentação detalhada por fase em `docs/`. Última atualização: 22/10/2026 (Fase 6, Onda 5B).
+Uso **interno** (não é SaaS). Documentação detalhada por fase em `docs/`. Última atualização: 28/10/2026 (baseline Git v1.0.1; ver a seção abaixo).
+
+## Baseline Git local e versão (28/10/2026)
+- **Repositório Git exclusivamente local** (`~/projects/gmn-intelligence-platform`, ext4 do WSL; sem remote, nada publicado). O commit-base marcado com a tag **`v1.0.1`** reproduz o código das imagens Docker `gmn-web:1.0.1` / `gmn-worker:1.0.1` publicadas na VPS: os 213 arquivos da imagem do worker (`src/`, `package.json`, `tsconfig.json`) são idênticos, byte a byte (SHA-256), à pasta de origem `/mnt/d/gmn-security-fix-20261024/gmn-intelligence-platform`.
+- **O `package.json` AINDA declara `"version": "1.0.0"`, embora as imagens publicadas sejam v1.0.1.** Não foi alterado no commit-base para não mascarar a divergência; a decisão de elevar a versão é separada (a tag `v1.0.1` é a referência).
+- **v1.0.0 → v1.0.1 = só segurança de dependências:** `zod` ^3.24.1 → 4.6.7 (fixo), override do `postcss` interno do Next (8.4.31 → 8.5.30) e `z.record(z.string(), z.unknown())` em `src/app/api/audit/enqueue/route.ts` e `src/lib/link-audit-evidence/types.ts`; 2 testes de pontuação só ajustaram expressões regulares de mensagens do zod 4. `src/lib/link-audit/scoring/` (régua D3B) não mudou.
+- **Pastas anteriores (arquivo, nunca apagar nem sobrescrever):** `/mnt/d/gmn-security-fix-20261024/...` (origem da v1.0.1) e `/mnt/d/gmn-intelligence-platform-corrigido/...` (v1.0.0; guarda o `.env.local` com segredos reais, `.data` com PDFs/backups e o marcador da consulta LIVE da TUVAPLAST). Nada disso foi copiado.
+- **Fora do repositório de propósito:** `.env*` (exceto o modelo `deploy/hostinger/.env.production.example`, só com marcadores de exemplo, exigido pelos testes de deploy), `node_modules`, `.next`, `.data`, pacotes Docker (`deploy/hostinger/dist`), backups, evidências privadas, **todos os PDFs** (auditorias reais de clientes e relatórios de terceiros em `docs/`, 10 arquivos) e `docs/exemplos-fase3/anterior/` (PDF de auditoria real com extensão `.layout-antigo`); também o arquivo vazio `sed` da raiz e os gerados (`next-env.d.ts`, `tsconfig.tsbuildinfo`). O `.gitignore` recebeu apenas um bloco de reforço (PDFs, pacotes, logs, `/evidence/`, `/decisions/`, `serper-*.json`, chaves).
+- **Não há `.env.example` na v1.0.1** (a pasta antiga tem um, só com frases-modelo). Modelo sanitizado: pendente.
+- **Ambiente local isolado:** nenhum arquivo `.env*` na árvore do projeto. `env -i` NÃO protege: `next dev/build/start`, o Worker e os scripts (`loadEnvConfig(process.cwd())`) leem `.env.production.local`, `.env.local`, `.env.production` e `.env` (os scripts/Worker até com `NODE_ENV=development`). Variáveis de desenvolvimento, quando necessárias, ficam FORA da árvore (ex.: `~/.gmn-dev/dev.env`, modo 600) e são exportadas no shell, nunca em arquivo do projeto. A porta Redis 6379 local pertence a outro projeto: nunca usar. Até lá, só testes (`npm test`, `npm run typecheck`), que não carregam ambiente.
+- Órfão conhecido: `src/agents/head-prospector.ts.backup-geo` (backup antigo, sem referências) faz parte da imagem publicada e foi mantido no baseline.
 
 ## Como rodar
 - `npm run dev` ou `npm run build && npm run start` (interface); `npm run worker:prod` (Worker de auditorias; obrigatório para auditar).
