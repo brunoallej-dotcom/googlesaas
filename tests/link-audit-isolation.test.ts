@@ -211,6 +211,12 @@ const EVIDENCE_DIR = 'src/lib/link-audit-evidence/';
  */
 const DECISIONS_DIR = 'src/lib/link-audit-decisions/';
 const DECISIONS_TARGETS: ReadonlySet<string> = new Set(['canonical.ts', 'snapshot-store.ts', 'scoring/input.ts', 'scoring/versions.ts']);
+/**
+ * Onda 6C (I0): módulo NEUTRO de armazenamento (servidor). Consome SÓ o selo canônico e o mecanismo único de gravação; nunca o
+ * motor, o coletor nem os esquemas. Quem o consome é verificado em `link-audit-storage-isolation.test.ts`.
+ */
+const STORAGE_DIR = 'src/lib/link-audit-storage/';
+const STORAGE_TARGETS: ReadonlySet<string> = new Set(['canonical.ts', 'snapshot-store.ts']);
 const CLIENT_DIRS = ['src/components/link-audit/', 'src/app/auditoria-por-link/'];
 /** Único valor (não só tipo) que o navegador pode importar: constantes puras, sem nenhum import. */
 const CLIENT_VALUE_IMPORTS: ReadonlySet<string> = new Set(['methodology']);
@@ -248,6 +254,7 @@ test('isolamento reverso: só os consumidores declarados importam o módulo, e s
     const allowedRoute = ROUTE_CONSUMERS[name];
     const isRuntime = name.startsWith(RUNTIME_DIR) || name.startsWith(EVIDENCE_DIR) || name === RUNTIME_CLI || name === EVIDENCE_CLI;
     const isDecisions = name.startsWith(DECISIONS_DIR);
+    const isStorage = name.startsWith(STORAGE_DIR);
     for (const statement of importStatements(fs.readFileSync(file, 'utf8'))) {
       const target = targetsModule(file, statement.specifier);
       if (target === null) continue;
@@ -255,6 +262,9 @@ test('isolamento reverso: só os consumidores declarados importam o módulo, e s
       if (isDecisions) {
         const withExtension = target.endsWith('.ts') ? target : `${target}.ts`;
         assert.ok(DECISIONS_TARGETS.has(withExtension), `${name} importa "${statement.specifier}", fora da lista fechada do módulo de decisões`);
+      } else if (isStorage) {
+        const withExtension = target.endsWith('.ts') ? target : `${target}.ts`;
+        assert.ok(STORAGE_TARGETS.has(withExtension), `${name} importa "${statement.specifier}", fora da lista fechada do módulo neutro de armazenamento`);
       } else if (isRuntime) {
         continue;
       } else if (allowedRoute) {

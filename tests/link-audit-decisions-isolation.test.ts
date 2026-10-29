@@ -28,9 +28,9 @@ test('o módulo tem exatamente os arquivos esperados (qualquer arquivo novo exig
 
 test('imports: só zod, módulos do próprio módulo e uma lista fechada de arquivos do motor/armazenamento (nunca o motor que calcula)', () => {
   const allowedExternal: Readonly<Record<string, readonly string[]>> = {
+    // Onda 6C (I0): as primitivas e o protocolo de recibos passaram para `link-audit-storage`; `files.ts` e `anchor-store.ts`
+    // não importam mais nenhum módulo do Node (restrição MAIS estreita que a anterior).
     'store.ts': ['node:crypto', 'node:path'],
-    'anchor-store.ts': ['node:crypto', 'node:path'],
-    'files.ts': ['node:path'],
     'service.ts': ['node:path'],
   };
   const allowedProject: Readonly<Record<string, readonly string[]>> = {
@@ -38,8 +38,8 @@ test('imports: só zod, módulos do próprio módulo e uma lista fechada de arqu
     'project.ts': ['../link-audit/scoring/input'],
     'contract.ts': ['../link-audit/scoring/input', '../link-audit/scoring/versions'],
     'store.ts': ['../link-audit/canonical', '../link-audit/snapshot-store'],
-    'files.ts': ['../link-audit/canonical', '../link-audit/snapshot-store'],
-    'anchor-store.ts': ['../link-audit/snapshot-store'],
+    'files.ts': ['../link-audit-storage'],
+    'anchor-store.ts': ['../link-audit/snapshot-store', '../link-audit-storage'],
     'service.ts': ['../link-audit/scoring/input', '../link-audit/snapshot-store'],
   };
   for (const file of libFiles) {
@@ -85,9 +85,15 @@ test('o módulo não usa rede, ambiente, relógio, aleatoriedade, console, avali
 });
 
 test('só grava pelo mecanismo único (publishExclusive); não existe API de alteração ou exclusão e nenhum arquivo é apagado ou renomeado', () => {
-  for (const name of ['store.ts', 'anchor-store.ts']) assert.ok(/publishExclusive\(/.test(strip(fs.readFileSync(path.join(LIB, name), 'utf8'))), `${name} grava pelo mecanismo único`);
+  // Onda 6C (I0): a gravação dos recibos migrou para o módulo neutro; o invariante continua o mesmo e agora cobre os dois lugares.
+  const STORAGE = path.join(ROOT, 'src', 'lib', 'link-audit-storage');
+  const writers = [path.join(LIB, 'store.ts'), path.join(STORAGE, 'receipts.ts')];
+  for (const file of writers) assert.ok(/publishExclusive\(/.test(strip(fs.readFileSync(file, 'utf8'))), `${rel(file)} grava pelo mecanismo único`);
   // e SOMENTE de forma atômica: o caminho alternativo (sem link) de publishExclusive é recusado nos dois armazenamentos
-  for (const name of ['store.ts', 'anchor-store.ts']) assert.ok(/atomicOnly\(/.test(strip(fs.readFileSync(path.join(LIB, name), 'utf8'))), `${name} deve usar atomicOnly`);
+  for (const file of writers) assert.ok(/atomicOnly\(/.test(strip(fs.readFileSync(file, 'utf8'))), `${rel(file)} deve usar atomicOnly`);
+  // a 6B não tem mais caminho próprio de gravação de recibo: delega ao protocolo neutro
+  const anchors = strip(fs.readFileSync(path.join(LIB, 'anchor-store.ts'), 'utf8'));
+  assert.ok(/writeReceipt\(/.test(anchors) && /confirmReceipt\(/.test(anchors) && !/publishExclusive|writeFile|\.link\(/.test(anchors), 'anchor-store.ts delega a gravação ao módulo neutro');
   for (const file of libFiles) {
     const code = strip(fs.readFileSync(file, 'utf8'));
     assert.ok(!/writeFile|appendFile|createWriteStream|\.rename\(|\.unlink\(|\.rm\(|\.rmdir\(|\.truncate\(|\.chmod\(|\.copyFile\(/.test(code), `${rel(file)} altera/apaga arquivos diretamente`);

@@ -1,0 +1,1993 @@
+{
+ "read: base ausente": {
+  "result": {
+   "code": "ANCHOR_MISSING",
+   "issues": [
+    "O armazenamento de âncoras não existe neste servidor."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "lstat(<R>/nada)",
+   "  throw ENOENT"
+  ],
+  "tree": {},
+  "tripped": false
+ },
+ "read: base é arquivo": {
+  "result": {
+   "code": "UNSAFE_PATH",
+   "issues": [
+    "O armazenamento de âncoras não é um diretório comum."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "lstat(<R>/f)",
+   "  ok"
+  ],
+  "tree": {},
+  "tripped": false
+ },
+ "read: base symlink": {
+  "result": {
+   "code": "UNSAFE_PATH",
+   "issues": [
+    "O armazenamento de âncoras não é um diretório comum."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "lstat(<R>/lnk)",
+   "  ok"
+  ],
+  "tree": {},
+  "tripped": false
+ },
+ "read: auditoria ausente": {
+  "result": {
+   "ok": true,
+   "value": {
+    "anchors": [],
+    "orphanTempFiles": [],
+    "unexpectedFiles": []
+   }
+  },
+  "trace": [
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  throw ENOENT"
+  ],
+  "tree": {},
+  "tripped": false
+ },
+ "read: auditoria é arquivo": {
+  "result": {
+   "code": "UNSAFE_PATH",
+   "issues": [
+    "A pasta de âncoras da auditoria não é um diretório comum."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  ok"
+  ],
+  "tree": {
+   "<não é diretório>": "file"
+  },
+  "tripped": false
+ },
+ "read: auditoria symlink": {
+  "result": {
+   "code": "UNSAFE_PATH",
+   "issues": [
+    "A pasta de âncoras da auditoria não é um diretório comum."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  ok"
+  ],
+  "tree": {},
+  "tripped": false
+ },
+ "read: lstat da base dá EIO (ERROR)": {
+  "result": {
+   "code": "UNSAFE_PATH",
+   "issues": [
+    "O armazenamento de âncoras não é um diretório comum."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "lstat(<R>)",
+   "  throw EIO"
+  ],
+  "tree": {},
+  "tripped": false
+ },
+ "read: readdir falha": {
+  "result": {
+   "code": "ANCHOR_INTEGRITY",
+   "issues": [
+    "listagem das âncoras: EACCES EACCES: negado [caminho]"
+   ],
+   "ok": false
+  },
+  "trace": [
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readdir(<R>/auditoria-diff-0001)",
+   "  throw EACCES"
+  ],
+  "tree": {
+   "a0001.json": "444:82ef19351e92a0d08bf18abf207d4a105a49d4200a0a87b6d80e0aa5d67bdad5",
+   "a0002.json": "444:544fa6278a3aec8892ce9c9a9d3f667ac94938d4568c291426b9768b2aba1136"
+  },
+  "tripped": false
+ },
+ "read: íntegro 3": {
+  "result": {
+   "ok": true,
+   "value": {
+    "anchors": [
+     {
+      "anchoredAt": "2026-10-21T12:00:01.000Z",
+      "auditId": "auditoria-diff-0001",
+      "contentSha256": "78b4b3731f6959171a48d76294b47191df042ab818b37b6b2be883bdcc27bfd3",
+      "headSha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+      "kind": "LINK_AUDIT_DECISION_ANCHOR",
+      "prevAnchorSha256": null,
+      "schemaVersion": 1,
+      "seq": 1
+     },
+     {
+      "anchoredAt": "2026-10-21T12:00:02.000Z",
+      "auditId": "auditoria-diff-0001",
+      "contentSha256": "2dfbb4bc28fa6e8b9639f51a2f3e3275c326d0e0cd3d827c53324b31bf86c944",
+      "headSha256": "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35",
+      "kind": "LINK_AUDIT_DECISION_ANCHOR",
+      "prevAnchorSha256": "78b4b3731f6959171a48d76294b47191df042ab818b37b6b2be883bdcc27bfd3",
+      "schemaVersion": 1,
+      "seq": 2
+     },
+     {
+      "anchoredAt": "2026-10-21T12:00:03.000Z",
+      "auditId": "auditoria-diff-0001",
+      "contentSha256": "9dee7e2f62c9b40584925925a24cdc8cecfae4e7a3c9ca9b2b7cdd62340a49d2",
+      "headSha256": "4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce",
+      "kind": "LINK_AUDIT_DECISION_ANCHOR",
+      "prevAnchorSha256": "2dfbb4bc28fa6e8b9639f51a2f3e3275c326d0e0cd3d827c53324b31bf86c944",
+      "schemaVersion": 1,
+      "seq": 3
+     }
+    ],
+    "orphanTempFiles": [
+     ".tmp-a0004.json-<rnd>"
+    ],
+    "unexpectedFiles": [
+     "desktop.ini"
+    ]
+   }
+  },
+  "trace": [
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readdir(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0001.json,65536)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0002.json,65536)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0003.json,65536)",
+   "  ok"
+  ],
+  "tree": {
+   ".tmp-a0004.json-<rnd>": "644:2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+   "a0001.json": "444:82ef19351e92a0d08bf18abf207d4a105a49d4200a0a87b6d80e0aa5d67bdad5",
+   "a0002.json": "444:544fa6278a3aec8892ce9c9a9d3f667ac94938d4568c291426b9768b2aba1136",
+   "a0003.json": "444:be8967dfc49dca89f57e584b71e6b94e4ebcffc9b4c2db06efbbfc38e26b490c",
+   "desktop.ini": "644:2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+  },
+  "tripped": false
+ },
+ "read: nome suspeito longo": {
+  "result": {
+   "code": "ANCHOR_INTEGRITY",
+   "issues": [
+    "Arquivo suspeito na pasta de âncoras: a0002xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readdir(<R>/auditoria-diff-0001)",
+   "  ok"
+  ],
+  "tree": {
+   "a0001.json": "444:82ef19351e92a0d08bf18abf207d4a105a49d4200a0a87b6d80e0aa5d67bdad5",
+   "a0002xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx": "644:2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+  },
+  "tripped": false
+ },
+ "read: suspeito maiúsculo": {
+  "result": {
+   "code": "ANCHOR_INTEGRITY",
+   "issues": [
+    "Arquivo suspeito na pasta de âncoras: A0002.JSON."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readdir(<R>/auditoria-diff-0001)",
+   "  ok"
+  ],
+  "tree": {
+   "A0002.JSON": "644:2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+   "a0001.json": "444:82ef19351e92a0d08bf18abf207d4a105a49d4200a0a87b6d80e0aa5d67bdad5"
+  },
+  "tripped": false
+ },
+ "read: lacuna": {
+  "result": {
+   "code": "ANCHOR_INTEGRITY",
+   "issues": [
+    "Lacuna na sequência de âncoras (esperado a0002.json, achado a0003.json)."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readdir(<R>/auditoria-diff-0001)",
+   "  ok"
+  ],
+  "tree": {
+   "a0001.json": "444:82ef19351e92a0d08bf18abf207d4a105a49d4200a0a87b6d80e0aa5d67bdad5",
+   "a0003.json": "444:be8967dfc49dca89f57e584b71e6b94e4ebcffc9b4c2db06efbbfc38e26b490c"
+  },
+  "tripped": false
+ },
+ "read: não começa em 1": {
+  "result": {
+   "code": "ANCHOR_INTEGRITY",
+   "issues": [
+    "Lacuna na sequência de âncoras (esperado a0001.json, achado a0002.json)."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readdir(<R>/auditoria-diff-0001)",
+   "  ok"
+  ],
+  "tree": {
+   "a0002.json": "444:544fa6278a3aec8892ce9c9a9d3f667ac94938d4568c291426b9768b2aba1136"
+  },
+  "tripped": false
+ },
+ "read: outra auditoria": {
+  "result": {
+   "code": "ANCHOR_INTEGRITY",
+   "issues": [
+    "a0002.json pertence a outra auditoria."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readdir(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0001.json,65536)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0002.json,65536)",
+   "  ok"
+  ],
+  "tree": {
+   "a0001.json": "444:82ef19351e92a0d08bf18abf207d4a105a49d4200a0a87b6d80e0aa5d67bdad5",
+   "a0002.json": "644:b89a6aaedd6f53da0a16c52aee008b86ac2418580e704adf6792ca29bd1ebc52"
+  },
+  "tripped": false
+ },
+ "read: seq interna": {
+  "result": {
+   "code": "ANCHOR_INTEGRITY",
+   "issues": [
+    "a0002.json: a sequência interna (5) não corresponde ao nome do arquivo."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readdir(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0001.json,65536)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0002.json,65536)",
+   "  ok"
+  ],
+  "tree": {
+   "a0001.json": "444:82ef19351e92a0d08bf18abf207d4a105a49d4200a0a87b6d80e0aa5d67bdad5",
+   "a0002.json": "644:cbf3444941dd65fe408c158722b4cb960c57d3e2e50ee95487d585191ac06ff0"
+  },
+  "tripped": false
+ },
+ "read: encadeamento": {
+  "result": {
+   "code": "ANCHOR_INTEGRITY",
+   "issues": [
+    "a0002.json: não está encadeada à âncora anterior."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readdir(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0001.json,65536)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0002.json,65536)",
+   "  ok"
+  ],
+  "tree": {
+   "a0001.json": "444:82ef19351e92a0d08bf18abf207d4a105a49d4200a0a87b6d80e0aa5d67bdad5",
+   "a0002.json": "644:15126175ffb40cd116ba4a0485c2c8005bf36de64081d70a1c115cff57d037f7"
+  },
+  "tripped": false
+ },
+ "read: primeiro com prev não nulo": {
+  "result": {
+   "code": "ANCHOR_INTEGRITY",
+   "issues": [
+    "a0001.json: não está encadeada à âncora anterior."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readdir(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0001.json,65536)",
+   "  ok"
+  ],
+  "tree": {
+   "a0001.json": "644:9965ca0f2e6511a960e8fc1bc6b4105358b5de7b01f3500ec7a847c99a011c91",
+   "a0002.json": "444:544fa6278a3aec8892ce9c9a9d3f667ac94938d4568c291426b9768b2aba1136"
+  },
+  "tripped": false
+ },
+ "read: esquema errado": {
+  "result": {
+   "code": "ANCHOR_INTEGRITY",
+   "issues": [
+    "a0002.json não segue o formato esperado."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readdir(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0001.json,65536)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0002.json,65536)",
+   "  ok"
+  ],
+  "tree": {
+   "a0001.json": "444:82ef19351e92a0d08bf18abf207d4a105a49d4200a0a87b6d80e0aa5d67bdad5",
+   "a0002.json": "644:bb46c6c9320d561a346d18eb0764c310855680f0bc02e490616c9449eebca815"
+  },
+  "tripped": false
+ },
+ "read: json inválido": {
+  "result": {
+   "code": "ANCHOR_INTEGRITY",
+   "issues": [
+    "a0002.json não é JSON válido."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readdir(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0001.json,65536)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0002.json,65536)",
+   "  ok"
+  ],
+  "tree": {
+   "a0001.json": "444:82ef19351e92a0d08bf18abf207d4a105a49d4200a0a87b6d80e0aa5d67bdad5",
+   "a0002.json": "644:67f4af70bb6c0312583de6669a4a6c77cce802af2c8e79a7f0484785290e9fed"
+  },
+  "tripped": false
+ },
+ "read: hash errado": {
+  "result": {
+   "code": "ANCHOR_INTEGRITY",
+   "issues": [
+    "a0002.json: o hash não confere (arquivo alterado ou inconsistente)."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readdir(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0001.json,65536)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0002.json,65536)",
+   "  ok"
+  ],
+  "tree": {
+   "a0001.json": "444:82ef19351e92a0d08bf18abf207d4a105a49d4200a0a87b6d80e0aa5d67bdad5",
+   "a0002.json": "644:8a4d7208deb9188d8b8d41c33385e7419d5367283a566884781647b295de9c3b"
+  },
+  "tripped": false
+ },
+ "read: bytes não canônicos": {
+  "result": {
+   "code": "ANCHOR_INTEGRITY",
+   "issues": [
+    "a0002.json: os bytes do arquivo não são os que este sistema grava (chave duplicada, espaços ou formatação alterados)."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readdir(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0001.json,65536)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0002.json,65536)",
+   "  ok"
+  ],
+  "tree": {
+   "a0001.json": "444:82ef19351e92a0d08bf18abf207d4a105a49d4200a0a87b6d80e0aa5d67bdad5",
+   "a0002.json": "644:ce6296ac20e8f83e78fb0c1925135e77324eed60e2f7dd5ed2d2b97bcef9f5dc"
+  },
+  "tripped": false
+ },
+ "read: arquivo grande": {
+  "result": {
+   "code": "ANCHOR_INTEGRITY",
+   "issues": [
+    "a0001.json: leitura: ETOOBIG excede 65536 bytes"
+   ],
+   "ok": false
+  },
+  "trace": [
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readdir(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0001.json,65536)",
+   "  throw ETOOBIG"
+  ],
+  "tree": {
+   "a0001.json": "644:5b4880d9165af0788abcc9e0da87409a6a054714c1a3d8fbee5373b46ef1f053"
+  },
+  "tripped": false
+ },
+ "read: symlink como arquivo": {
+  "result": {
+   "code": "ANCHOR_INTEGRITY",
+   "issues": [
+    "a0001.json: leitura: ELOOP ELOOP: too many symbolic links encountered, open '[caminho]'"
+   ],
+   "ok": false
+  },
+  "trace": [
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readdir(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0001.json,65536)",
+   "  throw ELOOP"
+  ],
+  "tree": {
+   "a0001.json": "symlink"
+  },
+  "tripped": false
+ },
+ "read: auditId consultado diferente": {
+  "result": {
+   "code": "ANCHOR_INTEGRITY",
+   "issues": [
+    "a0001.json pertence a outra auditoria."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readdir(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0001.json,65536)",
+   "  ok"
+  ],
+  "tree": {
+   "a0001.json": "444:82ef19351e92a0d08bf18abf207d4a105a49d4200a0a87b6d80e0aa5d67bdad5",
+   "a0002.json": "444:544fa6278a3aec8892ce9c9a9d3f667ac94938d4568c291426b9768b2aba1136"
+  },
+  "tripped": false
+ },
+ "read: muitos (12) com índice > 9": {
+  "result": {
+   "ok": true,
+   "value": {
+    "anchors": [
+     {
+      "anchoredAt": "2026-10-21T12:00:01.000Z",
+      "auditId": "auditoria-diff-0001",
+      "contentSha256": "78b4b3731f6959171a48d76294b47191df042ab818b37b6b2be883bdcc27bfd3",
+      "headSha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+      "kind": "LINK_AUDIT_DECISION_ANCHOR",
+      "prevAnchorSha256": null,
+      "schemaVersion": 1,
+      "seq": 1
+     },
+     {
+      "anchoredAt": "2026-10-21T12:00:02.000Z",
+      "auditId": "auditoria-diff-0001",
+      "contentSha256": "2dfbb4bc28fa6e8b9639f51a2f3e3275c326d0e0cd3d827c53324b31bf86c944",
+      "headSha256": "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35",
+      "kind": "LINK_AUDIT_DECISION_ANCHOR",
+      "prevAnchorSha256": "78b4b3731f6959171a48d76294b47191df042ab818b37b6b2be883bdcc27bfd3",
+      "schemaVersion": 1,
+      "seq": 2
+     },
+     {
+      "anchoredAt": "2026-10-21T12:00:03.000Z",
+      "auditId": "auditoria-diff-0001",
+      "contentSha256": "9dee7e2f62c9b40584925925a24cdc8cecfae4e7a3c9ca9b2b7cdd62340a49d2",
+      "headSha256": "4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce",
+      "kind": "LINK_AUDIT_DECISION_ANCHOR",
+      "prevAnchorSha256": "2dfbb4bc28fa6e8b9639f51a2f3e3275c326d0e0cd3d827c53324b31bf86c944",
+      "schemaVersion": 1,
+      "seq": 3
+     },
+     {
+      "anchoredAt": "2026-10-21T12:00:04.000Z",
+      "auditId": "auditoria-diff-0001",
+      "contentSha256": "b033ce72215f37413e02030fe4aad5f9575cb0e4f8385b02562c38d2dec281be",
+      "headSha256": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
+      "kind": "LINK_AUDIT_DECISION_ANCHOR",
+      "prevAnchorSha256": "9dee7e2f62c9b40584925925a24cdc8cecfae4e7a3c9ca9b2b7cdd62340a49d2",
+      "schemaVersion": 1,
+      "seq": 4
+     },
+     {
+      "anchoredAt": "2026-10-21T12:00:05.000Z",
+      "auditId": "auditoria-diff-0001",
+      "contentSha256": "5bed79ab16ef171bd1e13711eec3992c8594c4dce2dadc4fad8357612e197879",
+      "headSha256": "ef2d127de37b942baad06145e54b0c619a1f22327b2ebbcfbec78f5564afe39d",
+      "kind": "LINK_AUDIT_DECISION_ANCHOR",
+      "prevAnchorSha256": "b033ce72215f37413e02030fe4aad5f9575cb0e4f8385b02562c38d2dec281be",
+      "schemaVersion": 1,
+      "seq": 5
+     },
+     {
+      "anchoredAt": "2026-10-21T12:00:06.000Z",
+      "auditId": "auditoria-diff-0001",
+      "contentSha256": "08ffa6aabeafc24c53b36e565d87dd038f7d77dcc32385b24f2dd7ffa43867a7",
+      "headSha256": "e7f6c011776e8db7cd330b54174fd76f7d0216b612387a5ffcfb81e6f0919683",
+      "kind": "LINK_AUDIT_DECISION_ANCHOR",
+      "prevAnchorSha256": "5bed79ab16ef171bd1e13711eec3992c8594c4dce2dadc4fad8357612e197879",
+      "schemaVersion": 1,
+      "seq": 6
+     },
+     {
+      "anchoredAt": "2026-10-21T12:00:07.000Z",
+      "auditId": "auditoria-diff-0001",
+      "contentSha256": "0c7ede800bcc849a6a69f9b0c9f525c013a36909944a4ea656f0c94fc2c3e5d5",
+      "headSha256": "7902699be42c8a8e46fbbb4501726517e86b22c56a189f7625a6da49081b2451",
+      "kind": "LINK_AUDIT_DECISION_ANCHOR",
+      "prevAnchorSha256": "08ffa6aabeafc24c53b36e565d87dd038f7d77dcc32385b24f2dd7ffa43867a7",
+      "schemaVersion": 1,
+      "seq": 7
+     },
+     {
+      "anchoredAt": "2026-10-21T12:00:08.000Z",
+      "auditId": "auditoria-diff-0001",
+      "contentSha256": "56a3452f936b07c8439f034c8bbabffdf6bb521fde26cfe35c3f8abb39bf99c1",
+      "headSha256": "2c624232cdd221771294dfbb310aca000a0df6ac8b66b696d90ef06fdefb64a3",
+      "kind": "LINK_AUDIT_DECISION_ANCHOR",
+      "prevAnchorSha256": "0c7ede800bcc849a6a69f9b0c9f525c013a36909944a4ea656f0c94fc2c3e5d5",
+      "schemaVersion": 1,
+      "seq": 8
+     },
+     {
+      "anchoredAt": "2026-10-21T12:00:09.000Z",
+      "auditId": "auditoria-diff-0001",
+      "contentSha256": "3848b0107a7d9d38927298707e107fcfbe498ea648d1b7b8dd9941b7152d127b",
+      "headSha256": "19581e27de7ced00ff1ce50b2047e7a567c76b1cbaebabe5ef03f7c3017bb5b7",
+      "kind": "LINK_AUDIT_DECISION_ANCHOR",
+      "prevAnchorSha256": "56a3452f936b07c8439f034c8bbabffdf6bb521fde26cfe35c3f8abb39bf99c1",
+      "schemaVersion": 1,
+      "seq": 9
+     },
+     {
+      "anchoredAt": "2026-10-21T12:00:00.000Z",
+      "auditId": "auditoria-diff-0001",
+      "contentSha256": "a756106f35ae35b2457ce6357c766a03ffc97728e82653bcfaa3978c18447080",
+      "headSha256": "4a44dc15364204a80fe80e9039455cc1608281820fe2b24f1e5233ade6af1dd5",
+      "kind": "LINK_AUDIT_DECISION_ANCHOR",
+      "prevAnchorSha256": "3848b0107a7d9d38927298707e107fcfbe498ea648d1b7b8dd9941b7152d127b",
+      "schemaVersion": 1,
+      "seq": 10
+     },
+     {
+      "anchoredAt": "2026-10-21T12:00:01.000Z",
+      "auditId": "auditoria-diff-0001",
+      "contentSha256": "c9dec3053d55d18fba9dd5a223629854d81b81161f4ff29dc2af3869a49b92c2",
+      "headSha256": "4fc82b26aecb47d2868c4efbe3581732a3e7cbcc6c2efb32062c08170a05eeb8",
+      "kind": "LINK_AUDIT_DECISION_ANCHOR",
+      "prevAnchorSha256": "a756106f35ae35b2457ce6357c766a03ffc97728e82653bcfaa3978c18447080",
+      "schemaVersion": 1,
+      "seq": 11
+     },
+     {
+      "anchoredAt": "2026-10-21T12:00:02.000Z",
+      "auditId": "auditoria-diff-0001",
+      "contentSha256": "52f59e42465e802670b2b7329b7c5591c278e16941670c9ab0de113b00b7a2fe",
+      "headSha256": "6b51d431df5d7f141cbececcf79edf3dd861c3b4069f0b11661a3eefacbba918",
+      "kind": "LINK_AUDIT_DECISION_ANCHOR",
+      "prevAnchorSha256": "c9dec3053d55d18fba9dd5a223629854d81b81161f4ff29dc2af3869a49b92c2",
+      "schemaVersion": 1,
+      "seq": 12
+     }
+    ],
+    "orphanTempFiles": [],
+    "unexpectedFiles": []
+   }
+  },
+  "trace": [
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readdir(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0001.json,65536)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0002.json,65536)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0003.json,65536)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0004.json,65536)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0005.json,65536)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0006.json,65536)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0007.json,65536)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0008.json,65536)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0009.json,65536)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0010.json,65536)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0011.json,65536)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0012.json,65536)",
+   "  ok"
+  ],
+  "tree": {
+   "a0001.json": "444:82ef19351e92a0d08bf18abf207d4a105a49d4200a0a87b6d80e0aa5d67bdad5",
+   "a0002.json": "444:544fa6278a3aec8892ce9c9a9d3f667ac94938d4568c291426b9768b2aba1136",
+   "a0003.json": "444:be8967dfc49dca89f57e584b71e6b94e4ebcffc9b4c2db06efbbfc38e26b490c",
+   "a0004.json": "444:9a9398de9bb81af9505216974d25fbec2e0afa9c330b468af298528550a493d7",
+   "a0005.json": "444:77902415b4a4fd5f7722573f76facf57d7288ba0d437aaf47731c0924770c827",
+   "a0006.json": "444:64b0ae8f37004ec9785226a284f8db55234269d80223d904bff0f284c8ee7c14",
+   "a0007.json": "444:05abb913826fcd24af9b41124a9b8b82c184a776c0c59e15f0af4db07c7b53ce",
+   "a0008.json": "444:aa36dc966070057957cb5c5215b89fca86d6dc87eaee9201e171ddb613acb4fa",
+   "a0009.json": "444:67212871971655470b5ff1378524c34e99e6e0287e36b01be4126457f68d8f6d",
+   "a0010.json": "444:455c8036a6a0ff5590e9eb4e6f81697a55ae535c1e9dbe07c39ee2df0ee3fbbf",
+   "a0011.json": "444:5b809e86caba50a18814b1c8bf24a1decc7bde5d6c17bbb0bd37dedc815d152d",
+   "a0012.json": "444:c5141a83d123defcba9325be693919096b13dd18fb14dfa988262eaaf975d8d7"
+  },
+  "tripped": false
+ },
+ "verify": {
+  "empty": {
+   "ok": true,
+   "value": {
+    "count": 0,
+    "lastSeq": 0,
+    "unanchored": 0
+   }
+  },
+  "mism": {
+   "code": "ANCHOR_MISMATCH",
+   "issues": [
+    "A decisão 2 não confere com a âncora gravada na pasta separada (arquivo reescrito ou substituído)."
+   ],
+   "ok": false
+  },
+  "mismLast": {
+   "code": "ANCHOR_MISMATCH",
+   "issues": [
+    "A decisão 3 não confere com a âncora gravada na pasta separada (arquivo reescrito ou substituído)."
+   ],
+   "ok": false
+  },
+  "ok3": {
+   "ok": true,
+   "value": {
+    "count": 3,
+    "lastSeq": 3,
+    "unanchored": 0
+   }
+  },
+  "one": {
+   "ok": true,
+   "value": {
+    "count": 0,
+    "lastSeq": 0,
+    "unanchored": 1
+   }
+  },
+  "onlyUnanch": {
+   "code": "ANCHOR_INTEGRITY",
+   "issues": [
+    "2 decisões estão sem âncora (o máximo tolerado é 1): âncoras removidas ou pasta de âncoras trocada."
+   ],
+   "ok": false
+  },
+  "pend": {
+   "ok": true,
+   "value": {
+    "count": 3,
+    "lastSeq": 3,
+    "unanchored": 1
+   }
+  },
+  "trunc": {
+   "code": "TRUNCATED",
+   "issues": [
+    "O histórico de decisões tem 2 arquivo(s), mas há âncora(s) até a posição 3: arquivos de decisão foram removidos ou o histórico foi restaurado de uma cópia antiga."
+   ],
+   "ok": false
+  },
+  "trunc0": {
+   "code": "TRUNCATED",
+   "issues": [
+    "O histórico de decisões tem 0 arquivo(s), mas há âncora(s) até a posição 3: arquivos de decisão foram removidos ou o histórico foi restaurado de uma cópia antiga."
+   ],
+   "ok": false
+  },
+  "two": {
+   "code": "ANCHOR_INTEGRITY",
+   "issues": [
+    "2 decisões estão sem âncora (o máximo tolerado é 1): âncoras removidas ou pasta de âncoras trocada."
+   ],
+   "ok": false
+  }
+ },
+ "body": {
+  "first": {
+   "anchoredAt": "2026-10-21T12:00:00.000Z",
+   "auditId": "auditoria-diff-0001",
+   "headSha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+   "kind": "LINK_AUDIT_DECISION_ANCHOR",
+   "prevAnchorSha256": null,
+   "schemaVersion": 1,
+   "seq": 1
+  },
+  "firstKeys": [
+   "schemaVersion",
+   "kind",
+   "auditId",
+   "seq",
+   "headSha256",
+   "anchoredAt",
+   "prevAnchorSha256"
+  ],
+  "json": "{\"schemaVersion\":1,\"kind\":\"LINK_AUDIT_DECISION_ANCHOR\",\"auditId\":\"auditoria-diff-0001\",\"seq\":2,\"headSha256\":\"d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35\",\"anchoredAt\":\"2026-10-21T12:00:00.000Z\",\"prevAnchorSha256\":\"5041bf1f713df204784353e82f6a4a535931cb64f1f4b4a5aeaffcb720918b22\"}",
+  "second": {
+   "anchoredAt": "2026-10-21T12:00:00.000Z",
+   "auditId": "auditoria-diff-0001",
+   "headSha256": "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35",
+   "kind": "LINK_AUDIT_DECISION_ANCHOR",
+   "prevAnchorSha256": "5041bf1f713df204784353e82f6a4a535931cb64f1f4b4a5aeaffcb720918b22",
+   "schemaVersion": 1,
+   "seq": 2
+  },
+  "withExtraFieldsOnEntry": {
+   "anchoredAt": "2026-10-21T12:00:00.000Z",
+   "auditId": "auditoria-diff-0001",
+   "headSha256": "4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce",
+   "kind": "LINK_AUDIT_DECISION_ANCHOR",
+   "prevAnchorSha256": null,
+   "schemaVersion": 1,
+   "seq": 3
+  }
+ },
+ "prep: base ausente": {
+  "result": {
+   "code": "ANCHOR_MISSING",
+   "issues": [
+    "O armazenamento de âncoras não existe neste servidor."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "lstat(<R>/nada)",
+   "  throw ENOENT"
+  ],
+  "tree": {},
+  "tripped": false
+ },
+ "prep: base é arquivo": {
+  "result": {
+   "code": "UNSAFE_PATH",
+   "issues": [
+    "O armazenamento de âncoras não é um diretório comum."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "lstat(<R>/f)",
+   "  ok"
+  ],
+  "tree": {},
+  "tripped": false
+ },
+ "prep: cria": {
+  "result": null,
+  "trace": [
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  throw ENOENT",
+   "mkdir(<R>/auditoria-diff-0001)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  ok"
+  ],
+  "tree": {},
+  "tripped": false
+ },
+ "prep: idempotente": {
+  "result": null,
+  "trace": [
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  ok"
+  ],
+  "tree": {},
+  "tripped": false
+ },
+ "prep: auditoria symlink": {
+  "result": {
+   "code": "UNSAFE_PATH",
+   "issues": [
+    "A pasta de âncoras da auditoria não está acessível."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  ok"
+  ],
+  "tree": {},
+  "tripped": false
+ },
+ "prep: auditoria arquivo": {
+  "result": {
+   "code": "UNSAFE_PATH",
+   "issues": [
+    "A pasta de âncoras da auditoria não está acessível."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  ok"
+  ],
+  "tree": {
+   "<não é diretório>": "file"
+  },
+  "tripped": false
+ },
+ "prep: lstat EIO": {
+  "result": {
+   "code": "UNSAFE_PATH",
+   "issues": [
+    "O armazenamento de âncoras não é um diretório comum."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "lstat(<R>)",
+   "  throw EIO"
+  ],
+  "tree": {},
+  "tripped": false
+ },
+ "prep: mkdir falha": {
+  "result": {
+   "code": "WRITE_FAILED",
+   "issues": [
+    "mkdir: EACCES EACCES: negado [caminho]"
+   ],
+   "ok": false
+  },
+  "trace": [
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  throw ENOENT",
+   "mkdir(<R>/auditoria-diff-0001)",
+   "  throw EACCES"
+  ],
+  "tree": {},
+  "tripped": false
+ },
+ "prep: mkdir \"ok\" mas não cria": {
+  "result": {
+   "code": "UNSAFE_PATH",
+   "issues": [
+    "A pasta de âncoras da auditoria não é um diretório comum."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  throw ENOENT",
+   "mkdir(<R>/auditoria-diff-0001)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  throw ENOENT"
+  ],
+  "tree": {},
+  "tripped": false
+ },
+ "write: ok": {
+  "result": {
+   "ok": true,
+   "value": {
+    "anchoredAt": "2026-10-21T12:00:00.000Z",
+    "auditId": "auditoria-diff-0001",
+    "contentSha256": "f30027fa102d600c53fbccf91ea0944d3ce86a24a6ab381788fad9663b642938",
+    "headSha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+    "kind": "LINK_AUDIT_DECISION_ANCHOR",
+    "prevAnchorSha256": null,
+    "schemaVersion": 1,
+    "seq": 1
+   }
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  ok",
+   "chmod(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,292)",
+   "  ok",
+   "link(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,<R>/auditoria-diff-0001/a0001.json)",
+   "  ok",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  ok",
+   "syncDirectory(<R>/auditoria-diff-0001)",
+   "  ok"
+  ],
+  "tree": {
+   "a0001.json": "444:a4bd09516bafda1e276c3559ec599c4d8b2e74e180a687a3efff1a8c8053a62a"
+  },
+  "tripped": false
+ },
+ "write: base travada": {
+  "result": {
+   "code": "STORAGE_FATAL",
+   "issues": [
+    "Erro fatal de disco anterior na pasta de âncoras: escritas interrompidas até reiniciar o servidor."
+   ],
+   "ok": false
+  },
+  "trace": [],
+  "tree": {},
+  "tripped": true
+ },
+ "write: contrato inválido": {
+  "result": {
+   "code": "INTERNAL",
+   "issues": [
+    "A âncora montada não segue o contrato (erro interno)."
+   ],
+   "ok": false
+  },
+  "trace": [],
+  "tree": {},
+  "tripped": false
+ },
+ "write: contrato inválido (seq 0)": {
+  "result": {
+   "code": "INTERNAL",
+   "issues": [
+    "A âncora montada não segue o contrato (erro interno)."
+   ],
+   "ok": false
+  },
+  "trace": [],
+  "tree": {},
+  "tripped": false
+ },
+ "write: conflito": {
+  "result": {
+   "code": "CONFLICT",
+   "issues": [
+    "A âncora a0001.json já existe; nada foi sobrescrito."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  ok",
+   "chmod(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,292)",
+   "  ok",
+   "link(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,<R>/auditoria-diff-0001/a0001.json)",
+   "  throw EEXIST",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  ok"
+  ],
+  "tree": {
+   "a0001.json": "444:82ef19351e92a0d08bf18abf207d4a105a49d4200a0a87b6d80e0aa5d67bdad5"
+  },
+  "tripped": false
+ },
+ "write: link EPERM": {
+  "result": {
+   "code": "ATOMIC_WRITE_UNAVAILABLE",
+   "issues": [
+    "O armazenamento de âncoras não suporta link() atômico."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  ok",
+   "chmod(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,292)",
+   "  ok",
+   "link(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,<R>/auditoria-diff-0001/a0001.json)",
+   "  throw EPERM",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  ok"
+  ],
+  "tree": {},
+  "tripped": false
+ },
+ "write: link ENOSYS": {
+  "result": {
+   "code": "ATOMIC_WRITE_UNAVAILABLE",
+   "issues": [
+    "O armazenamento de âncoras não suporta link() atômico."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  ok",
+   "chmod(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,292)",
+   "  ok",
+   "link(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,<R>/auditoria-diff-0001/a0001.json)",
+   "  throw ENOSYS",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  ok"
+  ],
+  "tree": {},
+  "tripped": false
+ },
+ "write: link ENOTSUP": {
+  "result": {
+   "code": "ATOMIC_WRITE_UNAVAILABLE",
+   "issues": [
+    "O armazenamento de âncoras não suporta link() atômico."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  ok",
+   "chmod(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,292)",
+   "  ok",
+   "link(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,<R>/auditoria-diff-0001/a0001.json)",
+   "  throw ENOTSUP",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  ok"
+  ],
+  "tree": {},
+  "tripped": false
+ },
+ "write: link EOPNOTSUPP": {
+  "result": {
+   "code": "ATOMIC_WRITE_UNAVAILABLE",
+   "issues": [
+    "O armazenamento de âncoras não suporta link() atômico."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  ok",
+   "chmod(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,292)",
+   "  ok",
+   "link(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,<R>/auditoria-diff-0001/a0001.json)",
+   "  throw EOPNOTSUPP",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  ok"
+  ],
+  "tree": {},
+  "tripped": false
+ },
+ "write: link EXDEV": {
+  "result": {
+   "code": "ATOMIC_WRITE_UNAVAILABLE",
+   "issues": [
+    "O armazenamento de âncoras não suporta link() atômico."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  ok",
+   "chmod(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,292)",
+   "  ok",
+   "link(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,<R>/auditoria-diff-0001/a0001.json)",
+   "  throw EXDEV",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  ok"
+  ],
+  "tree": {},
+  "tripped": false
+ },
+ "write: link EIO": {
+  "result": {
+   "again": {
+    "code": "STORAGE_FATAL",
+    "issues": [
+     "Erro fatal de disco anterior na pasta de âncoras: escritas interrompidas até reiniciar o servidor."
+    ],
+    "ok": false
+   },
+   "r": {
+    "code": "STORAGE_FATAL",
+    "issues": [
+     "Erro fatal de disco (EIO) na pasta de âncoras: escritas interrompidas."
+    ],
+    "ok": false
+   }
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  ok",
+   "chmod(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,292)",
+   "  ok",
+   "link(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,<R>/auditoria-diff-0001/a0001.json)",
+   "  throw EIO",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  ok"
+  ],
+  "tree": {},
+  "tripped": true
+ },
+ "write: tmp EIO": {
+  "result": {
+   "code": "STORAGE_FATAL",
+   "issues": [
+    "Erro fatal de disco (EIO) na pasta de âncoras: escritas interrompidas."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  throw EIO",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  throw ENOENT"
+  ],
+  "tree": {},
+  "tripped": true
+ },
+ "write: link EROFS": {
+  "result": {
+   "again": {
+    "code": "STORAGE_FATAL",
+    "issues": [
+     "Erro fatal de disco anterior na pasta de âncoras: escritas interrompidas até reiniciar o servidor."
+    ],
+    "ok": false
+   },
+   "r": {
+    "code": "STORAGE_FATAL",
+    "issues": [
+     "Erro fatal de disco (EROFS) na pasta de âncoras: escritas interrompidas."
+    ],
+    "ok": false
+   }
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  ok",
+   "chmod(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,292)",
+   "  ok",
+   "link(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,<R>/auditoria-diff-0001/a0001.json)",
+   "  throw EROFS",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  ok"
+  ],
+  "tree": {},
+  "tripped": true
+ },
+ "write: tmp EROFS": {
+  "result": {
+   "code": "STORAGE_FATAL",
+   "issues": [
+    "Erro fatal de disco (EROFS) na pasta de âncoras: escritas interrompidas."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  throw EROFS",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  throw ENOENT"
+  ],
+  "tree": {},
+  "tripped": true
+ },
+ "write: ENOSPC no tmp": {
+  "result": {
+   "code": "ANCHOR_WRITE_FAILED",
+   "issues": [
+    "escrita do temporário: ENOSPC sem espaço [caminho]"
+   ],
+   "ok": false
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  throw ENOSPC",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  throw ENOENT"
+  ],
+  "tree": {},
+  "tripped": false
+ },
+ "write: EACCES no link": {
+  "result": {
+   "code": "ANCHOR_WRITE_FAILED",
+   "issues": [
+    "publicação (link): EACCES negado [caminho]"
+   ],
+   "ok": false
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  ok",
+   "chmod(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,292)",
+   "  ok",
+   "link(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,<R>/auditoria-diff-0001/a0001.json)",
+   "  throw EACCES",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  ok"
+  ],
+  "tree": {},
+  "tripped": false
+ },
+ "write: pasta da auditoria ausente": {
+  "result": {
+   "code": "ANCHOR_WRITE_FAILED",
+   "issues": [
+    "escrita do temporário: ENOENT ENOENT: no such file or directory, open '[caminho]'"
+   ],
+   "ok": false
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  throw ENOENT",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  throw ENOENT"
+  ],
+  "tree": {},
+  "tripped": false
+ },
+ "write: chmod/unlink/sync falham (best effort)": {
+  "result": {
+   "ok": true,
+   "value": {
+    "anchoredAt": "2026-10-21T12:00:00.000Z",
+    "auditId": "auditoria-diff-0001",
+    "contentSha256": "f30027fa102d600c53fbccf91ea0944d3ce86a24a6ab381788fad9663b642938",
+    "headSha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+    "kind": "LINK_AUDIT_DECISION_ANCHOR",
+    "prevAnchorSha256": null,
+    "schemaVersion": 1,
+    "seq": 1
+   }
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  ok",
+   "chmod(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,292)",
+   "  throw EPERM",
+   "link(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,<R>/auditoria-diff-0001/a0001.json)",
+   "  ok",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  throw EPERM",
+   "syncDirectory(<R>/auditoria-diff-0001)",
+   "  throw EIO"
+  ],
+  "tree": {
+   ".tmp-a0001.json-<rnd>": "600:a4bd09516bafda1e276c3559ec599c4d8b2e74e180a687a3efff1a8c8053a62a",
+   "a0001.json": "600:a4bd09516bafda1e276c3559ec599c4d8b2e74e180a687a3efff1a8c8053a62a"
+  },
+  "tripped": false
+ },
+ "write: EEXIST no tmp": {
+  "result": {
+   "code": "ANCHOR_WRITE_FAILED",
+   "issues": [
+    "escrita do temporário: EEXIST EEXIST"
+   ],
+   "ok": false
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  throw EEXIST",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  throw ENOENT"
+  ],
+  "tree": {},
+  "tripped": false
+ },
+ "confirm: ok primeiro": {
+  "result": {
+   "ok": true,
+   "value": {
+    "anchoredAt": "2026-10-21T12:00:00.000Z",
+    "auditId": "auditoria-diff-0001",
+    "contentSha256": "f30027fa102d600c53fbccf91ea0944d3ce86a24a6ab381788fad9663b642938",
+    "headSha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+    "kind": "LINK_AUDIT_DECISION_ANCHOR",
+    "prevAnchorSha256": null,
+    "schemaVersion": 1,
+    "seq": 1
+   }
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  ok",
+   "chmod(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,292)",
+   "  ok",
+   "link(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,<R>/auditoria-diff-0001/a0001.json)",
+   "  ok",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  ok",
+   "syncDirectory(<R>/auditoria-diff-0001)",
+   "  ok"
+  ],
+  "tree": {
+   "a0001.json": "444:a4bd09516bafda1e276c3559ec599c4d8b2e74e180a687a3efff1a8c8053a62a"
+  },
+  "tripped": false
+ },
+ "confirm: ENOSPC → 3 tentativas": {
+  "result": {
+   "code": "ANCHOR_WRITE_FAILED",
+   "issues": [
+    "escrita do temporário: ENOSPC x [caminho]"
+   ],
+   "ok": false
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  throw ENOSPC",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  throw ENOENT",
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  throw ENOSPC",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  throw ENOENT",
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  throw ENOSPC",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  throw ENOENT"
+  ],
+  "tree": {},
+  "tripped": false
+ },
+ "confirm: 2 falhas + sucesso": {
+  "result": {
+   "ok": true,
+   "value": {
+    "anchoredAt": "2026-10-21T12:00:00.000Z",
+    "auditId": "auditoria-diff-0001",
+    "contentSha256": "f30027fa102d600c53fbccf91ea0944d3ce86a24a6ab381788fad9663b642938",
+    "headSha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+    "kind": "LINK_AUDIT_DECISION_ANCHOR",
+    "prevAnchorSha256": null,
+    "schemaVersion": 1,
+    "seq": 1
+   }
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  throw EAGAIN",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  throw ENOENT",
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  throw EAGAIN",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  throw ENOENT",
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  ok",
+   "chmod(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,292)",
+   "  ok",
+   "link(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,<R>/auditoria-diff-0001/a0001.json)",
+   "  ok",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  ok",
+   "syncDirectory(<R>/auditoria-diff-0001)",
+   "  ok"
+  ],
+  "tree": {
+   "a0001.json": "444:a4bd09516bafda1e276c3559ec599c4d8b2e74e180a687a3efff1a8c8053a62a"
+  },
+  "tripped": false
+ },
+ "confirm: 3 falhas diferentes → última": {
+  "result": {
+   "code": "ANCHOR_WRITE_FAILED",
+   "issues": [
+    "escrita do temporário: EBUSY m3"
+   ],
+   "ok": false
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  throw EAGAIN",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  throw ENOENT",
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  throw ENOSPC",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  throw ENOENT",
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  throw EBUSY",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  throw ENOENT"
+  ],
+  "tree": {},
+  "tripped": false
+ },
+ "confirm: EIO no link → fatal, 1 tentativa": {
+  "result": {
+   "after": {
+    "code": "STORAGE_FATAL",
+    "issues": [
+     "Erro fatal de disco anterior na pasta de âncoras: escritas interrompidas até reiniciar o servidor."
+    ],
+    "ok": false
+   },
+   "r": {
+    "code": "STORAGE_FATAL",
+    "issues": [
+     "Erro fatal de disco (EIO) na pasta de âncoras: escritas interrompidas."
+    ],
+    "ok": false
+   }
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  ok",
+   "chmod(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,292)",
+   "  ok",
+   "link(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,<R>/auditoria-diff-0001/a0001.json)",
+   "  throw EIO",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  ok"
+  ],
+  "tree": {},
+  "tripped": true
+ },
+ "confirm: EROFS no link": {
+  "result": {
+   "code": "STORAGE_FATAL",
+   "issues": [
+    "Erro fatal de disco (EROFS) na pasta de âncoras: escritas interrompidas."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  ok",
+   "chmod(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,292)",
+   "  ok",
+   "link(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,<R>/auditoria-diff-0001/a0001.json)",
+   "  throw EROFS",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  ok"
+  ],
+  "tree": {},
+  "tripped": true
+ },
+ "confirm: sem link atômico": {
+  "result": {
+   "code": "ATOMIC_WRITE_UNAVAILABLE",
+   "issues": [
+    "O armazenamento de âncoras não suporta link() atômico."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  ok",
+   "chmod(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,292)",
+   "  ok",
+   "link(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,<R>/auditoria-diff-0001/a0001.json)",
+   "  throw EXDEV",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  ok"
+  ],
+  "tree": {},
+  "tripped": false
+ },
+ "confirm: EEXIST idêntico → adota": {
+  "result": {
+   "ok": true,
+   "value": {
+    "anchoredAt": "2026-10-21T12:00:02.000Z",
+    "auditId": "auditoria-diff-0001",
+    "contentSha256": "2dfbb4bc28fa6e8b9639f51a2f3e3275c326d0e0cd3d827c53324b31bf86c944",
+    "headSha256": "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35",
+    "kind": "LINK_AUDIT_DECISION_ANCHOR",
+    "prevAnchorSha256": "78b4b3731f6959171a48d76294b47191df042ab818b37b6b2be883bdcc27bfd3",
+    "schemaVersion": 1,
+    "seq": 2
+   }
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0002.json-<rnd>,#c1b7e0ff)",
+   "  ok",
+   "chmod(<R>/auditoria-diff-0001/.tmp-a0002.json-<rnd>,292)",
+   "  ok",
+   "link(<R>/auditoria-diff-0001/.tmp-a0002.json-<rnd>,<R>/auditoria-diff-0001/a0002.json)",
+   "  throw EEXIST",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0002.json-<rnd>)",
+   "  ok",
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readdir(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0001.json,65536)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0002.json,65536)",
+   "  ok"
+  ],
+  "tree": {
+   "a0001.json": "444:82ef19351e92a0d08bf18abf207d4a105a49d4200a0a87b6d80e0aa5d67bdad5",
+   "a0002.json": "444:544fa6278a3aec8892ce9c9a9d3f667ac94938d4568c291426b9768b2aba1136"
+  },
+  "tripped": false
+ },
+ "confirm: EEXIST hash diferente": {
+  "result": {
+   "code": "ANCHOR_MISMATCH",
+   "issues": [
+    "A âncora a0002.json já existe e NÃO corresponde à decisão 2."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0002.json-<rnd>,#47649f7c)",
+   "  ok",
+   "chmod(<R>/auditoria-diff-0001/.tmp-a0002.json-<rnd>,292)",
+   "  ok",
+   "link(<R>/auditoria-diff-0001/.tmp-a0002.json-<rnd>,<R>/auditoria-diff-0001/a0002.json)",
+   "  throw EEXIST",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0002.json-<rnd>)",
+   "  ok",
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readdir(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0001.json,65536)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0002.json,65536)",
+   "  ok"
+  ],
+  "tree": {
+   "a0001.json": "444:82ef19351e92a0d08bf18abf207d4a105a49d4200a0a87b6d80e0aa5d67bdad5",
+   "a0002.json": "444:544fa6278a3aec8892ce9c9a9d3f667ac94938d4568c291426b9768b2aba1136"
+  },
+  "tripped": false
+ },
+ "confirm: EEXIST não é a última": {
+  "result": {
+   "code": "ANCHOR_INTEGRITY",
+   "issues": [
+    "A âncora a0001.json existe, mas a pasta de âncoras não termina nela."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  ok",
+   "chmod(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,292)",
+   "  ok",
+   "link(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,<R>/auditoria-diff-0001/a0001.json)",
+   "  throw EEXIST",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  ok",
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readdir(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0001.json,65536)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0002.json,65536)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0003.json,65536)",
+   "  ok"
+  ],
+  "tree": {
+   "a0001.json": "444:82ef19351e92a0d08bf18abf207d4a105a49d4200a0a87b6d80e0aa5d67bdad5",
+   "a0002.json": "444:544fa6278a3aec8892ce9c9a9d3f667ac94938d4568c291426b9768b2aba1136",
+   "a0003.json": "444:be8967dfc49dca89f57e584b71e6b94e4ebcffc9b4c2db06efbbfc38e26b490c"
+  },
+  "tripped": false
+ },
+ "confirm: EEXIST com pasta adulterada": {
+  "result": {
+   "code": "ANCHOR_INTEGRITY",
+   "issues": [
+    "a0001.json pertence a outra auditoria."
+   ],
+   "ok": false
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0002.json-<rnd>,#c100085e)",
+   "  ok",
+   "chmod(<R>/auditoria-diff-0001/.tmp-a0002.json-<rnd>,292)",
+   "  ok",
+   "link(<R>/auditoria-diff-0001/.tmp-a0002.json-<rnd>,<R>/auditoria-diff-0001/a0002.json)",
+   "  throw EEXIST",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0002.json-<rnd>)",
+   "  ok",
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readdir(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readFile(<R>/auditoria-diff-0001/a0001.json,65536)",
+   "  ok"
+  ],
+  "tree": {
+   "a0001.json": "644:3b9887356855bf544d4e1866967786ae575615a04348ef3492ab22d7ae6e96e3",
+   "a0002.json": "444:544fa6278a3aec8892ce9c9a9d3f667ac94938d4568c291426b9768b2aba1136"
+  },
+  "tripped": false
+ },
+ "confirm: EEXIST e readdir falha": {
+  "result": {
+   "code": "ANCHOR_INTEGRITY",
+   "issues": [
+    "listagem das âncoras: EIO x [caminho]"
+   ],
+   "ok": false
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  ok",
+   "chmod(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,292)",
+   "  ok",
+   "link(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,<R>/auditoria-diff-0001/a0001.json)",
+   "  throw EEXIST",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  ok",
+   "lstat(<R>)",
+   "  ok",
+   "lstat(<R>/auditoria-diff-0001)",
+   "  ok",
+   "readdir(<R>/auditoria-diff-0001)",
+   "  throw EIO"
+  ],
+  "tree": {
+   "a0001.json": "444:82ef19351e92a0d08bf18abf207d4a105a49d4200a0a87b6d80e0aa5d67bdad5"
+  },
+  "tripped": false
+ },
+ "confirm: corrida (2 paralelos, mesmo recibo)": {
+  "result": [
+   {
+    "ok": true,
+    "value": {
+     "anchoredAt": "2026-10-21T12:00:00.000Z",
+     "auditId": "auditoria-diff-0001",
+     "contentSha256": "f30027fa102d600c53fbccf91ea0944d3ce86a24a6ab381788fad9663b642938",
+     "headSha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+     "kind": "LINK_AUDIT_DECISION_ANCHOR",
+     "prevAnchorSha256": null,
+     "schemaVersion": 1,
+     "seq": 1
+    }
+   },
+   {
+    "ok": true,
+    "value": {
+     "anchoredAt": "2026-10-21T12:00:00.000Z",
+     "auditId": "auditoria-diff-0001",
+     "contentSha256": "f30027fa102d600c53fbccf91ea0944d3ce86a24a6ab381788fad9663b642938",
+     "headSha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+     "kind": "LINK_AUDIT_DECISION_ANCHOR",
+     "prevAnchorSha256": null,
+     "schemaVersion": 1,
+     "seq": 1
+    }
+   }
+  ],
+  "trace": [],
+  "tree": {
+   "a0001.json": "444:a4bd09516bafda1e276c3559ec599c4d8b2e74e180a687a3efff1a8c8053a62a"
+  },
+  "tripped": false
+ },
+ "confirm: pasta da auditoria ausente": {
+  "result": {
+   "code": "ANCHOR_WRITE_FAILED",
+   "issues": [
+    "escrita do temporário: ENOENT ENOENT: no such file or directory, open '[caminho]'"
+   ],
+   "ok": false
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  throw ENOENT",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  throw ENOENT",
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  throw ENOENT",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  throw ENOENT",
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>,#a4bd0951)",
+   "  throw ENOENT",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0001.json-<rnd>)",
+   "  throw ENOENT"
+  ],
+  "tree": {},
+  "tripped": false
+ },
+ "confirm: com anterior": {
+  "result": {
+   "ok": true,
+   "value": {
+    "anchoredAt": "2026-10-21T12:00:00.000Z",
+    "auditId": "auditoria-diff-0001",
+    "contentSha256": "9a54f5a23623d0141c6068156d62b6506d8a8afff8658d4f03a0e631faa2b52e",
+    "headSha256": "4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce",
+    "kind": "LINK_AUDIT_DECISION_ANCHOR",
+    "prevAnchorSha256": "2dfbb4bc28fa6e8b9639f51a2f3e3275c326d0e0cd3d827c53324b31bf86c944",
+    "schemaVersion": 1,
+    "seq": 3
+   }
+  },
+  "trace": [
+   "writeExclusive(<R>/auditoria-diff-0001/.tmp-a0003.json-<rnd>,#b8f9c5a7)",
+   "  ok",
+   "chmod(<R>/auditoria-diff-0001/.tmp-a0003.json-<rnd>,292)",
+   "  ok",
+   "link(<R>/auditoria-diff-0001/.tmp-a0003.json-<rnd>,<R>/auditoria-diff-0001/a0003.json)",
+   "  ok",
+   "unlink(<R>/auditoria-diff-0001/.tmp-a0003.json-<rnd>)",
+   "  ok",
+   "syncDirectory(<R>/auditoria-diff-0001)",
+   "  ok"
+  ],
+  "tree": {
+   "a0001.json": "444:82ef19351e92a0d08bf18abf207d4a105a49d4200a0a87b6d80e0aa5d67bdad5",
+   "a0002.json": "444:544fa6278a3aec8892ce9c9a9d3f667ac94938d4568c291426b9768b2aba1136",
+   "a0003.json": "444:b8f9c5a7e3795509a79a2409435576d2770c4470a51e8acd1be23e986d89e6c1"
+  },
+  "tripped": false
+ },
+ "prims": {
+  "base": [
+   {
+    "ok": true,
+    "value": "/srv/d"
+   },
+   {
+    "code": "UNSAFE_PATH",
+    "issues": [
+     "O diretório de x não pode ficar em public/ do projeto (área pública ou de código)."
+    ],
+    "ok": false
+   }
+  ],
+  "filename": [
+   "a0001.json",
+   "a1234.json"
+  ],
+  "locate": [
+   {
+    "ok": true,
+    "value": {
+     "dir": "/srv/d/auditoria-diff-0001",
+     "root": "/srv/d"
+    }
+   },
+   {
+    "code": "INVALID_ID",
+    "issues": [
+     "auditId inválido (8 a 64 caracteres: letras minúsculas, números, _ e -)."
+    ],
+    "ok": false
+   },
+   {
+    "code": "INVALID_ID",
+    "issues": [
+     "auditId inválido (8 a 64 caracteres: letras minúsculas, números, _ e -)."
+    ],
+    "ok": false
+   },
+   {
+    "code": "INVALID_ID",
+    "issues": [
+     "auditId inválido (8 a 64 caracteres: letras minúsculas, números, _ e -)."
+    ],
+    "ok": false
+   },
+   {
+    "ok": true,
+    "value": {
+     "dir": "/srv/d/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "root": "/srv/d"
+    }
+   },
+   {
+    "code": "INVALID_ID",
+    "issues": [
+     "auditId inválido (8 a 64 caracteres: letras minúsculas, números, _ e -)."
+    ],
+    "ok": false
+   },
+   {
+    "code": "INVALID_ID",
+    "issues": [
+     "auditId inválido (8 a 64 caracteres: letras minúsculas, números, _ e -)."
+    ],
+    "ok": false
+   },
+   {
+    "code": "UNSAFE_PATH",
+    "issues": [
+     "O diretório de decisões não pode ficar em src/ do projeto (área pública ou de código)."
+    ],
+    "ok": false
+   },
+   {
+    "code": "UNSAFE_PATH",
+    "issues": [
+     "Diretório base de âncoras inválido (precisa ser um caminho absoluto)."
+    ],
+    "ok": false
+   },
+   {
+    "code": "INVALID_ID",
+    "issues": [
+     "auditId inválido (8 a 64 caracteres: letras minúsculas, números, _ e -)."
+    ],
+    "ok": false
+   },
+   {
+    "code": "UNSAFE_PATH",
+    "issues": [
+     "O caminho da auditoria sai do diretório base."
+    ],
+    "ok": false
+   }
+  ],
+  "split": [
+   {
+    "numbers": [
+     1
+    ],
+    "orphanTempFiles": [
+     ".tmp-a0003.json-ab"
+    ],
+    "suspicious": [
+     "a1.json",
+     "a0001.json.bak",
+     "A0002.JSON",
+     "a9"
+    ],
+    "unexpectedFiles": [
+     "readme",
+     "a",
+     "ax1",
+     ""
+    ]
+   },
+   {
+    "numbers": [
+     1,
+     2,
+     100
+    ],
+    "orphanTempFiles": [],
+    "suspicious": [
+     "D0003.json"
+    ],
+    "unexpectedFiles": [
+     "d.json",
+     "dx"
+    ]
+   }
+  ]
+ }
+}
