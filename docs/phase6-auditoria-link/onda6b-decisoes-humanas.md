@@ -1,0 +1,152 @@
+# Fase 6 · Onda 6B — Persistência das decisões humanas
+
+Status: implementada em 28/10/2026 sobre o baseline Git `v1.0.1`; **revisada de forma independente e adversarial no mesmo dia** (correções B1–B4 e S1–S11 incorporadas; ver §16). **Em seguida, uma segunda revisão do código de `expectedHead`, âncoras, gravação e recuperação achou a janela residual B5 (decisão publicada cujo recibo falhava era devolvida como sucesso): corrigida pela Emenda 1 do ADR — a decisão só é CONFIRMADA com o recibo; ver §7 e §16.** **Sem interface, sem PDF, sem Supabase/migration, sem coleta, sem rede, sem créditos; nada foi alterado em `src/lib/link-audit/scoring/` (régua D3B) nem no `stack.yml`; nada foi feito na VPS nem publicado.**
+
+## 1. Numeração das ondas (aprovada)
+| Onda | Escopo |
+|---|---|
+| 6A | Motor Lumos determinístico (`scoring/`), concluída |
+| **6B** | **Persistência das decisões humanas e APIs autenticadas (este documento)** |
+| 6C | Integração com o Motor Lumos (evidências armazenadas → entrada do motor) e interface operacional |
+| 7 | Relatório PDF |
+Citações antigas em `D3B` §12 e `onda6a` §8 apenas foram renumeradas. **Nenhuma regra normativa (pesos, faixas, invariantes, decisões D3B-1…17) mudou.**
+
+## 2. O que a 6B resolve
+O contrato da 6A (`operatorRecordSchema`) já definia os seis tipos de confirmação humana (juízos C2/C3/P3, N/A, atestado de escopo de site, confirmação de imagens, confirmação de observação, equivalência de nomes), mas só como **entrada**. A 6B guarda essas decisões de forma **imutável, auditável e encadeada**, e entrega a lista de registros **vigentes** exatamente no formato que o motor aceita. Nenhum ponto é calculado, armazenado ou aceito do cliente.
+
+## 3. Decisões de arquitetura
+1. **Arquivos imutáveis, separados das evidências**: `<GMN_LINK_AUDIT_DECISIONS_DIR>/<auditId>/dNNNN.json`. A pasta de evidências nunca é escrita (em produção ela é `:ro`).
+2. **Histórico append-only**: criação, substituição explícita e revogação são entradas novas. Nada é editado, sobrescrito, renomeado ou apagado (não existe API para isso; um teste estático proíbe).
+3. **Mesmo mecanismo de gravação das evidências, SOMENTE atômico**: `publishExclusive` (temporário exclusivo + fsync + `link()` exclusivo). O caminho alternativo de `publishExclusive` (sem `link()`, criação direta do arquivo final, não atômica) é **recusado** para decisões e âncoras (`atomicOnly`): uma queda no meio deixaria um arquivo parcial no histórico. Sem `link()`, a escrita falha com 503 e nada é publicado.
+4. **Âncoras em pasta separada** (`GMN_LINK_AUDIT_DECISIONS_ANCHOR_DIR`, obrigatória) e **`expectedHead` obrigatório** nas escritas — ver o ADR `onda6b-adr-ancora-externa.md`. **O recibo é a confirmação (Emenda 1):** uma decisão publicada sem recibo é **PENDENTE** (existe, não vale, não é sucesso); só com `dNNNN` **e** `aNNNN` ela é CONFIRMADA.
+5. **Sem Supabase**: o RLS segue pendente (G5) e o projeto não tem staging. Nenhuma migration; teste estático confere.
+6. **O validador oficial é o do motor**: o conjunto vigente passa por `parseScoringInput` (schema estrito + validação cruzada da 6A). Nada de regras copiadas.
+
+## 4. Formato dos arquivos
+**Decisão** `dNNNN.json` (`NNNN` = sequência contínua 0001–9999): `schemaVersion: 1`, `kind: LINK_AUDIT_OPERATOR_DECISION`, `auditId`, `seq`, `action`, `recordedAt` (UTC, hora do **servidor**, nunca anterior à entrada anterior), `recordedBy` (e-mail da **sessão**, minúsculas), `prevSha256` (hash do arquivo anterior; `null` no primeiro) e `contentSha256` (SHA-256 do JSON canônico sem esse campo).
+
+| `action` | Campos próprios |
+|---|---|
+| `RECORD` | `decisionId` (`op-NNNN`, igual à sequência), `record` (registro da 6A **sem** `id`, `operatorEmail` e `recordedAt`), `supersedes` (`op-NNNN` ou `null`), `basis` (nº da captura e da revisão de relatório mais recentes quando a decisão foi tomada; só números e a data da coleta, ou `null` se ela não for uma data ISO) |
+| `REVOKE` | `revokes` (`op-NNNN`), `reason` (20 a 2000 caracteres) |
+
+**Âncora** `<ÂNCORAS>/<auditId>/aNNNN.json`: `{ schemaVersion, kind: LINK_AUDIT_DECISION_ANCHOR, auditId, seq, headSha256, anchoredAt, prevAnchorSha256, contentSha256 }` — um recibo por decisão, encadeado às âncoras anteriores.
+
+O esquema é `.strict()` (Zod 4): qualquer campo a mais — inclusive de pontuação — torna o arquivo inválido. O `record` é **derivado diretamente** do `operatorRecordSchema` da 6A (um teste falha se a 6A ganhar ou perder uma variante). **Os bytes também são conferidos** (§6).
+
+## 5. Máquina de estados (replay) e regras de coerência
+Cada decisão é `ACTIVE`, `SUPERSEDED` ou `REVOKED`.
+- **Espaços (slots):** o contrato da 6A permite um juízo, um N/A, um atestado e uma confirmação de observação por subcritério e uma confirmação de imagens. **Juízo e N/A do mesmo subcritério são alternativas** (espaço `S:<subcritério>` compartilhado): o motor aplica o N/A primeiro e esconderia um juízo — por exemplo o "faltam categorias" de C3, que valeria zero, ficaria encoberto por um N/A neutro, inflando o índice. Ocupar um espaço já ocupado → **409 `SUPERSEDE_REQUIRED`**. A equivalência de nomes ocupa o espaço do **par** (sem ordem, caixa ou espaços repetidos): a mesma equivalência não se repete; pares diferentes convivem.
+- **Substituição** (`supersedes`): a nova decisão precisa ser do **mesmo tipo e cobrir TODOS os subcritérios da anterior** (pode acrescentar; nunca retirar). Retirar um subcritério, trocar C2 por C3 ou uma equivalência de nomes por outra — e trocar a natureza (juízo × N/A) — é feito por **revogação**, que fica explícita no histórico. A anterior vira `SUPERSEDED`, continua no histórico e o arquivo original não é tocado. Se ainda restar outro conflito → 409 (revogue antes).
+- **Revogação**: nova entrada com motivo; a original vira `REVOKED`. Revogar de novo, revogar substituída → 409 `DECISION_NOT_ACTIVE`; inexistente → 404.
+- **Limites:** até 200 decisões vigentes (teto de `operatorRecords` da 6A) e 9999 entradas por auditoria; **as últimas 100 entradas são reservadas a revogações** (uma auditoria nunca fica "congelada" sem poder revogar).
+- A reprodução é **pura**, linear no tamanho do histórico, e recusa qualquer inconsistência, mesmo com hashes corretos (identificador diferente da sequência, referência a entrada futura, conflito de espaço, excesso de vigentes).
+
+## 6. Integridade: o que é e o que NÃO é detectado
+**Toda leitura (e toda gravação, antes de escrever)** relê as duas pastas e confere: nomes e sequência sem lacunas; nomes **suspeitos** (`d0005.json.bak`, `D0001.JSON`: parecem entradas mas não são ⇒ falha, pois podem ser o rastro de uma remoção); tamanho ≤ 64 KB; JSON e esquema; **hash conferido sobre o JSON bruto** (não sobre o objeto normalizado); **bytes exatamente os que o sistema grava** (recusa chave duplicada, espaços/quebras alterados, campo omitido, BOM, CRLF); `auditId`; número interno = nome do arquivo; encadeamento; semântica do histórico; e o **confronto com as âncoras**. Qualquer falha → **409 sem nenhum dado**, e nada é gravado sobre um histórico adulterado. Ruído comum (`desktop.ini`) e temporários órfãos (`.tmp-…`) são ignorados, contados e informados em `integrity.ignoredFiles`.
+
+| Cenário | Detectado? |
+|---|---|
+| Conteúdo de um arquivo alterado; arquivo do meio re-selado; troca/duplicata/arquivo de outra auditoria; lacuna; JSON/esquema inválido | **Sim** (hash, encadeamento, sequência, esquema) |
+| Alteração só de espaços/formatação, chave duplicada, campo omitido | **Sim** (bytes canônicos e hash bruto) |
+| Apagar o **último** arquivo, vários sufixos ou todos; apagar a **última revogação** (a decisão voltaria a valer) | **Sim** (`DECISIONS_TRUNCATED`: a âncora está à frente) |
+| Refazer o hash do **último** arquivo | **Sim** (`ANCHOR_MISMATCH`) |
+| Restaurar **só** a pasta de decisões de um backup antigo | **Sim** (`DECISIONS_TRUNCATED`) |
+| Apagar 2 ou mais âncoras / trocar a pasta de âncoras por uma vazia | **Sim** (`ANCHOR_INTEGRITY`) |
+| Apagar **exatamente uma** âncora (a última) | Vira uma decisão **PENDENTE** (§7): não vale, aparece em `pending`, **nenhum** pedido alheio a legitima; só o reenvio idêntico do autor grava o recibo |
+| Apagar o último arquivo **ainda pendente** (sem recibo) | Não acusa — e não precisa: nunca foi confirmado, nenhuma promessa foi feita (a resposta foi 503 `ANCHOR_PENDING`) |
+| Escrever direto na pasta de decisões uma entrada válida na cauda (forjada) | Fica **PENDENTE**: nunca vale e ninguém a confirma; bloqueia escritas (409 `PENDING_UNCONFIRMED`) até a quarentena (§15) |
+| Escrita sobre uma visão velha do operador | **Sim** (`HEAD_MISMATCH`, com o head atual) |
+| Restaurar **as duas** pastas de backups coerentes | Leitura: **não** (as duas voltam juntas); escrita: **sim**, se o operador já tinha visto uma posição maior (`HISTORY_REGRESSED`) |
+| Apagar o último arquivo **e** a última âncora (as duas pastas) | **Não**, a menos que o cliente guarde o head |
+| Alterar as duas pastas de forma coordenada (inclusive `root` na VPS) | **Não**: o hash não é assinatura |
+
+Por isso: **guarde o `head`** (`seq` + `sha256`, devolvido em toda resposta) fora do armazenamento — a 6C deve fixá-lo em cada resultado de pontuação — e mantenha as duas pastas em locais de gravação e de backup **independentes**.
+
+## 7. Escrita, concorrência e falhas
+- Trava em processo por auditoria + `link()` exclusivo entre processos. Se outro processo gravar o mesmo número, a 6B **relê, reavalia todas as regras com o estado novo** e tenta o próximo (até 5 vezes; depois 409 `WRITE_CONFLICT`, preservando todos os arquivos do outro processo). O `recordedAt` é decidido **dentro** da trava e é monotônico.
+- **Ordem (Emenda 1):** (1) verificar decisões e âncoras; (2) reconhecer **reenvio** do mesmo pedido (idempotência; ver abaixo); (3) se houver uma decisão **pendente** (publicada sem recibo) e o pedido não for o reenvio dela → 409 `PENDING_UNCONFIRMED`, **nada** é gravado; (4) conferir o `expectedHead` e as regras de domínio; (5) publicar a decisão; (6) gravar o recibo (até 3 tentativas imediatas; `EEXIST` só vale se o recibo existente for idêntico ao esperado); (7) **só então** devolver sucesso. Se (6) falhar: **503 `ANCHOR_PENDING`** (`Retry-After: 5`) com o `head` **confirmado** e a pendente — nunca um 2xx. A decisão pendente **não vale**: não entra em `head`, `decisions`, `history` nem `operatorRecords`; aparece em `pending`.
+- **Reenvio idempotente:** é reenvio o pedido do **mesmo autor** com a **mesma operação** (criação: `record` + `supersedes`; revogação: `revokes` + `reason`) sobre a entrada logo depois da sua visão (`expectedHead`). Reenviar uma pendente grava só o recibo que faltava (200, `replayed:true`); reenviar uma confirmada devolve a mesma decisão sem gravar (200); o `head` devolvido é o atual. Outro autor, outro conteúdo ou visão que não confere nunca é reenvio. Assim, resposta perdida, queda do servidor e `ANCHOR_PENDING` se resolvem **reenviando o mesmo corpo**, sem duplicar.
+- **Falhas:** erro de disco comum (ex.: `ENOSPC`) → 503, nada publicado, temporário removido. `EIO`/`EROFS` em qualquer das pastas → **todas** as escritas bloqueadas até reiniciar; leituras continuam. Sem `link()` atômico → 503 (nunca há arquivo parcial como entrada). **Em nenhum caso** a gravação cai num caminho não atômico.
+- As pastas-base **não são criadas** pelo módulo (ausente → 503); só as pastas da auditoria são criadas na primeira gravação. Symlinks na base ou na pasta da auditoria são recusados.
+
+## 8. Referências de evidência
+Decisões podem citar evidência (N/A `FEATURE_UNAVAILABLE` e confirmação de imagens). Aceitam-se **somente** identificadores que correspondem a arquivos reais do serviço de evidências, verificados pelo leitor autorizado:
+| Identificador | Arquivo real |
+|---|---|
+| `capture:c0001` | `c0001.capture.json` |
+| `report:c0001-r0001` | `c0001.report-r0001.json` |
+Todos cabem no formato de id do contrato da 6A (`[A-Za-z0-9_.:-]{1,64}`). No layout **legado** (TUVAPLAST) o leitor expõe a captura 1 e as revisões 1 e 2; um teste somente-leitura confirma `capture:c0001` e `report:c0001-r0002` na captura real. `site:c0001` (`c0001.site.json`) **é recusado**: a API pública do leitor não permite confirmar que o arquivo existe. Formato inválido → 400 `INVALID_EVIDENCE_REFERENCE`; inexistente → 409 `EVIDENCE_REFERENCE_NOT_FOUND`. Coleta com integridade `MISMATCH`/`CORRUPT` não aceita decisões novas (409 `EVIDENCE_INTEGRITY`).
+
+## 9. Compatibilidade com a 6A
+O conjunto vigente (mais o candidato) é validado com `parseScoringInput` dentro de uma entrada mínima. Recusas da 6A (valor de juízo inválido, P3 sem amostra, N/A derivado dos fatos, N/A em subcritério que a causa não cobre, `FEATURE_UNAVAILABLE` sem evidência, subcritério repetido, atestado/observação para subcritério indevido, imagens repetidas ou sem evidência) viram **400 `CONTRACT_REJECTED`** com a mensagem da própria 6A.
+**Única regra descartada** (depende de dado que a 6B não tem): "atestado só vale para escopo `SITEMAP_COMPLETE`/`DOCUMENTED_FULL_REVIEW`" — verificada pela 6C na entrada completa. **Consequência para a 6C:** um atestado (ou uma confirmação de observação) vigente pode fazer a entrada completa ser recusada pela 6A se o escopo do site for insuficiente; por isso cada decisão traz `siteDependent: true` nesses dois tipos e a 6C precisa tratá-las (exibir, e permitir revogar). As evidências citadas entram na validação como "armazenadas e verificadas"; um teste falha se a validação cruzada da 6A passar a ler a origem/status/captura dessas evidências.
+A projeção `operatorRecords` é `{...record, id: decisionId, operatorEmail: recordedBy, recordedAt}` apenas das vigentes. Teste ponta a ponta: com essas decisões, `scoreAudit` produz, para C2, C3, P3, S5, V5 e X4, o mesmo estado e pontos dos fixtures da 6A; revogar a de C2 a devolve a **Não verificado** (nunca zero). Uma **fixture de ouro do formato v1** (`tests/fixtures/link-audit-decisions/v1/`) acusa se um endurecimento futuro do esquema da 6A invalidar histórico já gravado (exigindo migração deliberada).
+
+## 10. API
+Todas exigem sessão (`requireOperator`: sessão + lista de operadores + bloqueio de origem cruzada nos POST; o middleware já cobre `/api/**`). Respostas sempre `no-store`, `nosniff`, `Vary: Cookie`; nenhuma traz caminho, credencial ou exceção.
+
+| Rota | Corpo | Sucesso |
+|---|---|---|
+| `GET /api/link-audit/decisions/{auditId}` | — (sem parâmetros de consulta) | 200 `{ auditId, head, pending, finalizable, decisions[vigentes], allDecisions[todas, com status], history[entradas], operatorRecords[projeção 6A], limits, anchors, integrity }` — tudo **confirmado**; `pending` é a decisão sem recibo (ou `null`) |
+| `POST /api/link-audit/decisions/{auditId}` | `{ record, supersedes?, expectedHead }` | **201** decisão nova confirmada / **200** reenvio: `{ decision, head, effectiveCount, anchored: true, replayed, anchors }` |
+| `POST /api/link-audit/decisions/{auditId}/revocations` | `{ revokes, reason, expectedHead }` | **201** / **200**: `{ revocation, revoked, head, effectiveCount, anchored: true, replayed, anchors }` |
+
+`expectedHead` é **obrigatório**: o `head` que o operador viu (`{ seq, sha256 }`) ou `null` se o histórico estava vazio. Divergência → 409 `HEAD_MISMATCH`; posição à frente do histórico atual → 409 `HISTORY_REGRESSED`; as duas respostas trazem o `head` atual (**confirmado**). **Sucesso (2xx) significa decisão E recibo duráveis.** Decisão gravada sem recibo → **503 `ANCHOR_PENDING`** `{ error, code, head: <confirmado>, pending }`: **não é sucesso**; reenvie o MESMO corpo (idempotente). Havendo pendente alheia ou outro pedido → **409 `PENDING_UNCONFIRMED`** `{ head, pending }`.
+
+| Status | Códigos |
+|---|---|
+| 400 | `INVALID_PARAMS`, `INVALID_JSON`, `INVALID_BODY` (inclui `expectedHead` ausente e **caracteres de controle, bidi e invisíveis** em qualquer texto), `FORBIDDEN_FIELDS` (pontuação/resultado em qualquer profundidade), `INVALID_EVIDENCE_REFERENCE`, `CONTRACT_REJECTED` |
+| 401 / 403 | sem sessão / `CROSS_ORIGIN`, `FORBIDDEN`, `OPERATOR_IDENTITY_INVALID` |
+| 404 | `AUDIT_NOT_FOUND`, `DECISION_NOT_FOUND` |
+| 409 | `HEAD_MISMATCH`, `HISTORY_REGRESSED`, `SUPERSEDE_REQUIRED`, `SUPERSEDE_INVALID`, `DECISION_NOT_ACTIVE`, `EVIDENCE_REFERENCE_NOT_FOUND`, `EVIDENCE_INTEGRITY`, `DECISIONS_INTEGRITY`, `DECISIONS_TRUNCATED`, `ANCHOR_MISMATCH`, `ANCHOR_INTEGRITY`, `LIMIT_REACHED`, `WRITE_CONFLICT`, **`PENDING_UNCONFIRMED`** |
+| 413 / 415 / 429 | corpo > 16 KB / tipo diferente de `application/json` / limite por operador (escrita 20/min, leitura 30/min, `Retry-After`) |
+| 503 | `DECISIONS_NOT_CONFIGURED`, `ANCHOR_NOT_CONFIGURED`, `EVIDENCE_NOT_CONFIGURED`, `EVIDENCE_STORAGE_UNAVAILABLE`, `DECISIONS_STORAGE_UNAVAILABLE`, `ANCHOR_STORAGE_UNAVAILABLE`, **`ANCHOR_PENDING`** (decisão gravada, recibo não confirmado; `Retry-After`), `DECISIONS_MISCONFIGURED` (pastas iguais ou aninhadas entre decisões, âncoras e evidências; dentro de `public/`/`src/`; relativas) |
+
+**Autoria e data são do servidor.** `id`, `operatorEmail`, `recordedAt`, `recordedBy`, `seq`, `basis` e `decisionId` enviados pelo cliente → 400. Identidade que o contrato não aceita (ex.: bypass de desenvolvimento `dev@localhost`) → 403, nada gravado. Os detalhes de integridade (409) podem citar nomes `dNNNN.json`/`aNNNN.json`, nunca caminhos.
+
+## 11. Configuração
+- `GMN_LINK_AUDIT_DECISIONS_DIR` — pasta dedicada, caminho absoluto, **já existente**.
+- `GMN_LINK_AUDIT_DECISIONS_ANCHOR_DIR` — **outra** pasta, em outro local de gravação e de backup, **já existente**.
+- `GMN_LINK_AUDIT_EVIDENCE_DIR` — a da 5B (só leitura).
+As três precisam ser distintas e nenhuma pode ficar dentro (nem conter) outra. Nada além disso é lido. **Em produção**: o volume de evidências é `:ro` e o contêiner web é `read_only`; veja `deploy/hostinger/PLANO-DE-VOLUME-DE-DECISOES.md` (dois volumes graváveis novos). Sem qualquer das variáveis, as rotas respondem 503 (falha fechada) e nada é gravado.
+
+## 12. Arquivos
+**Criados** — `src/lib/link-audit-decisions/{types,files,evidence-refs,project,contract,anchor-store,store,service,index}.ts`; `src/app/api/link-audit/decisions/{shared.ts,[auditId]/route.ts,[auditId]/revocations/route.ts}`; `tests/link-audit-decisions-{schema,project,store,service,anchor,recovery,api,isolation}.test.ts`, `tests/helpers/link-audit-decisions-fixtures.ts` e `tests/fixtures/link-audit-decisions/v1/**`; `scripts/run-isolated.sh`; este documento; o ADR `onda6b-adr-ancora-externa.md`; `deploy/hostinger/PLANO-DE-VOLUME-DE-DECISOES.md`.
+**Modificados** — `package.json` (somente a lista do script `test`); `tests/link-audit-isolation.test.ts` e `tests/link-audit-scoring-isolation.test.ts` (políticas estendidas de forma estreita: o módulo de decisões é consumidor de servidor com **lista fechada** de alvos — selo canônico, gravação única e o *contrato* de entrada `scoring/input` e `scoring/versions`; o que calcula segue sem consumidores; as rotas de decisões usam o índice público das evidências); `NOTES.md`; `D3B` §12 e `onda6a` §8 (somente numeração); `E0` §25.
+**Não modificados** — `src/lib/link-audit/scoring/` (diferença vazia contra a tag `v1.0.1`), nenhum outro arquivo existente de `src/`, `supabase/`, `deploy/hostinger/stack.yml`, `.env*`.
+
+## 13. Testes
+Cobrem: os 6 tipos de decisão; criação/leitura; substituição (válida e inválida, parcial, por natureza diferente); revogação (duplicada, inexistente); referências inexistentes/inválidas/`site:`; **concorrência** (gravações simultâneas, corrida por subcritério, corrida entre processos com `link()` forçando EEXIST, conflitos contínuos, `expectedHead` com N escritores); **adulteração e o fim do histórico** (conteúdo, re-selo do meio e do último, remoção no meio/início/fim/total, remoção da última revogação, restauração de cópia antiga, cópia/troca/outra auditoria, JSON/esquema inválidos, `__proto__`, chave duplicada, espaço extra, campo omitido, CRLF, BOM, grande, vazio, symlink, diretório com nome de entrada, nomes suspeitos); **âncoras** (hash, lacuna, outra auditoria, número, bytes, symlink, removidas, janela de queda, repare); **falhas de disco** (ENOSPC, EIO/EROFS em decisões e âncoras, sem `link()` em cinco códigos, sem arquivo parcial); limites de 9999 (leitura linear) e de 200; reserva de revogações; dados inválidos; autorização e origem cruzada; 400/401/403/404/409/413/415/429/503; ausência de caminhos e credenciais nas respostas; evidências originais com hash idêntico antes/depois; compatibilidade com `parseScoringInput` e `scoreAudit`; fixture de ouro v1; isolamento (sem Supabase/Redis/rede/ambiente/relógio/aleatoriedade, só `publishExclusive` e só via `atomicOnly`, sem API destrutiva, navegador não importa).
+**Emenda 1 (janela do recibo) — `tests/link-audit-decisions-recovery.test.ts` + ampliações em store/anchor/api:** reprodução do cenário do relatório (10 entradas, `a0011` falha, `d0011` some); invariante "se respondeu sucesso, a perda é detectada" em 4 modos de falha do recibo; **queda simulada após cada operação de disco** da criação e da revogação (a varredura cobre da 1ª operação até a gravação completa): o histórico nunca fica ilegível, nenhum sucesso sem os dois arquivos, o reenvio converge para exatamente uma decisão e o segundo reenvio não altera nenhum arquivo; falso alarme em leitura concorrente com escrita, revogação com recibo removido (`finalizable:false`), pendente forjada com data/captura/contrato inválidos, pendente no limite de 9999; matriz de truncamento (último arquivo, sufixos, todos, pasta inteira, última revogação) e de restauração (só decisões, só recibos, as duas pastas, arquivo re-selado); recibos removidos; pendente perdida; entrada forjada na cauda; recibo que aparece no mesmo instante (idêntico × diferente); idempotência (resposta perdida, reenvio tardio, outro operador, decisão já revogada); concorrência (6 reenvios simultâneos gravam 1); fuzz determinístico com modelo (3 sementes × 160 passos). **Mutação do protocolo: 25 de 25 mutantes mortos** (20 do protocolo + 5 das correções da revisão independente: releitura antes de acusar, revalidação da pendente forjada, `finalizable`, monotonia da data e existência da captura/revisão) (recibo falha e devolve sucesso; reenvio sem conferir recibo, autor, conteúdo, hash da visão ou encadeamento; gravar sobre pendente; leitor que trata pendente como confirmada; recibo à frente deixando de ser truncamento; tolerar várias sem recibo; adoção cega de recibo existente; `head` ausente na pendente; GET que esconde a pendente; 201 em vez de 200; sem `Retry-After`; tentativa única). Dois mutantes inicialmente sobreviveram por serem **redundantes** entre si (a leitura estrita já garante o encadeamento); um teste unitário de `findReplay` com entradas não encadeadas passou a matá-los (defesa em profundidade).
+**Verificação por mutação (1ª revisão):** desfazer cada correção (sobreposição parcial, espaço compartilhado juízo×N/A, comparação com a âncora e com o hash da âncora, `expectedHead`, bytes canônicos, hash bruto, `atomicOnly`, caracteres ocultos, reserva de revogações, `recordedAt` monotônico, nomes suspeitos, âncora obrigatória na configuração) faz o teste correspondente falhar (12 de 12 detectadas); o mesmo vale para os testes de isolamento.
+
+## 14. Verificação isolada
+`scripts/run-isolated.sh <comando>` roda em namespace de rede vazio (sem rede externa nem a porta 6379 do host; o script **prova** isso antes de executar e aborta se falhar), com `env -i`, e recusa-se se houver `.env*` na árvore (o Next, o Worker e os scripts leem `.env.local`/`.env`/`.env.production*` mesmo com `NODE_ENV=development`; `env -i` não impede isso). `--offline-fonts` simula a resposta do Google Fonts para o build (o `next/font/google` baixa a fonte Inter no build): **esse `.next` nunca vai para uma imagem**. Lint indisponível (ESLint não está instalado no projeto).
+
+## 15. Recuperação de uma auditoria bloqueada (nunca apagar para "destravar")
+Uma auditoria com `DECISIONS_INTEGRITY`, `DECISIONS_TRUNCATED`, `ANCHOR_MISMATCH` ou `ANCHOR_INTEGRITY` não aceita leitura nem escrita (falha fechada). **Não apague nem edite arquivos.** Procedimento: (1) copie as duas pastas da auditoria para um local de quarentena (somente cópia); (2) compare com os backups independentes de cada pasta e com o `head` guardado; (3) identifique o arquivo/âncora divergente pelos nomes citados nos detalhes do erro; (4) restaure SEMPRE o par coerente (decisões e âncoras do mesmo instante) em pasta nova e confira lendo pela API; (5) registre o incidente. Um arquivo parcial não deve mais existir (a gravação é atômica), mas um temporário órfão `.tmp-…` pode ficar após uma queda: é ignorado e pode ser movido para a quarentena.
+
+**Decisão PENDENTE (`pending` no GET; 503 `ANCHOR_PENDING` ou 409 `PENDING_UNCONFIRMED` nas escritas)** — não é um bloqueio de integridade; as leituras continuam, só as escritas dessa auditoria ficam à espera:
+1. Normal: o **autor reenvia o mesmo corpo** (a tela da 6C pode reenviar a partir de `pending.record`/`pending.reason`). Isso grava o recibo que faltava; o histórico segue.
+2. Se o recibo continua falhando, o problema é o **volume de âncoras** (espaço, permissão, montagem): corrija-o; nenhuma decisão se perde enquanto isso.
+3. Se o autor não voltar e for preciso liberar a auditoria: **antes de mover qualquer coisa, compare `pending.seq` com o `head` guardado fora do armazenamento** (o que a 6C fixa nos resultados e o que os backups das duas pastas mostram). Se `pending.seq` é **menor ou igual** ao `head` já guardado, NÃO é uma pendente: é uma decisão confirmada cujo **recibo foi removido** — restaure o `aNNNN.json` do backup da pasta de âncoras, não mova a decisão (mover apagaria em silêncio uma decisão confirmada). Só se `pending.seq` for maior que qualquer `head` guardado e o autor reconhecer (ou não) o pedido: confira que existe `dNNNN.json` **sem** `aNNNN.json` correspondente e **mova** (não apague) o `dNNNN.json` para a quarentena. **Nunca crie um recibo à mão.** Se `pending` for uma entrada que ninguém reconhece (forjada), trate como incidente: quarentena + investigação.
+4. Uma decisão pendente que **sumiu** não exige nenhuma ação: o operador foi avisado (503) de que ela não estava salva e basta reenviar.
+
+## 16. Revisão independente (28/10/2026) e riscos residuais
+Achados BLOCKER corrigidos nesta onda: **B1** retrocesso/truncamento invisível (âncoras + `expectedHead`); **B2** juízo e N/A contraditórios; **B3** substituição por sobreposição parcial e equivalência de nomes sem relação; **B4** documentação mais forte que o código (esta reescrita). **B5** (segunda revisão, mesmo dia) — **janela do recibo**: a decisão publicada cuja âncora falhava era devolvida como 201 `anchored:false` e a sua perda não era detectada, pois o leitor tratava a cauda sem recibo como confirmada; corrigido pela **Emenda 1** (decisão PENDENTE até o recibo, sucesso só com os dois arquivos, reenvio idempotente, leitor só devolve o confirmado). A **revisão independente da Emenda 1** (sobre o código já corrigido; veredito: aprovado com ressalvas, nenhum BLOCKER) achou e levou a corrigir: falso `DECISIONS_TRUNCATED` numa leitura que cruza uma escrita (âncoras lidas antes das decisões + uma releitura), conclusão de pendente forjada com data/captura/contrato do atacante (revalidação), e o aviso `finalizable`; mais ajustes de texto (runbook, `fsync`, UI). Sugestões incorporadas: bytes canônicos (S1), recusa do caminho não atômico (S2), caracteres ocultos (S3), nomes suspeitos (S4), reserva de revogações e `replay` linear (S5), `collectedAt` do layout legado (S6), `siteDependent` (S7), teste de independência da origem das evidências (S8), fixture de ouro v1 (S9), `scrubPaths` (S10), `recordedAt` monotônico (S11).
+**Riscos residuais:**
+1. Adulteração **coordenada** das duas pastas (ou `root` na VPS) não é detectada pelo armazenamento; mitigação: locais e backups independentes, e fixar o `head` em cada resultado (6C).
+2. Dois locais de gravação em produção (dois volumes novos); sem eles, 503.
+3. **Custo de leitura:** cada leitura relê todos os arquivos das duas pastas (≤ 9999 × 2 × 64 KB no pior caso teórico; na prática dezenas de KB). Limitado por sessão (30/min). Sem paginação nesta onda.
+4. **Bypass de desenvolvimento** (`dev@localhost`) não grava decisões (403): a 6C precisa de um operador de desenvolvimento com e-mail válido (alteração pequena em `guard.ts`, a autorizar).
+5. **`auditId` com `_`**: aceito pelas evidências, mas o motor 6A só aceita hífens; a 6C precisa mapear/recusar.
+6. **`site:cNNNN`** só será aceito quando o leitor expuser as observações de site; V5/S5/X4 de fonte externa precisam citar evidência de site na 6C (origem `OFFICIAL_SITE`).
+7. **Atestado/observação vigentes** podem fazer a 6A recusar a entrada completa (§9); a 6C deve exibi-los e permitir revogar.
+8. **O e-mail do operador** fica gravado nos arquivos e na projeção: tratar como dado interno.
+9. **Pendente que bloqueia** (Emenda 1): uma decisão sem recibo, cujo autor não volta, bloqueia novas escritas daquela auditoria até a quarentena (§15) — escolha deliberada (falha fechada) para que nenhum pedido alheio "legitime" uma cauda; uma cauda forjada na pasta de decisões também só consegue **bloquear**, nunca valer.
+10. **Recibo removido da última entrada** é indistinguível de uma pendente (se for uma revogação, a decisão revogada reaparece vigente em `operatorRecords`): o sinal é `pending` + `finalizable:false`, e a 6C **deve** recusar finalizar. O texto livre de `pending` pode ser de uma entrada forjada: a UI da 6C deve escapá-lo. "Duráveis" é o `fsync` dos arquivos; o do diretório é *best-effort*. Ao reenviar uma decisão já revogada, o cliente recebe 200 com `status: REVOKED`: conferir `replayed` e `status`.
+11. A fixture de ouro v1 protege o formato atual; mudar o esquema da 6A exige migração **deliberada** (nova versão de formato), nunca edição dos arquivos.
+
+## 17. Próximos passos (fora da 6B)
+Onda 6C: mapear evidências armazenadas → `ScoringInput` (ids `capture:`/`report:`, origem/tipo de captura, `referenceDate` do snapshot — nunca do cliente), tela de registro e exibição das decisões (com rótulos "provisório", cobertura e confiança, `siteDependent` e o `head`), tratar `auditId` com `_`, operador de desenvolvimento, **fixar o `head` das decisões no resultado**, e só então chamar `scoreAudit`. Onda 7: PDF.

@@ -59,7 +59,14 @@ test('independência: nada de Juiz, prospecção, banco, filas, PDF, Serper, col
   }
 });
 
-test('o motor ainda não está conectado: nenhum arquivo fora dele (nem o barrel) o importa', () => {
+/**
+ * Onda 6B: o módulo de decisões humanas consome SÓ o contrato de entrada (input.ts, versions.ts). O que CALCULA (engine,
+ * agregação, régua, confiança…) continua sem nenhum consumidor até a Onda 6C.
+ */
+const DECISIONS_DIR = path.join(ROOT, 'src', 'lib', 'link-audit-decisions') + path.sep;
+const DECISIONS_ALLOWED = new Set([path.join(SCORING_DIR, 'input'), path.join(SCORING_DIR, 'versions')]);
+
+test('o motor que calcula ainda não está conectado: fora dele só o módulo de decisões usa o CONTRATO (input, versions); nem o barrel o importa', () => {
   const barrel = fs.readFileSync(path.join(ROOT, 'src', 'lib', 'link-audit', 'index.ts'), 'utf8');
   assert.ok(!/scoring/.test(barrel), 'o barrel de link-audit não exporta o motor');
   const roots = ['src', 'scripts'].map((dir) => path.join(ROOT, dir));
@@ -67,6 +74,10 @@ test('o motor ainda não está conectado: nenhum arquivo fora dele (nem o barrel
     if (file.startsWith(SCORING_DIR + path.sep)) continue;
     for (const specifier of imports(fs.readFileSync(file, 'utf8'))) {
       const resolved = specifier.startsWith('@/') ? path.join(ROOT, 'src', specifier.slice(2)) : specifier.startsWith('.') ? path.resolve(path.dirname(file), specifier) : null;
+      if (file.startsWith(DECISIONS_DIR) && resolved !== null && (resolved === SCORING_DIR || resolved.startsWith(SCORING_DIR + path.sep))) {
+        assert.ok(DECISIONS_ALLOWED.has(resolved), `${path.relative(ROOT, file)} importa "${specifier}": o módulo de decisões só pode usar o contrato (input, versions)`);
+        continue;
+      }
       assert.ok(resolved === null || !(resolved === SCORING_DIR || resolved.startsWith(SCORING_DIR + path.sep)), `${path.relative(ROOT, file)} importa o motor de pontuação`);
     }
   }
