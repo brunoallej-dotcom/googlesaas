@@ -33,13 +33,17 @@ const importsOf = (source: string): Array<{ specifier: string; typeOnly: boolean
   ];
 };
 
-const FILES = ['assemble.ts', 'audit-id-alias.ts', 'criteria-sources.ts', 'index.ts', 'types.ts'];
+const FILES = ['assemble.ts', 'audit-id-alias.ts', 'blockers.ts', 'criteria-sources.ts', 'index.ts', 'outcome.ts', 'preview.ts', 'types.ts'];
 /** Lista fechada por arquivo: importa só irmãos, o selo canônico, a metodologia (tipo), o contrato do motor e tipos da base. */
 const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   'assemble.ts': new Set(['../link-audit/canonical', '../link-audit/scoring/dates', '../link-audit/scoring/input', '../link-audit/scoring/ruler', '../link-audit/scoring/types', '../link-audit/scoring/versions', '../link-audit-evidence/scoring-basis', './audit-id-alias', './criteria-sources', './types']),
   'audit-id-alias.ts': new Set(['../link-audit/canonical']),
   'criteria-sources.ts': new Set(['../link-audit/methodology', '../link-audit/scoring/input', '../link-audit/scoring/ruler', '../link-audit/scoring/types']),
-  'index.ts': new Set(['./assemble', './audit-id-alias', './criteria-sources', './types']),
+  'blockers.ts': new Set(['../link-audit/scoring/input', '../link-audit/scoring/types', './types']),
+  'outcome.ts': new Set(['../link-audit/scoring/types']),
+  // Onda 6C (I3): o ÚNICO arquivo que executa o motor (pelo índice) e consome decisões (índice público) e a base (só tipos)
+  'preview.ts': new Set(['../link-audit/canonical', '../link-audit/methodology', '../link-audit/scoring/index', '../link-audit/scoring/input', '../link-audit-decisions', '../link-audit-evidence/scoring-basis', './assemble', './audit-id-alias', './blockers', './criteria-sources', './outcome', './types']),
+  'index.ts': new Set(['./assemble', './audit-id-alias', './blockers', './criteria-sources', './outcome', './preview', './types']),
   'types.ts': new Set(['../link-audit/methodology', '../link-audit/scoring/input', '../link-audit/scoring/types', '../link-audit-evidence/scoring-basis', './audit-id-alias', './criteria-sources']),
 };
 
@@ -51,17 +55,20 @@ test('cada arquivo importa só a sua lista fechada; o motor que calcula, o leito
   for (const name of FILES) {
     for (const { specifier, typeOnly } of importsOf(fs.readFileSync(path.join(LIB, name), 'utf8'))) {
       assert.ok(ALLOWED[name]?.has(specifier), `${name} importa "${specifier}" fora da lista`);
-      if (specifier.includes('scoring-basis') || specifier.includes('methodology')) assert.ok(typeOnly, `${name}: "${specifier}" só como tipo`);
+      if (specifier.includes('scoring-basis') || (specifier.includes('methodology') && name !== 'preview.ts')) assert.ok(typeOnly, `${name}: "${specifier}" só como tipo`);
+      if (name === 'preview.ts') continue; // lista própria acima: o motor (índice) e as decisões (índice) são deliberados aqui e só aqui
       assert.ok(!/engine|aggregate|eval-|confidence|publication|integrity|results|nap-compare|link-audit-decisions|link-audit-storage|reader|store|supabase|redis|bullmq|serper|dataforseo|site-check|url-safety|next|react|pdf|collector|runtime/i.test(specifier.replace('../link-audit-evidence/scoring-basis', '')), `${name} importa "${specifier}"`);
     }
   }
 });
 
-test('nenhum consumidor no I2: nada em src/ ou scripts/ importa o mapeador (a prévia, a simulação e as rotas são os incrementos seguintes)', () => {
+test('consumidores: só a rota da prévia (I3) importa o módulo, e só pelo índice público; nada mais em src/ ou scripts/', () => {
   for (const file of [...walk(path.join(ROOT, 'src')), ...walk(path.join(ROOT, 'scripts'))]) {
     if (file.startsWith(LIB + path.sep)) continue;
+    const route = file.startsWith(path.join(ROOT, 'src', 'app', 'api', 'link-audit', 'scoring') + path.sep);
     for (const { specifier } of importsOf(fs.readFileSync(file, 'utf8'))) {
       const resolved = specifier.startsWith('@/') ? path.join(ROOT, 'src', specifier.slice(2)) : specifier.startsWith('.') ? path.resolve(path.dirname(file), specifier) : null;
+      if (route && resolved === LIB) continue;
       assert.ok(resolved === null || !(resolved === LIB || resolved.startsWith(LIB + path.sep)), `${path.relative(ROOT, file)} importa o mapeador ("${specifier}")`);
     }
   }

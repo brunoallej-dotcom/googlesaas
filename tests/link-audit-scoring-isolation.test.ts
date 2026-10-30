@@ -86,6 +86,8 @@ test('o motor que calcula ainda não está conectado: fora dele só decisões e 
         continue;
       }
       if (file.startsWith(SCORING_RUNS_DIR) && resolved !== null && (resolved === SCORING_DIR || resolved.startsWith(SCORING_DIR + path.sep))) {
+        // Onda 6C (I3): SÓ o serviço de prévia (`preview.ts`) executa o motor, e só pelo índice (`scoring/index`)
+        if (path.basename(file) === 'preview.ts' && resolved === path.join(SCORING_DIR, 'index')) continue;
         assert.ok(SCORING_RUNS_ALLOWED.has(resolved), `${path.relative(ROOT, file)} importa "${specifier}": o mapeador só pode usar o contrato, a régua como dados e as datas`);
         continue;
       }

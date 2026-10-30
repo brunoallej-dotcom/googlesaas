@@ -123,8 +123,18 @@ test('rotas: sem rede, sem disco, sem outra variável de ambiente além das duas
 test('o navegador, as páginas, os componentes, o Worker e os comandos NÃO importam as decisões (somente as rotas de servidor)', () => {
   const decisionsLib = LIB;
   const decisionsRoutes = ROUTES;
+  // Onda 6C (I3): a prévia da pontuação (serviço + rota) consome as decisões CONFIRMADAS, e só pelo índice público
+  const scoringRoutes = path.join(ROOT, 'src', 'app', 'api', 'link-audit', 'scoring') + path.sep;
+  const scoringService = path.join(ROOT, 'src', 'lib', 'link-audit-scoring-runs', 'preview.ts');
   for (const file of [...walk(path.join(ROOT, 'src')), ...walk(path.join(ROOT, 'scripts'))]) {
     if (file.startsWith(decisionsLib + path.sep) || file.startsWith(decisionsRoutes + path.sep)) continue;
+    if (file.startsWith(scoringRoutes) || file === scoringService) {
+      for (const specifier of imports(fs.readFileSync(file, 'utf8'))) {
+        const resolved = specifier.startsWith('@/') ? path.join(ROOT, 'src', specifier.slice(2)) : specifier.startsWith('.') ? path.resolve(path.dirname(file), specifier) : null;
+        if (resolved !== null && (resolved === decisionsLib || resolved.startsWith(decisionsLib + path.sep))) assert.equal(resolved, decisionsLib, `${rel(file)} importa "${specifier}": só o índice público das decisões é permitido`);
+      }
+      continue;
+    }
     for (const specifier of imports(fs.readFileSync(file, 'utf8'))) {
       const resolved = specifier.startsWith('@/') ? path.join(ROOT, 'src', specifier.slice(2)) : specifier.startsWith('.') ? path.resolve(path.dirname(file), specifier) : null;
       const hits = resolved !== null && (resolved === decisionsLib || resolved.startsWith(decisionsLib + path.sep) || resolved.startsWith(decisionsRoutes));

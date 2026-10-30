@@ -223,7 +223,9 @@ const STORAGE_TARGETS: ReadonlySet<string> = new Set(['canonical.ts', 'snapshot-
  * Os imports são conferidos arquivo a arquivo em `link-audit-scoring-runs-isolation.test.ts`.
  */
 const SCORING_RUNS_DIR = 'src/lib/link-audit-scoring-runs/';
-const SCORING_RUNS_TARGETS: ReadonlySet<string> = new Set(['canonical.ts', 'methodology.ts', 'scoring/dates.ts', 'scoring/input.ts', 'scoring/ruler.ts', 'scoring/types.ts', 'scoring/versions.ts']);
+const SCORING_RUNS_TARGETS: ReadonlySet<string> = new Set(['canonical.ts', 'methodology.ts', 'scoring/dates.ts', 'scoring/index.ts', 'scoring/input.ts', 'scoring/ruler.ts', 'scoring/types.ts', 'scoring/versions.ts']);
+/** Onda 6C (I3): a rota da prévia (servidor). Só ela e o serviço de prévia consomem o índice do motor; cada arquivo é conferido em `link-audit-scoring-runs-isolation.test.ts`. */
+const SCORING_ROUTES_DIR = 'src/app/api/link-audit/scoring/';
 const CLIENT_DIRS = ['src/components/link-audit/', 'src/app/auditoria-por-link/'];
 /** Único valor (não só tipo) que o navegador pode importar: constantes puras, sem nenhum import. */
 const CLIENT_VALUE_IMPORTS: ReadonlySet<string> = new Set(['methodology']);
@@ -452,6 +454,15 @@ test('Onda 5A/5B: só o runtime, os comandos e as rotas de leitura importam o se
         const resolved = resolveImport(file, statement.specifier);
         if (resolved === null || !(resolved === evidenceRoot || resolved.startsWith(evidenceRoot + path.sep))) continue;
         assert.ok(statement.typeOnly && resolved === path.join(evidenceRoot, 'scoring-basis'), `${name} importa "${statement.specifier}": só tipos de scoring-basis são permitidos`);
+      }
+      continue;
+    }
+    if (name.startsWith(SCORING_ROUTES_DIR)) {
+      // Onda 6C (I3): a rota da prévia usa o índice público e o leitor de pontuação (único lugar que o monta)
+      for (const statement of importStatements(fs.readFileSync(file, 'utf8'))) {
+        const resolved = resolveImport(file, statement.specifier);
+        if (resolved === null || !(resolved === evidenceRoot || resolved.startsWith(evidenceRoot + path.sep))) continue;
+        assert.ok(resolved === evidenceRoot || resolved === path.join(evidenceRoot, 'scoring-basis'), `${name} importa "${statement.specifier}": só o índice público e o leitor de pontuação são permitidos`);
       }
       continue;
     }
