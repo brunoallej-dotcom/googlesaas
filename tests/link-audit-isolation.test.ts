@@ -217,6 +217,13 @@ const DECISIONS_TARGETS: ReadonlySet<string> = new Set(['canonical.ts', 'snapsho
  */
 const STORAGE_DIR = 'src/lib/link-audit-storage/';
 const STORAGE_TARGETS: ReadonlySet<string> = new Set(['canonical.ts', 'snapshot-store.ts']);
+/**
+ * Onda 6C (I2): mapeador determinístico (servidor). Consome SÓ o selo canônico, as constantes de metodologia (tipo) e o CONTRATO
+ * do motor (entrada, tipos, régua como dados, datas puras e versões). NUNCA o motor que calcula (engine, agregação, avaliadores).
+ * Os imports são conferidos arquivo a arquivo em `link-audit-scoring-runs-isolation.test.ts`.
+ */
+const SCORING_RUNS_DIR = 'src/lib/link-audit-scoring-runs/';
+const SCORING_RUNS_TARGETS: ReadonlySet<string> = new Set(['canonical.ts', 'methodology.ts', 'scoring/dates.ts', 'scoring/input.ts', 'scoring/ruler.ts', 'scoring/types.ts', 'scoring/versions.ts']);
 const CLIENT_DIRS = ['src/components/link-audit/', 'src/app/auditoria-por-link/'];
 /** Único valor (não só tipo) que o navegador pode importar: constantes puras, sem nenhum import. */
 const CLIENT_VALUE_IMPORTS: ReadonlySet<string> = new Set(['methodology']);
@@ -255,11 +262,15 @@ test('isolamento reverso: só os consumidores declarados importam o módulo, e s
     const isRuntime = name.startsWith(RUNTIME_DIR) || name.startsWith(EVIDENCE_DIR) || name === RUNTIME_CLI || name === EVIDENCE_CLI;
     const isDecisions = name.startsWith(DECISIONS_DIR);
     const isStorage = name.startsWith(STORAGE_DIR);
+    const isScoringRuns = name.startsWith(SCORING_RUNS_DIR);
     for (const statement of importStatements(fs.readFileSync(file, 'utf8'))) {
       const target = targetsModule(file, statement.specifier);
       if (target === null) continue;
       consumersSeen.add(name);
-      if (isDecisions) {
+      if (isScoringRuns) {
+        const withExtension = target.endsWith('.ts') ? target : `${target}.ts`;
+        assert.ok(SCORING_RUNS_TARGETS.has(withExtension), `${name} importa "${statement.specifier}", fora da lista fechada do mapeador (contrato do motor, nunca o motor que calcula)`);
+      } else if (isDecisions) {
         const withExtension = target.endsWith('.ts') ? target : `${target}.ts`;
         assert.ok(DECISIONS_TARGETS.has(withExtension), `${name} importa "${statement.specifier}", fora da lista fechada do módulo de decisões`);
       } else if (isStorage) {
@@ -435,6 +446,15 @@ test('Onda 5A/5B: só o runtime, os comandos e as rotas de leitura importam o se
     name.startsWith('src/lib/link-audit-evidence/') || name.startsWith(RUNTIME_DIR) || name === RUNTIME_CLI || name === EVIDENCE_CLI || name.startsWith(EVIDENCE_ROUTES_DIR) || name.startsWith(DECISIONS_ROUTES_DIR);
   for (const file of [...walk(path.join(ROOT, 'src')), ...walk(path.join(ROOT, 'scripts'))]) {
     const name = rel(file);
+    if (name.startsWith(SCORING_RUNS_DIR)) {
+      // Onda 6C (I2): o mapeador só importa TIPOS da base de pontuação (apagados na compilação); nunca o leitor nem o armazenamento
+      for (const statement of importStatements(fs.readFileSync(file, 'utf8'))) {
+        const resolved = resolveImport(file, statement.specifier);
+        if (resolved === null || !(resolved === evidenceRoot || resolved.startsWith(evidenceRoot + path.sep))) continue;
+        assert.ok(statement.typeOnly && resolved === path.join(evidenceRoot, 'scoring-basis'), `${name} importa "${statement.specifier}": só tipos de scoring-basis são permitidos`);
+      }
+      continue;
+    }
     if (allowedImporters(name)) continue;
     for (const statement of importStatements(fs.readFileSync(file, 'utf8'))) {
       const resolved = resolveImport(file, statement.specifier);

@@ -47,7 +47,14 @@ test('só o próprio módulo de evidências importa scoring-basis, derive-url e 
   assert.deepEqual(importers, {
     'src/lib/link-audit-evidence/derive-url.ts': ['src/lib/link-audit-evidence/scoring-basis.ts'],
     'src/lib/link-audit-evidence/legacy.ts': ['src/lib/link-audit-evidence/reader.ts', 'src/lib/link-audit-evidence/scoring-basis.ts'],
+    // Onda 6C (I2): o mapeador é o único consumidor externo, e SÓ de tipos (apagados na compilação; verificado abaixo)
+    'src/lib/link-audit-evidence/scoring-basis.ts': ['src/lib/link-audit-scoring-runs/assemble.ts', 'src/lib/link-audit-scoring-runs/types.ts'],
   });
+  for (const importer of importers['src/lib/link-audit-evidence/scoring-basis.ts'] ?? []) {
+    const code = strip(fs.readFileSync(path.join(ROOT, importer), 'utf8'));
+    const statements = [...code.matchAll(/(?:^|\n)\s*import\s+(type\s+)?[^;]*?from\s+['"][^'"]*scoring-basis['"]/g)];
+    assert.ok(statements.length > 0 && statements.every((match) => match[1] !== undefined), `${importer} deve importar scoring-basis apenas como tipo`);
+  }
 });
 
 test('o índice público do módulo NÃO exporta a base de pontuação (o índice é importado pelo navegador para tipos)', () => {
