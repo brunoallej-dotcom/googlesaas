@@ -45,6 +45,30 @@ export interface PreviewFailure {
 }
 export type PreviewResult = { readonly ok: true; readonly value: PreviewPayload } | PreviewFailure;
 
+type ReadyBasisOf<T> = T extends { status: 'READY'; basis: infer B } ? B : never;
+export type ReadyBasis = ReadyBasisOf<ScoringBasisOutcome>;
+
+/**
+ * Tudo o que a prévia calculou, para quem precisa MAIS do que a projeção pública (a finalização do I4): a entrada exata do motor,
+ * o resultado completo, a base verificada e as decisões lidas. Estes dados são INTERNOS: nunca saem por uma rota.
+ */
+export interface Evaluation {
+  readonly payload: PreviewPayload;
+  readonly input: ScoringInput | null;
+  readonly inputSha256: string | null;
+  readonly result: ScoreResult | null;
+  readonly outcome: OutcomePreview | null;
+  readonly mapped: AssembleResult | null;
+  readonly basis: ReadyBasis | null;
+  readonly decisions: ListPayload;
+  /** Decisões efetivamente aplicadas na entrada, com o carimbo de captura que a 6B gravou (rastreabilidade do vínculo do C2). */
+  readonly applied: ReadonlyArray<{ readonly decisionId: string; readonly kind: string; readonly seq: number; readonly stampCapture: number | null; readonly stampCollectedAt: string | null }>;
+  readonly held: readonly HeldDecision[];
+  /** Impressão digital das DUAS leituras que concordaram (head, pendente, registros e base). */
+  readonly fingerprint: string;
+}
+export type EvaluationResult = { readonly ok: true; readonly value: Evaluation } | PreviewFailure;
+
 export interface PreviewActor {
   readonly email: string;
 }
@@ -171,7 +195,6 @@ export function createScoringPreviewService(deps: PreviewDeps) {
     return sha256Hex(canonicalJson({ head: s.decisions.head, pending: s.decisions.pending?.entrySha256 ?? null, finalizable: s.decisions.finalizable, operatorRecords: s.decisions.operatorRecords, basis: s.basis }));
   }
 
-  type ReadyBasis = Extract<ScoringBasisOutcome, { status: 'READY' }>['basis'];
   const captureNumber = (ref: string): number | null => {
     const match = /^capture:c(\d{4})$/.exec(ref);
     return match ? Number(match[1]) : null;
@@ -195,7 +218,7 @@ export function createScoringPreviewService(deps: PreviewDeps) {
     return 'OK';
   }
 
-  function compute(auditId: string, s: Snapshot): { ok: true; value: PreviewPayload } | PreviewFailure {
+  function compute(auditId: string, s: Snapshot, fp: string): EvaluationResult {
     const { decisions } = s;
     if (decisions.auditId !== auditId) return fail('AUDIT_IDENTITY_MISMATCH');
     const pending = decisions.pending;
@@ -210,9 +233,7 @@ export function createScoringPreviewService(deps: PreviewDeps) {
     if (s.basis.status === 'NO_EVIDENCE') {
       serviceBlockers.push(previewBlocker('NO_STORED_CAPTURE', 'BLOCKING'));
       const view = CRITERIA_SOURCES.map((row): CriterionSourceView => ({ id: row.id, criterionId: row.criterionId, maxHalfPoints: row.maxHalfPoints, source: row.channel === 'BLOCKED' ? 'BLOQUEADO' : 'SEM_DADO', reasonCode: row.channel === 'BLOCKED' ? row.blockedReason : ('NO_STORED_CAPTURE' as never), factEmitted: false, evidenceRefs: [], decisionIds: [] }));
-      return {
-        ok: true,
-        value: {
+      const noEvidencePayload: PreviewPayload = {
           definitive: false,
           auditId,
           scoringAuditId: null,
@@ -228,8 +249,8 @@ export function createScoringPreviewService(deps: PreviewDeps) {
           blockers: sortPreviewBlockers(serviceBlockers),
           missing: buildMissing(view),
           finalization: { allowed: false, expectedHead: decisions.head, expectedInputSha256: null, latest: null },
-        },
       };
+      return { ok: true, value: { payload: noEvidencePayload, input: null, inputSha256: null, result: null, outcome: null, mapped: null, basis: null, decisions, applied: [], held: [], fingerprint: fp } };
     }
 
     const basis = s.basis.basis;
@@ -239,6 +260,7 @@ export function createScoringPreviewService(deps: PreviewDeps) {
     const recordsById = new Map<string, OperatorRecord>(decisions.operatorRecords.map((record) => [record.id, record]));
     if (recordsById.size !== decisions.operatorRecords.length || decisions.decisions.length !== decisions.operatorRecords.length) return fail('INTERNAL_ERROR');
     const applied: OperatorRecord[] = [];
+    const appliedStamps: Evaluation['applied'][number][] = [];
     const held: HeldDecision[] = [];
     for (const dto of decisions.decisions) {
       const record = recordsById.get(dto.decisionId);
@@ -253,7 +275,10 @@ export function createScoringPreviewService(deps: PreviewDeps) {
       }
       if (hold) {
         held.push({ decisionId: dto.decisionId, code: hold });
-      } else applied.push(record);
+      } else {
+        applied.push(record);
+        appliedStamps.push({ decisionId: dto.decisionId, kind: dto.kind, seq: dto.seq, stampCapture: dto.basis.capture, stampCollectedAt: dto.basis.collectedAt });
+      }
     }
     for (const code of ['DECISION_NOT_SUPPORTED', 'DECISION_NEEDS_SITE_SCOPE', 'DECISION_CATEGORY_MISMATCH', 'DECISION_BASIS_UNVERIFIABLE'] as const) {
       const ids = held.filter((item) => item.code === code).map((item) => item.decisionId);
@@ -308,9 +333,7 @@ export function createScoringPreviewService(deps: PreviewDeps) {
     const profile = basis.profile;
     const website = mapped.input?.profile?.website?.[0]?.value;
 
-    return {
-      ok: true,
-      value: {
+    const payload: PreviewPayload = {
         definitive: false,
         auditId,
         scoringAuditId: mapped.traceability.auditId?.scoringAuditId ?? null,
@@ -349,26 +372,45 @@ export function createScoringPreviewService(deps: PreviewDeps) {
         blockers: sorted,
         missing: buildMissing(mapped.criteriaView),
         finalization: { allowed, expectedHead: decisions.head, expectedInputSha256: mapped.input ? mapped.inputSha256 : null, latest: null },
-      },
     };
+    return { ok: true, value: { payload, input: mapped.input, inputSha256: mapped.input ? mapped.inputSha256 : null, result, outcome, mapped, basis, decisions, applied: appliedStamps, held, fingerprint: fp } };
+  }
+
+  /** Duas leituras que concordam (até 3 tentativas) e então o cálculo. Base de `preview` e da finalização. */
+  async function evaluate(actor: PreviewActor, auditId: string): Promise<EvaluationResult> {
+    if (typeof auditId !== 'string' || !AUDIT_ID_PATTERN.test(auditId)) return fail('INVALID_PARAMS');
+    for (let attempt = 0; attempt < READ_ATTEMPTS; attempt += 1) {
+      const first = await snapshot(actor, auditId);
+      if (!first.ok) return first;
+      const second = await snapshot(actor, auditId);
+      if (!second.ok) return second;
+      try {
+        const fp = fingerprint(first.value);
+        if (fp === fingerprint(second.value)) return compute(auditId, first.value, fp);
+      } catch {
+        return fail('INTERNAL_ERROR'); // forma inesperada vinda dos leitores: falha fechada, sem detalhe
+      }
+    }
+    return fail('READ_INCONSISTENT');
   }
 
   return {
+    evaluate,
     /** Prévia da pontuação. Nunca grava; nunca é definitiva; só o `auditId` vem do cliente. */
     async preview(actor: PreviewActor, auditId: string): Promise<PreviewResult> {
+      const evaluated = await evaluate(actor, auditId);
+      return evaluated.ok ? { ok: true, value: evaluated.value.payload } : evaluated;
+    },
+    /** Impressão digital de UMA leitura nova (head, pendente, registros e base): a finalização a compara com a da avaliação antes de publicar. */
+    async fingerprintNow(actor: PreviewActor, auditId: string): Promise<{ readonly ok: true; readonly fingerprint: string } | PreviewFailure> {
       if (typeof auditId !== 'string' || !AUDIT_ID_PATTERN.test(auditId)) return fail('INVALID_PARAMS');
-      for (let attempt = 0; attempt < READ_ATTEMPTS; attempt += 1) {
-        const first = await snapshot(actor, auditId);
-        if (!first.ok) return first;
-        const second = await snapshot(actor, auditId);
-        if (!second.ok) return second;
-        try {
-          if (fingerprint(first.value) === fingerprint(second.value)) return compute(auditId, first.value);
-        } catch {
-          return fail('INTERNAL_ERROR'); // forma inesperada vinda dos leitores: falha fechada, sem detalhe
-        }
+      const read = await snapshot(actor, auditId);
+      if (!read.ok) return read;
+      try {
+        return { ok: true, fingerprint: fingerprint(read.value) };
+      } catch {
+        return fail('INTERNAL_ERROR');
       }
-      return fail('READ_INCONSISTENT');
     },
   };
 }

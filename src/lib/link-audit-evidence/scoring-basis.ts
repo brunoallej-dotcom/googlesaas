@@ -158,6 +158,11 @@ interface ProfileInput {
   /** Identidade candidata, ainda não validada (vem do arquivo; nunca é confiada sem o esquema). */
   readonly identityCandidate: unknown;
   readonly report: Record<string, unknown> | null;
+  /**
+   * USO INTERNO (recheca do I4): recebe o texto do website BRUTO do lugar casado. O valor nunca sai deste módulo: quem o recebe é
+   * `verifyWebsiteDerivation`, que devolve só um veredito.
+   */
+  readonly onRawWebsite?: (raw: string | null) => void;
 }
 
 /** Perfil + dado informativo, a partir do corpo ÍNTEGRO de UMA captura. Puro. */
@@ -177,6 +182,7 @@ export function profileFromBody(input: ProfileInput): { profile: BasisProfile | 
   if (matched.state === 'NOT_LOCATED') return unavailable('NOT_LOCATED');
   if (matched.state === 'AMBIGUOUS') return unavailable('AMBIGUOUS_IDENTITY');
   const place: MapsPlace = matched.place;
+  input.onRawWebsite?.(place.website);
 
   const website: BasisWebsite | null =
     place.website === null
@@ -230,7 +236,7 @@ export function createScoringBasisReader(options: EvidenceReaderOptions) {
 
   const failed = (info: IntegrityInfo): ScoringBasisOutcome => ({ status: 'INTEGRITY_FAILED', integrity: { ...info, issues: sanitizeForOutput(info.issues) as string[] } });
 
-  async function readVersioned(auditId: string): Promise<ScoringBasisOutcome> {
+  async function readVersioned(auditId: string, onRawWebsite?: (raw: string | null) => void): Promise<ScoringBasisOutcome> {
     const verification = await verifyAudit(options.baseDir, auditId, storeOptions);
     if (!verification.ok) {
       if (verification.code === 'NOT_FOUND') return { status: 'NOT_FOUND' };
@@ -315,6 +321,7 @@ export function createScoringBasisReader(options: EvidenceReaderOptions) {
         bodyText,
         identityCandidate: capture.input.identity,
         report: latest ? (reportFiles.get(reportRef(n, latest.revision)) ?? null) : null,
+        ...(onRawWebsite ? { onRawWebsite } : {}),
       });
       profile = built.profile;
       reviews = built.reviews;
@@ -323,7 +330,7 @@ export function createScoringBasisReader(options: EvidenceReaderOptions) {
     return { status: 'READY', basis: { version: SCORING_BASIS_VERSION, auditId, layout: 'VERSIONED', evidences, profile, informational: { reviews } } };
   }
 
-  async function readLegacy(auditId: string, dir: string): Promise<ScoringBasisOutcome> {
+  async function readLegacy(auditId: string, dir: string, onRawWebsite?: (raw: string | null) => void): Promise<ScoringBasisOutcome> {
     const legacy = await readLegacyAudit(ops, dir);
     if (legacy.integrity.status === 'MISMATCH') return failed(legacy.integrity);
     // o relatório VIGENTE (não superado) é obrigatório: um relatório superado nunca é promovido em silêncio
@@ -380,6 +387,7 @@ export function createScoringBasisReader(options: EvidenceReaderOptions) {
           confirmation: { confirmedBy: given.confirmedBy, confirmedAt: given.confirmedAt },
         },
         report,
+        ...(onRawWebsite ? { onRawWebsite } : {}),
       });
       profile = built.profile;
       reviews = built.reviews;
@@ -387,27 +395,60 @@ export function createScoringBasisReader(options: EvidenceReaderOptions) {
     return { status: 'READY', basis: { version: SCORING_BASIS_VERSION, auditId, layout: 'LEGACY', evidences, profile, informational: { reviews } } };
   }
 
+  /** Localiza a pasta, descarta symlink/não diretório e escolhe o layout; o mesmo caminho para ler e para rechecar. */
+  async function readAny(auditId: string, onRawWebsite?: (raw: string | null) => void): Promise<ScoringBasisOutcome> {
+    const located = locate(options.baseDir, auditId, projectRoot);
+    if (!located.ok) throw new Error(located.issues.join(' '));
+    try {
+      const info = await ops.lstat(located.value.dir);
+      if (info.isSymbolicLink() || !info.isDirectory()) return { status: 'NOT_FOUND' };
+    } catch {
+      // pasta inexistente: a verificação a trata como "não encontrada"
+    }
+    let legacy = false;
+    try {
+      legacy = (await ops.lstat(path.join(located.value.dir, 'MANIFEST.json'))).isFile();
+    } catch {
+      legacy = false;
+    }
+    return legacy ? readLegacy(auditId, located.value.dir, onRawWebsite) : readVersioned(auditId, onRawWebsite);
+  }
+
   return {
     /** Lê, verifica e projeta a base de pontuação. Só leitura. Id inválido lança erro; ator não autorizado lança `EvidenceAccessError`. */
     async readScoringBasis(actor: EvidenceActor, auditId: string): Promise<ScoringBasisOutcome> {
       await guard(actor);
-      const located = locate(options.baseDir, auditId, projectRoot);
-      if (!located.ok) throw new Error(located.issues.join(' '));
-      try {
-        const info = await ops.lstat(located.value.dir);
-        if (info.isSymbolicLink() || !info.isDirectory()) return { status: 'NOT_FOUND' };
-      } catch {
-        // pasta inexistente: a verificação a trata como "não encontrada"
-      }
-      let legacy = false;
-      try {
-        legacy = (await ops.lstat(path.join(located.value.dir, 'MANIFEST.json'))).isFile();
-      } catch {
-        legacy = false;
-      }
-      return legacy ? readLegacy(auditId, located.value.dir) : readVersioned(auditId);
+      return readAny(auditId);
+    },
+
+    /**
+     * RECHECA a derivação do website (Onda 6C, I4) no último instante antes de gravar um resultado: relê, do disco e com a MESMA
+     * verificação de integridade, a captura-fonte, acha o website BRUTO do lugar casado por CID/placeId e o deriva de novo. Só
+     * devolve `MATCH` se o SHA-256 do bruto, a URL derivada e o nível de UTM forem exatamente os esperados. O bruto não sai daqui.
+     * Independência real: bytes lidos de novo e reverificados, não o objeto que a prévia já tinha em memória. LIMITE: a derivação em si
+     * é a mesma função (`deriveWebsite`); o que se prova é que o resultado reflete a evidência íntegra de AGORA.
+     */
+    async verifyWebsiteDerivation(actor: EvidenceActor, auditId: string, expected: WebsiteExpectation): Promise<'MATCH' | 'MISMATCH' | 'NOT_AVAILABLE'> {
+      await guard(actor);
+      let raw: string | null | undefined;
+      const outcome = await readAny(auditId, (value) => {
+        raw = value;
+      });
+      if (outcome.status !== 'READY' || outcome.basis.profile.state !== 'AVAILABLE') return 'NOT_AVAILABLE';
+      if (outcome.basis.profile.source.ref !== expected.sourceRef) return 'MISMATCH';
+      if (typeof raw !== 'string') return 'MISMATCH';
+      const fresh = deriveWebsite(raw);
+      return fresh.rawSha256 === expected.rawSha256 && fresh.state === 'DERIVED' && fresh.derived === expected.derived && fresh.utm.level === expected.utmLevel ? 'MATCH' : 'MISMATCH';
     },
   };
+}
+
+/** O que a prévia derivou do website e a finalização quer conferir contra o bruto íntegro. */
+export interface WebsiteExpectation {
+  readonly sourceRef: string;
+  readonly rawSha256: string;
+  readonly derived: string;
+  readonly utmLevel: 'COMPLETE' | 'PARTIAL' | 'NOT_OBSERVED';
 }
 
 export type ScoringBasisReader = ReturnType<typeof createScoringBasisReader>;

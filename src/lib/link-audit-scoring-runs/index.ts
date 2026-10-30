@@ -13,7 +13,11 @@ export type { Attribution, PreviewBlocker, PreviewBlockerCode } from './blockers
 export { deriveOutcome, MINIMUM_COVERAGE_PERCENT, toPublicView } from './outcome';
 export type { InconclusiveReason, Outcome, OutcomeLevel, OutcomePreview } from './outcome';
 export { createScoringPreviewService, PREVIEW_HTTP_STATUS, PREVIEW_MESSAGE } from './preview';
-export type { HeldDecision, PreviewActor, PreviewCriterion, PreviewDeps, PreviewFailure, PreviewFailureCode, PreviewPayload, PreviewResult, PreviewState, PreviewSubcriterion } from './preview';
+export { createScoringResultsService, RESULTS_HTTP_STATUS, RESULTS_MESSAGE } from './results';
+export type { FinalizePayload, ListRunsPayload, PendingRunDto, ResultsDeps, ResultsFailure, ResultsFailureCode, RunDetailPayload, RunSummaryDto, ScoringResultsService } from './results';
+export { MAX_RUN_BYTES, MAX_RUNS } from './results-types';
+export type { ScoreRun } from './results-types';
+export type { Evaluation, HeldDecision, PreviewActor, PreviewCriterion, PreviewDeps, PreviewFailure, PreviewFailureCode, PreviewPayload, PreviewResult, PreviewState, PreviewSubcriterion } from './preview';
 export type {
   AssembleOptions,
   AssembleResult,

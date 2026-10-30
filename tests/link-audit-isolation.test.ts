@@ -224,6 +224,8 @@ const STORAGE_TARGETS: ReadonlySet<string> = new Set(['canonical.ts', 'snapshot-
  */
 const SCORING_RUNS_DIR = 'src/lib/link-audit-scoring-runs/';
 const SCORING_RUNS_TARGETS: ReadonlySet<string> = new Set(['canonical.ts', 'methodology.ts', 'scoring/dates.ts', 'scoring/index.ts', 'scoring/input.ts', 'scoring/ruler.ts', 'scoring/types.ts', 'scoring/versions.ts']);
+/** Onda 6C (I4): SÓ o armazenamento dos resultados (`results-store.ts`) usa o mecanismo único de gravação (`snapshot-store`: trava e publicação exclusiva). */
+const SCORING_RUNS_STORE_TARGETS: ReadonlyMap<string, ReadonlySet<string>> = new Map([['src/lib/link-audit-scoring-runs/results-store.ts', new Set(['snapshot-store.ts'])]]);
 /** Onda 6C (I3): a rota da prévia (servidor). Só ela e o serviço de prévia consomem o índice do motor; cada arquivo é conferido em `link-audit-scoring-runs-isolation.test.ts`. */
 const SCORING_ROUTES_DIR = 'src/app/api/link-audit/scoring/';
 const CLIENT_DIRS = ['src/components/link-audit/', 'src/app/auditoria-por-link/'];
@@ -271,7 +273,7 @@ test('isolamento reverso: só os consumidores declarados importam o módulo, e s
       consumersSeen.add(name);
       if (isScoringRuns) {
         const withExtension = target.endsWith('.ts') ? target : `${target}.ts`;
-        assert.ok(SCORING_RUNS_TARGETS.has(withExtension), `${name} importa "${statement.specifier}", fora da lista fechada do mapeador (contrato do motor, nunca o motor que calcula)`);
+        assert.ok(SCORING_RUNS_TARGETS.has(withExtension) || SCORING_RUNS_STORE_TARGETS.get(name)?.has(withExtension) === true, `${name} importa "${statement.specifier}", fora da lista fechada do mapeador (contrato do motor, nunca o motor que calcula)`);
       } else if (isDecisions) {
         const withExtension = target.endsWith('.ts') ? target : `${target}.ts`;
         assert.ok(DECISIONS_TARGETS.has(withExtension), `${name} importa "${statement.specifier}", fora da lista fechada do módulo de decisões`);

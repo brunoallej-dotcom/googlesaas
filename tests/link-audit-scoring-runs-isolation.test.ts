@@ -33,7 +33,11 @@ const importsOf = (source: string): Array<{ specifier: string; typeOnly: boolean
   ];
 };
 
-const FILES = ['assemble.ts', 'audit-id-alias.ts', 'blockers.ts', 'criteria-sources.ts', 'index.ts', 'outcome.ts', 'preview.ts', 'types.ts'];
+/** Arquivos PUROS (I2/I3): sem disco, sem node:, sem relógio. */
+const PURE_FILES = ['assemble.ts', 'audit-id-alias.ts', 'blockers.ts', 'criteria-sources.ts', 'index.ts', 'outcome.ts', 'preview.ts', 'types.ts'];
+/** Onda 6C (I4): armazenamento e finalização dos resultados. Cada um tem lista e proibições PRÓPRIAS (abaixo). */
+const RESULT_FILES = ['results-store.ts', 'results-types.ts', 'results-verify.ts', 'results.ts'];
+const FILES = [...PURE_FILES, ...RESULT_FILES].sort();
 /** Lista fechada por arquivo: importa só irmãos, o selo canônico, a metodologia (tipo), o contrato do motor e tipos da base. */
 const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   'assemble.ts': new Set(['../link-audit/canonical', '../link-audit/scoring/dates', '../link-audit/scoring/input', '../link-audit/scoring/ruler', '../link-audit/scoring/types', '../link-audit/scoring/versions', '../link-audit-evidence/scoring-basis', './audit-id-alias', './criteria-sources', './types']),
@@ -43,7 +47,15 @@ const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   'outcome.ts': new Set(['../link-audit/scoring/types']),
   // Onda 6C (I3): o ÚNICO arquivo que executa o motor (pelo índice) e consome decisões (índice público) e a base (só tipos)
   'preview.ts': new Set(['../link-audit/canonical', '../link-audit/methodology', '../link-audit/scoring/index', '../link-audit/scoring/input', '../link-audit-decisions', '../link-audit-evidence/scoring-basis', './assemble', './audit-id-alias', './blockers', './criteria-sources', './outcome', './types']),
-  'index.ts': new Set(['./assemble', './audit-id-alias', './blockers', './criteria-sources', './outcome', './preview', './types']),
+  'index.ts': new Set(['./assemble', './audit-id-alias', './blockers', './criteria-sources', './outcome', './preview', './results', './results-types', './types']),
+  // Onda 6C (I4): tipos/esquemas puros do registro e do recibo
+  'results-types.ts': new Set(['zod', '../link-audit-storage', './audit-id-alias']),
+  // reexecuta o motor (pelo índice) SÓ para conferir um registro já gravado; puro (sem disco)
+  'results-verify.ts': new Set(['../link-audit/canonical', '../link-audit/scoring/index', './audit-id-alias', './outcome', './results-types', './types']),
+  // o ÚNICO arquivo que toca o disco: protocolo de arquivos/recibos do I0 + mecanismo único de gravação
+  'results-store.ts': new Set(['node:crypto', 'node:path', '../link-audit/canonical', '../link-audit/snapshot-store', '../link-audit-storage', './audit-id-alias', './results-types']),
+  // orquestra: prévia (avaliação), armazenamento e verificação; nunca o motor, o disco nem as decisões diretamente
+  'results.ts': new Set(['node:path', '../link-audit-evidence/scoring-basis', './audit-id-alias', './blockers', './outcome', './preview', './results-store', './results-types', './results-verify', './types']),
   'types.ts': new Set(['../link-audit/methodology', '../link-audit/scoring/input', '../link-audit/scoring/types', '../link-audit-evidence/scoring-basis', './audit-id-alias', './criteria-sources']),
 };
 
@@ -53,10 +65,11 @@ test('lista exata de arquivos do módulo (qualquer arquivo novo exige decisão e
 
 test('cada arquivo importa só a sua lista fechada; o motor que calcula, o leitor, o armazenamento, decisões, Next, React, banco, filas e rede ficam de fora', () => {
   for (const name of FILES) {
+    if (RESULT_FILES.includes(name)) continue; // lista própria no teste dos resultados (I4), mais abaixo
     for (const { specifier, typeOnly } of importsOf(fs.readFileSync(path.join(LIB, name), 'utf8'))) {
       assert.ok(ALLOWED[name]?.has(specifier), `${name} importa "${specifier}" fora da lista`);
       if (specifier.includes('scoring-basis') || (specifier.includes('methodology') && name !== 'preview.ts')) assert.ok(typeOnly, `${name}: "${specifier}" só como tipo`);
-      if (name === 'preview.ts') continue; // lista própria acima: o motor (índice) e as decisões (índice) são deliberados aqui e só aqui
+      if (name === 'preview.ts' || name === 'index.ts') continue; // lista própria acima: o motor (índice) e as decisões (índice) são deliberados no serviço de prévia; o índice só reexporta irmãos
       assert.ok(!/engine|aggregate|eval-|confidence|publication|integrity|results|nap-compare|link-audit-decisions|link-audit-storage|reader|store|supabase|redis|bullmq|serper|dataforseo|site-check|url-safety|next|react|pdf|collector|runtime/i.test(specifier.replace('../link-audit-evidence/scoring-basis', '')), `${name} importa "${specifier}"`);
     }
   }
@@ -74,7 +87,7 @@ test('consumidores: só a rota da prévia (I3) importa o módulo, e só pelo ín
   }
 });
 
-test('sem rede, disco, ambiente, relógio, aleatoriedade, console, temporizadores, avaliação dinâmica nem escrita', () => {
+test('sem rede, disco, ambiente, relógio, aleatoriedade, console, temporizadores, avaliação dinâmica nem escrita (arquivos puros)', () => {
   const forbidden: ReadonlyArray<readonly [RegExp, string]> = [
     [/\bfetch\s*\(/, 'fetch'],
     [/node:/, 'módulo node'],
@@ -91,14 +104,14 @@ test('sem rede, disco, ambiente, relógio, aleatoriedade, console, temporizadore
     [/writeFile|appendFile|\.mkdir\s*\(|\.unlink\s*\(|\.rename\s*\(|\.link\s*\(|withLock|publishExclusive|writeExclusive/, 'escrita'],
     [/\bglobalThis\b|\bwindow\b|\bdocument\b|localStorage/, 'estado global/navegador'],
   ];
-  for (const name of FILES) {
+  for (const name of PURE_FILES) {
     const code = strip(fs.readFileSync(path.join(LIB, name), 'utf8'));
     for (const [pattern, label] of forbidden) assert.ok(!pattern.test(code), `${name} usa ${label}`);
   }
 });
 
 test('M-4a: nenhum arquivo do mapeador lê a parte informativa da base nem nomeia nota/contagem de avaliações; "reviews" só aparece como marca de exclusão', () => {
-  for (const name of FILES) {
+  for (const name of PURE_FILES) {
     const code = strip(fs.readFileSync(path.join(LIB, name), 'utf8'));
     assert.ok(!/\binformational\b/.test(code), `${name} referencia a parte informativa`);
     assert.ok(!/ratingCount|ratingShown|reviewCount|latestReviewDate|\.rating\b/.test(code), `${name} nomeia dado de avaliações`);
@@ -117,6 +130,76 @@ test('o mapeador nunca produz pontos: nenhuma função exportada devolve, recebe
   assert.ok(!/scoreAudit|verifyScoreResult|computeIndex|aggregate\(|buildPublication|obtainedHalfPoints|coveragePercent|evaluatedHalfPoints\s*[+=]/.test(code));
   const index = strip(fs.readFileSync(path.join(LIB, 'index.ts'), 'utf8'));
   assert.ok(!/export\s+\*/.test(index));
+});
+
+/* ---------------------------------------------------------------- Onda 6C (I4): resultados */
+const importsOfFile = (name: string): Array<{ specifier: string; typeOnly: boolean }> => importsOf(fs.readFileSync(path.join(LIB, name), 'utf8'));
+const codeOf = (name: string): string => strip(fs.readFileSync(path.join(LIB, name), 'utf8'));
+
+test('I4: cada arquivo dos resultados importa só a sua lista fechada (nunca o motor que calcula, o leitor de evidências, as decisões, Next, React, banco, filas, rede)', () => {
+  for (const name of RESULT_FILES) {
+    for (const { specifier, typeOnly } of importsOfFile(name)) {
+      assert.ok(ALLOWED[name]?.has(specifier), `${name} importa "${specifier}" fora da lista`);
+      if (specifier.includes('scoring-basis') || specifier === '../link-audit-storage' && name === 'results-types.ts') assert.ok(typeOnly, `${name}: "${specifier}" só como tipo`);
+      assert.ok(!/engine|aggregate|eval-|confidence|publication|nap-compare|link-audit-decisions|supabase|redis|bullmq|serper|dataforseo|site-check|url-safety|next|react|pdf|collector|runtime|undici|axios|node-fetch|child_process/i.test(specifier), `${name} importa "${specifier}"`);
+    }
+  }
+  // o motor (índice) só é importado pela prévia e pela verificação dos resultados
+  const engineImporters = FILES.filter((name) => importsOfFile(name).some(({ specifier }) => specifier === '../link-audit/scoring/index'));
+  assert.deepEqual(engineImporters, ['preview.ts', 'results-verify.ts']);
+});
+
+test('I4: só results-store.ts toca o disco/mecanismo de gravação; só ele usa node:crypto; o resto dos resultados é puro (sem node:fs, process, Date, fetch, env, console, timers)', () => {
+  for (const name of RESULT_FILES) {
+    const code = codeOf(name);
+    for (const [pattern, label] of [
+      [/\bfetch\s*\(/, 'fetch'],
+      [/node:(?!path\b|crypto\b)/, 'módulo node além de path/crypto'],
+      [/\brequire\s*\(/, 'require'],
+      [/process\.(?!cwd\(\))/, 'process (além de process.cwd() como raiz padrão do projeto)'],
+      [/\bDate\b/, 'Date (relógio/fuso)'],
+      [/Math\.random|randomUUID|getRandomValues/, 'aleatoriedade'],
+      [/\beval\s*\(|new Function\s*\(/, 'avaliação dinâmica'],
+      [/\bsetTimeout\b|\bsetInterval\b|\bsetImmediate\b|queueMicrotask/, 'temporizador'],
+      [/\bXMLHttpRequest\b|\bWebSocket\b|\bEventSource\b/, 'cliente de rede'],
+      [/\.env\b|dotenv|loadEnvConfig/, 'ambiente'],
+      [/\bconsole\./, 'console'],
+      [/\bglobalThis\b|\bwindow\b|\bdocument\b|localStorage/, 'estado global/navegador'],
+      // nada apaga, renomeia, trunca nem reescreve um resultado ou recibo: a única forma de gravar é a publicação exclusiva
+      [/writeFile|appendFile|\.unlink\s*\(|\.rename\s*\(|\.rm\s*\(|\.rmdir\s*\(|\.truncate\s*\(|\.copyFile\s*\(|\.symlink\s*\(|\.utimes\s*\(|\.chmod\s*\(/, 'escrita/remoção fora da publicação exclusiva'],
+    ] as const) assert.ok(!pattern.test(code), `${name} usa ${label}`);
+    if (name !== 'results-store.ts') {
+      assert.ok(!/randomBytes|node:crypto/.test(code), `${name} usa node:crypto`);
+      assert.ok(!/withLock|publishExclusive|\.mkdir\s*\(|\.link\s*\(|ops\.(?!realpath\b)\w+\s*\(/.test(code), `${name} toca o mecanismo de gravação`);
+    }
+  }
+  // results-store: o único uso de escrita é publishExclusive (resultado) e confirmReceipt (recibo, protocolo do I0)
+  const store = codeOf('results-store.ts');
+  assert.deepEqual([...new Set([...store.matchAll(/\bops\.([a-zA-Z]+)\s*\(/g)].map((m) => m[1]))].sort(), ['readdir']);
+  assert.ok(/publishExclusive\(/.test(store) && /confirmReceipt\(/.test(store) && /withLock\(/.test(store) && /atomicOnly\(/.test(store));
+  // results.ts: só consulta o caminho real das pastas (configuração); o relógio vem injetado
+  assert.deepEqual([...new Set([...codeOf('results.ts').matchAll(/\bops\.([a-zA-Z]+)\s*\(/g)].map((m) => m[1]))].sort(), ['realpath']);
+  assert.ok(/deps\.clock\(\)/.test(codeOf('results.ts')) && !/new Date|Date\.now/.test(codeOf('results.ts')));
+});
+
+test('I4: o registro nunca recebe pontuação do cliente: o corpo da finalização aceita só expectedHead e expectedInputSha256 (estrito) e o autor/hora vêm do servidor', () => {
+  const types = codeOf('results-types.ts');
+  assert.match(types, /finalizeBodySchema\s*=\s*z\.object\(\{ expectedHead: headSchema\.nullable\(\), expectedInputSha256: hex64 \}\)\.strict\(\)/);
+  const service = codeOf('results.ts');
+  assert.ok(/finalizedBy:\s*operator/.test(service) && /finalizedAt/.test(service));
+  assert.ok(!/rawBody\.(?:finalizedBy|finalizedAt|result|input|referenceDate|score|index)/.test(service));
+  // o desfecho do registro DERIVA do resultado do motor (nunca é informado)
+  assert.ok(/deriveOutcome\(/.test(codeOf('results-verify.ts')));
+});
+
+test('I4: M-4a nos resultados — nenhum arquivo nomeia a parte informativa nem dado de avaliações; "reviews" só aparece na recusa da entrada', () => {
+  for (const name of RESULT_FILES) {
+    const code = codeOf(name);
+    assert.ok(!/\binformational\b/.test(code), `${name} referencia a parte informativa`);
+    assert.ok(!/ratingCount|ratingShown|reviewCount|latestReviewDate|\.rating\b/.test(code), `${name} nomeia dado de avaliações`);
+    const mentions = [...code.matchAll(/\breviews\b/g)].length;
+    assert.ok(name === 'results-verify.ts' ? mentions === 1 : mentions === 0, `${name}: menções a reviews inesperadas (${mentions})`);
+  }
 });
 
 /* ---------------------------------------------------------------- dinâmica: armadilhas */

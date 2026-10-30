@@ -339,23 +339,28 @@ Como o motor **já** devolve `ok:true` com `index:null` nesses casos (`engine.ts
 - **PONTUADO:** pode exibir índice e classificação **com o rótulo** `PROVISÓRIO`/`PUBLICÁVEL`, confiança, pontos por critério, limitações, sensibilidade a N/A.
 - O arquivo guarda o **resultado completo do motor** (necessário para `verifyScoreResult`), mas a **projeção pública** (`toPublicView`) **remove** `totals.obtained*` e `criteria[].obtained*` quando `outcome = INCONCLUSIVO`. A Onda 7 consome a projeção e não pode imprimir pontos agregados de registros inconclusivos.
 
-### 12.3 Esquema do registro (`<RESULTS>/<auditId>/sNNNN.json`, selado e encadeado)
+### 12.3 Esquema do registro (`<RESULTS>/<auditId>/sNNNN.json`, selado e encadeado) — **implementado no I4** (`results-types.ts`, Zod estrito)
 ```
 { schemaVersion:1, kind:'LINK_AUDIT_SCORE_RUN', auditId, seq, finalizedAt, finalizedBy,
   outcome: 'PONTUADO' | 'INCONCLUSIVO',
   scored:       null | { level:'PROVISORIO'|'PUBLICAVEL' },
   inconclusive: null | { reasonCode, failedGates:[…], coveragePercent, minimumCoveragePercent:40 },
-  scoringAuditId, auditIdAlias:{applied,rule,sourceAuditId},
-  decisions:{ head:{seq,sha256}|null, count },
-  evidenceBasis:[{ ref, kind, observedAt, contentSha256, legacy }],
-  referenceDate, referenceDateSource:{ ref, observedAt },
-  websiteDerivation: null | { rule:'lumos-url-derive-v1', rawSha256, sourceEvidence:{ ref, contentSha256, bodySha256 } },
+  scoringAuditId, auditIdAlias:{applied,rule,reason,sourceAuditId},
+  decisions:{ head:{seq,sha256}|null, count, appliedIds:[…], applied:[{decisionId,kind,seq,stampCapture,stampCollectedAt}] },
+  layout:'VERSIONED'|'LEGACY',
+  evidenceBasis:[{ ref, kind, observedAt, contentSha256, bodySha256|null, legacy, superseded }],
+  profileSource: null | { ref, observedAt, contentSha256, bodySha256 },
+  referenceDate, referenceDateSource:{ ref, observedAt, rule },
+  websiteDerivation: null | { rule, rawSha256, sourceEvidence:{ ref, contentSha256, bodySha256 }, utmLevel, x5Proof },
   mapperVersion, methodologyVersion, scoreModelVersion, rulerFingerprint,
   input:  <ScoringInput exato enviado ao motor>,
   result: <ScoreResult completo>,
   inputSha256, resultSha256, prevSha256, contentSha256 }
 ```
-Invariantes verificadas na gravação **e** na leitura: `outcome`/`scored`/`inconclusive` coerentes com `result.publication`; `verifyScoreResult(result, input)`; `inputSha256`/`resultSha256` conferem; `rulerFingerprint`/versões iguais às do motor carregado; `decisions.head` é o confirmado.
+Recibo `aNNNN.json` (pasta separada, protocolo genérico do I0): `{ schemaVersion, kind:'LINK_AUDIT_SCORE_RUN_ANCHOR', auditId, seq, headSha256 (= contentSha256 do resultado), anchoredAt, prevAnchorSha256, contentSha256 }`.
+
+**Invariantes verificadas na gravação (`validate`, antes de publicar) e em TODA leitura (`verifyRunRecord`, `results-verify.ts`; texto fixo, nunca ecoa valores):** entrada aceita por `parseScoringInput` e idêntica à normalizada; `inputSha256`/`resultSha256` conferem; `verifyScoreResult(result, input)` (o motor REPRODUZ o resultado); versões e `rulerFingerprint` iguais ao modelo em `SCORE_MODELS`; `mapperVersion` conhecido; alias reproduzível (`verifyAuditIdAlias`), `sourceAuditId = auditId` e `input.auditId = result.auditId = scoringAuditId`; `outcome`/`scored`/`inconclusive` derivam de `deriveOutcome(result)` (INCONCLUSIVO sem índice nem confiança); `referenceDate` = a da entrada e do resultado e = dia da fonte; cada evidência da entrada está em `evidenceBasis` com o mesmo hash e a mesma data, sem evidência posterior à data de referência; `appliedIds` = ids de `input.operatorRecords`; **M-4a** (sem `reviews` na entrada); só o `website` pode ter `complete:true` e apenas com a derivação registrada (`x5Proof:'PROVEN'`, `utmLevel:'COMPLETE'`). A verificação bem-sucedida é memorizada por `contentSha256` (o registro é imutável e o hash é recalculado a cada leitura): ~6,7 ms por registro sem a memória.
+**Tamanho medido (I4):** ~49 KB (PONTUADO com a entrada rica), ~32 KB (INCONCLUSIVO), ~50 KB (com website); teto `MAX_RUN_BYTES` = 1 MiB (arquivo maior é recusado antes de publicar e não é lido na releitura).
 
 ### 12.4 "O que falta para o mínimo" (registros e prévias inconclusivos)
 A prévia mostra, em linguagem factual, as famílias de dado que **ainda não existem** e o **potencial** (§21) — nunca uma promessa: "Avaliações recentes (R3, P1, P2): até +12 pontos de cobertura · Painel do perfil: até +30 · Leitura do site: até +5…". Rotulado "potencial, ainda não comprovado".
@@ -363,7 +368,9 @@ A prévia mostra, em linguagem factual, as famílias de dado que **ainda não ex
 ---
 
 ## 13. Regras de finalização e bloqueio
-Finalizar exige **todas**: integridade das evidências OK; integridade das decisões OK; `finalizable:true` e `pending == null`; `scoreAudit` devolveu `ok:true`; `expectedHead` e `expectedInputSha256` iguais aos recalculados **dentro da trava**; nenhuma referência de evidência não comprovada; operador autenticado e autorizado; pasta de resultados configurada. **Nunca** finaliza com decisão pendente, `finalizable:false` ou falha de integridade (D6C-2).
+Finalizar exige **todas**: integridade das evidências OK; integridade das decisões OK; `finalizable:true` e `pending == null`; `scoreAudit` devolveu `ok:true`; `expectedHead` e `expectedInputSha256` iguais aos recalculados **dentro da trava**; nenhuma referência de evidência não comprovada; operador autenticado e autorizado; pastas de resultados e de recibos configuradas e distintas das demais raízes. **Nunca** finaliza com decisão pendente, `finalizable:false` ou falha de integridade (D6C-2).
+
+**Ordem das checagens implementada (I4, `results.ts`):** corpo estrito → [dentro da trava] reenvio idêntico? → pendente de outro pedido? → avaliação (a MESMA da prévia, leitura dupla concordante) → `expectedHead` (`HISTORY_REGRESSED` se o head atual é menor que o esperado, senão `HEAD_MISMATCH`, devolvendo o head atual) → `expectedInputSha256` (`INPUT_CHANGED`) → bloqueios (`NOT_FINALIZABLE` com `blockers`) → **reconferência do website no bruto íntegro** (`verifyWebsiteDerivation`: relê os bytes, reverifica selo e hashes e rederiva; `WEBSITE_DERIVATION_MISMATCH`; o bruto nunca sai do leitor) → **hashes das evidências já usadas em resultados anteriores não podem ter mudado** (`EVIDENCE_HASH_CHANGED`: captura trocada com o mesmo número e a mesma data) → **releitura final da impressão digital** (head + pendente + registros + base) igual à da avaliação (`INPUT_CHANGED`) → montagem → `verifyRunRecord` → publicação do resultado → recibo → releitura informativa (`stateChangedAfterFinalization`, não persistida).
 
 | Código | Origem | Ação |
 |---|---|---|
@@ -376,7 +383,10 @@ Finalizar exige **todas**: integridade das evidências OK; integridade das decis
 | `DECISION_EVIDENCE_NOT_IN_BASE` | decisão cita evidência fora da base | revogar/substituir |
 | `INPUT_CHANGED` | `expectedInputSha256` ≠ recalculado | recarregar a prévia |
 | `HEAD_MISMATCH` / `HISTORY_REGRESSED` | `expectedHead` | recarregar / alerta |
-| `RESULT_PENDING_UNCONFIRMED` | resultado anterior sem recibo | reenviar |
+| `RESULT_PENDING_UNCONFIRMED` | resultado anterior sem recibo | reenviar (só o autor conclui; para outro operador é transitório se havia finalização em curso: `Retry-After`) |
+| `WEBSITE_DERIVATION_MISMATCH` | bruto íntegro reaberto não confere com a derivação | recarregar a prévia / investigar a evidência |
+| `EVIDENCE_HASH_CHANGED` | evidência já usada em resultado anterior mudou de hash | investigar (captura trocada) |
+| `RESULT_INTEGRITY` · `RESULT_TRUNCATED` · `RESULT_ANCHOR_MISMATCH` · `RESULT_ANCHOR_INTEGRITY` | histórico de resultados | quarentena; nenhum dado é exibido |
 
 **Não é bloqueio:** cobertura < 40 % (gera `INCONCLUSIVO`, com confirmação "Este registro não tem nota"). **Nunca** se exibe "0", "nota geral" ou `\d+/100` para registros sem índice.
 
@@ -402,11 +412,11 @@ Todas as rotas: `requireOperator`; cabeçalhos `no-store, private`, `nosniff`, `
 ```
 Erros: 404; 409 `EVIDENCE_INTEGRITY`/`DECISIONS_*` (**sem dados**); 503 de configuração; 429.
 
-### 14.2 `POST …/finalize` (6/min)
-Corpo estrito `{ expectedHead:Head|null, expectedInputSha256:hex64 }`; **qualquer outro campo ⇒ 400 `FORBIDDEN_FIELDS`**. Autor e hora vêm da sessão e do servidor. **201** novo registro confirmado (`definitive:true`, `outcome`); **200** `replayed:true`; **409** `NOT_FINALIZABLE` (com `blockers`), `INPUT_CHANGED`, `HEAD_MISMATCH`, `HISTORY_REGRESSED`, `RESULT_PENDING_UNCONFIRMED`; **503** `RESULT_ANCHOR_PENDING` (`Retry-After`; **nunca 2xx**), `RESULTS_NOT_CONFIGURED`, `RESULT_ANCHOR_NOT_CONFIGURED`.
+### 14.2 `POST /api/link-audit/scoring/{auditId}/finalize` (6/min) — **implementado no I4**
+Corpo estrito `{ expectedHead:Head|null, expectedInputSha256:hex64 }`; **qualquer outro campo ⇒ 400 `FORBIDDEN_FIELDS`** (pontuação, entrada, `referenceDate`, autor, hora, hashes…); malformado ⇒ 400 `INVALID_BODY`. Autor e hora vêm da sessão e do servidor (hora monotônica dentro da auditoria). `requireOperator` antes de validar (inclusive bloqueio de origem cruzada); qualquer parâmetro de consulta ⇒ 400. **201** novo registro confirmado (arquivo + recibo) — `{ definitive:true, replayed:false, head, anchored:true, stateChangedAfterFinalization, run }`; **200** `replayed:true` (qualquer operador, resultado confirmado; o reconhecimento vem ANTES da avaliação, que só serve para calcular `stateChangedAfterFinalization` — compara entrada do motor, head, decisão pendente e `finalizable` de HOJE; `null` = não foi possível comparar; `recoveredPending:true` quando o pedido concluiu o recibo de um resultado que ficara pendente: as evidências citadas precisam existir hoje com os mesmos hashes, senão `EVIDENCE_HASH_CHANGED` e o recibo NÃO é dado); **409** `NOT_FINALIZABLE` (com `blockers`), `INPUT_CHANGED`, `HEAD_MISMATCH`/`HISTORY_REGRESSED` (com o `head` atual), `RESULT_PENDING_UNCONFIRMED` (`Retry-After`), `WEBSITE_DERIVATION_MISMATCH`, `EVIDENCE_HASH_CHANGED`, `RESULT_INTEGRITY`/`RESULT_TRUNCATED`/`RESULT_ANCHOR_*`, `RESULTS_LIMIT_REACHED`, `RESULT_WRITE_CONFLICT`; **503** `RESULT_ANCHOR_PENDING` (`Retry-After`; **nunca 2xx**: gravado e NÃO confirmado), `RESULTS_NOT_CONFIGURED`, `RESULT_ANCHOR_NOT_CONFIGURED`, `RESULTS_MISCONFIGURED`, `RESULTS_STORAGE_UNAVAILABLE`, `RESULT_ANCHOR_STORAGE_UNAVAILABLE`. **INCONCLUSIVO (`index:null`) é resultado válido e selável**; "NÃO FINALIZÁVEL" nunca persiste.
 
-### 14.3 `GET …/results` e `…/results/{n}` (30/min)
-Lista: `{ results:[{ seq, finalizedAt, finalizedBy, outcome, level|null, coveragePercent, inputSha256, stale }], head, anchors, pending }`. Detalhe: registro **verificado** (selo, bytes canônicos, recibos, `verifyScoreResult`, `outcome` coerente) em projeção pública (§12.2). Falha ⇒ 409 sem dados.
+### 14.3 `GET …/results` e `GET …/results/{n}` (30/min) — **implementado no I4**
+Lista: `{ definitive:true, auditId, results:[{ seq, finalizedAt, finalizedBy, outcome, level|null, reasonCode|null, coveragePercent, inputSha256, resultSha256, contentSha256, decisionsHead, superseded, stale, decisionsChanged }], head, currentDecisionsHead, pending (resumo, FORA de `results`), anchors, currentInputSha256, integrity }`. `stale` só no mais recente (`null` nos demais ou se a base atual não pôde ser relida: resultados selados continuam consultáveis). Detalhe `{n}` (`^[1-9]\d{0,3}$`): registro **verificado por inteiro** (selo, bytes, encadeamento, recibos, `verifyRunRecord` de TODOS os registros) em projeção pública por lista de campos (sem `input`, sem `rawSha256`, sem e-mails nem justificativas das decisões, `result` por `toPublicView`). Qualquer falha de integridade ⇒ **409 sem dados**; pendente nunca aparece como resultado (`get` de uma pendente ⇒ 409 `RESULT_PENDING_UNCONFIRMED`); auditoria sem nenhum resultado e sem evidências ⇒ 404.
 
 ### 14.4 `GET /api/link-audit/operator` — **ADIADO (preparação do I5; verificar antes se já existe forma segura de obter a identidade; NÃO implementado)**
 `{ email }` da sessão. Só para exibição; o servidor sempre revalida a autorização.
@@ -415,7 +425,7 @@ Lista: `{ results:[{ seq, finalizedAt, finalizedBy, outcome, level|null, coverag
 Corpo estrito `{ candidate: <registro no formato do formulário da 6B>, supersedes?: op-NNNN }`. Valida o formato com o esquema da 6B, monta a entrada com o candidato **em memória** e roda o motor. Resposta `{ accepted, blockers[], effect:{ subcriterionId, before, after }[] }`. **Não grava nada**, não altera a 6B, não é fonte de verdade (a gravação continua nas rotas da 6B).
 
 ### 14.6 Variáveis (só servidor)
-`GMN_LINK_AUDIT_RESULTS_DIR`, `GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR` (D6C-5): pastas dedicadas, absolutas, existentes, distintas entre si e das de evidências/decisões/âncoras, nenhuma dentro de outra. Ausentes ⇒ 503 **somente na finalização** (a prévia e a simulação funcionam).
+`GMN_LINK_AUDIT_RESULTS_DIR`, `GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR` (D6C-5): pastas dedicadas, absolutas, existentes, distintas entre si e das de evidências/decisões/âncoras, nenhuma dentro de outra. Ausentes ⇒ 503 **na finalização e nas consultas de resultados** (a prévia funciona; a simulação segue adiada). A configuração insegura (iguais, aninhadas, relativas, ou iguais/aninhadas às de evidências, decisões e âncoras das decisões) ⇒ 503 `RESULTS_MISCONFIGURED`. **Em dev/teste usar pastas ISOLADAS; nenhum volume é criado na VPS por esta onda.**
 
 ---
 
@@ -423,7 +433,8 @@ Corpo estrito `{ candidate: <registro no formato do formulário da 6B>, supersed
 - **Protocolo = o da 6B (Emenda 1):** arquivo `sNNNN` → recibo `aNNNN` (pasta separada) → só então sucesso; sem recibo o registro é **pendente** (existe, não vale, não é definitivo); reenvio idêntico (mesmo autor, mesmo `inputSha256`, mesmo `expectedHead`) conclui; leitura devolve só o confirmado e mostra a pendente à parte; registros nunca são sobrescritos nem apagados; versões novas são `sNNNN+1`.
 - **Rastreabilidade (D6C-2/3 e pedido do usuário):** cada registro grava os **hashes das evidências**, a **versão da régua** (`rulerFingerprint`, `scoreModelVersion`, `methodologyVersion`), o `mapperVersion`, o **`head` confirmado das decisões** e `referenceDateSource`. Ao abrir, o servidor recalcula a entrada atual: `inputSha256` diferente ⇒ **DESATUALIZADO** (o registro antigo continua válido e consultável).
 - **Por que guardar a entrada exata:** `verifyScoreResult(result, input)` exige a entrada; `inputSha256` do motor é do objeto normalizado. A entrada **não contém** o website bruto (§9.6) nem parâmetros sensíveis.
-- **Limites:** `MAX_RUN_BYTES` a medir no I4 (previsão ≤ 256 KB); até 500 versões por auditoria.
+- **Limites (I4):** `MAX_RUN_BYTES` = 1 MiB (medido: ~32–50 KB por registro); até 500 versões por auditoria (`LIMIT_REACHED`, sem sobrescrever).
+- **Por que o I4 não reutiliza `appendEntry` da 6B:** ele é amarrado a `DecisionEntry` (esquema, projeção semântica) e generalizá-lo exigiria mexer na 6B, congelada. `results-store.ts` repete só a mecânica (trava, releitura, `link()` exclusivo, recibo, pendente) sobre as primitivas do I0 (`link-audit-storage`), com `build` ASSÍNCRONO dentro da trava e um perfil de recibo próprio (prefixo `a`, tipo `LINK_AUDIT_SCORE_RUN_ANCHOR`).
 - **Não depende de dado inventado:** o registro só contém o que veio de evidência verificada, decisões confirmadas ou derivações determinísticas versionadas.
 - **Extração de primitivas (I0):** `seal`, `serialize`, `readSealedFile`, `atomicOnly`, `assertBase`, `dirStatus`, `ensureDirectory`, `scrubPaths`, `fail`, trava de erro fatal, `splitNames` (prefixo generalizado) e `confirmAnchor/readAnchors/verifyAnchors` migram para `link-audit-storage/` com reexport (§23).
 
@@ -496,7 +507,7 @@ Fixos e honestos; "N/V = não verificado ≠ zero"; origem rotulada ("Serper, in
 
 ## 18. Idempotência, concorrência e recuperação
 - **Finalização idempotente:** mesmo `inputSha256` já finalizado ⇒ 200 `replayed` (não duplica); `RESULT_ANCHOR_PENDING` ⇒ reenviar conclui o recibo.
-- **Concorrência:** trava por auditoria; releitura de evidências e decisões **dentro** da trava; `link()` exclusivo entre processos; conflito ⇒ relê e reavalia (até 5×); duas finalizações simultâneas com a mesma entrada geram **um** registro.
+- **Concorrência (política explícita, I4):** (1) trava por auditoria (em processo) + `link()` exclusivo do `sNNNN` (entre processos); perdendo a corrida relê e REAVALIA (até 5×); (2) dentro da trava: reenvio → avaliação → conferências → recheca do website bruto → hashes fixados → releitura final da impressão digital → publicação; (3) o registro grava o `head` e os hashes realmente usados; resta uma **janela inevitável** entre a última releitura e o `link()` (as pastas de evidências e decisões não compartilham trava): o registro continua verdadeiro SOBRE o estado que grava e fica detectavelmente `DESATUALIZADO` (`stale`); depois do recibo, `stateChangedAfterFinalization` avisa; (4) duas finalizações simultâneas do mesmo estado ⇒ **um** registro (as demais, `replayed`); quem chega entre o resultado e o recibo de OUTRO operador recebe 409 transitório e, ao reenviar, 200; (5) o relógio do cliente nunca é usado.
 - **Mudança entre prévia e finalização:** `expectedHead`/`expectedInputSha256` ⇒ 409; nunca grava sobre visão velha.
 - **Quedas:** varredura "queda após cada operação de disco" (padrão da 6B); registro pendente nunca vale; quarentena documentada (nunca apagar).
 - **Falhas isoladas na tela:** erro em uma das três leituras não derruba as demais. **Prévia é pura e repetível** (mesma base ⇒ mesmos hashes).
@@ -640,6 +651,9 @@ Observação: **N/A nunca aumenta a cobertura** (o denominador da publicação �
 8. **Dado interno:** e-mail do operador em registros; Onda 7 não pode imprimi-lo sem decisão.
 9. **Produção:** dois volumes e duas variáveis novos — **só plano**; sem volume, finalizar falha fechada (503), prévia funciona.
 10. **A lista de auditorias do leitor corta em 100**; sem paginação (fora do escopo).
+11. **Resultado pendente órfão (I4):** só o autor conclui; se ele sair da lista de operadores, a auditoria fica sem novas finalizações. Nada apaga a pendente; procedimento: quarentena manual do `sNNNN` pendente por quem administra o volume (fora do sistema) e registro do incidente. `Retry-After` é só uma dica.
+12. **Escrita privilegiada só na pasta de resultados (I4):** um `s(N+1)` forjado e autoconsistente vira "pendente"; a conclusão exige o autor E evidências reais com os mesmos hashes, mas não impede valores de perfil fabricados que citem hashes reais. Limite do desenho (a 6B tem o mesmo). Quem altera as DUAS pastas não é detectado.
+13. **Menores aceitos (I4):** pastas vazias criadas antes do `build` (ruído, 6/min); verificação semântica síncrona em lote com cache frio (~6,7 ms/registro, até 500); `finalizedAt` tomado antes da avaliação; amarrações extras de `verifyRunRecord` só para registro forjado (website presente ⇒ derivação; `kind` × prefixo da ref); no limite de 500 um pedido desatualizado recebe antes `HEAD_MISMATCH`/`INPUT_CHANGED`.
 
 ---
 
@@ -683,7 +697,9 @@ Cada incremento fecha com testes verdes no ambiente isolado, `tsc` limpo e, quan
 - **Cobertura insuficiente não é erro:** `INCONCLUSIVO` (`index:null`) é 200 e **finalizável**; bloqueio, decisão pendente e falha de integridade são estados distintos. `finalization.allowed` exige resultado, nenhum `BLOCKING`, `finalizable` da 6B e nenhuma pendente.
 - **Contrato:** §14.1, §14.4, §14.5; `decisionOptions`; bloqueios traduzidos; `outcomePreview`; projeção pública.
 - **Aceite:** matriz de bloqueios; **simular concorda com a prévia** (teste que compara `effect` com recálculo); nenhuma resposta `definitive:true`; INCONCLUSIVO sem termos proibidos; limites de taxa; sem gravação em disco.
-### I4 — Armazenamento e finalização
+### I4 — Armazenamento e finalização (**IMPLEMENTADO em 30/10/2026, SEM commit (decisão do usuário); aguarda aprovação para o I5**)
+- **Implementado:** `src/lib/link-audit-scoring-runs/{results-types,results-store,results-verify,results}.ts`; refatoração de `preview.ts` (expõe `evaluate`/`fingerprintNow`) e extensão `verifyWebsiteDerivation` do leitor (I1); rotas `POST …/finalize`, `GET …/results`, `GET …/results/[seq]` e `shared.ts` (`withResults`). `src/lib/link-audit/scoring/` idêntico à `v1.0.1` e `src/lib/link-audit-decisions/` intocado.
+- **Resultado (revisão final, 30/10/2026):** suíte completa isolada, `tsc` e build offline limpos (números no commit); **mutação: 66 mutantes, 60 mortos, 6 sobreviventes** — F07 (equivalente: dominada por `derived !== emitted`), V04 e V13 (redundantes com `verifyScoreResult`), V12 (a 1ª classificação "redundante" estava ERRADA: a revisão mostrou que uma entrada refeita com outra `referenceDate` só é pega por essa checagem; teste novo cobre a lacuna), F21 (chave do memo mais estreita que `contentSha256` = só desempenho; teste novo com cache primado cobre chave larga) e F22 (teto do memo, não determinístico; ~64 B por registro distinto). *Correção de registro: o relatório anterior dizia "61 mortos, 5 sobreviventes"; o correto é 60/6.* Duas revisões independentes: ambas APROVADO COM RESSALVAS, sem BLOCKER/MAJOR; ressalvas corrigidas: pendente expõe `decisionsHead`/`inputSha256`/`isMine` (sem e-mail), reenvio no limite de 500 continua 200, `stale` × `decisionsChanged` × `stateChangedAfterFinalization` unificados (incluem decisão pendente), conclusão da pendente reconfere as evidências, evidência removida (`ausente:`) é recusada, releitura pós-recibo protegida.
 - **Contrato:** §12.3, §14.2, §14.3, §15; `outcome` derivado do motor; registro `PONTUADO|INCONCLUSIVO`; recibos; `DESATUALIZADO`.
 - **Aceite:** **persiste `INCONCLUSIVO`** quando as condições de integridade estão satisfeitas e **recusa** com pendente/`finalizable:false`/integridade falha/`ok:false`; registra hashes, versão da régua e `head`; bateria adversarial completa (queda após cada operação, truncamento, restauração, reenvio, concorrência, fuzz) e **mutação ≥ 25 mutantes mortos**; nenhum dado inventado no registro.
 ### I5 — Cliente da UI

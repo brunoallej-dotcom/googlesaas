@@ -49,7 +49,8 @@ test('só o próprio módulo de evidências importa scoring-basis, derive-url e 
     'src/lib/link-audit-evidence/legacy.ts': ['src/lib/link-audit-evidence/reader.ts', 'src/lib/link-audit-evidence/scoring-basis.ts'],
     // Onda 6C (I2): o mapeador é o único consumidor externo, e SÓ de tipos (apagados na compilação; verificado abaixo)
     // Onda 6C (I3): o serviço de prévia também só importa TIPOS; a ÚNICA importação de valor é a rota da prévia (monta o leitor)
-    'src/lib/link-audit-evidence/scoring-basis.ts': ['src/app/api/link-audit/scoring/shared.ts', 'src/lib/link-audit-scoring-runs/assemble.ts', 'src/lib/link-audit-scoring-runs/preview.ts', 'src/lib/link-audit-scoring-runs/types.ts'],
+    // Onda 6C (I4): a finalização só importa o TIPO da conferência do website (a releitura bruta é feita pelo leitor, injetado)
+    'src/lib/link-audit-evidence/scoring-basis.ts': ['src/app/api/link-audit/scoring/shared.ts', 'src/lib/link-audit-scoring-runs/assemble.ts', 'src/lib/link-audit-scoring-runs/preview.ts', 'src/lib/link-audit-scoring-runs/results.ts', 'src/lib/link-audit-scoring-runs/types.ts'],
   });
   for (const importer of (importers['src/lib/link-audit-evidence/scoring-basis.ts'] ?? []).filter((name) => name.startsWith('src/lib/'))) {
     const code = strip(fs.readFileSync(path.join(ROOT, importer), 'utf8'));
@@ -94,7 +95,7 @@ test('o leitor de pontuação só usa FsOps para LER (lstat, readdir, readFile) 
 test('o navegador não referencia a base de pontuação nem tem como recebê-la (nenhum arquivo de UI cita seus nomes)', () => {
   const scoringRoute = path.join(ROOT, 'src', 'app', 'api', 'link-audit', 'scoring') + path.sep;
   // a rota de servidor da prévia (I3) é o único arquivo de src/app que monta o leitor; o resto da UI continua sem citar nada
-  assert.deepEqual(walk(scoringRoute).map((file) => path.relative(scoringRoute, file)).sort(), ['[auditId]/route.ts', 'shared.ts']);
+  assert.deepEqual(walk(scoringRoute).map((file) => path.relative(scoringRoute, file)).sort(), ['[auditId]/finalize/route.ts', '[auditId]/results/[seq]/route.ts', '[auditId]/results/route.ts', '[auditId]/route.ts', 'shared.ts']);
   assert.ok(!/scoring-basis|ScoringBasis|readScoringBasis/.test(strip(fs.readFileSync(path.join(scoringRoute, '[auditId]', 'route.ts'), 'utf8'))));
   for (const file of [...walk(path.join(ROOT, 'src', 'components')), ...walk(path.join(ROOT, 'src', 'app'))].filter((candidate) => !candidate.startsWith(scoringRoute))) {
     const code = strip(fs.readFileSync(file, 'utf8'));

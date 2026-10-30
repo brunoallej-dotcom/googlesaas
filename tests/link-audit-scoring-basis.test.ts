@@ -643,3 +643,80 @@ test('LEGADO: o status HTTP usado é o do texto VERIFICADO (trocar o arquivo dep
   const ops = faulty({ async readFile(file: string, max: number) { const text = await nodeFsOps.readFile(file, max); return file === statusFile && ++reads > 1 ? '{"status":500}' : text; } });
   assert.equal(ready(await readerFor(base, ops).readScoringBasis(OPERATOR, AUDIT)).profile.state, 'AVAILABLE');
 });
+
+// ------------------------------------------------------------------------------------------------ Onda 6C (I4): releitura do website BRUTO
+test('I4 — verifyWebsiteDerivation: relê os bytes íntegros e confere o bruto (MATCH); o bruto nunca sai, só o veredito', async () => {
+  const base = tmpDir();
+  await seed(base, { body: bodyText({ website: 'https://loja.example/promo?utm_source=VALOR-SECRETO-A&utm_medium=VALOR-SECRETO-B&token=TOKEN-X' }) });
+  const reader = readerFor(base);
+  const profile = available(ready(await reader.readScoringBasis(OPERATOR, AUDIT)));
+  const website = profile.website;
+  assert.ok(website && website.state === 'DERIVED' && website.utm);
+  const expected = { sourceRef: profile.source.ref, rawSha256: website.derivation.rawSha256, derived: website.derived as string, utmLevel: website.utm.level };
+  const verdict = await reader.verifyWebsiteDerivation(OPERATOR, AUDIT, expected);
+  assert.equal(verdict, 'MATCH');
+  assert.equal(typeof verdict, 'string');
+  assert.ok(!JSON.stringify(verdict).includes('VALOR-SECRETO'));
+});
+
+test('I4 — verifyWebsiteDerivation: qualquer divergência da expectativa ⇒ MISMATCH (hash do bruto, URL derivada, nível de UTM, captura de origem)', async () => {
+  const base = tmpDir();
+  await seed(base, { body: bodyText({ website: 'https://loja.example/?utm_source=a&utm_medium=b' }) });
+  const reader = readerFor(base);
+  const profile = available(ready(await reader.readScoringBasis(OPERATOR, AUDIT)));
+  const website = profile.website;
+  assert.ok(website && website.state === 'DERIVED' && website.utm);
+  const good = { sourceRef: profile.source.ref, rawSha256: website.derivation.rawSha256, derived: website.derived as string, utmLevel: website.utm.level };
+  assert.equal(await reader.verifyWebsiteDerivation(OPERATOR, AUDIT, good), 'MATCH');
+  for (const [name, wrong] of [
+    ['hash do bruto', { ...good, rawSha256: sha('outro') }],
+    ['URL derivada', { ...good, derived: 'https://outra.example/' }],
+    ['nível de UTM', { ...good, utmLevel: 'PARTIAL' as const }],
+    ['captura de origem', { ...good, sourceRef: 'capture:c0099' }],
+  ] as const) assert.equal(await reader.verifyWebsiteDerivation(OPERATOR, AUDIT, wrong), 'MISMATCH', name);
+});
+
+test('I4 — verifyWebsiteDerivation: o bruto TROCADO na evidência (nova captura com outro website) não confere com a derivação antiga', async () => {
+  const base = tmpDir();
+  await seed(base, { body: bodyText({ website: 'https://loja.example/?utm_source=a&utm_medium=b' }) });
+  const reader = readerFor(base);
+  const before = available(ready(await reader.readScoringBasis(OPERATOR, AUDIT)));
+  const website = before.website;
+  assert.ok(website && website.state === 'DERIVED' && website.utm);
+  const old = { sourceRef: before.source.ref, rawSha256: website.derivation.rawSha256, derived: website.derived as string, utmLevel: website.utm.level };
+  assert.ok((await writeCapture(base, captureInput({ body: bodyText({ website: 'https://loja.example/?utm_source=z&utm_medium=y&utm_campaign=c' }) }))).ok);
+  assert.equal(await reader.verifyWebsiteDerivation(OPERATOR, AUDIT, old), 'MISMATCH', 'a captura mais nova é outra evidência (outra referência e outro bruto)');
+});
+
+test('I4 — verifyWebsiteDerivation: evidência adulterada no disco, sem website, sem captura ou auditoria inexistente ⇒ NOT_AVAILABLE (nunca MATCH)', async () => {
+  const base = tmpDir();
+  await seed(base, { body: bodyText({ website: 'https://loja.example/?utm_source=a&utm_medium=b' }) });
+  const reader = readerFor(base);
+  const profile = available(ready(await reader.readScoringBasis(OPERATOR, AUDIT)));
+  const website = profile.website;
+  assert.ok(website && website.state === 'DERIVED' && website.utm);
+  const expected = { sourceRef: profile.source.ref, rawSha256: website.derivation.rawSha256, derived: website.derived as string, utmLevel: website.utm.level };
+  assert.equal(await reader.verifyWebsiteDerivation(OPERATOR, 'auditoria-inexistente-01', expected), 'NOT_AVAILABLE');
+
+  const noSite = tmpDir();
+  await seed(noSite, { body: bodyText({ website: undefined }) });
+  assert.equal(await readerFor(noSite).verifyWebsiteDerivation(OPERATOR, AUDIT, expected), 'MISMATCH', 'sem website no bruto atual, a derivação anterior não se sustenta');
+
+  const empty = tmpDir();
+  assert.equal(await readerFor(empty).verifyWebsiteDerivation(OPERATOR, AUDIT, expected), 'NOT_AVAILABLE');
+
+  const file = path.join(base, AUDIT, 'c0001.capture.json');
+  tamper(file, (text) => text.replace('utm_source=a', 'utm_source=b'));
+  assert.equal(await reader.verifyWebsiteDerivation(OPERATOR, AUDIT, expected), 'NOT_AVAILABLE', 'selo quebrado: a evidência não é lida');
+});
+
+test('I4 — verifyWebsiteDerivation exige autorização e id válido (como a leitura) e não escreve nada', async () => {
+  const base = tmpDir();
+  await seed(base, { body: bodyText({ website: 'https://loja.example/?utm_source=a&utm_medium=b' }) });
+  const expected = { sourceRef: 'capture:c0001', rawSha256: sha('x'), derived: 'https://loja.example/', utmLevel: 'COMPLETE' as const };
+  const before = treeState(path.join(base, AUDIT));
+  await assert.rejects(() => readerFor(base).verifyWebsiteDerivation({ email: 'intruso@x.com' }, AUDIT, expected), EvidenceAccessError);
+  await assert.rejects(() => readerFor(base).verifyWebsiteDerivation(OPERATOR, '../fora', expected), /inválido/i);
+  assert.equal(await readerFor(base).verifyWebsiteDerivation(OPERATOR, AUDIT, expected), 'MISMATCH');
+  assert.deepEqual(treeState(path.join(base, AUDIT)), before);
+});

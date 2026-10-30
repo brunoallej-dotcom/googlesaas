@@ -4,7 +4,7 @@ import { isErrorResponse, requireOperator } from '@/lib/auth/require-operator';
 import { AUDIT_ID_PATTERN, createDecisionService } from '@/lib/link-audit-decisions';
 import { createEvidenceReader, EvidenceAccessError, type EvidenceActor } from '@/lib/link-audit-evidence';
 import { createScoringBasisReader } from '@/lib/link-audit-evidence/scoring-basis';
-import { createScoringPreviewService, PREVIEW_HTTP_STATUS, PREVIEW_MESSAGE, type PreviewFailure } from '@/lib/link-audit-scoring-runs';
+import { createScoringPreviewService, createScoringResultsService, PREVIEW_HTTP_STATUS, PREVIEW_MESSAGE, RESULTS_HTTP_STATUS, RESULTS_MESSAGE, type PreviewFailure, type ResultsFailure, type ScoringResultsService } from '@/lib/link-audit-scoring-runs';
 import { SlidingWindowLimiter } from '@/lib/rate-limit';
 
 /*
@@ -46,7 +46,7 @@ function configuredDir(raw: string | undefined): string | null {
   return path.resolve(value);
 }
 
-/** Relógio do servidor: só alimenta as verificações de "data futura" do mapeador (nunca entra na entrada do motor). */
+/** Relógio do servidor: só alimenta as verificações de "data futura" do mapeador e a hora do resultado (nunca vem do cliente). */
 const serverClock = (): string => new Date().toISOString();
 
 export interface ScoringContext {
@@ -54,8 +54,15 @@ export interface ScoringContext {
   readonly actor: EvidenceActor;
 }
 
-/** Autentica, limita a taxa, confere a configuração e entrega o serviço; qualquer exceção vira erro genérico. */
-export async function withScoring(request: Request, handler: (ctx: ScoringContext) => Promise<NextResponse>): Promise<NextResponse> {
+interface Prepared {
+  readonly actor: EvidenceActor;
+  readonly preview: ReturnType<typeof createScoringPreviewService>;
+  readonly basisReader: ReturnType<typeof createScoringBasisReader>;
+  readonly dirs: { readonly evidence: string; readonly decisions: string; readonly anchors: string };
+}
+
+/** Autentica, limita a taxa, confere a configuração das três raízes de LEITURA e monta a prévia; qualquer exceção do chamador vira erro genérico. */
+async function prepare(request: Request, limiter: SlidingWindowLimiter): Promise<NextResponse | Prepared> {
   const access = await requireOperator(request);
   if (isErrorResponse(access)) return access;
 
@@ -74,17 +81,83 @@ export async function withScoring(request: Request, handler: (ctx: ScoringContex
   const actor: EvidenceActor = { email: access.operator };
   const authorize = (candidate: EvidenceActor): boolean => candidate.email === access.operator && candidate.email.length > 0;
   const reader = createEvidenceReader({ baseDir: evidenceDir, authorize });
+  const storage = await reader.storageStatus(actor);
+  if (storage !== 'READY') return reply({ error: 'O armazenamento de evidências não está acessível ao servidor.', code: 'EVIDENCE_STORAGE_UNAVAILABLE' }, 503);
+  const basisReader = createScoringBasisReader({ baseDir: evidenceDir, authorize });
+  const preview = createScoringPreviewService({
+    basisReader,
+    decisions: createDecisionService({ baseDir: decisionsDir, anchorDir, evidence: reader, evidenceBaseDir: evidenceDir }),
+    clock: serverClock,
+  });
+  return { actor, preview, basisReader, dirs: { evidence: evidenceDir, decisions: decisionsDir, anchors: anchorDir } };
+}
+
+const guarded = async (action: () => Promise<NextResponse>): Promise<NextResponse> => {
   try {
-    const storage = await reader.storageStatus(actor);
-    if (storage !== 'READY') return reply({ error: 'O armazenamento de evidências não está acessível ao servidor.', code: 'EVIDENCE_STORAGE_UNAVAILABLE' }, 503);
-    const service = createScoringPreviewService({
-      basisReader: createScoringBasisReader({ baseDir: evidenceDir, authorize }),
-      decisions: createDecisionService({ baseDir: decisionsDir, anchorDir, evidence: reader, evidenceBaseDir: evidenceDir }),
-      clock: serverClock,
-    });
-    return await handler({ service, actor });
+    return await action();
   } catch (error) {
     if (error instanceof EvidenceAccessError) return reply({ error: 'Acesso negado.', code: 'FORBIDDEN' }, 403);
     return internal(); // nada do erro (mensagem, caminho) é devolvido ou registrado
   }
+};
+
+/** Prévia (somente leitura). */
+export async function withScoring(request: Request, handler: (ctx: ScoringContext) => Promise<NextResponse>): Promise<NextResponse> {
+  return guarded(async () => {
+    const prepared = await prepare(request, limiter);
+    if (prepared instanceof NextResponse) return prepared;
+    return handler({ service: prepared.preview, actor: prepared.actor });
+  });
+}
+
+/* ------------------------------------------------------------------ resultados finalizados (Onda 6C, I4) */
+const finalizeLimiter = new SlidingWindowLimiter(6, 60_000);
+const resultsReadLimiter = new SlidingWindowLimiter(30, 60_000);
+
+export interface ResultsContext {
+  readonly service: ScoringResultsService;
+  readonly actor: EvidenceActor;
+}
+
+/**
+ * Falha dos resultados: mensagem fixa + (no máximo 10) detalhes de integridade já saneados + bloqueios (NOT_FINALIZABLE) + o head atual
+ * das decisões (recusas de `expectedHead`) + o resumo da pendente. Nunca caminhos, exceções, entrada do motor, justificativas ou URLs.
+ */
+export function resultsFailureResponse(failure: ResultsFailure): NextResponse {
+  const issues = failure.issues.slice(0, 10).map((issue) => issue.slice(0, 300));
+  // pendente = resultado gravado e ainda sem recibo: ou há uma finalização em curso (o reenvio logo depois é 200), ou o autor ainda precisa reenviar
+  const extra: Record<string, string> = failure.code === 'RESULT_ANCHOR_PENDING' || failure.code === 'RESULT_PENDING_UNCONFIRMED' ? { 'Retry-After': '5' } : failure.code === 'READ_INCONSISTENT' ? { 'Retry-After': '2' } : {};
+  return reply(
+    {
+      error: RESULTS_MESSAGE[failure.code],
+      code: failure.code,
+      ...(issues.length > 0 ? { issues } : {}),
+      ...(failure.blockers !== undefined ? { blockers: failure.blockers } : {}),
+      ...(failure.head !== undefined ? { head: failure.head } : {}),
+      ...(failure.pending !== undefined ? { pending: failure.pending } : {}),
+    },
+    RESULTS_HTTP_STATUS[failure.code],
+    extra,
+  );
+}
+
+/** Resultados: a finalização exige as duas pastas de resultados (503 sem elas); a prévia continua funcionando sem elas. */
+export async function withResults(request: Request, mode: 'read' | 'write', handler: (ctx: ResultsContext) => Promise<NextResponse>): Promise<NextResponse> {
+  return guarded(async () => {
+    const prepared = await prepare(request, mode === 'write' ? finalizeLimiter : resultsReadLimiter);
+    if (prepared instanceof NextResponse) return prepared;
+    const resultsDir = configuredDir(process.env.GMN_LINK_AUDIT_RESULTS_DIR);
+    if (!resultsDir) return reply({ error: RESULTS_MESSAGE.RESULTS_NOT_CONFIGURED, code: 'RESULTS_NOT_CONFIGURED' }, 503);
+    const resultsAnchorDir = configuredDir(process.env.GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR);
+    if (!resultsAnchorDir) return reply({ error: RESULTS_MESSAGE.RESULT_ANCHOR_NOT_CONFIGURED, code: 'RESULT_ANCHOR_NOT_CONFIGURED' }, 503);
+    const service = createScoringResultsService({
+      preview: prepared.preview,
+      basisReader: prepared.basisReader,
+      baseDir: resultsDir,
+      anchorDir: resultsAnchorDir,
+      otherDirs: [prepared.dirs.evidence, prepared.dirs.decisions, prepared.dirs.anchors],
+      clock: serverClock,
+    });
+    return handler({ service, actor: prepared.actor });
+  });
 }
