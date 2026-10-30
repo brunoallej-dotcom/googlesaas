@@ -231,7 +231,7 @@ const SCORING_ROUTES_DIR = 'src/app/api/link-audit/scoring/';
 const CLIENT_DIRS = ['src/components/link-audit/', 'src/app/auditoria-por-link/'];
 /** Único valor (não só tipo) que o navegador pode importar: constantes puras, sem nenhum import. */
 const CLIENT_VALUE_IMPORTS: ReadonlySet<string> = new Set(['methodology']);
-const CLIENT_EXTERNAL_PACKAGES: ReadonlySet<string> = new Set(['react', 'react/jsx-runtime', 'next/link', 'lucide-react']);
+const CLIENT_EXTERNAL_PACKAGES: ReadonlySet<string> = new Set(['react', 'react/jsx-runtime', 'next/link', 'next/navigation', 'lucide-react']); // next/navigation: notFound() da rota da auditoria (I5)
 
 interface ImportStatement {
   readonly specifier: string;
@@ -308,7 +308,8 @@ test('Onda 3: nada do navegador importa Node, url-safety, armazenamento ou hash;
     }
     const code = stripComments(source);
     assert.ok(!/localStorage|sessionStorage|indexedDB|document\.cookie/.test(code), `${rel(file)} usa armazenamento do navegador`);
-    if (!rel(file).endsWith('api-client.ts')) assert.ok(!/\bfetch\s*\(/.test(code.replace(/fetch\('\/api\/auth\/logout'[^)]*\)/g, '')), `${rel(file)} chama fetch fora do cliente de API`);
+    // Onda 6C (I5): o cliente HTTP da página da auditoria (mesma origem) é o único outro arquivo autorizado a chamar fetch
+    if (!rel(file).endsWith('api-client.ts') && rel(file) !== 'src/components/link-audit/audit-page/api.ts') assert.ok(!/\bfetch\s*\(/.test(code.replace(/fetch\('\/api\/auth\/logout'[^)]*\)/g, '')), `${rel(file)} chama fetch fora do cliente de API`);
   }
 });
 

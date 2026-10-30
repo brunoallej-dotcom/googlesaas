@@ -140,6 +140,12 @@ export function StoredAuditDetail({ detail, loading, onSelectRevision }: StoredA
           <Row label="Situação">{STATE_LABELS[detail.state] ?? detail.state}</Row>
           <Row label="Metodologia">{detail.methodologyVersion ?? 'versão não registrada nesta coleta'}</Row>
         </dl>
+        <a
+          href={`/auditoria-por-link/${encodeURIComponent(detail.auditId)}`}
+          className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-lg bg-gmn-primary px-4 text-sm font-semibold text-white transition-colors hover:bg-gmn-primary/90 focus:outline-none focus-visible:ring-2 focus-visible:ring-gmn-accent focus-visible:ring-offset-2 focus-visible:ring-offset-gmn-bg"
+        >
+          Abrir auditoria Lumos
+        </a>
       </header>
 
       <div role="note" className="rounded-xl border border-gmn-accent/30 bg-gmn-accent/[0.06] p-4">
