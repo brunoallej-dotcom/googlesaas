@@ -1,6 +1,7 @@
 import {
   ClipboardList,
   FileText,
+  Gauge,
   History,
   Lightbulb,
   ListChecks,
@@ -52,7 +53,7 @@ export function AuditWorkspace({ identity }: AuditWorkspaceProps): React.JSX.Ele
       id="area-da-auditoria"
       icon={ClipboardList}
       title="Área da auditoria"
-      subtitle="Estrutura que receberá a auditoria nas próximas etapas. Nada abaixo contém dados: tudo está vazio de propósito."
+      subtitle="Resumo desta sessão. Nada abaixo contém dados: a avaliação de cada empresa acontece na auditoria Lumos (veja “Auditorias armazenadas”)."
     >
       <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <Card icon={Building2} title="Identificação da empresa" badge={null}>
@@ -63,6 +64,13 @@ export function AuditWorkspace({ identity }: AuditWorkspaceProps): React.JSX.Ele
           ) : (
             <p>Aguardando um link identificado e a sua confirmação.</p>
           )}
+        </Card>
+
+        <Card icon={Gauge} title="Auditoria Lumos" badge={null}>
+          <p>Para avaliar uma empresa, escolha-a em Auditorias armazenadas e abra a auditoria Lumos: ali ficam a prévia, as decisões humanas e o registro de resultados.</p>
+          <a href="#auditorias-armazenadas" className="mt-2 inline-flex min-h-11 items-center rounded-lg border border-white/[0.1] px-3 text-sm font-medium text-gmn-text transition-colors hover:border-white/25 hover:bg-white/[0.04] focus:outline-none focus-visible:ring-2 focus-visible:ring-gmn-accent/70">
+            Ir para Auditorias armazenadas
+          </a>
         </Card>
 
         <Card icon={ShieldCheck} title="Evidências verificadas">
@@ -93,7 +101,7 @@ export function AuditWorkspace({ identity }: AuditWorkspaceProps): React.JSX.Ele
           <p>Indisponível. O relatório de 12 páginas depende das decisões de identidade visual e de pontuação (D3 e D4).</p>
         </Card>
 
-        <Card icon={ListChecks} title="Critérios da metodologia" badge="Sem avaliação · pontuação bloqueada (D3)">
+        <Card icon={ListChecks} title="Critérios da metodologia" badge="Avaliação na auditoria Lumos">
           <ul className="space-y-1.5">
             {CRITERIA.map((criterion) => (
               <li key={criterion.id} className="flex items-baseline justify-between gap-3">

@@ -85,11 +85,11 @@ export function AuditDetailScreen({ auditId }: { readonly auditId: string }): Re
       <div className="space-y-4 md:[&_a]:scroll-mt-52 md:[&_button]:scroll-mt-52 md:[&_input]:scroll-mt-52 md:[&_select]:scroll-mt-52 md:[&_summary]:scroll-mt-52 md:[&_textarea]:scroll-mt-52 md:[&_[tabindex='-1']]:scroll-mt-52">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <nav aria-label="Navegação da auditoria" className="flex items-center gap-2 text-sm">
-            <a href="/auditoria-por-link" className="inline-flex min-h-11 items-center gap-1.5 rounded-lg px-2 text-gmn-muted hover:text-gmn-text focus:outline-none focus-visible:ring-2 focus-visible:ring-gmn-accent/70"><ArrowLeft className="h-4 w-4" aria-hidden="true" />Auditorias</a>
+            <a href={`/auditoria-por-link?auditId=${encodeURIComponent(auditId)}#auditorias-armazenadas`} aria-label="Voltar para Auditorias armazenadas" className="inline-flex min-h-11 items-center gap-1.5 rounded-lg px-2 text-gmn-muted hover:text-gmn-text focus:outline-none focus-visible:ring-2 focus-visible:ring-gmn-accent/70"><ArrowLeft className="h-4 w-4" aria-hidden="true" />Auditorias</a>
             <span aria-hidden="true" className="text-gmn-muted">/</span>
             <span className="min-w-0 break-words font-medium text-gmn-text" aria-current="page">{name}</span>
           </nav>
-          <button type="button" onClick={refresh} disabled={cooling || busy} className={BUTTON_QUIET} aria-label="Atualizar prévia, decisões e resultados">
+          <button type="button" onClick={refresh} disabled={cooling || busy} className={BUTTON_QUIET} aria-label={cooling ? 'Atualizado: aguarde alguns segundos para atualizar de novo' : 'Atualizar prévia, decisões e resultados'}>
             <RefreshCw className="h-4 w-4" aria-hidden="true" />
             {cooling ? 'Atualizado' : 'Atualizar'}
           </button>

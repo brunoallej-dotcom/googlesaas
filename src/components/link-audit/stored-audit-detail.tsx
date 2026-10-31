@@ -142,7 +142,7 @@ export function StoredAuditDetail({ detail, loading, onSelectRevision }: StoredA
         </dl>
         <a
           href={`/auditoria-por-link/${encodeURIComponent(detail.auditId)}`}
-          className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-lg bg-gmn-primary px-4 text-sm font-semibold text-white transition-colors hover:bg-gmn-primary/90 focus:outline-none focus-visible:ring-2 focus-visible:ring-gmn-accent focus-visible:ring-offset-2 focus-visible:ring-offset-gmn-bg"
+          className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-lg bg-[#1D68DB] px-4 text-sm font-semibold text-white transition-colors hover:bg-[#1A5FCF] focus:outline-none focus-visible:ring-2 focus-visible:ring-gmn-accent focus-visible:ring-offset-2 focus-visible:ring-offset-gmn-bg"
         >
           Abrir auditoria Lumos
         </a>
@@ -372,7 +372,7 @@ export function StoredAuditDetail({ detail, loading, onSelectRevision }: StoredA
                             disabled={loading}
                             aria-current={current ? 'true' : undefined}
                             onClick={() => onSelectRevision(version.capture, revision.revision)}
-                            className={`rounded-md border px-2.5 py-1 text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-gmn-accent/60 disabled:opacity-60 ${
+                            className={`rounded-md border px-2.5 py-1 text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-gmn-accent/70 disabled:opacity-60 ${
                               current ? 'border-gmn-accent/60 bg-gmn-accent/10 text-gmn-text' : 'border-white/[0.1] text-gmn-muted hover:border-white/25 hover:text-gmn-text'
                             }`}
                           >

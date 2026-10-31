@@ -17,7 +17,7 @@ interface IdentityConfirmPanelProps {
 }
 
 const FIELD_CLASS =
-  'h-11 w-full rounded-lg border border-white/[0.08] bg-gmn-tile px-3 text-sm text-gmn-text transition-colors placeholder:text-gmn-muted/60 hover:border-white/15 focus:border-gmn-accent/60 focus:outline-none focus:ring-2 focus:ring-gmn-accent/40';
+  'h-11 w-full rounded-lg border border-white/40 bg-gmn-tile px-3 text-sm text-gmn-text transition-colors placeholder:text-gmn-muted/80 hover:border-white/60 focus:border-gmn-accent focus:outline-none focus:ring-2 focus:ring-gmn-accent/40';
 const LABEL_CLASS = 'mb-1.5 block text-xs font-medium text-gmn-muted';
 
 export function formatConfirmedAt(iso: string): string {
@@ -184,7 +184,7 @@ export function IdentityConfirmPanel({
           <button
             type="submit"
             disabled={!canConfirm}
-            className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-gmn-primary px-5 text-sm font-semibold text-white shadow-lg shadow-gmn-primary/25 transition hover:bg-gmn-accent active:scale-[.99] disabled:cursor-not-allowed disabled:opacity-60"
+            className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-[#1D68DB] px-5 text-sm font-semibold text-white shadow-lg shadow-gmn-primary/25 transition hover:bg-[#1A5FCF] active:scale-[.99] disabled:cursor-not-allowed disabled:opacity-60"
           >
             {loading ? (
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />

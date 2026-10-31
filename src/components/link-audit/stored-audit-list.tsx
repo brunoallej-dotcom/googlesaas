@@ -1,11 +1,11 @@
-import { Archive, CircleCheck, FileSearch, Fingerprint, LoaderCircle, RefreshCw, Search, ShieldAlert, ShieldQuestion, TriangleAlert } from 'lucide-react';
+import { Archive, ArrowRight, CircleCheck, FileSearch, Fingerprint, LoaderCircle, RefreshCw, Search, ShieldAlert, ShieldQuestion, TriangleAlert } from 'lucide-react';
 import { StatusBadge } from '@/components/ui/status-badge';
 import type { AuditListItemDto } from '@/lib/link-audit-evidence';
 import type { Phase } from './evidence-state';
 import { formatDateTime, LIST_INTEGRITY_LABELS, placeLine, pluralize } from './evidence-labels';
 
 const INPUT_CLASS =
-  'h-11 w-full rounded-lg border border-white/[0.08] bg-gmn-tile pl-10 pr-3 text-sm text-gmn-text transition-colors placeholder:text-gmn-muted/60 hover:border-white/15 focus:border-gmn-accent/60 focus:outline-none focus:ring-2 focus:ring-gmn-accent/40';
+  'h-11 w-full rounded-lg border border-white/40 bg-gmn-tile pl-10 pr-3 text-sm text-gmn-text transition-colors placeholder:text-gmn-muted/80 hover:border-white/60 focus:border-gmn-accent focus:outline-none focus:ring-2 focus:ring-gmn-accent/40';
 
 interface StoredAuditListProps {
   readonly phase: Phase;
@@ -28,12 +28,12 @@ function IntegrityBadge({ status }: { readonly status: AuditListItemDto['integri
 
 function AuditCard({ item, selected, onSelect }: { readonly item: AuditListItemDto; readonly selected: boolean; readonly onSelect: (auditId: string) => void }): React.JSX.Element {
   return (
-    <li>
+    <li className="space-y-1">
       <button
         type="button"
         onClick={() => onSelect(item.auditId)}
         aria-current={selected ? 'true' : undefined}
-        className={`w-full rounded-xl border p-4 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-gmn-accent/60 ${
+        className={`w-full rounded-xl border p-4 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-gmn-accent/70 ${
           selected ? 'border-gmn-accent/60 bg-gmn-accent/[0.08]' : 'border-white/[0.06] bg-gmn-tile/50 hover:border-white/15 hover:bg-gmn-tile'
         }`}
       >
@@ -61,6 +61,15 @@ function AuditCard({ item, selected, onSelect }: { readonly item: AuditListItemD
           <StatusBadge tone="neutral" label={`${pluralize(item.captureCount, 'captura', 'capturas')} · ${pluralize(item.reportRevisions, 'versão', 'versões')}`} icon={Archive} />
         </div>
       </button>
+      {/* ação contextual: abre a área operacional Lumos. É só um link: a lista NÃO consulta prévia nem resultado de nenhuma empresa */}
+      <a
+        href={`/auditoria-por-link/${encodeURIComponent(item.auditId)}`}
+        aria-label={`Abrir auditoria Lumos de ${item.companyName ?? item.auditId}`}
+        className="inline-flex min-h-11 items-center gap-1.5 rounded-lg px-3 text-sm font-medium text-gmn-accent transition-colors hover:bg-white/[0.04] hover:text-gmn-text focus:outline-none focus-visible:ring-2 focus-visible:ring-gmn-accent/70"
+      >
+        Abrir auditoria Lumos
+        <ArrowRight className="h-4 w-4" aria-hidden="true" />
+      </a>
     </li>
   );
 }
@@ -98,7 +107,7 @@ export function StoredAuditList({ phase, items, total, message, query, selectedI
         <button
           type="button"
           onClick={onRetry}
-          className="mt-3 inline-flex h-9 items-center gap-2 rounded-lg border border-white/[0.1] px-3 text-sm text-gmn-text transition-colors hover:border-white/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-gmn-accent/60"
+          className="mt-3 inline-flex h-9 items-center gap-2 rounded-lg border border-white/[0.1] px-3 text-sm text-gmn-text transition-colors hover:border-white/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-gmn-accent/70"
         >
           <RefreshCw className="h-4 w-4" aria-hidden="true" />
           Tentar novamente

@@ -51,9 +51,9 @@ export function TraceabilityPanel({ preview }: { readonly preview: PreviewPayloa
   return (
     <dl className="grid gap-x-6 gap-y-2 text-xs sm:grid-cols-2">
       {rows.map(([label, value]) => (
-        <div key={label} className="flex items-baseline gap-2">
+        <div key={label} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
           <dt className="shrink-0 text-gmn-muted">{label}</dt>
-          <dd className="min-w-0 text-gmn-text">{value}</dd>
+          <dd className="min-w-0 break-words text-gmn-text">{value}</dd>
         </div>
       ))}
     </dl>

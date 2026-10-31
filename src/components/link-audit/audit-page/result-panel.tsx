@@ -9,7 +9,7 @@ function Gates({ result }: { readonly result: PublicResult | null }): React.JSX.
   if (!gates || gates.length === 0) return null;
   return (
     <div>
-      <h4 className="text-xs font-semibold uppercase tracking-wide text-gmn-muted">Portões da metodologia</h4>
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-gmn-muted">Portões da metodologia</h3>
       <ul className="mt-2 space-y-1.5">
         {gates.map((gate) => (
           <li key={gate.id} className="flex items-start gap-2 text-xs">

@@ -59,9 +59,9 @@ export function CompanyPanel({ evidence, preview }: { readonly evidence: AuditDe
 
 function Row({ label, value }: { readonly label: string; readonly value: React.ReactNode }): React.JSX.Element {
   return (
-    <div className="flex items-baseline gap-2">
+    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
       <dt className="shrink-0 text-gmn-muted">{label}</dt>
-      <dd className="min-w-0 text-gmn-text">{value}</dd>
+      <dd className="min-w-0 break-words text-gmn-text">{value}</dd>
     </div>
   );
 }

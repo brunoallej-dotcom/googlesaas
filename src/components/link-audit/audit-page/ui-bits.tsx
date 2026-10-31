@@ -7,11 +7,11 @@ import { shortHash } from './labels';
 import type { Phase } from './state';
 
 export const BUTTON_PRIMARY =
-  'inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-gmn-primary px-4 text-sm font-semibold text-white transition-colors hover:bg-gmn-primary/90 focus:outline-none focus-visible:ring-2 focus-visible:ring-gmn-accent focus-visible:ring-offset-2 focus-visible:ring-offset-gmn-bg disabled:cursor-not-allowed disabled:bg-white/[0.06] disabled:text-gmn-muted';
+  'inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-[#1D68DB] px-4 text-sm font-semibold text-white transition-colors hover:bg-[#1A5FCF] focus:outline-none focus-visible:ring-2 focus-visible:ring-gmn-accent focus-visible:ring-offset-2 focus-visible:ring-offset-gmn-bg disabled:cursor-not-allowed disabled:bg-white/[0.06] disabled:text-gmn-muted';
 export const BUTTON_QUIET =
   'inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-white/[0.1] px-3 text-sm text-gmn-text transition-colors hover:border-white/25 hover:bg-white/[0.04] focus:outline-none focus-visible:ring-2 focus-visible:ring-gmn-accent/70 disabled:cursor-not-allowed disabled:opacity-50';
 export const FIELD_CLASS =
-  'w-full rounded-lg border border-white/[0.1] bg-gmn-tile px-3 py-2 text-sm text-gmn-text placeholder:text-gmn-muted/60 hover:border-white/20 focus:border-gmn-accent/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-gmn-accent/40';
+  'w-full rounded-lg border border-white/40 bg-gmn-tile px-3 py-2 text-sm text-gmn-text placeholder:text-gmn-muted/80 hover:border-white/60 focus:border-gmn-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-gmn-accent/40';
 
 /** Seção recolhível (`<details>`): no celular as seções começam recolhidas quando `compact`; no desktop ficam abertas. */
 export function Section({ id, icon: Icon, title, subtitle, actions, open = true, children }: { readonly id: string; readonly icon: LucideIcon; readonly title: string; readonly subtitle?: React.ReactNode; readonly actions?: React.ReactNode; readonly open?: boolean; readonly children: React.ReactNode }): React.JSX.Element {

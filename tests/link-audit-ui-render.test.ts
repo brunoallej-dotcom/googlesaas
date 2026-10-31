@@ -203,7 +203,11 @@ test('área da auditoria: estados vazios honestos, sem dados inventados e sem bo
     assert.ok(content.includes(title), title);
   }
   for (const label of ['Dados essenciais e consistência NAP', 'Autoridade local e competitividade']) assert.ok(content.includes(label), label);
-  assert.match(content, /pontuação bloqueada \(D3\)/);
+  assert.match(content, /Avaliação na auditoria Lumos/);
+  assert.match(content, /Auditoria Lumos/);
+  assert.match(content, /Para avaliar uma empresa, escolha-a em Auditorias armazenadas e abra a auditoria Lumos/);
+  assert.match(html, /<a href="#auditorias-armazenadas"/, 'o único link do espaço antigo é a âncora interna');
+  assert.equal((html.match(/<a /g) ?? []).length, 1);
   assert.match(content, /Não implementado nesta etapa/);
   assert.match(content, /Aguardando um link identificado e a sua confirmação/);
   assert.match(content, /Nenhum snapshot é salvo nesta etapa/);
