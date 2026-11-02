@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { originProofSchema } from '../link-audit-origin';
 import type { ReceiptShape } from '../link-audit-storage';
 import { ENGINE_AUDIT_ID, STORE_AUDIT_ID } from './audit-id-alias';
 
@@ -104,6 +105,8 @@ export const scoreRunSchema = z
     result: z.record(z.string(), z.unknown()),
     inputSha256: hex64,
     resultSha256: hex64,
+    /** PROVA DE ORIGEM (HMAC do servidor, chave fora das pastas): presente nos resultados gravados depois da remediação do MAJOR-1; ausente nos anteriores (não podem ser concluídos se ficarem pendentes). */
+    origin: originProofSchema.optional(),
     prevSha256: hex64.nullable(),
     contentSha256: hex64,
   })

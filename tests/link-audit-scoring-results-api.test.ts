@@ -1,3 +1,8 @@
+import { buildReportFromCapture } from '../src/lib/link-audit/collector/capture-report';
+import { writeCapture, writeReport } from '../src/lib/link-audit-evidence/store';
+import { identityFor, inputFor, LINK, T_NOW } from './helpers/link-audit-collect-fixtures';
+import { bodyText, captureInput } from './helpers/link-audit-evidence-fixtures';
+import { evidenceKeys, proveEvidenceForRoutes } from './helpers/link-audit-evidence-provenance-fixtures';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -11,8 +16,10 @@ import * as detailModule from '../src/app/api/link-audit/scoring/[auditId]/resul
 import { GET as detailRoute } from '../src/app/api/link-audit/scoring/[auditId]/results/[seq]/route';
 import { GET as previewRoute } from '../src/app/api/link-audit/scoring/[auditId]/route';
 import { createSessionToken, SESSION_COOKIE } from '../src/lib/auth/session';
+import { seal, serialize } from '../src/lib/link-audit-storage';
 import { middleware } from '../src/middleware';
 import { hashTree, registerCleanup, tmpDir, world, type World } from './helpers/link-audit-decisions-fixtures';
+import { TEST_ORIGIN_KEY } from './helpers/link-audit-origin-fixtures';
 
 /*
  * Onda 6C, I4 — as ROTAS de finalização e consulta, com sessão assinada por segredo fictício e pastas temporárias. Prévia REAL sobre
@@ -39,6 +46,7 @@ function setEnv(w: Pick<World, 'evidenceDir' | 'decisionsDir' | 'anchorDir'>, di
   env.SUPABASE_SERVICE_ROLE_KEY = SECRET;
   env.GMN_OPERATOR_EMAILS = operatorList();
   delete env.GMN_AUTH_DISABLED;
+  env.GMN_LINK_AUDIT_ORIGIN_KEY = TEST_ORIGIN_KEY;
   const set = (name: string, value: string | undefined): void => {
     if (value === undefined) delete env[name];
     else env[name] = value;
@@ -80,6 +88,7 @@ interface Ctx {
 }
 async function setup(): Promise<Ctx> {
   const w = await world();
+  await proveEvidenceForRoutes(env, w);
   const dirs = { results: tmpDir('lad-api-rs-'), resultAnchors: tmpDir('lad-api-ra-') };
   setEnv(w, dirs);
   return { w, dirs, ana: await cookie(nextOperator()), auditId: w.auditId };
@@ -396,4 +405,103 @@ test('limitador da finalização (6/min por operador): a 7ª tentativa ⇒ 429 c
   let limited = 0;
   for (let i = 0; i < 32; i++) if ((await list(c, reader)).status === 429) limited++;
   assert.equal(limited, 2);
+});
+
+test('MAJOR-1 pela API (resultados): resultado pendente com AUTOR FALSIFICADO e sem etiqueta não é concluído pelo "autor" (409 RESULT_PENDING_ORIGIN_UNPROVEN); nenhum recibo; a lista não afirma autoria nem desfecho', async () => {
+  const c = await setup();
+  const body = await preview(c);
+  assert.equal((await post(c, body)).status, 201, 'um resultado legítimo existe');
+  // quem só escreve na pasta de resultados: troca o autor, remove a etiqueta, refaz o selo SHA-256 e apaga o recibo
+  const file = path.join(c.dirs.results, c.auditId, 's0001.json');
+  const run = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+  delete run.contentSha256;
+  delete run.origin;
+  run.finalizedBy = 'ana@empresa.com';
+  fs.chmodSync(file, 0o644);
+  fs.writeFileSync(file, serialize(seal(run)));
+  fs.rmSync(path.join(c.dirs.resultAnchors, c.auditId), { recursive: true, force: true });
+  const ana = await cookie('ana@empresa.com');
+  const listed = await json(await list(c, ana));
+  assert.deepEqual([listed.results.length, listed.pending.origin, listed.pending.originDetail, listed.pending.isMine, listed.pending.outcome, listed.pending.coveragePercent], [0, 'UNPROVEN', 'MISSING', false, null, null]);
+  assert.ok(!JSON.stringify(listed).includes('ana@empresa.com') || listed.results.length === 0, 'o autor citado no arquivo não é afirmado');
+  const receiptsBefore = hashTree(c.dirs.resultAnchors);
+  const attempt = await post(c, body, ana); // o "autor" nomeado reenvia o pedido que a interface monta
+  const failure = await json(attempt);
+  assert.deepEqual([attempt.status, failure.code, failure.pending.origin], [409, 'RESULT_PENDING_ORIGIN_UNPROVEN', 'UNPROVEN']);
+  assert.match(attempt.headers.get('cache-control') ?? '', /no-store/);
+  assert.deepEqual(hashTree(c.dirs.resultAnchors), receiptsBefore, 'nenhum recibo foi gravado');
+  assert.equal((await detail(c, '1', ana)).status, 409, 'o detalhe não é entregue');
+});
+
+test('MAJOR-1 pela API (resultados): sem chave de origem (ausente ou fraca) a FINALIZAÇÃO responde 503 ORIGIN_KEY_NOT_CONFIGURED sem gravar nada; a prévia e as consultas continuam', async () => {
+  const c = await setup();
+  const body = await preview(c);
+  const before = [...all(c), ...mine(c)];
+  for (const value of [undefined, 'curta']) {
+    if (value === undefined) delete env.GMN_LINK_AUDIT_ORIGIN_KEY;
+    else env.GMN_LINK_AUDIT_ORIGIN_KEY = value;
+    const r = await post(c, body);
+    const failure = await json(r);
+    assert.deepEqual([r.status, failure.code], [503, 'ORIGIN_KEY_NOT_CONFIGURED'], String(value));
+    assert.ok(!JSON.stringify(failure).includes(TEST_ORIGIN_KEY));
+    assert.equal((await list(c)).status, 200, 'a consulta não depende da chave');
+    assert.equal((await previewRoute(req(base(c.auditId), { cookie: await fresh() }), ctx(c.auditId))).status, 200, 'a prévia também não');
+  }
+  assert.deepEqual([...all(c), ...mine(c)], before, 'nada foi gravado');
+  env.GMN_LINK_AUDIT_ORIGIN_KEY = TEST_ORIGIN_KEY;
+  assert.equal((await post(c, body)).status, 201, 'com a chave, a finalização volta');
+});
+
+test('PROVA DE COLETA pela API: sem manifesto/chave de confiança a prévia é consultável e rotulada, mas a finalização responde 409 NOT_FINALIZABLE e NADA é gravado', async () => {
+  const c = await setup();
+  for (const [label, mutate] of [
+    ['sem a pasta de manifestos', () => void delete env.GMN_LINK_AUDIT_EVIDENCE_SEALS_DIR],
+    ['sem a chave pública de confiança', () => void delete env.GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS],
+    ['com a chave pública de OUTRA pessoa (não assinou estes manifestos)', () => void (env.GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS = evidenceKeys().trustKeys)],
+    ['com a chave de confiança malformada', () => void (env.GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS = 'isto-nao-e-uma-chave')],
+  ] as const) {
+    const saved = { dir: env.GMN_LINK_AUDIT_EVIDENCE_SEALS_DIR, keys: env.GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS };
+    mutate();
+    const before = [...all(c), ...mine(c)];
+    const seen = await previewRoute(req(base(c.auditId), { cookie: await fresh() }), ctx(c.auditId));
+    assert.equal(seen.status, 200, label);
+    const body = await json(seen);
+    assert.equal(body.evidence.provenance.status, 'UNAUTHENTICATED', label);
+    assert.equal(body.finalization.allowed, false, label);
+    assert.ok(body.blockers.some((b: any) => b.code === 'EVIDENCE_PROVENANCE_UNPROVEN' && b.severity === 'BLOCKING'), label);
+    const attempt = await post(c, { expectedHead: body.finalization.expectedHead, expectedInputSha256: body.finalization.expectedInputSha256 ?? 'a'.repeat(64) });
+    assert.equal(attempt.status, 409, label);
+    const failure = await json(attempt);
+    assert.ok(['NOT_FINALIZABLE', 'INPUT_CHANGED'].includes(failure.code), `${label}: ${failure.code}`);
+    assert.deepEqual([...all(c), ...mine(c)], before, `${label}: nada foi gravado`);
+    // sem vazamento: o corpo não cita caminhos, chaves nem a pasta de manifestos
+    assert.ok(!JSON.stringify([body, failure]).includes(String(saved.dir)) && !JSON.stringify([body, failure]).includes(String(saved.keys).split(':')[1] ?? 'ø'), label);
+    if (saved.dir !== undefined) env.GMN_LINK_AUDIT_EVIDENCE_SEALS_DIR = saved.dir;
+    if (saved.keys !== undefined) env.GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS = saved.keys;
+  }
+  // restaurada a configuração, a mesma auditoria é finalizável (a prova era a única coisa que faltava)
+  const seen = await preview(c);
+  assert.equal((await post(c, seen)).status, 201);
+});
+
+test('PROVA DE COLETA pela API: captura forjada SÓ na pasta de evidências, depois de a coleta legítima ser atestada, não é finalizável (409) e nada é gravado', async () => {
+  const c = await setup();
+  const first = await preview(c);
+  assert.ok(first.expectedInputSha256);
+  // o invasor escreve uma captura nova pelo pipeline (integridade OK) — o manifesto da coleta legítima não a cobre
+  const cap = await writeCapture(c.w.evidenceDir, captureInput({ auditId: c.auditId, body: bodyText({ title: 'Padaria FORJADA' }), collectedAt: '2026-10-22T13:30:00.000Z' }));
+  assert.ok(cap.ok);
+  const built = await buildReportFromCapture({
+    rawBody: bodyText({ title: 'Padaria FORJADA' }), body: { name: 'c0002.capture.json', sha256: cap.value.contentSha256, bytes: 10 }, otherFiles: [], httpStatus: 200, httpAttempts: 1, collectedAt: '2026-10-22T13:30:00.000Z',
+    input: inputFor(identityFor(LINK, { name: 'Padaria Exemplo', city: 'Cidade Exemplo', stateCode: 'GO' }), 'snap-exemplo-0001'), site: null, siteOutcome: null, generatedAt: T_NOW,
+  } as never);
+  if (built.ok) await writeReport(c.w.evidenceDir, c.auditId, cap.value.captureNumber, JSON.parse(JSON.stringify(built.report)) as Record<string, unknown>, T_NOW);
+  const before = [...all(c), ...mine(c)];
+  const seen = await previewRoute(req(base(c.auditId), { cookie: await fresh() }), ctx(c.auditId));
+  const body = await json(seen);
+  assert.equal(seen.status, 200);
+  assert.equal(body.evidence.provenance.status, 'UNAUTHENTICATED');
+  const attempt = await post(c, { expectedHead: body.finalization.expectedHead, expectedInputSha256: body.finalization.expectedInputSha256 ?? first.expectedInputSha256 });
+  assert.equal(attempt.status, 409);
+  assert.deepEqual([...all(c), ...mine(c)], before, 'nada gravado');
 });

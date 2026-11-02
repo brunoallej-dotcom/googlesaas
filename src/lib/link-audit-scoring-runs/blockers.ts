@@ -11,7 +11,7 @@ import type { BlockerCode, BlockerSeverity, MapperBlocker } from './types';
 export type PreviewBlockerCode = BlockerCode | ServiceBlockerCode;
 
 /** Códigos que o SERVIÇO emite (têm mensagem própria aqui); os demais vêm do mapeador com a mensagem dele. */
-export type ServiceBlockerCode = 'NO_STORED_CAPTURE' | 'DECISION_PENDING' | 'DECISION_NEEDS_SITE_SCOPE' | 'DECISION_CATEGORY_MISMATCH' | 'DECISION_BASIS_UNVERIFIABLE' | 'DECISION_NOT_SUPPORTED' | 'ENGINE_REJECTED_INPUT';
+export type ServiceBlockerCode = 'NO_STORED_CAPTURE' | 'DECISION_PENDING' | 'DECISION_NEEDS_SITE_SCOPE' | 'DECISION_CATEGORY_MISMATCH' | 'DECISION_BASIS_UNVERIFIABLE' | 'DECISION_NOT_SUPPORTED' | 'EVIDENCE_PROVENANCE_UNPROVEN' | 'DECISIONS_HISTORY_UNRESOLVED' | 'ENGINE_REJECTED_INPUT';
 
 export interface PreviewBlocker {
   readonly code: PreviewBlockerCode;
@@ -25,10 +25,12 @@ export interface PreviewBlocker {
 const SERVICE_MESSAGES: Readonly<Record<ServiceBlockerCode, string>> = {
   DECISION_NOT_SUPPORTED: 'A decisão está fora do contrato aprovado da Onda 6C e não foi aplicada; ela impede a finalização. Revogue a decisão.',
   NO_STORED_CAPTURE: 'Não há captura armazenada e íntegra com relatório: nada foi enviado ao motor. É preciso coletar (fora desta etapa).',
-  DECISION_PENDING: 'Há uma decisão gravada e ainda não confirmada (sem recibo). Ela não vale e a prévia não pode ser finalizada; reenvie o mesmo pedido para concluí-la.',
+  DECISION_PENDING: 'Há uma decisão gravada e ainda não confirmada (sem recibo). Ela não vale, a decisão que ela revoga ou substitui NÃO é considerada vigente enquanto isso, e a prévia não pode ser finalizada; o autor, com a origem comprovada, conclui reenviando o mesmo pedido.',
   DECISION_NEEDS_SITE_SCOPE: 'A decisão depende da leitura verificável do site, que ainda não existe. Ela não foi aplicada; revogue a decisão.',
   DECISION_CATEGORY_MISMATCH: 'O juízo C2 foi registrado antes da captura que fundamenta a categoria atual e não foi aplicado. Registre um novo juízo (substituindo este) ou revogue-o.',
   DECISION_BASIS_UNVERIFIABLE: 'A captura em que o juízo C2 foi registrado não existe mais ou não confere com as evidências atuais (restauração ou adulteração). O juízo não foi aplicado; substitua-o ou revogue-o.',
+  DECISIONS_HISTORY_UNRESOLVED: 'A integridade do histórico de decisões NÃO está resolvida: a testemunha independente (resultados já selados) mostra que falta uma posição do histórico ou que ela é outra, não é confiável, não pôde ser lida ou não está configurada. Nenhuma decisão humana foi enviada ao motor e nada pode ser finalizado. Não apague nem mova arquivos; restaure o par decisões + recibos do mesmo instante a partir do backup e avise a operação.',
+  EVIDENCE_PROVENANCE_UNPROVEN: 'A origem da coleta NÃO foi comprovada por uma prova independente (manifesto assinado fora da pasta de evidências). O SHA-256 prova que o arquivo não mudou depois de selado, não que veio da coleta; por isso o resultado não pode ser finalizado. A prévia continua consultável.',
   ENGINE_REJECTED_INPUT: 'O motor recusou a entrada montada: não há resultado.',
 };
 

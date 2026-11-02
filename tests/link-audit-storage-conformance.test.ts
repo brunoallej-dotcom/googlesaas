@@ -15,11 +15,51 @@ registerCleanup();
  * byte de arquivo (decisões e recibos), código de erro, mensagem, `head`, `pending` ou saída de primitiva pode mudar.
  * Regenerar a referência é mudar o protocolo da 6B: exige decisão deliberada (por isso o hash abaixo está fixado).
  */
-const FIXTURE = path.join(__dirname, 'fixtures', 'link-audit-storage', 'protocol-conformance-v1.json');
-const FIXTURE_SHA256 = '17dda7f947065b9c249f18118dc5e0a08f7bce3d9d7204e1490edd591c6a877f';
+/*
+ * v1 = referência gravada ANTES da refatoração do I0 (protocolo sem prova de origem), CONGELADA como evidência histórica.
+ * v2 = a mesma cena sobre o protocolo COM prova de origem (remediação do MAJOR-1, decisão deliberada): as entradas passam a levar a etiqueta
+ * `origin` (todo hash/head muda) e a pendente exibida a OUTRO operador deixa de revelar o conteúdo do registro. O teste "v2 difere de v1 só
+ * no que foi decidido" prova que nada além disso mudou (códigos, mensagens, ordem, recuperação, primitivas).
+ * A v2 foi REGENERADA em 01/11/2026 por duas decisões deliberadas do responsável: política de chaves (identificador independente do segredo ⇒ `kid` e
+ * etiquetas mudam) e os campos `ambiguousDecisionIds` e `witness` na listagem (1ª regeneração: ambiguidade; 2ª, R3-MINOR-2: testemunha do histórico; 3ª, R4-MINOR-1/INFO-1 em 01/11/2026: a testemunha passou a ser OBRIGATÓRIA e ganhou `coveredSeq` e `unwitnessedAffecting`; neste cenário
+ * (6B isolada, `WITNESS_NOT_REQUIRED`) o estado é `NOT_REQUIRED`, antes `NOT_CONFIGURED`, que agora significa FALHA FECHADA).
+ * Conferido por máscara: fora hashes, `kid` e esses campos, o conteúdo é idêntico ao da v2 anterior (verificado removendo `witness` das duas versões).
+ */
+const FIXTURE_V1 = path.join(__dirname, 'fixtures', 'link-audit-storage', 'protocol-conformance-v1.json');
+const FIXTURE_V1_SHA256 = '17dda7f947065b9c249f18118dc5e0a08f7bce3d9d7204e1490edd591c6a877f';
+const FIXTURE = path.join(__dirname, 'fixtures', 'link-audit-storage', 'protocol-conformance-v2.json');
+const FIXTURE_SHA256 = '1921d398f489d394d5622b42a74037d99decd7166253d68f70a609a0b01aa674';
 
-test('a referência de conformidade gravada antes da refatoração não foi alterada', () => {
+test('a referência v1 (anterior à prova de origem) não foi alterada', () => {
+  assert.equal(createHash('sha256').update(fs.readFileSync(FIXTURE_V1)).digest('hex'), FIXTURE_V1_SHA256);
+});
+
+test('a referência v2 (com prova de origem) não foi alterada', () => {
   assert.equal(createHash('sha256').update(fs.readFileSync(FIXTURE)).digest('hex'), FIXTURE_SHA256);
+});
+
+test('v2 difere de v1 SÓ no que foi decidido: hashes (campo origin nos arquivos) e o conteúdo da pendente escondido de outro operador', () => {
+  const NEW = new Set(['origin', 'originDetail', 'isMine', 'ambiguousDecisionIds', 'witness']);
+  const norm = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(norm);
+    if (typeof value === 'string') return value.replace(/[0-9a-f]{64}/g, '<h64>');
+    if (value !== null && typeof value === 'object') return Object.fromEntries(Object.entries(value).filter(([key]) => !NEW.has(key)).map(([key, v]) => [key, norm(v)]));
+    return value;
+  };
+  const v1 = norm(JSON.parse(fs.readFileSync(FIXTURE_V1, 'utf8'))) as { steps: Array<{ step: string; result: any }>; primitives: unknown; storeNegatives: unknown };
+  const v2 = norm(JSON.parse(fs.readFileSync(FIXTURE, 'utf8'))) as typeof v1;
+  assert.deepEqual(v2.primitives, v1.primitives);
+  assert.deepEqual(v2.storeNegatives, v1.storeNegatives);
+  assert.equal(v2.steps.length, v1.steps.length);
+  const different = v1.steps.flatMap((step, index) => (JSON.stringify(step) === JSON.stringify(v2.steps[index]) ? [] : [index]));
+  assert.deepEqual(different.map((index) => v1.steps[index]?.step), ['outro operador sobre a pendente', 'revogação alheia sobre a pendente']);
+  for (const index of different) {
+    const before = v1.steps[index]?.result;
+    const after = v2.steps[index]?.result;
+    assert.notEqual(before.pending.record, null, 'na v1 o conteúdo da pendente aparecia para outro operador');
+    assert.equal(after.pending.record, null, 'na v2 só o autor com origem comprovada vê o conteúdo');
+    assert.deepEqual({ ...after, pending: { ...after.pending, record: before.pending.record } }, before);
+  }
 });
 
 test('CONFORMIDADE — o protocolo da 6B reproduz exatamente a referência (arquivos, códigos, mensagens, head, pendente, primitivas)', async () => {

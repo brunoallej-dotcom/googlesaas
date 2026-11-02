@@ -4,7 +4,9 @@ import { isErrorResponse, requireOperator } from '@/lib/auth/require-operator';
 import { AUDIT_ID_PATTERN, createDecisionService } from '@/lib/link-audit-decisions';
 import { createEvidenceReader, EvidenceAccessError, type EvidenceActor } from '@/lib/link-audit-evidence';
 import { createScoringBasisReader } from '@/lib/link-audit-evidence/scoring-basis';
-import { createScoringPreviewService, createScoringResultsService, PREVIEW_HTTP_STATUS, PREVIEW_MESSAGE, RESULTS_HTTP_STATUS, RESULTS_MESSAGE, type PreviewFailure, type ResultsFailure, type ScoringResultsService } from '@/lib/link-audit-scoring-runs';
+import { evidenceProvenanceFromConfig } from '@/lib/link-audit-evidence/provenance';
+import { originConfigFromEnv } from '@/lib/link-audit-origin';
+import { createResultsKnownHeads, createScoringPreviewService, createScoringResultsService, PREVIEW_HTTP_STATUS, PREVIEW_MESSAGE, RESULTS_HTTP_STATUS, RESULTS_MESSAGE, type PreviewFailure, type ResultsFailure, type ScoringResultsService } from '@/lib/link-audit-scoring-runs';
 import { SlidingWindowLimiter } from '@/lib/rate-limit';
 
 /*
@@ -84,9 +86,17 @@ async function prepare(request: Request, limiter: SlidingWindowLimiter): Promise
   const storage = await reader.storageStatus(actor);
   if (storage !== 'READY') return reply({ error: 'O armazenamento de evidências não está acessível ao servidor.', code: 'EVIDENCE_STORAGE_UNAVAILABLE' }, 503);
   const basisReader = createScoringBasisReader({ baseDir: evidenceDir, authorize });
+  // PROVA de que as evidências vieram da coleta: manifestos assinados FORA da pasta de evidências (somente leitura) + chaves PÚBLICAS de confiança. Sem as duas
+  // coisas a política é a FECHADA (nada é autêntico ⇒ nenhuma finalização). Não existe valor que "confie em tudo".
+  const evidenceProvenance = evidenceProvenanceFromConfig({ sealsDir: configuredDir(process.env.GMN_LINK_AUDIT_EVIDENCE_SEALS_DIR), trustKeys: process.env.GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS, otherDirs: [evidenceDir, decisionsDir, anchorDir, configuredDir(process.env.GMN_LINK_AUDIT_RESULTS_DIR), configuredDir(process.env.GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR)] });
+  const prepareOrigin = originConfigFromEnv(undefined, () => new Date());
+  const resultsDir = configuredDir(process.env.GMN_LINK_AUDIT_RESULTS_DIR);
+  const resultsAnchorDir = configuredDir(process.env.GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR);
+  const knownHeads = resultsDir && resultsAnchorDir ? createResultsKnownHeads({ baseDir: resultsDir, anchorDir: resultsAnchorDir, otherDirs: [decisionsDir, anchorDir, evidenceDir], ...(prepareOrigin.ok ? { origin: prepareOrigin.authenticator } : {}) }) : async () => ({ ok: false as const, reason: 'NOT_CONFIGURED' as const }); // sem as pastas de resultados: NÃO RESOLVIDO (falha fechada), nunca "sem inconsistência"
   const preview = createScoringPreviewService({
     basisReader,
-    decisions: createDecisionService({ baseDir: decisionsDir, anchorDir, evidence: reader, evidenceBaseDir: evidenceDir }),
+    evidenceProvenance,
+    decisions: createDecisionService({ baseDir: decisionsDir, anchorDir, evidence: reader, evidenceBaseDir: evidenceDir, knownHeads }), // só LEITURA das decisões: sem escrita não há o que assinar; com a TESTEMUNHA dos resultados selados
     clock: serverClock,
   });
   return { actor, preview, basisReader, dirs: { evidence: evidenceDir, decisions: decisionsDir, anchors: anchorDir } };
@@ -150,7 +160,11 @@ export async function withResults(request: Request, mode: 'read' | 'write', hand
     if (!resultsDir) return reply({ error: RESULTS_MESSAGE.RESULTS_NOT_CONFIGURED, code: 'RESULTS_NOT_CONFIGURED' }, 503);
     const resultsAnchorDir = configuredDir(process.env.GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR);
     if (!resultsAnchorDir) return reply({ error: RESULTS_MESSAGE.RESULT_ANCHOR_NOT_CONFIGURED, code: 'RESULT_ANCHOR_NOT_CONFIGURED' }, 503);
+    // Chave de ORIGEM (nunca em log, resposta ou pasta de dados). Leitura sem chave funciona (a origem das pendentes fica "não verificável"); a finalização não.
+    const originConfig = originConfigFromEnv(undefined, () => new Date());
+    if (mode === 'write' && !originConfig.ok) return reply({ error: RESULTS_MESSAGE.ORIGIN_KEY_NOT_CONFIGURED, code: 'ORIGIN_KEY_NOT_CONFIGURED' }, RESULTS_HTTP_STATUS.ORIGIN_KEY_NOT_CONFIGURED);
     const service = createScoringResultsService({
+      ...(originConfig.ok ? { origin: originConfig.authenticator } : {}),
       preview: prepared.preview,
       basisReader: prepared.basisReader,
       baseDir: resultsDir,

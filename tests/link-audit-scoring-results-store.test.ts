@@ -10,6 +10,7 @@ import { MAX_RUNS, MAX_RUN_BYTES, RUN_ANCHOR_KIND, RUN_FILE_KIND, RUN_SCHEMA_VER
 import { hashTree, registerCleanup, tmpDir } from './helpers/link-audit-decisions-fixtures';
 import { errno, faulty } from './helpers/link-audit-evidence-fixtures';
 import { receiptPath, resultsEnv, RES_AUDIT, runPath, tickClock, type ResultsEnv } from './helpers/link-audit-results-fixtures';
+import { TEST_ORIGIN } from './helpers/link-audit-origin-fixtures';
 
 /*
  * Onda 6C, I4 — o ARMAZENAMENTO dos resultados, isolado do motor: um registro mínimo basta porque o armazenamento só prova arquivo,
@@ -59,7 +60,7 @@ const resend =
     ctx.pending ? { ok: true, replayOf: ctx.pending.seq } : fallback(ctx);
 
 const ropts = (e: ResultsEnv, fsOps?: FsOps) => ({ anchorDir: e.anchors, ...(fsOps ? { fs: fsOps } : {}) });
-const wopts = (e: ResultsEnv, fsOps?: FsOps, now: () => string = tickClock()) => ({ anchorDir: e.anchors, now, ...(fsOps ? { fs: fsOps } : {}) });
+const wopts = (e: ResultsEnv, fsOps?: FsOps, now: () => string = tickClock()) => ({ origin: TEST_ORIGIN, anchorDir: e.anchors, now, ...(fsOps ? { fs: fsOps } : {}) });
 const append = (e: ResultsEnv, b = build(), fsOps?: FsOps, now?: () => string) => appendRun(e.base, RES_AUDIT, b, wopts(e, fsOps, now));
 const read = (e: ResultsEnv, fsOps?: FsOps, auditId: string = RES_AUDIT) => readRunLog(e.base, auditId, ropts(e, fsOps));
 const code = async (e: ResultsEnv): Promise<string> => {

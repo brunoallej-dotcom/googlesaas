@@ -117,6 +117,17 @@ async function createHarness(options) {
     process.exit(78);
   }
   const secret = crypto.randomBytes(24).toString('hex');
+  /** Chave de ORIGEM (comprovação de pendências), aleatória por execução: vai ao seed e ao servidor por ambiente; nunca é fixa nem gravada. */
+  const originKey = `ok-run-${crypto.randomBytes(4).toString('hex')}:${crypto.randomBytes(32).toString('hex')}`; // formato estrito de produção: <id>:<64 hex>
+  /**
+   * PROVA DE COLETA (autenticidade das evidências): o par Ed25519 é desta execução. A semente recebe a PRIVADA (faz o papel de quem atesta a coleta);
+   * o servidor recebe só a PÚBLICA e a pasta de manifestos. Sem isso o servidor, por desenho, não finaliza nada.
+   */
+  const evidenceKeyId = `ek-run-${crypto.randomBytes(4).toString('hex')}`;
+  const evidencePair = crypto.generateKeyPairSync('ed25519');
+  const evidenceSigningKey = evidencePair.privateKey.export({ format: 'der', type: 'pkcs8' }).toString('base64');
+  const evidencePublicDer = evidencePair.publicKey.export({ format: 'der', type: 'spki' });
+  const evidenceTrustKeys = `${evidenceKeyId}:${evidencePublicDer.subarray(evidencePublicDer.length - 32).toString('base64url')}`;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `gmn-browser-${name}-`));
   const children = [];
   let ws = null;
@@ -146,7 +157,7 @@ async function createHarness(options) {
   const seedOutput = execFileSync(process.execPath, ['--require', path.join(PROJECT, 'tests/register-typescript.cjs'), path.join(PROJECT, seed), root, OPERATOR_EMAIL, ...seedArgs], {
     cwd: PROJECT,
     encoding: 'utf8',
-    env: { PATH: process.env.PATH, HOME: process.env.HOME, GMN_SEED_SECRET: secret }, // o segredo vai por ambiente, não pelo argv (visível em /proc)
+    env: { PATH: process.env.PATH, HOME: process.env.HOME, GMN_SEED_SECRET: secret, GMN_LINK_AUDIT_ORIGIN_KEY: originKey, GMN_SEED_EVIDENCE_SIGNING_KEY: evidenceSigningKey, GMN_SEED_EVIDENCE_KEY_ID: evidenceKeyId }, // segredos por ambiente, não pelo argv (visível em /proc)
   });
   const line = (tag) => (seedOutput.split('\n').find((l) => l.startsWith(`${tag} `)) || '').slice(tag.length + 1);
   const IDS = JSON.parse(line('IDS') || '{}');
@@ -164,13 +175,17 @@ async function createHarness(options) {
     PORT: String(port),
     HOSTNAME: '127.0.0.1',
     SUPABASE_SERVICE_ROLE_KEY: secret,
+    GMN_LINK_AUDIT_ORIGIN_KEY: originKey,
     GMN_OPERATOR_EMAILS: `${OPERATOR_EMAIL},${OTHER_OPERATOR_EMAIL}`,
     GMN_LINK_AUDIT_EVIDENCE_DIR: path.join(root, 'evidence'),
+    GMN_LINK_AUDIT_EVIDENCE_SEALS_DIR: path.join(root, 'seals'),
+    GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS: evidenceTrustKeys, // só a PÚBLICA
     GMN_LINK_AUDIT_DECISIONS_DIR: path.join(root, 'decisions'),
     GMN_LINK_AUDIT_DECISIONS_ANCHOR_DIR: path.join(root, 'anchors'),
     GMN_LINK_AUDIT_RESULTS_DIR: path.join(root, 'results'),
     GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR: path.join(root, 'resanchors'),
   };
+  const initialServerEnv = { ...env };
   let server = null;
   let serverLog = '';
   const startServer = async () => {
@@ -274,6 +289,22 @@ async function createHarness(options) {
     OTHER_OPERATOR_EMAIL,
     cookieName,
     chromeVersion: version.Browser,
+    /** Identificador PÚBLICO da chave de origem do servidor (nunca o material). */
+    originKeyId: originKey.split(':')[0],
+    /** Chave de origem NOVA, gerada na hora com CSPRNG (formato de produção); nunca fixa no código. */
+    freshOriginKey: () => `ok-rot-${crypto.randomBytes(4).toString('hex')}:${crypto.randomBytes(32).toString('hex')}`,
+    /** Altera o ambiente do servidor local (`undefined` remove a variável); vale a partir do próximo `restartServer()`. */
+    setServerEnv(patch) {
+      for (const [name, value] of Object.entries(patch)) {
+        if (value === undefined) delete env[name];
+        else env[name] = value;
+      }
+    },
+    /** Devolve o ambiente do servidor ao do início da execução; vale a partir do próximo `restartServer()`. */
+    resetServerEnv() {
+      for (const name of Object.keys(env)) delete env[name];
+      Object.assign(env, initialServerEnv);
+    },
     /**
      * Reinicia SÓ o servidor local (os dados em disco e a sessão continuam): zera os limitadores em memória entre blocos longos.
      * Não use onde o roteiro verifica o próprio limite (HTTP 429).
@@ -331,6 +362,19 @@ async function createHarness(options) {
     clickText: (label, scope = 'document') =>
       evalJs(`(()=>{const b=[...${scope}.querySelectorAll('button,a,summary')].find(e=>e.innerText.trim().startsWith(${JSON.stringify(label)})&&!e.disabled);if(!b)return false;b.click();return true})()`),
     enabledButton: (label) => waitFor(() => evalJs(`[...document.querySelectorAll('button')].some(b=>b.innerText.trim().startsWith(${JSON.stringify(label)})&&!b.disabled)`), 15000),
+    /**
+     * Conclui uma PENDÊNCIA pelo painel (com origem comprovada): confere que o botão está DESABILITADO enquanto a caixa de confirmação não é
+     * marcada, marca a caixa e clica. Devolve { disabledBefore, enabledAfter, clicked }.
+     */
+    async concludePending(label) {
+      const find = `[...document.querySelectorAll('section[aria-labelledby$="-t"] button')].find(b=>b.innerText.trim().startsWith(${JSON.stringify(label)}))`;
+      const disabledBefore = await evalJs(`(${find})?.disabled===true`);
+      await evalJs(`document.querySelector('section[aria-labelledby$="-t"] input[type=checkbox]').click()`);
+      await sleep(200);
+      const enabledAfter = await evalJs(`(${find})?.disabled===false`);
+      const clicked = await evalJs(`(()=>{const b=${find};if(!b||b.disabled)return false;b.click();return true})()`);
+      return { disabledBefore, enabledAfter, clicked };
+    },
     /** Digita num campo do React (dispara `input`/`change` como o usuário). */
     typeInto: (selector, value) =>
       evalJs(`(()=>{const el=document.querySelector(${JSON.stringify(selector)});if(!el)return false;const proto=el.tagName==='SELECT'?HTMLSelectElement.prototype:el.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(proto,'value').set.call(el,${JSON.stringify(value)});el.dispatchEvent(new Event(el.tagName==='SELECT'?'change':'input',{bubbles:true}));return true})()`),

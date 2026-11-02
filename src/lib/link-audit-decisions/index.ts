@@ -19,3 +19,5 @@ export type {
   ServiceResult,
 } from './service';
 export { AUDIT_ID_PATTERN } from './types';
+export { evaluateKnownHeads, isUnresolved, WITNESS_NOT_REQUIRED } from './witness';
+export type { KnownHead, KnownHeadsFailure, KnownHeadsProvider, KnownHeadsRead, WitnessSource, WitnessStatus, WitnessVerdict } from './witness';

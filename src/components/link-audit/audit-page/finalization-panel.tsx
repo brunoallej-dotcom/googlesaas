@@ -4,6 +4,7 @@ import { StatusBadge } from '@/components/ui/status-badge';
 import { INCONCLUSIVE_HEADLINE, safeText, shortHash } from './labels';
 import type { FinalizeFlow, PageState } from './state';
 import { finalizeEligibility } from './state';
+import { PendingRunPanel } from './pending-panels';
 import { BUTTON_PRIMARY, BUTTON_QUIET, ConfirmDialog, useExpired } from './ui-bits';
 
 export interface FinalizationPanelProps {
@@ -29,19 +30,7 @@ export function FinalizationPanel(p: FinalizationPanelProps): React.JSX.Element 
     <div className="space-y-4">
       <p className="text-xs text-gmn-muted">Registrar grava um resultado <strong className="text-gmn-text">definitivo e imutável</strong>, ligado às evidências e às decisões da prévia exibida. {outcome?.outcome === 'INCONCLUSIVO' ? 'Como a prévia é inconclusiva, o registro não terá nota.' : ''}</p>
 
-      {pendingRun && (
-        <div role="alert" className="rounded-xl border border-dashed border-gmn-warning/60 bg-gmn-warning/[0.06] p-3 text-xs">
-          <p className="font-semibold text-gmn-text">Resultado s{String(pendingRun.seq).padStart(4, '0')} gravado e NÃO confirmado (sem recibo): ele não vale.</p>
-          {pendingRun.isMine ? (
-            <>
-              <p className="mt-1 text-gmn-muted">Foi você quem o gravou. Concluir reenvia exatamente o pedido original. O resultado é anterior e pode já ser histórico: o servidor confere as evidências antes de dar o recibo.</p>
-              <button type="button" disabled={busy} onClick={p.onCompletePending} className={`${BUTTON_PRIMARY} mt-2`}><RotateCcw className="h-4 w-4" aria-hidden="true" />Concluir a confirmação</button>
-            </>
-          ) : (
-            <p className="mt-1 text-gmn-muted">Somente o autor pode concluí-lo. Enquanto não for concluído, nenhum novo resultado é registrado.</p>
-          )}
-        </div>
-      )}
+      {pendingRun && <PendingRunPanel key={pendingRun.contentSha256} pending={pendingRun} busy={busy} onComplete={p.onCompletePending} />}
 
       <button type="button" disabled={!eligibility.allowed} onClick={p.onOpen} aria-describedby="finalizar-motivo" className={`${BUTTON_PRIMARY} w-full`}>
         <FileCheck2 className="h-4 w-4" aria-hidden="true" />

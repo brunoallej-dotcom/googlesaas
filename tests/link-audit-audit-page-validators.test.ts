@@ -115,8 +115,8 @@ test('decisões: forma de cada item, status, pendente e coerência (pendente ⇒
     ['decisão sem recordedBy', (v) => void delete any(v).decisions[0].recordedBy],
     ['histórico com ação inválida', (v) => void (any(v).history[0].action = 'APAGAR')],
     ['pendente confirmada', (v) => void ((any(v).pending = { confirmed: true, seq: 2, action: 'RECORD', decisionId: 'op-0002', revokes: null, supersedes: null, reason: null, record: {}, recordedAt: 'x', recordedBy: 'y' }), (any(v).finalizable = false))],
-    ['pendente com finalizable:true', (v) => void (any(v).pending = { confirmed: false, seq: 2, action: 'RECORD', decisionId: 'op-0002', revokes: null, supersedes: null, reason: null, record: {}, recordedAt: 'x', recordedBy: 'y' })],
-    ['pendente com ação inválida', (v) => void ((any(v).pending = { confirmed: false, seq: 2, action: 'X', decisionId: null, revokes: null, supersedes: null, reason: null, record: null, recordedAt: 'x', recordedBy: 'y' }), (any(v).finalizable = false))],
+    ['pendente com finalizable:true', (v) => void (any(v).pending = { confirmed: false, entrySha256: 'e'.repeat(64), seq: 2, action: 'RECORD', decisionId: 'op-0002', revokes: null, supersedes: null, reason: null, record: {}, recordedAt: 'x', recordedBy: 'y' })],
+    ['pendente com ação inválida', (v) => void ((any(v).pending = { confirmed: false, entrySha256: 'e'.repeat(64), seq: 2, action: 'X', decisionId: null, revokes: null, supersedes: null, reason: null, record: null, recordedAt: 'x', recordedBy: 'y' }), (any(v).finalizable = false))],
   ]);
 });
 
@@ -223,4 +223,109 @@ test('cliente HTTP: resposta 2xx incompatível ⇒ "malformed" (falha fechada), 
   assert.equal((await httpApi.decide(AUDIT, { kind: 'CREATE', body: { record: {}, expectedHead: null } })).kind, 'ok');
   send({ anchored: true });
   assert.deepEqual(await httpApi.decide(AUDIT, { kind: 'CREATE', body: { record: {}, expectedHead: null } }), { kind: 'malformed' });
+});
+
+test('pendências: o contrato de ORIGEM é coerente (falha fechada): isMine/conteúdo/autor só com origem COMPROVADA', () => {
+  const unproven = { origin: 'UNPROVEN', originDetail: 'MISSING', isMine: false, outcome: null, level: null, coveragePercent: null, appliedDecisionCount: null } as const;
+  assert.ok(isResultsPayload(clone(resultsFixture({ pending: pendingRun(unproven) })), AUDIT), 'não comprovada, com tudo nulo, é legítima');
+  reject(() => clone(resultsFixture({ pending: pendingRun() })), (v) => isResultsPayload(v, AUDIT), [
+    ['origem desconhecida', (v) => void (any(v).pending.origin = 'TALVEZ')],
+    ['origem comprovada com detalhe de falha', (v) => void (any(v).pending.originDetail = 'INVALID')],
+    ['sem o campo de origem', (v) => void delete any(v).pending.origin],
+    ['isMine não booleano', (v) => void (any(v).pending.isMine = 'sim')],
+    ['matchesCurrent inválido', (v) => void (any(v).pending.matchesCurrent = 'talvez')],
+    ['cobertura fora de 0–100', (v) => void (any(v).pending.coveragePercent = 150)],
+  ]);
+  reject(() => clone(resultsFixture({ pending: pendingRun(unproven) })), (v) => isResultsPayload(v, AUDIT), [
+    ['isMine=true com origem NÃO comprovada (resposta forjada)', (v) => void (any(v).pending.isMine = true)],
+    ['desfecho do arquivo exposto sem origem comprovada', (v) => void (any(v).pending.outcome = 'PONTUADO')],
+    ['cobertura exposta sem origem comprovada', (v) => void (any(v).pending.coveragePercent = 80)],
+    ['origem não comprovada sem o motivo', (v) => void (any(v).pending.originDetail = null)],
+  ]);
+  const decision = (over: Record<string, unknown>) => decisionsFixture({ pending: { confirmed: false, entrySha256: 'e'.repeat(64), origin: 'PROVEN', originDetail: null, isMine: true, seq: 1, action: 'RECORD', decisionId: 'op-0001', revokes: null, supersedes: null, reason: null, record: { kind: 'JUDGEMENT' }, recordedAt: '2026-10-30T10:00:00.000Z', recordedBy: 'a@b.com', ...over } as never, finalizable: false });
+  assert.ok(isDecisionsPayload(clone(decision({})), AUDIT));
+  assert.ok(isDecisionsPayload(clone(decision({ origin: 'UNPROVEN', originDetail: 'INVALID', isMine: false, record: null, recordedBy: null })), AUDIT));
+  for (const [name, over] of [
+    ['isMine com origem não comprovada', { origin: 'UNPROVEN', originDetail: 'INVALID', isMine: true, recordedBy: null }],
+    ['autor exposto sem origem comprovada', { origin: 'UNPROVEN', originDetail: 'INVALID', isMine: false, record: null, recordedBy: 'ana@empresa.com' }],
+    ['conteúdo exposto para quem não é o autor', { isMine: false, record: { kind: 'JUDGEMENT' } }],
+    ['motivo exposto para quem não é o autor', { isMine: false, record: null, reason: 'texto' }],
+    ['origem comprovada sem autor', { recordedBy: null }],
+  ] as const) assert.equal(isDecisionsPayload(clone(decision(over as never)), AUDIT), false, name);
+});
+
+test('decisões EM DÚVIDA e testemunha estruturada: o contrato é coerente (falha fechada)', () => {
+  const pendingRevoke = { confirmed: false, entrySha256: 'e'.repeat(64), origin: 'PROVEN', originDetail: null, isMine: false, seq: 2, action: 'REVOKE', decisionId: null, revokes: 'op-0001', supersedes: null, reason: null, record: null, recordedAt: '2026-10-30T10:00:00.000Z', recordedBy: 'a@b.com' } as never;
+  const inDoubt = decisionDto({ decisionId: 'op-0001', status: 'AMBIGUOUS' });
+  const ok = decisionsFixture({ pending: pendingRevoke, finalizable: false, allDecisions: [inDoubt], ambiguousDecisionIds: ['op-0001'] });
+  assert.ok(isDecisionsPayload(clone(ok), AUDIT), 'a decisão em dúvida está só em allDecisions e é declarada em ambiguousDecisionIds');
+  reject(() => clone(ok), (v) => isDecisionsPayload(v, AUDIT), [
+    ['em dúvida listada como vigente', (v) => void (any(v).decisions = [{ ...any(v).allDecisions[0] }])],
+    ['em dúvida sem declarar o id', (v) => void (any(v).ambiguousDecisionIds = [])],
+    ['id declarado sem a decisão marcada', (v) => void (any(v).allDecisions[0].status = 'ACTIVE')],
+    ['id malformado', (v) => void (any(v).ambiguousDecisionIds = ['op-1'])],
+    ['campo ausente', (v) => void delete any(v).ambiguousDecisionIds],
+    ['dúvida SEM pendente', (v) => void ((any(v).pending = null), (any(v).finalizable = true))],
+  ]);
+  // a TESTEMUNHA (estado estruturado do servidor): valores do contrato e coerências
+  const w = (status: string, extra: Record<string, unknown> = {}) =>
+    decisionsFixture({ witness: { status, knownHeads: ['NOT_CONFIGURED', 'NOT_REQUIRED', 'UNWITNESSED', 'UNAVAILABLE', 'UNTRUSTED'].includes(status) ? 0 : 1, coveredSeq: null, unwitnessedAffecting: 0 } as never, ...extra });
+  assert.ok(isDecisionsPayload(clone(w('CONSISTENT')), AUDIT));
+  assert.ok(isDecisionsPayload(clone(w('NOT_REQUIRED')), AUDIT));
+  assert.ok(isDecisionsPayload(clone(w('UNWITNESSED')), AUDIT), 'sem testemunha ainda: declarado, não bloqueante');
+  // NÃO RESOLVIDOS (todos falham fechado): zero vigentes, tudo em dúvida, não finalizável
+  for (const status of ['NOT_CONFIGURED', 'UNAVAILABLE', 'UNTRUSTED', 'HISTORY_DIVERGES']) {
+    assert.ok(isDecisionsPayload(clone(w(status, { finalizable: false, allDecisions: [inDoubt], ambiguousDecisionIds: ['op-0001'] })), AUDIT), status);
+    reject(() => clone(w(status, { finalizable: false, allDecisions: [inDoubt], ambiguousDecisionIds: ['op-0001'] })), (v) => isDecisionsPayload(v, AUDIT), [[`${status} finalizável`, (v) => void (any(v).finalizable = true)]]);
+  }
+  assert.ok(isDecisionsPayload(clone(w('RECEIPT_LOST_WITNESSED', { pending: pendingRevoke, finalizable: false, allDecisions: [inDoubt], ambiguousDecisionIds: ['op-0001'] })), AUDIT));
+  const active = decisionDto({ decisionId: 'op-0001', status: 'ACTIVE' });
+  assert.ok(isDecisionsPayload(clone(w('HISTORY_REGRESSED', { finalizable: false, allDecisions: [inDoubt], ambiguousDecisionIds: ['op-0001'] })), AUDIT), 'não resolvida: zero vigentes, tudo em dúvida, não finalizável');
+  reject(() => clone(w('HISTORY_REGRESSED', { finalizable: false, allDecisions: [inDoubt], ambiguousDecisionIds: ['op-0001'] })), (v) => isDecisionsPayload(v, AUDIT), [
+    ['não resolvida e finalizável', (v) => void (any(v).finalizable = true)],
+    ['não resolvida com decisão vigente', (v) => void ((any(v).decisions = [active]), (any(v).allDecisions = [active]), (any(v).ambiguousDecisionIds = []))],
+    ['não resolvida com decisão ACTIVE em allDecisions', (v) => void ((any(v).allDecisions = [active]), (any(v).ambiguousDecisionIds = []))],
+    ['status desconhecido', (v) => void (any(v).witness.status = 'TALVEZ')],
+    ['campo ausente', (v) => void delete any(v).witness],
+    ['knownHeads inválido', (v) => void (any(v).witness.knownHeads = -1)],
+  ]);
+  reject(() => clone(w('CONSISTENT')), (v) => isDecisionsPayload(v, AUDIT), [
+    ['recibo perdido sem pendente', (v) => void (any(v).witness.status = 'RECEIPT_LOST_WITNESSED')],
+    ['NOT_REQUIRED com cabeças', (v) => void ((any(v).witness.status = 'NOT_REQUIRED'), (any(v).witness.knownHeads = 2))],
+    ['UNWITNESSED com cobertura', (v) => void ((any(v).witness.status = 'UNWITNESSED'), (any(v).witness.knownHeads = 0), (any(v).witness.coveredSeq = 2))],
+    ['CONSISTENT sem nenhuma cabeça', (v) => void (any(v).witness.knownHeads = 0)],
+    ['cobertura inválida', (v) => void (any(v).witness.coveredSeq = 0)],
+    ['contagem sem testemunha negativa', (v) => void (any(v).witness.unwitnessedAffecting = -1)],
+  ]);
+  // R3-INFO-2: uma operação pendente que REVOGA X nunca deixa X como vigente
+  reject(() => clone(ok), (v) => isDecisionsPayload(v, AUDIT), [
+    ['pendente REVOKE de op-0001 com op-0001 ACTIVE em decisions', (v) => void ((any(v).decisions = [decisionDto({ decisionId: 'op-0001', status: 'ACTIVE' })]), (any(v).allDecisions = [decisionDto({ decisionId: 'op-0001', status: 'ACTIVE' })]), (any(v).ambiguousDecisionIds = []))],
+  ]);
+});
+
+test('prévia: a AUTENTICIDADE da coleta é validada e finalizável exige coleta AUTÊNTICA (falha fechada)', () => {
+  const base = clone(previewFixture());
+  assert.ok(isPreviewPayload(clone(base), AUDIT), 'padrão da fixture: finalizável e autêntica');
+  const unproven = (reason: string | null, status = 'UNAUTHENTICATED', missingRefs: string[] = []) => (v: unknown) => void (any(v).evidence.provenance = { status, reason, missingRefs });
+  reject(() => clone(base), (v) => isPreviewPayload(v, AUDIT), [
+    ['finalizável com coleta NÃO autêntica', unproven('NO_SEAL')],
+    ['finalizável sem informação de autenticidade', (v) => void (any(v).evidence.provenance = null)],
+    ['campo ausente', (v) => void delete any(v).evidence.provenance],
+    ['motivo desconhecido', unproven('TALVEZ')],
+    ['autêntica com motivo', unproven('NO_SEAL', 'AUTHENTICATED')],
+    ['não autêntica sem motivo', unproven(null)],
+    ['status desconhecido', unproven(null, 'MAYBE')],
+    ['EVIDENCE_MISSING sem as referências ausentes', unproven('EVIDENCE_MISSING')],
+    ['referências ausentes sem EVIDENCE_MISSING', unproven('NO_SEAL', 'UNAUTHENTICATED', ['capture:c0002'])],
+    ['referência ausente malformada', unproven('EVIDENCE_MISSING', 'UNAUTHENTICATED', ['../etc/passwd'])],
+    ['referências demais', unproven('EVIDENCE_MISSING', 'UNAUTHENTICATED', Array.from({ length: 6 }, (_, i) => `capture:c000${i}`))],
+    ['autêntica com referências ausentes', unproven(null, 'AUTHENTICATED', ['capture:c0002'])],
+  ]);
+  // não finalizável + não autêntica é um estado legítimo (a prévia continua consultável, rotulada)
+  const blocked = clone(base);
+  any(blocked).state = 'CALCULADO_NAO_FINALIZAVEL';
+  any(blocked).finalization = { allowed: false, expectedHead: null, expectedInputSha256: null, latest: null };
+  any(blocked).evidence.provenance = { status: 'UNAUTHENTICATED', reason: 'PROOF_NOT_CONFIGURED', missingRefs: [] };
+  any(blocked).blockers = [{ code: 'EVIDENCE_PROVENANCE_UNPROVEN', severity: 'BLOCKING', message: 'A origem da coleta NÃO foi comprovada.', reasonCode: 'PROOF_NOT_CONFIGURED', decisionIds: [], subcriterionIds: [] }];
+  assert.ok(isPreviewPayload(blocked, AUDIT), JSON.stringify(blocked.finalization));
 });

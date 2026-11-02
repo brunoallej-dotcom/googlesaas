@@ -6,6 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { writeFull } from './link-audit-evidence-fixtures';
+import { sealAuditsForBrowserSeed } from './link-audit-evidence-provenance-fixtures';
 import { createSessionToken, SESSION_COOKIE } from '../../src/lib/auth/session';
 
 /* Semeia dados 100% FICTÍCIOS num diretório temporário e imprime o cookie de sessão assinado por segredo fictício. */
@@ -15,6 +16,7 @@ import { createSessionToken, SESSION_COOKIE } from '../../src/lib/auth/session';
   if (secret.length < 16) throw new Error('GMN_SEED_SECRET ausente');
   for (const dir of ['evidence', 'decisions', 'anchors', 'results', 'resanchors']) fs.mkdirSync(path.join(root, dir), { recursive: true });
   await writeFull(path.join(root, 'evidence'), { auditId });
+  await sealAuditsForBrowserSeed(root, [auditId]); // quem tem a chave atesta a coleta legítima: sem isso a finalização fica bloqueada por desenho
   const token = await createSessionToken(email, secret);
   const intruso = await createSessionToken('intruso@x.com', secret);
   process.stdout.write(`IDS ${JSON.stringify({ main: auditId })}\nCOOKIE ${SESSION_COOKIE}=${token}\nINTRUSO ${SESSION_COOKIE}=${intruso}\n`);

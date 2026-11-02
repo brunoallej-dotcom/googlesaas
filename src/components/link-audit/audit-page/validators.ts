@@ -20,6 +20,7 @@ const arr = <T,>(v: unknown, guard: (item: unknown) => boolean): v is T[] => Arr
 const strs = (v: unknown): boolean => arr<string>(v, str);
 const oneOf = (v: unknown, values: readonly string[]): boolean => str(v) && values.includes(v);
 const percent = (v: unknown): boolean => num(v) && (v as number) >= 0 && (v as number) <= 100;
+const percentN = (v: unknown): boolean => v === null || percent(v);
 
 export const isHead = (v: unknown): v is Head => isObj(v) && int(v.seq) && (v.seq as number) >= 1 && isHex64(v.sha256);
 const headN = (v: unknown): boolean => v === null || isHead(v);
@@ -66,8 +67,10 @@ export function isPreviewPayload(value: unknown, auditId?: string): value is Pre
   const { company, evidence, decisions, finalization } = value;
   if (!isObj(company) || !bool(company.located) || !str(company.profileState) || !strN(company.unavailableReason) || !strN(company.websiteHost) || !str(company.source)) return false;
   if (!isObj(evidence) || !isObj(evidence.integrity) || !str(evidence.integrity.status) || !(evidence.integrity.checkedFiles === null || int(evidence.integrity.checkedFiles)) || !strN(evidence.layout) || !strN(evidence.referenceDate)) return false;
+  const prov = evidence.provenance;
+  if (!(prov === null || (isObj(prov) && Array.isArray(prov.missingRefs) && prov.missingRefs.length <= 5 && (prov.missingRefs as unknown[]).every((r) => str(r) && /^[a-z-]+:c\d{4}(-r\d{4})?$/.test(r)) && ((prov.status === 'AUTHENTICATED' && prov.reason === null && prov.missingRefs.length === 0) || (prov.status === 'UNAUTHENTICATED' && oneOf(prov.reason, PROVENANCE_REASONS) && (prov.reason === 'EVIDENCE_MISSING') === (prov.missingRefs.length > 0)))))) return false;
   if (!refSourceOk(evidence.referenceDateSource) || !refSourceOk(evidence.profileSource) || !arr(evidence.bases, baseOk)) return false;
-  if (!isObj(decisions) || !headN(decisions.head) || !int(decisions.count) || !pendingSummaryOk(decisions.pending) || !bool(decisions.finalizable) || !strs(decisions.applied) || !arr(decisions.held, (h) => isObj(h) && str(h.decisionId) && str(h.code))) return false;
+  if (!isObj(decisions) || !headN(decisions.head) || !int(decisions.count) || !pendingSummaryOk(decisions.pending) || !bool(decisions.finalizable) || !witnessOk(decisions.witness) || !strs(decisions.applied) || !arr(decisions.held, (h) => isObj(h) && str(h.decisionId) && str(h.code))) return false;
   if (!arr(value.decisionOptions, (o) => isObj(o) && str(o.type) && str(o.subcriterionId) && strN(o.code) && bool(o.available) && strN(o.reasonCode))) return false;
   if (!arr(value.criteria, criterionOk) || !arr(value.blockers, blockerOk) || !arr(value.missing, (m) => isObj(m) && str(m.family) && str(m.label) && num(m.potentialHalfPoints))) return false;
   const outcome = value.outcomePreview;
@@ -81,16 +84,51 @@ export function isPreviewPayload(value: unknown, auditId?: string): value is Pre
   if (finalization.allowed) {
     // "pode finalizar" só vale se TUDO que o contrato garante junto estiver presente e coerente
     const blocking = (value.blockers as Array<{ severity: string }>).some((b) => b.severity === 'BLOCKING');
-    if (value.state !== 'CALCULADO_FINALIZAVEL' || outcome === null || finalization.expectedInputSha256 === null || blocking || (decisions as Rec).pending !== null || (decisions as Rec).finalizable !== true || ((decisions as Rec).held as unknown[]).length > 0 || (evidence.integrity as Rec).status !== 'OK') return false;
+    if (value.state !== 'CALCULADO_FINALIZAVEL' || outcome === null || finalization.expectedInputSha256 === null || blocking || (decisions as Rec).pending !== null || (decisions as Rec).finalizable !== true || unresolved((decisions as Rec).witness) || ((decisions as Rec).held as unknown[]).length > 0 || (evidence.integrity as Rec).status !== 'OK' || ((evidence.provenance as Rec | null)?.status !== 'AUTHENTICATED')) return false; // finalizável exige coleta AUTÊNTICA
     if (!sameHead(finalization.expectedHead as Head | null, (decisions as Rec).head as Head | null)) return false;
   }
   return true;
 }
 
 const decisionDtoOk = (d: unknown): boolean =>
-  isObj(d) && str(d.decisionId) && /^op-\d{4}$/.test(d.decisionId) && int(d.seq) && str(d.kind) && isObj(d.record) && str(d.recordedAt) && str(d.recordedBy) && strN(d.supersedes) && strN(d.supersededBy) && oneOf(d.status, ['ACTIVE', 'SUPERSEDED', 'REVOKED']) && bool(d.siteDependent);
+  isObj(d) && str(d.decisionId) && /^op-\d{4}$/.test(d.decisionId) && int(d.seq) && str(d.kind) && isObj(d.record) && str(d.recordedAt) && str(d.recordedBy) && strN(d.supersedes) && strN(d.supersededBy) && oneOf(d.status, ['ACTIVE', 'SUPERSEDED', 'REVOKED', 'AMBIGUOUS']) && bool(d.siteDependent);
+const PROVENANCE_REASONS = ['PROOF_NOT_CONFIGURED', 'NO_SEAL', 'LEGACY_NO_SEAL', 'SEAL_INVALID', 'EVIDENCE_NOT_SEALED', 'EVIDENCE_MISSING', 'EVIDENCE_HASH_MISMATCH', 'VERIFICATION_ERROR'] as const;
+const WITNESS_STATUSES = ['NOT_REQUIRED', 'UNWITNESSED', 'CONSISTENT', 'RECEIPT_LOST_WITNESSED', 'HISTORY_REGRESSED', 'HISTORY_DIVERGES', 'UNTRUSTED', 'UNAVAILABLE', 'NOT_CONFIGURED'] as const;
+const witnessOk = (w: unknown): boolean =>
+  isObj(w) &&
+  oneOf(w.status, WITNESS_STATUSES) &&
+  int(w.knownHeads) &&
+  (w.coveredSeq === null || (int(w.coveredSeq) && (w.coveredSeq as number) >= 1)) &&
+  int(w.unwitnessedAffecting) &&
+  (w.status !== 'NOT_REQUIRED' || w.knownHeads === 0) &&
+  (w.status !== 'UNWITNESSED' || (w.knownHeads === 0 && w.coveredSeq === null)) &&
+  (w.status !== 'CONSISTENT' || (w.knownHeads as number) >= 1);
+const unresolved = (w: unknown): boolean => isObj(w) && ['HISTORY_REGRESSED', 'HISTORY_DIVERGES', 'UNTRUSTED', 'UNAVAILABLE', 'NOT_CONFIGURED'].includes(w.status as string);
+const ORIGINS = ['PROVEN', 'UNPROVEN', 'UNVERIFIABLE'] as const;
+const ORIGIN_DETAILS = ['MISSING', 'INVALID', 'KEY_MISMATCH', 'KEY_REVOKED', 'KEY_EXPIRED', 'NO_KEY'] as const;
+/**
+ * Coerência da ORIGEM (falha fechada): só uma pendência com origem COMPROVADA pode trazer conteúdo, autor ou `isMine`. Uma resposta que
+ * diga o contrário (servidor com defeito, resposta forjada) é recusada por inteiro: a tela nunca apresenta como "sua" uma pendência
+ * cuja origem não foi comprovada.
+ */
+const originOk = (p: Rec): boolean =>
+  oneOf(p.origin, ORIGINS) && (p.origin === 'PROVEN' ? p.originDetail === null : oneOf(p.originDetail, ORIGIN_DETAILS)) && bool(p.isMine) && (p.isMine !== true || p.origin === 'PROVEN');
 const pendingDecisionOk = (p: unknown): boolean =>
-  isObj(p) && p.confirmed === false && int(p.seq) && oneOf(p.action, ['RECORD', 'REVOKE']) && strN(p.decisionId) && strN(p.revokes) && strN(p.supersedes) && strN(p.reason) && (p.record === null || isObj(p.record)) && str(p.recordedAt) && str(p.recordedBy);
+  isObj(p) &&
+  p.confirmed === false &&
+  int(p.seq) &&
+  oneOf(p.action, ['RECORD', 'REVOKE']) &&
+  strN(p.decisionId) &&
+  strN(p.revokes) &&
+  strN(p.supersedes) &&
+  originOk(p) &&
+  strN(p.reason) &&
+  (p.record === null || isObj(p.record)) &&
+  str(p.recordedAt) &&
+  strN(p.recordedBy) &&
+  isHex64(p.entrySha256) &&
+  (p.origin === 'PROVEN' ? str(p.recordedBy) : p.recordedBy === null) &&
+  (p.isMine === true || (p.record === null && p.reason === null));
 
 export function isDecisionsPayload(value: unknown, auditId?: string): value is DecisionsList {
   if (!isObj(value) || !str(value.auditId) || (auditId !== undefined && value.auditId !== auditId) || !headN(value.head) || !bool(value.finalizable)) return false;
@@ -99,12 +137,39 @@ export function isDecisionsPayload(value: unknown, auditId?: string): value is D
   if (!arr(value.history, (h) => isObj(h) && int(h.seq) && oneOf(h.action, ['RECORD', 'REVOKE']) && strN(h.decisionId) && strN(h.revokes) && strN(h.reason) && str(h.recordedAt) && str(h.recordedBy))) return false;
   if ((value.decisions as DecisionDto[]).some((d) => d.status !== 'ACTIVE')) return false; // "vigentes" só contém ativas
   if (value.pending !== null && value.finalizable !== false) return false; // pendente = não finalizável (contrato da 6B)
+  // decisões EM DÚVIDA: só existem com pendente, são exatamente as marcadas AMBIGUOUS e nunca contam como vigentes
+  if (!Array.isArray(value.ambiguousDecisionIds) || !(value.ambiguousDecisionIds as unknown[]).every((id) => str(id) && /^op-\d{4}$/.test(id))) return false;
+  const doubtful = (value.allDecisions as DecisionDto[]).filter((d) => d.status === 'AMBIGUOUS').map((d) => d.decisionId).sort();
+  const declared = [...(value.ambiguousDecisionIds as string[])].sort();
+  if (doubtful.length !== declared.length || doubtful.some((id, index) => id !== declared[index])) return false;
+  if (declared.length > 0 && value.pending === null && !unresolved(value.witness)) return false;
+  if ((value.decisions as DecisionDto[]).some((d) => declared.includes(d.decisionId))) return false;
+  // TESTEMUNHA: integridade NÃO resolvida ⇒ ZERO decisões vigentes, nada ACTIVE em lugar nenhum, nada finalizável; "recibo perdido" exige pendente
+  if (!witnessOk(value.witness)) return false;
+  if (unresolved(value.witness) && (value.finalizable !== false || (value.decisions as DecisionDto[]).length > 0 || (value.allDecisions as DecisionDto[]).some((d) => d.status === 'ACTIVE'))) return false;
+  if ((value.witness as Rec).status === 'RECEIPT_LOST_WITNESSED' && value.pending === null) return false;
+  // uma operação pendente que revoga/substitui X nunca deixa X vigente (R3-INFO-2)
+  const pend = value.pending as Rec | null;
+  const target = pend ? (pend.action === 'REVOKE' ? pend.revokes : pend.supersedes) : null;
+  if (typeof target === 'string' && (value.decisions as DecisionDto[]).some((d) => d.decisionId === target)) return false;
   return true;
 }
 
 const runSummaryOk = (r: unknown): boolean =>
   isObj(r) && int(r.seq) && (r.seq as number) >= 1 && str(r.finalizedAt) && str(r.finalizedBy) && oneOf(r.outcome, OUTCOMES) && levelOk(r.outcome, r.level) && strN(r.reasonCode) && percent(r.coveragePercent) && isHex64(r.inputSha256) && isHex64(r.resultSha256) && isHex64(r.contentSha256) && headN(r.decisionsHead) && bool(r.superseded) && boolN(r.stale) && boolN(r.decisionsChanged);
-const pendingRunOk = (p: unknown): boolean => isObj(p) && int(p.seq) && (p.seq as number) >= 1 && str(p.finalizedAt) && bool(p.isMine) && oneOf(p.outcome, OUTCOMES) && isHex64(p.inputSha256) && headN(p.decisionsHead) && isHex64(p.contentSha256);
+const pendingRunOk = (p: unknown): boolean =>
+  isObj(p) &&
+  int(p.seq) &&
+  (p.seq as number) >= 1 &&
+  str(p.finalizedAt) &&
+  p.receipt === 'MISSING' &&
+  p.blocksFinalization === true &&
+  originOk(p) &&
+  (p.origin === 'PROVEN' ? oneOf(p.outcome, OUTCOMES) && percentN(p.coveragePercent) && (p.appliedDecisionCount === null || int(p.appliedDecisionCount)) && strN(p.level) : p.outcome === null && p.level === null && p.coveragePercent === null && p.appliedDecisionCount === null) &&
+  isHex64(p.inputSha256) &&
+  headN(p.decisionsHead) &&
+  boolN(p.matchesCurrent) &&
+  isHex64(p.contentSha256);
 
 export function isResultsPayload(value: unknown, auditId?: string): value is ResultsList {
   if (!isObj(value) || value.definitive !== true || !str(value.auditId) || (auditId !== undefined && value.auditId !== auditId) || !headN(value.head)) return false;

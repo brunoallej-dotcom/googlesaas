@@ -22,7 +22,7 @@ const libFiles = walk(LIB);
 const routeFiles = walk(ROUTES);
 
 test('o módulo tem exatamente os arquivos esperados (qualquer arquivo novo exige revisão deliberada)', () => {
-  assert.deepEqual(libFiles.map((f) => path.relative(LIB, f)).sort(), ['anchor-store.ts', 'contract.ts', 'evidence-refs.ts', 'files.ts', 'index.ts', 'project.ts', 'service.ts', 'store.ts', 'types.ts']);
+  assert.deepEqual(libFiles.map((f) => path.relative(LIB, f)).sort(), ['anchor-store.ts', 'contract.ts', 'evidence-refs.ts', 'files.ts', 'index.ts', 'project.ts', 'service.ts', 'store.ts', 'types.ts', 'witness.ts']);
   assert.deepEqual(routeFiles.map((f) => path.relative(ROUTES, f).split(path.sep).join('/')).sort(), ['[auditId]/revocations/route.ts', '[auditId]/route.ts', 'shared.ts']);
 });
 
@@ -34,13 +34,14 @@ test('imports: só zod, módulos do próprio módulo e uma lista fechada de arqu
     'service.ts': ['node:path'],
   };
   const allowedProject: Readonly<Record<string, readonly string[]>> = {
-    'types.ts': ['../link-audit/scoring/input'],
+    // MAJOR-1: a prova de ORIGEM (HMAC, chave fora das pastas) é o único módulo novo que as decisões consomem (types: esquema da etiqueta; store: assina e exige a prova para concluir pendente; service: julga a origem para o DTO)
+    'types.ts': ['../link-audit-origin', '../link-audit/scoring/input'],
     'project.ts': ['../link-audit/scoring/input'],
     'contract.ts': ['../link-audit/scoring/input', '../link-audit/scoring/versions'],
-    'store.ts': ['../link-audit/canonical', '../link-audit/snapshot-store'],
+    'store.ts': ['../link-audit-origin', '../link-audit/canonical', '../link-audit/snapshot-store'],
     'files.ts': ['../link-audit-storage'],
     'anchor-store.ts': ['../link-audit/snapshot-store', '../link-audit-storage'],
-    'service.ts': ['../link-audit/scoring/input', '../link-audit/snapshot-store'],
+    'service.ts': ['../link-audit-origin', '../link-audit/scoring/input', '../link-audit/snapshot-store'],
   };
   for (const file of libFiles) {
     const name = path.basename(file);
@@ -109,10 +110,10 @@ test('rotas: sem rede, sem disco, sem outra variável de ambiente além das duas
     assert.ok(!/\bfetch\s*\(|node:(?:http|https|http2|dns|net|tls|dgram|child_process|fs)\b|fsPromises|XMLHttpRequest|WebSocket/.test(code), `${rel(file)} usa rede ou disco`);
     assert.ok(!/export\s+(?:async\s+)?function\s+(?:PUT|PATCH|DELETE|OPTIONS|HEAD)\b/.test(code), `${rel(file)} exporta método de alteração/exclusão`);
     const vars = [...code.matchAll(/process\.env\.([A-Z0-9_]+)/g)].map((m) => m[1]);
-    for (const name of vars) assert.ok(['GMN_LINK_AUDIT_DECISIONS_DIR', 'GMN_LINK_AUDIT_DECISIONS_ANCHOR_DIR', 'GMN_LINK_AUDIT_EVIDENCE_DIR'].includes(name as string), `${rel(file)} lê ${name}`);
+    for (const name of vars) assert.ok(['GMN_LINK_AUDIT_DECISIONS_DIR', 'GMN_LINK_AUDIT_DECISIONS_ANCHOR_DIR', 'GMN_LINK_AUDIT_EVIDENCE_DIR', 'GMN_LINK_AUDIT_RESULTS_DIR', 'GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR'].includes(name as string), `${rel(file)} lê ${name}`);
     assert.ok(!/process\.env(?!\.)/.test(code), `${rel(file)} lê o ambiente inteiro`);
     for (const specifier of imports(fs.readFileSync(file, 'utf8'))) {
-      const ok = specifier.startsWith('.') || specifier === 'next/server' || specifier === 'node:path' || /^@\/lib\/(?:auth\/require-operator|link-audit-decisions|link-audit-evidence|rate-limit)$/.test(specifier);
+      const ok = specifier.startsWith('.') || specifier === 'next/server' || specifier === 'node:path' || /^@\/lib\/(?:auth\/require-operator|link-audit-decisions|link-audit-evidence|link-audit-origin|link-audit-scoring-runs|rate-limit)$/.test(specifier);
       assert.ok(ok, `${rel(file)} importa "${specifier}"`);
     }
   }

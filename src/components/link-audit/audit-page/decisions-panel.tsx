@@ -2,6 +2,7 @@ import { CircleCheck, Hand, History, LoaderCircle, RotateCcw, Undo2 } from 'luci
 import { useEffect, useRef } from 'react';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { DECISION_KIND_LABELS, DECISION_STATUS_LABELS, formatDateTime, JUDGEMENT_C2_VALUES, OPTION_UNAVAILABLE_LABELS, safeText } from './labels';
+import { HistoryIntegrityBanner, PendingDecisionPanel, WitnessCoverageNote } from './pending-panels';
 import type { DecisionForm, OptionKey, RevokeFlow } from './state';
 import type { DecisionDto, DecisionsList, PreviewPayload } from './types';
 import { BUTTON_PRIMARY, BUTTON_QUIET, FIELD_CLASS } from './ui-bits';
@@ -46,17 +47,9 @@ export function DecisionsPanel(p: DecisionsPanelProps): React.JSX.Element {
   const inactive = p.decisions.allDecisions.filter((dto) => dto.status !== 'ACTIVE');
   return (
     <div className="space-y-5">
-      {p.decisions.pending && (
-        <div role="alert" className="rounded-xl border border-dashed border-gmn-warning/60 bg-gmn-warning/[0.06] p-4">
-          <p className="text-sm font-semibold text-gmn-text">Decisão pendente — gravada, mas SEM recibo: ela ainda não vale.</p>
-          <p className="mt-1 text-xs text-gmn-muted">
-            {p.decisions.pending.action === 'REVOKE' ? `Revogação de ${safeText(p.decisions.pending.revokes, 12)}` : `Nova decisão ${safeText(p.decisions.pending.decisionId, 12)}`} · {formatDateTime(p.decisions.pending.recordedAt)} · por {safeText(p.decisions.pending.recordedBy, 120)}.
-            {p.decisions.pending.action === 'REVOKE' ? ' Enquanto não for concluída, a decisão revogada ainda aparece como vigente.' : ''}
-          </p>
-          <p className="mt-1 text-xs text-gmn-muted">Somente o autor pode concluí-la, reenviando exatamente o mesmo pedido. Enquanto isso, nenhum resultado pode ser registrado.</p>
-          <button type="button" onClick={p.onResendListed} className={`${BUTTON_QUIET} mt-3`}><RotateCcw className="h-4 w-4" aria-hidden="true" />Reenviar o mesmo pedido</button>
-        </div>
-      )}
+      <HistoryIntegrityBanner status={p.decisions.witness.status} />
+      <WitnessCoverageNote witness={p.decisions.witness} />
+      {p.decisions.pending && <PendingDecisionPanel key={p.decisions.pending.entrySha256} pending={p.decisions.pending} ambiguousIds={p.decisions.ambiguousDecisionIds} witness={p.decisions.witness.status} onResend={p.onResendListed} />}
 
       <div>
         <h3 className="text-xs font-semibold uppercase tracking-wide text-gmn-muted">Decisões vigentes ({p.decisions.decisions.length})</h3>

@@ -7,6 +7,7 @@ import { decisionIdFor, DECISION_FILE_KIND, DECISION_SCHEMA_VERSION, ANCHOR_FILE
 import { nodeFsOps, type FsOps } from '../src/lib/link-audit/snapshot-store';
 import { errno, faulty } from './helpers/link-audit-evidence-fixtures';
 import { clock, hashTree, registerCleanup, rec, tmpDir } from './helpers/link-audit-decisions-fixtures';
+import { TEST_ORIGIN } from './helpers/link-audit-origin-fixtures';
 
 registerCleanup();
 
@@ -20,7 +21,7 @@ interface Env {
 }
 const env = (): Env => ({ base: tmpDir('lad-st-'), anchors: tmpDir('lad-an-') });
 const ropts = (e: Env, fsOps?: FsOps) => ({ anchorDir: e.anchors, ...(fsOps ? { fs: fsOps } : {}) });
-const wopts = (e: Env, fsOps?: FsOps, now: () => string = clock) => ({ anchorDir: e.anchors, now, ...(fsOps ? { fs: fsOps } : {}) });
+const wopts = (e: Env, fsOps?: FsOps, now: () => string = clock) => ({ origin: TEST_ORIGIN, anchorDir: e.anchors, now, ...(fsOps ? { fs: fsOps } : {}) });
 
 const draftFor =
   (who = 'ana@empresa.com', auditId = AUDIT_ID, recordOf?: (seq: number) => Record<string, unknown>) =>

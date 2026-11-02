@@ -93,13 +93,15 @@ export interface PreviewPayload {
   readonly company: { readonly located: boolean; readonly profileState: string; readonly unavailableReason: string | null; readonly websiteHost: string | null; readonly source: string };
   readonly evidence: {
     readonly integrity: { readonly status: string; readonly checkedFiles: number | null };
+    /** AUTENTICIDADE da coleta (≠ integridade): `null` sem evidência. Sem prova independente a finalização fica bloqueada. */
+    readonly provenance: { readonly status: 'AUTHENTICATED' | 'UNAUTHENTICATED'; readonly reason: string | null; readonly missingRefs: readonly string[] } | null;
     readonly layout: string | null;
     readonly referenceDate: string | null;
     readonly referenceDateSource: { readonly ref: string; readonly observedAt: string } | null;
     readonly profileSource: { readonly ref: string; readonly observedAt: string } | null;
     readonly bases: readonly EvidenceBase[];
   };
-  readonly decisions: { readonly head: Head | null; readonly count: number; readonly pending: PendingDecisionSummary | null; readonly finalizable: boolean; readonly applied: readonly string[]; readonly held: ReadonlyArray<{ readonly decisionId: string; readonly code: string }> };
+  readonly decisions: { readonly head: Head | null; readonly count: number; readonly pending: PendingDecisionSummary | null; readonly finalizable: boolean; readonly witness: WitnessInfo; readonly applied: readonly string[]; readonly held: ReadonlyArray<{ readonly decisionId: string; readonly code: string }> };
   readonly decisionOptions: ReadonlyArray<{ readonly type: 'JUDGEMENT' | 'NOT_APPLICABLE'; readonly subcriterionId: string; readonly code: string | null; readonly available: boolean; readonly reasonCode: string | null }>;
   readonly criteria: readonly PreviewCriterion[];
   readonly outcomePreview: OutcomePreview | null;
@@ -118,9 +120,28 @@ export interface DecisionDto {
   readonly recordedBy: string;
   readonly supersedes: string | null;
   readonly supersededBy: string | null;
-  readonly status: 'ACTIVE' | 'SUPERSEDED' | 'REVOKED' | string;
+  /** `AMBIGUOUS`: há uma operação PENDENTE (sem recibo) que a revoga ou substitui; ela NÃO é tratada como vigente. */
+  readonly status: 'ACTIVE' | 'SUPERSEDED' | 'REVOKED' | 'AMBIGUOUS' | string;
   readonly siteDependent: boolean;
 }
+
+/** Origem de uma pendência, COMPROVADA pelo servidor (nunca pelo campo "autor" do arquivo). */
+export type PendingOrigin = 'PROVEN' | 'UNPROVEN' | 'UNVERIFIABLE';
+export type PendingOriginDetail = 'MISSING' | 'INVALID' | 'KEY_MISMATCH' | 'KEY_REVOKED' | 'KEY_EXPIRED' | 'NO_KEY';
+
+/** Testemunha do histórico de decisões. REGRESSED, DIVERGES, UNTRUSTED, UNAVAILABLE e NOT_CONFIGURED = integridade NÃO resolvida (falha fechada). */
+export interface WitnessInfo {
+  readonly status: WitnessStatus;
+  /** Cabeças CONFIABILIZADAS conferidas. */
+  readonly knownHeads: number;
+  /** Maior posição coberta por testemunha; `null` = nenhuma. */
+  readonly coveredSeq: number | null;
+  /** Revogações/substituições SEM testemunha (a perda delas não seria detectada). */
+  readonly unwitnessedAffecting: number;
+}
+export type WitnessStatus = 'NOT_REQUIRED' | 'UNWITNESSED' | 'CONSISTENT' | 'RECEIPT_LOST_WITNESSED' | 'HISTORY_REGRESSED' | 'HISTORY_DIVERGES' | 'UNTRUSTED' | 'UNAVAILABLE' | 'NOT_CONFIGURED';
+export const UNRESOLVED_WITNESS: readonly WitnessStatus[] = ['HISTORY_REGRESSED', 'HISTORY_DIVERGES', 'UNTRUSTED', 'UNAVAILABLE', 'NOT_CONFIGURED'];
+export const isUnresolvedWitness = (status: WitnessStatus): boolean => UNRESOLVED_WITNESS.includes(status);
 
 export interface PendingDecision {
   readonly confirmed: false;
@@ -129,10 +150,17 @@ export interface PendingDecision {
   readonly decisionId: string | null;
   readonly revokes: string | null;
   readonly supersedes: string | null;
+  readonly origin: PendingOrigin;
+  readonly originDetail: PendingOriginDetail | null;
+  /** Origem comprovada E o autor autenticado é esta sessão. Só então `record`/`reason` vêm preenchidos. */
+  readonly isMine: boolean;
   readonly reason: string | null;
   readonly record: Record<string, unknown> | null;
   readonly recordedAt: string;
-  readonly recordedBy: string;
+  /** Só quando a origem foi comprovada. */
+  readonly recordedBy: string | null;
+  /** Identidade da entrada pendente (hash do arquivo): o estado da tela (confirmação marcada) nunca atravessa de uma entrada para outra. */
+  readonly entrySha256: string;
 }
 
 export interface HistoryEntry {
@@ -151,6 +179,10 @@ export interface DecisionsList {
   readonly pending: PendingDecision | null;
   readonly finalizable: boolean;
   readonly decisions: readonly DecisionDto[];
+  /** Testemunha do histórico (cabeças já confirmadas em resultados selados). Não resolvida ⇒ zero decisões vigentes, nada finalizável. */
+  readonly witness: WitnessInfo;
+  /** Ids (só ids) das decisões em dúvida por causa da operação pendente. */
+  readonly ambiguousDecisionIds: readonly string[];
   readonly history: readonly HistoryEntry[];
   readonly allDecisions: readonly DecisionDto[];
 }
@@ -158,10 +190,22 @@ export interface DecisionsList {
 export interface PendingRun {
   readonly seq: number;
   readonly finalizedAt: string;
+  /** Estado estruturado do servidor, igual para todos os perfis: sem recibo ≠ confirmado; bloqueia novas finalizações. */
+  readonly receipt: 'MISSING';
+  readonly blocksFinalization: true;
+  readonly origin: PendingOrigin;
+  readonly originDetail: PendingOriginDetail | null;
+  /** Origem comprovada E o autor autenticado é esta sessão. */
   readonly isMine: boolean;
-  readonly outcome: 'PONTUADO' | 'INCONCLUSIVO';
+  /** Os quatro campos abaixo só vêm preenchidos quando a origem foi comprovada (senão o conteúdo é do arquivo, não do servidor). */
+  readonly outcome: 'PONTUADO' | 'INCONCLUSIVO' | null;
+  readonly level: string | null;
+  readonly coveragePercent: number | null;
+  readonly appliedDecisionCount: number | null;
   readonly inputSha256: string;
   readonly decisionsHead: Head | null;
+  /** A entrada gravada é a de hoje? `false` = já nasce histórico; `null` = não foi possível comparar. */
+  readonly matchesCurrent: boolean | null;
   readonly contentSha256: string;
 }
 
@@ -191,6 +235,7 @@ export interface ResultsList {
   readonly currentInputSha256: string | null;
   readonly currentDecisionsHead: Head | null;
 }
+
 
 export interface RunDetail {
   readonly definitive: true;

@@ -1,3 +1,4 @@
+import { WITNESS_NOT_REQUIRED } from '../src/lib/link-audit-decisions/witness';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -10,8 +11,14 @@ import { POST as revokeRoute } from '../src/app/api/link-audit/decisions/[auditI
 import { createSessionToken, SESSION_COOKIE } from '../src/lib/auth/session';
 import { middleware } from '../src/middleware';
 import { nodeFsOps } from '../src/lib/link-audit/snapshot-store';
+import { seal, serialize } from '../src/lib/link-audit-storage';
+import { DECISION_FILE_KIND, DECISION_SCHEMA_VERSION } from '../src/lib/link-audit-decisions/types';
 import { errno } from './helpers/link-audit-evidence-fixtures';
 import { entryPath, hashTree, rec, registerCleanup, tmpDir, world, type World } from './helpers/link-audit-decisions-fixtures';
+import { OTHER_ORIGIN_KEY, TEST_ORIGIN, TEST_ORIGIN_KEY } from './helpers/link-audit-origin-fixtures';
+import { createDecisionService } from '../src/lib/link-audit-decisions';
+import { previewOver } from './helpers/link-audit-preview-fixtures';
+import { makeService, resultsEnv } from './helpers/link-audit-results-fixtures';
 
 registerCleanup();
 
@@ -24,10 +31,14 @@ const operatorList = (): string => ['ana@empresa.com', ...Array.from({ length: 4
 const nextOperator = (): string => `op${operatorSeq++}@empresa.com`;
 const cookie = async (email: string): Promise<string> => `${SESSION_COOKIE}=${await createSessionToken(email, SECRET)}`;
 
-function setEnv(w: Pick<World, 'evidenceDir' | 'decisionsDir' | 'anchorDir'> | null, over: { decisions?: string | undefined; evidence?: string | undefined; anchors?: string | undefined } = {}): void {
+/** Pastas da TESTEMUNHA (resultados e recibos dos resultados): obrigatórias; sem elas o histórico é NÃO RESOLVIDO (falha fechada). */
+let witnessDirs = resultsEnv();
+
+function setEnv(w: Pick<World, 'evidenceDir' | 'decisionsDir' | 'anchorDir'> | null, over: { decisions?: string | undefined; evidence?: string | undefined; anchors?: string | undefined; results?: string | undefined; resultAnchors?: string | undefined } = {}): void {
   env.SUPABASE_SERVICE_ROLE_KEY = SECRET;
   env.GMN_OPERATOR_EMAILS = operatorList();
   delete env.GMN_AUTH_DISABLED;
+  env.GMN_LINK_AUDIT_ORIGIN_KEY = TEST_ORIGIN_KEY;
   const set = (name: string, value: string | undefined): void => {
     if (value === undefined) delete env[name];
     else env[name] = value;
@@ -35,6 +46,8 @@ function setEnv(w: Pick<World, 'evidenceDir' | 'decisionsDir' | 'anchorDir'> | n
   set('GMN_LINK_AUDIT_EVIDENCE_DIR', 'evidence' in over ? over.evidence : w?.evidenceDir);
   set('GMN_LINK_AUDIT_DECISIONS_DIR', 'decisions' in over ? over.decisions : w?.decisionsDir);
   set('GMN_LINK_AUDIT_DECISIONS_ANCHOR_DIR', 'anchors' in over ? over.anchors : w?.anchorDir);
+  set('GMN_LINK_AUDIT_RESULTS_DIR', 'results' in over ? over.results : witnessDirs.base);
+  set('GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR', 'resultAnchors' in over ? over.resultAnchors : witnessDirs.anchors);
 }
 
 interface Init {
@@ -61,6 +74,7 @@ const url = (auditId: string, suffix = ''): string => `/api/link-audit/decisions
 let lastHead: unknown = null;
 async function setup(): Promise<{ w: World; ana: string; auditId: string }> {
   const w = await world();
+  witnessDirs = resultsEnv();
   setEnv(w);
   lastHead = null;
   return { w, ana: await cookie(nextOperator()), auditId: w.auditId };
@@ -435,7 +449,7 @@ test('Emenda 1 pela API: recibo que falha ⇒ 503 ANCHOR_PENDING (nunca 2xx) com
   assert.deepEqual([done.pending, done.anchors], [null, { count: 3, lastSeq: 3, unanchored: 0 }]);
 });
 
-test('Emenda 1 pela API: reenvio de uma REVOGAÇÃO pendente — a decisão segue vigente até o recibo; depois do reenvio fica revogada, uma vez só', async () => {
+test('Emenda 1 pela API: reenvio de uma REVOGAÇÃO pendente — a decisão fica EM DÚVIDA (não vigente) até o recibo; depois do reenvio fica revogada, uma vez só', async () => {
   const { w, ana, auditId } = await setup();
   const created = await json(await post(auditId, { record: rec.c2() }, ana));
   const seen = created.head;
@@ -443,11 +457,171 @@ test('Emenda 1 pela API: reenvio de uma REVOGAÇÃO pendente — a decisão segu
   const pending = await withAnchorWritesFailing(2, () => revoke(auditId, body, ana, { noHead: true }));
   assert.deepEqual([pending.status, (await json(pending)).code], [503, 'ANCHOR_PENDING']);
   const during = await json(await get(auditId, ana));
-  assert.deepEqual([during.decisions.map((d: any) => d.decisionId), during.operatorRecords.length, during.pending.action, during.pending.revokes], [['op-0001'], 1, 'REVOKE', 'op-0001']); // ainda vigente
+  assert.deepEqual([during.decisions.map((d: any) => d.decisionId), during.operatorRecords.length, during.pending.action, during.pending.revokes, during.ambiguousDecisionIds, during.allDecisions[0].status], [[], 0, 'REVOKE', 'op-0001', ['op-0001'], 'AMBIGUOUS']); // nem vigente, nem revogada com certeza
   const resent = await revoke(auditId, body, ana, { noHead: true });
   const resentBody = await json(resent);
   assert.deepEqual([resent.status, resentBody.replayed, resentBody.effectiveCount, resentBody.revoked.status], [200, true, 0, 'REVOKED']);
   const after = await json(await get(auditId, ana));
   assert.deepEqual([after.decisions.length, after.operatorRecords.length, after.history.length, after.pending], [0, 0, 2, null]);
   assert.equal(fs.readdirSync(path.join(w.decisionsDir, auditId)).length, 2);
+});
+
+test('MAJOR-1 pela API: pendente FORJADA em nome do operador não é concluída (409 PENDING_ORIGIN_UNPROVEN), não expõe autor nem conteúdo e não grava recibo', async () => {
+  const { w, ana, auditId } = await setup();
+  const versions = await w.reader.listVersions({ email: 'ana@empresa.com' }, auditId);
+  const latest = versions.filter((v) => v.capture !== null).sort((a, b) => (b.capture as number) - (a.capture as number))[0]!;
+  const record = { kind: 'JUDGEMENT', subcriterionId: 'C2', value: 'COMPATIBLE', justification: 'Texto forjado por quem só escreve na pasta de decisões.' };
+  fs.mkdirSync(path.join(w.decisionsDir, auditId), { recursive: true });
+  const forged = seal({ schemaVersion: DECISION_SCHEMA_VERSION, kind: DECISION_FILE_KIND, auditId, action: 'RECORD', recordedAt: '2026-10-21T11:00:00.000Z', recordedBy: 'ana@empresa.com', decisionId: 'op-0001', record, supersedes: null, basis: { capture: latest.capture, report: null, collectedAt: latest.collectedAt }, seq: 1, prevSha256: null });
+  fs.writeFileSync(entryPath(w, 1), serialize(forged), { mode: 0o444 });
+  // a sessão é de QUALQUER operador autorizado (a "ana" do arquivo é só o que o arquivo afirma)
+  const listed = await json(await get(auditId, ana));
+  assert.deepEqual([listed.pending.origin, listed.pending.originDetail, listed.pending.isMine, listed.pending.record, listed.pending.recordedBy, listed.finalizable, listed.decisions.length], ['UNPROVEN', 'MISSING', false, null, null, false, 0]);
+  assert.ok(!JSON.stringify(listed).includes('Texto forjado') && !JSON.stringify(listed).includes('ana@empresa.com'), 'conteúdo e autor do arquivo forjado não saem pela API');
+  const anchorsBefore = hashTree(w.anchorDir);
+  // O ATAQUE: a própria ANA (sessão de ana@empresa.com, o autor que o arquivo forjado cita) reenvia a operação do arquivo
+  const theNamedAuthor = await cookie('ana@empresa.com');
+  const attempt = await post(auditId, { record }, theNamedAuthor); // `expectedHead` = o head que a leitura acima devolveu (null)
+  const body = await json(attempt);
+  assert.deepEqual([attempt.status, body.code, body.pending.origin], [409, 'PENDING_ORIGIN_UNPROVEN', 'UNPROVEN']);
+  assert.match(attempt.headers.get('cache-control') ?? '', /no-store/);
+  assert.deepEqual(hashTree(w.anchorDir), anchorsBefore, 'nenhum recibo');
+  const after = await json(await get(auditId, ana));
+  assert.deepEqual([after.decisions.length, after.operatorRecords.length, after.finalizable], [0, 0, false]);
+});
+
+test('MAJOR-1 pela API: sem chave de origem (ausente ou fraca) as ESCRITAS respondem 503 ORIGIN_KEY_NOT_CONFIGURED sem gravar nada; a LEITURA continua (origem "não verificável")', async () => {
+  const { w, ana, auditId } = await setup();
+  const ok = await post(auditId, { record: rec.c2() }, ana);
+  assert.equal(ok.status, 201, 'com a chave, a escrita funciona');
+  const decisionsBefore = hashTree(w.decisionsDir);
+  const anchorsBefore = hashTree(w.anchorDir);
+  for (const value of [undefined, 'curta', '   ']) {
+    if (value === undefined) delete env.GMN_LINK_AUDIT_ORIGIN_KEY;
+    else env.GMN_LINK_AUDIT_ORIGIN_KEY = value;
+    const created = await post(auditId, { record: rec.c3() }, ana);
+    const revoked = await revoke(auditId, { revokes: 'op-0001', reason: REASON }, ana);
+    for (const response of [created, revoked]) {
+      const body = await json(response);
+      assert.deepEqual([response.status, body.code], [503, 'ORIGIN_KEY_NOT_CONFIGURED'], String(value));
+      assert.ok(!JSON.stringify(body).includes(TEST_ORIGIN_KEY));
+    }
+    const read = await get(auditId, ana);
+    assert.equal(read.status, 200, 'a leitura não depende da chave');
+  }
+  assert.deepEqual([hashTree(w.decisionsDir), hashTree(w.anchorDir)], [decisionsBefore, anchorsBefore], 'nada foi gravado');
+  env.GMN_LINK_AUDIT_ORIGIN_KEY = TEST_ORIGIN_KEY;
+  assert.equal((await post(auditId, { record: rec.c3() }, ana)).status, 201, 'a chave voltou: a escrita volta');
+});
+
+test('R3-MINOR-2 / R3-MINOR-5 pela API: com a TESTEMUNHA (resultado selado em outras pastas), operadores DIFERENTES do autor veem o estado estruturado; a quarentena da pendente não reativa a revogada e as escritas são recusadas', async () => {
+  const { w, ana, auditId } = await setup();
+  assert.equal((await post(auditId, { record: rec.c2() }, ana)).status, 201);
+  assert.equal((await revoke(auditId, { revokes: 'op-0001', reason: REASON }, ana)).status, 201);
+  // um resultado SELADO sobre esse histórico (em outras pastas) registra o head das decisões (seq 2)
+  const rEnv = resultsEnv();
+  const decisions = createDecisionService({ knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: w.decisionsDir, anchorDir: w.anchorDir, evidence: w.reader, evidenceBaseDir: w.evidenceDir });
+  const preview = previewOver({ evidenceDir: w.evidenceDir, raw: decisions });
+  const evaluated = await preview.evaluate({ email: 'ana@empresa.com' }, auditId);
+  assert.ok(evaluated.ok);
+  assert.ok((await makeService(rEnv, preview).finalize({ email: 'ana@empresa.com' }, auditId, { expectedHead: evaluated.value.decisions.head, expectedInputSha256: evaluated.value.inputSha256 as string })).ok);
+  env.GMN_LINK_AUDIT_RESULTS_DIR = rEnv.base;
+  env.GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR = rEnv.anchors;
+  const other = await cookie(nextOperator());
+  const third = await cookie(nextOperator());
+  const baseline = await json(await get(auditId, other));
+  assert.deepEqual([baseline.witness, baseline.finalizable, baseline.pending], [{ status: 'CONSISTENT', knownHeads: 1, coveredSeq: 2, unwitnessedAffecting: 0 }, true, null]);
+
+  fs.rmSync(path.join(w.anchorDir, auditId, 'a0002.json')); // o recibo da REVOGAÇÃO some
+  for (const who of [other, third]) {
+    const view = await json(await get(auditId, who)); // operadores que NÃO são o autor
+    assert.deepEqual([view.witness.status, view.decisions, view.operatorRecords, view.ambiguousDecisionIds, view.finalizable], ['RECEIPT_LOST_WITNESSED', [], [], ['op-0001'], false]);
+    assert.equal(view.pending.reason, null, 'o motivo privado não vaza');
+    assert.equal(view.pending.record, null);
+  }
+  // a quarentena manual da pendente (o §15 item 3 antigo) NÃO reativa a revogada
+  const quarantineDir = path.join(w.decisionsDir, '..', `quarentena-${auditId}`);
+  fs.mkdirSync(quarantineDir, { recursive: true });
+  fs.renameSync(path.join(w.decisionsDir, auditId, 'd0002.json'), path.join(quarantineDir, 'd0002.json'));
+  const regressed = await json(await get(auditId, other));
+  assert.deepEqual([regressed.witness.status, regressed.decisions, regressed.operatorRecords, regressed.finalizable], ['HISTORY_REGRESSED', [], [], false]);
+  assert.deepEqual(regressed.allDecisions.map((d: any) => [d.decisionId, d.status]), [['op-0001', 'AMBIGUOUS']]);
+  const before = [hashTree(w.decisionsDir), hashTree(w.anchorDir)];
+  const write = await post(auditId, { record: rec.c2(), expectedHead: regressed.head }, other, { noHead: true }); // pedido VÁLIDO: a recusa tem de ser pela integridade, não pelo corpo
+  const body = await json(write);
+  assert.deepEqual([write.status, body.code], [409, 'DECISIONS_HISTORY_UNRESOLVED']);
+  assert.deepEqual([hashTree(w.decisionsDir), hashTree(w.anchorDir)], before, 'nada gravado');
+  assert.ok(!JSON.stringify(body).includes(w.decisionsDir) && !JSON.stringify(body).includes(rEnv.base), 'sem caminhos');
+});
+
+test('INFO-1 pela API: dependência da TESTEMUNHA ausente, insegura ou ilegível NÃO é "sem inconsistência": decisão vigente bloqueada, escritas recusadas, consulta informativa mantida e nada gravado', async () => {
+  const { w, ana, auditId } = await setup();
+  assert.equal((await post(auditId, { record: rec.c2() }, ana)).status, 201);
+  const live = await json(await get(auditId, ana));
+  assert.deepEqual([live.witness, live.decisions.length, live.finalizable], [{ status: 'UNWITNESSED', knownHeads: 0, coveredSeq: null, unwitnessedAffecting: 0 }, 1, true], 'com a configuração válida e sem resultados a testemunha ainda não existe (declarado)');
+  const good = { results: witnessDirs.base, resultAnchors: witnessDirs.anchors };
+  const cases: Array<[string, Parameters<typeof setEnv>[1], string]> = [
+    ['pasta de resultados AUSENTE', { results: undefined }, 'NOT_CONFIGURED'],
+    ['pasta de recibos dos resultados AUSENTE', { resultAnchors: undefined }, 'NOT_CONFIGURED'],
+    ['as duas ausentes', { results: undefined, resultAnchors: undefined }, 'NOT_CONFIGURED'],
+    ['caminho relativo (inseguro)', { results: 'resultados' }, 'NOT_CONFIGURED'],
+    ['resultados e recibos na MESMA pasta', { resultAnchors: good.results }, 'NOT_CONFIGURED'],
+    ['resultados DENTRO da pasta de decisões', { results: path.join(w.decisionsDir, 'resultados') }, 'NOT_CONFIGURED'],
+    ['resultados na MESMA pasta das decisões', { results: w.decisionsDir }, 'NOT_CONFIGURED'],
+    ['resultados na MESMA pasta das evidências', { results: w.evidenceDir }, 'NOT_CONFIGURED'],
+    ['recibos dos resultados na MESMA pasta dos recibos das decisões', { resultAnchors: w.anchorDir }, 'NOT_CONFIGURED'],
+    ['pasta de resultados INEXISTENTE', { results: path.join(good.results, 'nao-existe') }, 'UNAVAILABLE'],
+    ['pasta de recibos INEXISTENTE', { resultAnchors: path.join(good.resultAnchors, 'nao-existe') }, 'UNAVAILABLE'],
+  ];
+  for (const [label, over, expected] of cases) {
+    setEnv(w, over);
+    const who = await cookie(nextOperator()); // um operador por caso: o limite de escritas por operador não mascara a recusa
+    const view = await json(await get(auditId, who));
+    assert.deepEqual([view.witness.status, view.decisions, view.operatorRecords, view.finalizable], [expected, [], [], false], label);
+    assert.ok(view.allDecisions.every((d: any) => d.status !== 'ACTIVE'), `${label}: consulta informativa, sem nenhuma decisão "vigente"`);
+    assert.deepEqual(view.allDecisions.map((d: any) => [d.decisionId, d.status]), [['op-0001', 'AMBIGUOUS']], `${label}: a decisão que seria vigente fica em dúvida`);
+    const before = [hashTree(w.decisionsDir), hashTree(w.anchorDir)];
+    const write = await post(auditId, { record: rec.c3(), expectedHead: view.head }, who, { noHead: true });
+    const body = await json(write);
+    assert.deepEqual([write.status, body.code], [409, 'DECISIONS_HISTORY_UNRESOLVED'], `${label}: escrita`);
+    const undo = await revoke(auditId, { revokes: 'op-0001', reason: REASON, expectedHead: view.head }, who, { noHead: true });
+    assert.deepEqual([undo.status, (await json(undo)).code], [409, 'DECISIONS_HISTORY_UNRESOLVED'], `${label}: revogação`);
+    assert.deepEqual([hashTree(w.decisionsDir), hashTree(w.anchorDir)], before, `${label}: nada gravado`);
+    assert.ok(!JSON.stringify(body).includes(w.decisionsDir) && !JSON.stringify(body).includes(good.results), `${label}: sem caminhos na resposta`);
+  }
+  setEnv(w); // a configuração volta ao normal: nada ficou travado em memória
+  const back = await json(await get(auditId, ana));
+  assert.deepEqual([back.witness.status, back.decisions.length, back.finalizable], ['UNWITNESSED', 1, true]);
+  assert.equal((await post(auditId, { record: rec.c3() }, ana)).status, 201, 'e a escrita volta');
+});
+
+test('FIAÇÃO das rotas: a chave de origem configurada chega ao provedor da testemunha — pendente de resultado COMPROVADO é testemunha (HISTORY_REGRESSED); após a rotação com a antiga REVOGADA é só indício (UNTRUSTED); nos dois casos falha fechada', async () => {
+  const { w, auditId } = await setup();
+  const ana = 'ana@empresa.com';
+  const anaCookie = await cookie(ana);
+  assert.equal((await post(auditId, { record: rec.c2() }, anaCookie)).status, 201);
+  assert.equal((await revoke(auditId, { revokes: 'op-0001', reason: REASON }, anaCookie)).status, 201);
+  const decisions = createDecisionService({ knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: w.decisionsDir, anchorDir: w.anchorDir, evidence: w.reader, evidenceBaseDir: w.evidenceDir });
+  const preview = previewOver({ evidenceDir: w.evidenceDir, raw: decisions });
+  const evaluated = await preview.evaluate({ email: ana }, auditId);
+  assert.ok(evaluated.ok);
+  assert.ok((await makeService(witnessDirs, preview).finalize({ email: ana }, auditId, { expectedHead: evaluated.value.decisions.head, expectedInputSha256: evaluated.value.inputSha256 as string })).ok);
+  fs.rmSync(path.join(witnessDirs.anchors, auditId, 'a0001.json')); // o resultado vira pendente
+  fs.rmSync(path.join(w.anchorDir, auditId, 'a0002.json')); // e o recibo da revogação some
+  const quarantineDir = path.join(w.decisionsDir, '..', `quarentena-fiacao-${auditId}`);
+  fs.mkdirSync(quarantineDir, { recursive: true });
+  fs.renameSync(path.join(w.decisionsDir, auditId, 'd0002.json'), path.join(quarantineDir, 'd0002.json'));
+  const other = await cookie(nextOperator());
+  const configured = await json(await get(auditId, other));
+  assert.deepEqual([configured.witness.status, configured.decisions, configured.finalizable], ['HISTORY_REGRESSED', [], false], 'chave em vigor: a pendente é TESTEMUNHA');
+  env.GMN_LINK_AUDIT_ORIGIN_KEY = OTHER_ORIGIN_KEY;
+  env.GMN_LINK_AUDIT_ORIGIN_REVOKED_KEY_IDS = 'ok-test-a';
+  try {
+    const rotated = await json(await get(auditId, other));
+    assert.deepEqual([rotated.witness.status, rotated.decisions, rotated.finalizable], ['UNTRUSTED', [], false], 'chave antiga revogada: a pendente é só INDÍCIO e contradiz o histórico');
+    assert.ok(rotated.allDecisions.every((d: any) => d.status !== 'ACTIVE'));
+  } finally {
+    env.GMN_LINK_AUDIT_ORIGIN_KEY = TEST_ORIGIN_KEY;
+    delete env.GMN_LINK_AUDIT_ORIGIN_REVOKED_KEY_IDS;
+  }
 });

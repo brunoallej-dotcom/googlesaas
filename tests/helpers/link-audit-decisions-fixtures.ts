@@ -1,3 +1,4 @@
+import { WITNESS_NOT_REQUIRED } from '../../src/lib/link-audit-decisions/witness';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -7,6 +8,7 @@ import { seal, serialize } from '../../src/lib/link-audit-decisions/store';
 import { ANCHOR_FILE_KIND, anchorFileName, decisionIdFor, DECISION_FILE_KIND, DECISION_SCHEMA_VERSION, entryFileName, type DecisionEntry } from '../../src/lib/link-audit-decisions/types';
 import type { FsOps } from '../../src/lib/link-audit/snapshot-store';
 import { AUDIT, registerCleanup, tmpDir, writeFull } from './link-audit-evidence-fixtures';
+import { TEST_ORIGIN } from './link-audit-origin-fixtures';
 
 /** Fixtures FICTÍCIAS das decisões humanas: evidências sintéticas em pasta temporária, nenhuma rede, nenhum dado real. */
 export { AUDIT, registerCleanup, tmpDir };
@@ -97,7 +99,7 @@ export async function world(options: { fs?: FsOps; auditId?: string; seed?: bool
   const auditId = options.auditId ?? AUDIT;
   if (options.seed !== false) await writeFull(evidenceDir, { auditId });
   const reader = createEvidenceReader({ baseDir: evidenceDir, authorize: () => true });
-  const raw = createDecisionService({ baseDir: decisionsDir, anchorDir, evidence: reader, evidenceBaseDir: evidenceDir, ...(options.fs ? { fs: options.fs } : {}) });
+  const raw = createDecisionService({ knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: decisionsDir, anchorDir, evidence: reader, evidenceBaseDir: evidenceDir, ...(options.fs ? { fs: options.fs } : {}) });
   return { evidenceDir, decisionsDir, anchorDir, auditId, reader, raw, service: withAutoHead(raw) };
 }
 
@@ -129,6 +131,11 @@ export const anchorPath = (w: Pick<World, 'anchorDir' | 'auditId'>, seq: number,
  * Escreve DIRETO em disco uma cadeia válida (decisões + âncoras) de `count` entradas alternando criação de C2 e revogação
  * (a última é uma criação vigente quando `count` é ímpar). Serve para testar limites sem milhares de chamadas ao serviço.
  */
+/** Entrada selada COMO O SERVIDOR LEGÍTIMO a grava (com a etiqueta de origem do `TEST_ORIGIN`). Quem só escreve numa pasta NÃO consegue fazer isto. */
+export function signedSeal<T extends object>(body: T): T & { origin: ReturnType<typeof TEST_ORIGIN.sign>; contentSha256: string } {
+  return seal({ ...body, origin: TEST_ORIGIN.sign('DECISION', body) });
+}
+
 export function writeAlternatingChain(decisionsDir: string, anchorDir: string, auditId: string, count: number): void {
   const dir = path.join(decisionsDir, auditId);
   const adir = path.join(anchorDir, auditId);
@@ -139,7 +146,7 @@ export function writeAlternatingChain(decisionsDir: string, anchorDir: string, a
   const basis = { capture: 1, report: { capture: 1, revision: 1 }, collectedAt: '2026-10-22T12:54:48.079Z' };
   for (let seq = 1; seq <= count; seq++) {
     const at = '2026-10-21T12:00:00.000Z';
-    const entry: DecisionEntry = seal(
+    const entry: DecisionEntry = signedSeal(
       seq % 2 === 1
         ? { schemaVersion: DECISION_SCHEMA_VERSION, kind: DECISION_FILE_KIND, auditId, seq, action: 'RECORD', recordedAt: at, recordedBy: 'ana@empresa.com', prevSha256: prev, decisionId: decisionIdFor(seq), record: rec.c2(), supersedes: null, basis }
         : { schemaVersion: DECISION_SCHEMA_VERSION, kind: DECISION_FILE_KIND, auditId, seq, action: 'REVOKE', recordedAt: at, recordedBy: 'ana@empresa.com', prevSha256: prev, revokes: decisionIdFor(seq - 1), reason: 'Informação conferida e incorreta; decisão desfeita.' },

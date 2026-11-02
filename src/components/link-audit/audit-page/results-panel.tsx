@@ -38,7 +38,7 @@ export function ResultsPanel({ results, detail, changedAfter, onSelect }: Result
       {results.pending && (
         <div className="rounded-xl border border-dashed border-gmn-warning/60 bg-gmn-warning/[0.06] p-3 text-xs">
           <StatusBadge tone="warning" label="Pendente — não vale" icon={CircleDashed} dashed />
-          <p className="mt-2 text-gmn-muted">{pad(results.pending.seq)} · {OUTCOME_LABELS[results.pending.outcome]} · {formatDateTime(results.pending.finalizedAt)}. Gravado sem recibo: não é um resultado confirmado e não aparece como atual.</p>
+          <p className="mt-2 text-gmn-muted">{pad(results.pending.seq)} · {results.pending.outcome ? OUTCOME_LABELS[results.pending.outcome] : 'origem não comprovada'} · {formatDateTime(results.pending.finalizedAt)}. Gravado sem recibo: não é um resultado confirmado e não aparece como atual.{results.pending.origin === 'PROVEN' ? '' : ' A origem deste arquivo não foi comprovada pelo servidor; ele não pode ser concluído.'}</p>
         </div>
       )}
       {runs.length === 0 ? (

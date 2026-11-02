@@ -26,6 +26,8 @@ import { pad, type CaptureFile } from './types';
  */
 
 export const SCORING_BASIS_VERSION = 'scoring-basis-v1' as const;
+/** Referência do status do provedor do layout legado. */
+export const legacyStatusRef = (capture: number): string => `legacy-status:c${String(capture).padStart(4, '0')}`;
 
 export interface BasisEvidence {
   /** Mesmos identificadores que a 6B aceita nas decisões: `capture:c0001` · `report:c0001-r0001`. */
@@ -113,11 +115,23 @@ export interface InformationalReviews {
   readonly source: Omit<BasisSource, 'bodySha256'>;
 }
 
+/**
+ * Artefato que INFLUENCIA a leitura mas não é captura nem relatório (hoje: o `serper-status.json` do layout legado, que decide se há perfil utilizável).
+ * Não é evidência do resultado (não entra nos registros), mas ENTRA na prova de coleta: sem o hash dele no manifesto assinado, a base não é autêntica.
+ */
+export interface BasisArtifact {
+  readonly ref: string;
+  readonly contentSha256: string;
+  readonly legacy: boolean;
+}
+
 export interface ScoringBasis {
   readonly version: typeof SCORING_BASIS_VERSION;
   readonly auditId: string;
   readonly layout: 'VERSIONED' | 'LEGACY';
   readonly evidences: readonly BasisEvidence[];
+  /** Artefatos que influenciam a base e precisam ser autenticados junto (R3-MINOR-3). Ausente/vazio no layout versionado. */
+  readonly artifacts?: readonly BasisArtifact[];
   readonly profile: BasisProfile | BasisProfileUnavailable;
   readonly informational: { readonly reviews: InformationalReviews | null };
 }
@@ -392,7 +406,10 @@ export function createScoringBasisReader(options: EvidenceReaderOptions) {
       profile = built.profile;
       reviews = built.reviews;
     }
-    return { status: 'READY', basis: { version: SCORING_BASIS_VERSION, auditId, layout: 'LEGACY', evidences, profile, informational: { reviews } } };
+    // O status do provedor decide se há perfil utilizável (cobertura, `located`): é INFLUÊNCIA sobre o resultado e, por isso, entra na prova de coleta com o hash VERIFICADO
+    const statusHash = legacy.verifiedStatusText !== null ? legacy.verifiedHashes['serper-status.json'] : undefined;
+    const artifacts: BasisArtifact[] = statusHash ? [{ ref: legacyStatusRef(1), contentSha256: statusHash, legacy: true }] : [];
+    return { status: 'READY', basis: { version: SCORING_BASIS_VERSION, auditId, layout: 'LEGACY', evidences, artifacts, profile, informational: { reviews } } };
   }
 
   /** Localiza a pasta, descarta symlink/não diretório e escolhe o layout; o mesmo caminho para ler e para rechecar. */

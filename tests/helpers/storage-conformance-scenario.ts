@@ -1,3 +1,4 @@
+import { WITNESS_NOT_REQUIRED } from '../../src/lib/link-audit-decisions/witness';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createDecisionService, type EvidenceLookup } from '../../src/lib/link-audit-decisions';
@@ -8,6 +9,7 @@ import { canonicalJson, sha256Hex } from '../../src/lib/link-audit/canonical';
 import { nodeFsOps, type FsOps } from '../../src/lib/link-audit/snapshot-store';
 import { errno, faulty } from './link-audit-evidence-fixtures';
 import { ANA, BIA, rec, tmpDir } from './link-audit-decisions-fixtures';
+import { TEST_ORIGIN } from './link-audit-origin-fixtures';
 
 /*
  * Cenário de CONFORMIDADE do protocolo de armazenamento da 6B. Usa só a API pública da 6B (serviço, `readLog` e as primitivas
@@ -76,7 +78,7 @@ export async function runConformanceScenario(): Promise<ConformanceReport> {
   const anchorDir = tmpDir('cf-a-');
   let tick = 0;
   const clock = (): string => new Date(Date.UTC(2026, 9, 21, 12, 0, tick++)).toISOString();
-  const service = (ops?: FsOps) => createDecisionService({ baseDir: decisionsDir, anchorDir, evidence, ...(ops ? { fs: ops } : {}) });
+  const service = (ops?: FsOps) => createDecisionService({ knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: decisionsDir, anchorDir, evidence, ...(ops ? { fs: ops } : {}) });
   const healthy = service();
   const steps: Array<{ step: string; result: unknown }> = [];
   const note = (step: string, result: unknown): void => void steps.push({ step, result });

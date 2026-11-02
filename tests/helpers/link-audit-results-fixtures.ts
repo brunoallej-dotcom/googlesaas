@@ -13,6 +13,7 @@ import { MAPPER_VERSION } from '../../src/lib/link-audit-scoring-runs/types';
 import type { WebsiteExpectation } from '../../src/lib/link-audit-evidence/scoring-basis';
 import { registerCleanup, tmpDir } from './link-audit-decisions-fixtures';
 import { clone, richInput } from './link-audit-scoring-fixtures';
+import { TEST_ORIGIN } from './link-audit-origin-fixtures';
 
 /*
  * Fixtures FICTÍCIAS da Onda 6C, I4. A avaliação é montada em memória com a ENTRADA REAL do motor (a rica fictícia, no FORMATO do
@@ -214,7 +215,7 @@ export function tickClock(startSecond = 0): () => string {
 
 export function makeService(e: ResultsEnv, evaluator: PreviewEvaluator, over: Partial<ResultsDeps> = {}) {
   const basis = fakeBasis();
-  return createScoringResultsService({ preview: evaluator, basisReader: basis.reader, baseDir: e.base, anchorDir: e.anchors, otherDirs: [e.other], clock: tickClock(), ...over });
+  return createScoringResultsService({ origin: TEST_ORIGIN, preview: evaluator, basisReader: basis.reader, baseDir: e.base, anchorDir: e.anchors, otherDirs: [e.other], clock: tickClock(), ...over });
 }
 
 export const runPath = (e: ResultsEnv, seq: number, auditId = RES_AUDIT): string => path.join(e.base, auditId, `s${String(seq).padStart(4, '0')}.json`);

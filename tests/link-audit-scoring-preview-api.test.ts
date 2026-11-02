@@ -1,3 +1,4 @@
+import { proveEvidenceForRoutes } from './helpers/link-audit-evidence-provenance-fixtures';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -10,6 +11,10 @@ import { middleware } from '../src/middleware';
 import { anchorPath, hashTree, must, rec, registerCleanup, world, type World } from './helpers/link-audit-decisions-fixtures';
 import { clock } from './helpers/link-audit-decisions-fixtures';
 import { bodyText, writeFull } from './helpers/link-audit-evidence-fixtures';
+import { OTHER_ORIGIN_KEY, TEST_ORIGIN, TEST_ORIGIN_KEY } from './helpers/link-audit-origin-fixtures';
+import { makeService, resultsEnv } from './helpers/link-audit-results-fixtures';
+import { createDecisionService, WITNESS_NOT_REQUIRED } from '../src/lib/link-audit-decisions';
+import { previewOver } from './helpers/link-audit-preview-fixtures';
 
 /* Onda 6C, I3 — a ROTA GET da prévia, com sessão assinada por segredo fictício e pastas temporárias. Nada de rede, Redis ou Supabase. */
 registerCleanup();
@@ -21,10 +26,14 @@ const operatorList = (): string => ['ana@empresa.com', ...Array.from({ length: 4
 const nextOperator = (): string => `pv${operatorSeq++}@empresa.com`;
 const cookie = async (email: string): Promise<string> => `${SESSION_COOKIE}=${await createSessionToken(email, SECRET)}`;
 
-function setEnv(w: Pick<World, 'evidenceDir' | 'decisionsDir' | 'anchorDir'> | null, over: { decisions?: string | undefined; evidence?: string | undefined; anchors?: string | undefined } = {}): void {
+/** Pastas da TESTEMUNHA (resultados e recibos dos resultados): obrigatórias; sem elas o histórico é NÃO RESOLVIDO (falha fechada). */
+let witnessDirs = resultsEnv();
+
+function setEnv(w: Pick<World, 'evidenceDir' | 'decisionsDir' | 'anchorDir'> | null, over: { decisions?: string | undefined; evidence?: string | undefined; anchors?: string | undefined; results?: string | undefined; resultAnchors?: string | undefined } = {}): void {
   env.SUPABASE_SERVICE_ROLE_KEY = SECRET;
   env.GMN_OPERATOR_EMAILS = operatorList();
   delete env.GMN_AUTH_DISABLED;
+  env.GMN_LINK_AUDIT_ORIGIN_KEY = TEST_ORIGIN_KEY;
   const set = (name: string, value: string | undefined): void => {
     if (value === undefined) delete env[name];
     else env[name] = value;
@@ -32,6 +41,8 @@ function setEnv(w: Pick<World, 'evidenceDir' | 'decisionsDir' | 'anchorDir'> | n
   set('GMN_LINK_AUDIT_EVIDENCE_DIR', 'evidence' in over ? over.evidence : w?.evidenceDir);
   set('GMN_LINK_AUDIT_DECISIONS_DIR', 'decisions' in over ? over.decisions : w?.decisionsDir);
   set('GMN_LINK_AUDIT_DECISIONS_ANCHOR_DIR', 'anchors' in over ? over.anchors : w?.anchorDir);
+  set('GMN_LINK_AUDIT_RESULTS_DIR', 'results' in over ? over.results : witnessDirs.base);
+  set('GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR', 'resultAnchors' in over ? over.resultAnchors : witnessDirs.anchors);
 }
 
 const req = (url: string, init: { cookie?: string | null; method?: string; headers?: Record<string, string> } = {}): Request => {
@@ -45,6 +56,8 @@ const json = async (r: Response): Promise<Record<string, any>> => (await r.json(
 
 async function setup(over: Parameters<typeof world>[0] = {}): Promise<{ w: World; ana: string; auditId: string }> {
   const w = await world(over);
+  await proveEvidenceForRoutes(env, w);
+  witnessDirs = resultsEnv();
   setEnv(w);
   return { w, ana: await cookie(nextOperator()), auditId: w.auditId };
 }
@@ -229,4 +242,64 @@ test('resposta de falha: mensagem fixa, no máximo 10 detalhes de 300 caracteres
   assert.ok(body.issues.every((issue: string) => issue.length === 300));
   assert.ok(!('head' in body) && !('pending' in body));
   assert.equal((await json(failureResponse({ ok: false, code: 'EVIDENCE_INTEGRITY', issues: [] }))).code, 'EVIDENCE_INTEGRITY');
+});
+
+test('INFO-1 pela rota da prévia: sem a TESTEMUNHA configurada (ou ilegível) a prévia NÃO é finalizável, não aplica decisão alguma e diz o motivo; nada é gravado', async () => {
+  const { w, ana, auditId } = await setup();
+  await must(w.service.create({ email: 'ana@empresa.com' }, auditId, { record: rec.c2() }, clock()));
+  const good = { results: witnessDirs.base, resultAnchors: witnessDirs.anchors };
+  const ok = await json(await previewRoute(req(url(auditId), { cookie: ana }), ctx(auditId)));
+  assert.equal(ok.decisions.witness.status, 'UNWITNESSED');
+  const cases: Array<[string, Parameters<typeof setEnv>[1], string]> = [
+    ['pasta de resultados ausente', { results: undefined }, 'NOT_CONFIGURED'],
+    ['pasta de recibos ausente', { resultAnchors: undefined }, 'NOT_CONFIGURED'],
+    ['resultados e recibos na mesma pasta', { resultAnchors: good.results }, 'NOT_CONFIGURED'],
+    ['resultados na mesma pasta das decisões', { results: w.decisionsDir }, 'NOT_CONFIGURED'],
+    ['resultados na mesma pasta das evidências', { results: w.evidenceDir }, 'NOT_CONFIGURED'],
+    ['recibos dos resultados na mesma pasta dos recibos das decisões', { resultAnchors: w.anchorDir }, 'NOT_CONFIGURED'],
+    ['pasta de resultados inexistente', { results: path.join(good.results, 'nao-existe') }, 'UNAVAILABLE'],
+  ];
+  for (const [label, over, expected] of cases) {
+    setEnv(w, over);
+    const before = all(w);
+    const response = await previewRoute(req(url(auditId), { cookie: ana }), ctx(auditId));
+    assert.equal(response.status, 200, label);
+    const body = await json(response);
+    assert.equal(body.decisions.witness.status, expected, label);
+    assert.equal(body.finalization.allowed, false, label);
+    assert.deepEqual(body.decisions.applied, [], `${label}: nenhuma decisão aplicada`);
+    assert.ok(body.blockers.some((b: any) => b.code === 'DECISIONS_HISTORY_UNRESOLVED' && b.severity === 'BLOCKING' && b.reasonCode === expected), `${label}: bloqueio com o estado certo`);
+    assert.deepEqual(all(w), before, `${label}: nada gravado`);
+    assert.ok(!JSON.stringify(body).includes(good.results), `${label}: sem caminhos`);
+  }
+});
+
+test('FIAÇÃO da rota da prévia: a chave de origem configurada chega ao provedor da testemunha (pendente comprovado ⇒ HISTORY_REGRESSED; chave antiga revogada ⇒ indício ⇒ UNTRUSTED); a prévia bloqueia nos dois casos', async () => {
+  const { w, ana, auditId } = await setup();
+  const author = { email: 'ana@empresa.com' };
+  await must(w.service.create(author, auditId, { record: rec.c2() }, clock()));
+  await must(w.service.revoke(author, auditId, { revokes: 'op-0001', reason: 'Revogada porque o juízo estava errado e foi refeito.' }, clock()));
+  const decisions = createDecisionService({ knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: w.decisionsDir, anchorDir: w.anchorDir, evidence: w.reader, evidenceBaseDir: w.evidenceDir });
+  const preview = previewOver({ evidenceDir: w.evidenceDir, raw: decisions });
+  const evaluated = await preview.evaluate(author, auditId);
+  assert.ok(evaluated.ok);
+  assert.ok((await makeService(witnessDirs, preview).finalize(author, auditId, { expectedHead: evaluated.value.decisions.head, expectedInputSha256: evaluated.value.inputSha256 as string })).ok);
+  fs.rmSync(path.join(witnessDirs.anchors, auditId, 'a0001.json'));
+  fs.rmSync(anchorPath(w, 2));
+  const quarantineDir = path.join(w.decisionsDir, '..', `quarentena-fiacao-${auditId}`);
+  fs.mkdirSync(quarantineDir, { recursive: true });
+  fs.renameSync(path.join(w.decisionsDir, auditId, 'd0002.json'), path.join(quarantineDir, 'd0002.json'));
+  const read = async () => json(await previewRoute(req(url(auditId), { cookie: ana }), ctx(auditId)));
+  const configured = await read();
+  assert.deepEqual([configured.decisions.witness.status, configured.finalization.allowed, configured.decisions.applied], ['HISTORY_REGRESSED', false, []]);
+  env.GMN_LINK_AUDIT_ORIGIN_KEY = OTHER_ORIGIN_KEY;
+  env.GMN_LINK_AUDIT_ORIGIN_REVOKED_KEY_IDS = 'ok-test-a';
+  try {
+    const rotated = await read();
+    assert.deepEqual([rotated.decisions.witness.status, rotated.finalization.allowed, rotated.decisions.applied], ['UNTRUSTED', false, []]);
+    assert.ok(rotated.blockers.some((b: any) => b.code === 'DECISIONS_HISTORY_UNRESOLVED' && b.reasonCode === 'UNTRUSTED'));
+  } finally {
+    env.GMN_LINK_AUDIT_ORIGIN_KEY = TEST_ORIGIN_KEY;
+    delete env.GMN_LINK_AUDIT_ORIGIN_REVOKED_KEY_IDS;
+  }
 });

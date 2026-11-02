@@ -145,14 +145,14 @@ test('decisão PENDENTE (sem recibo) ⇒ não vale, não entra no cálculo, bloq
   assert.equal(JSON.stringify(payload.decisions.pending).includes('ana@'), false, 'nem autor nem texto livre da pendente saem');
 });
 
-test('REVOGAÇÃO pendente ⇒ a decisão possivelmente revogada continua vigente e fica apontada (op-NNNN) no bloqueio; nada é finalizável', async () => {
+test('REVOGAÇÃO pendente ⇒ a decisão possivelmente revogada NÃO é aplicada (fica em dúvida) e é apontada (op-NNNN) no bloqueio; nada é finalizável', async () => {
   const w = await world();
   await must(w.service.create(ANA, w.auditId, { record: rec.c2() }, clock()));
   await must(w.service.revoke(ANA, w.auditId, { revokes: 'op-0001', reason: 'Informação conferida e incorreta; decisão desfeita.' }, clock()));
   fs.rmSync(anchorPath(w, 2), { force: true });
   const payload = ok(await previewOver(w).preview(ANA, w.auditId));
   assert.equal(payload.state, 'DECISAO_PENDENTE');
-  assert.deepEqual(payload.decisions.applied, ['op-0001'], 'sem o recibo a revogação não vale');
+  assert.deepEqual(payload.decisions.applied, [], 'sem o recibo a revogação não vale, mas a decisão em dúvida também NÃO é aplicada');
   assert.deepEqual([payload.decisions.pending?.action, payload.decisions.pending?.revokes], ['REVOKE', 'op-0001']);
   assert.deepEqual(payload.blockers.map((b) => [b.code, b.decisionIds]), [['DECISION_PENDING', ['op-0001']]]);
   assert.equal(payload.finalization.allowed, false);

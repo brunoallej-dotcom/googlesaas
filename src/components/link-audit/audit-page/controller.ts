@@ -143,10 +143,14 @@ export async function retryFinalize(ctx: Ctx): Promise<void> {
   if (flow.phase === 'anchor_pending' || (flow.phase === 'error' && flow.request)) await submitFinalize(ctx, flow.request as FinalizeRequest, true);
 }
 
-/** Resultado pendente DESTA sessão, vindo do histórico (depois de recarregar a página): o pedido é reconstruído só do que a API expõe. */
+/**
+ * Resultado pendente vindo do histórico: o pedido é reconstruído só do que a API expõe, e SÓ quando o SERVIDOR comprovou a origem e o autor
+ * autenticado é esta sessão (`isMine` já embute as duas coisas). Quem chama é o botão do painel, que exige a confirmação explícita
+ * (caixa marcada) depois de mostrar o que será concluído; esta função nunca é acionada por outro caminho.
+ */
 export async function completePendingRun(ctx: Ctx): Promise<void> {
   const pending = ctx.getState().results.data?.pending;
-  if (!pending || !pending.isMine) return;
+  if (!pending || !pending.isMine || pending.origin !== 'PROVEN') return;
   await submitFinalize(ctx, { expectedHead: pending.decisionsHead, expectedInputSha256: pending.inputSha256 }, true);
 }
 
@@ -195,11 +199,17 @@ async function submitFinalize(ctx: Ctx, request: FinalizeRequest, recovery: bool
       await loadSection(ctx, 'results');
       return;
     }
-    if (out.code === 'RESULT_PENDING_UNCONFIRMED') {
+    if (out.code === 'RESULT_PENDING_UNCONFIRMED' || out.code === 'RESULT_PENDING_ORIGIN_UNPROVEN') {
+      // NUNCA se monta um reenvio automático a partir de dados do servidor: a pendência aparece no painel próprio (com a origem, os detalhes
+      // e a confirmação explícita). Aqui só se recarrega o histórico e se explica por que este pedido não gravou nada.
       await loadSection(ctx, 'results');
       const pending = ctx.getState().results.data?.pending;
-      if (pending?.isMine) ctx.dispatch({ type: 'FINALIZE_SET', flow: { phase: 'anchor_pending', request: { expectedHead: pending.decisionsHead, expectedInputSha256: pending.inputSha256 }, message: describeFailure(out) } });
-      else ctx.dispatch({ type: 'FINALIZE_SET', flow: { phase: 'error', code: out.code, message: 'Há um resultado gravado e não confirmado de outro operador; somente o autor pode concluí-lo.', request: null } });
+      const message = out.code === 'RESULT_PENDING_ORIGIN_UNPROVEN'
+        ? 'A origem do resultado pendente não pôde ser comprovada pelo servidor: ele não pode ser concluído por esta tela e nada foi gravado. Veja o aviso de pendência.'
+        : pending?.isMine
+          ? 'Há um resultado pendente seu. Confira os dados no aviso de pendência e conclua a confirmação por lá; nada foi gravado por este pedido.'
+          : 'Há um resultado gravado e não confirmado nesta auditoria; somente o autor, com a origem comprovada pelo servidor, pode concluí-lo. Nada foi gravado.';
+      ctx.dispatch({ type: 'FINALIZE_SET', flow: { phase: 'error', code: out.code, message, request: null } });
       return;
     }
     if (STALE_VIEW_CODES.has(out.code)) {
@@ -356,6 +366,8 @@ export async function resendListedPending(ctx: Ctx): Promise<void> {
   const list = ctx.getState().decisions.data;
   const pending = list?.pending;
   if (!list || !pending) return;
+  // só com origem COMPROVADA pelo servidor e autor autenticado = esta sessão (o botão do painel exige a confirmação explícita antes de chegar aqui)
+  if (!pending.isMine || pending.origin !== 'PROVEN') return ctx.dispatch({ type: 'NOTICE', notice: { tone: 'warning', text: 'A origem desta decisão pendente não foi comprovada pelo servidor (ou ela é de outro autor): ela não pode ser concluída por esta tela.' } });
   const request: DecisionRequest | null =
     pending.action === 'RECORD' && pending.record
       ? { kind: 'CREATE', body: { record: pending.record, ...(pending.supersedes ? { supersedes: pending.supersedes } : {}), expectedHead: list.head } }

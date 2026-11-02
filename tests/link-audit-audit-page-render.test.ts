@@ -9,6 +9,7 @@ import { CompanyPanel } from '../src/components/link-audit/audit-page/company-pa
 import { CriteriaMatrix } from '../src/components/link-audit/audit-page/criteria-matrix';
 import { DecisionsPanel, type DecisionsPanelProps } from '../src/components/link-audit/audit-page/decisions-panel';
 import { FinalizationPanel } from '../src/components/link-audit/audit-page/finalization-panel';
+import { PendingRunPanel } from '../src/components/link-audit/audit-page/pending-panels';
 import { INCONCLUSIVE_HEADLINE } from '../src/components/link-audit/audit-page/labels';
 import { ResultPanel } from '../src/components/link-audit/audit-page/result-panel';
 import { ResultsPanel } from '../src/components/link-audit/audit-page/results-panel';
@@ -112,7 +113,7 @@ test('decisões: vazio honesto; vigente com autor/data, justificativa recolhida 
   const dto = decisionDto({ record: { kind: 'JUDGEMENT', subcriterionId: 'C2', value: 'COMPATIBLE', justification: '<img src=x onerror=alert(1)> conferido‮' }, recordedBy: '<b>ana</b>@empresa.com' });
   const html = render(createElement(DecisionsPanel, decisionsProps({
     decisions: decisionsFixture({ head: head(1), decisions: [dto], allDecisions: [dto], history: [{ seq: 1, action: 'RECORD', decisionId: 'op-0001', revokes: null, reason: null, recordedAt: dto.recordedAt, recordedBy: dto.recordedBy }] }),
-    preview: previewFixture({ decisions: { head: head(1), count: 1, pending: null, finalizable: true, applied: [], held: [{ decisionId: 'op-0001', code: 'DECISION_CATEGORY_MISMATCH' }] } }),
+    preview: previewFixture({ decisions: { head: head(1), count: 1, pending: null, finalizable: true, witness: { status: 'NOT_REQUIRED', knownHeads: 0, coveredSeq: null, unwitnessedAffecting: 0 }, applied: [], held: [{ decisionId: 'op-0001', code: 'DECISION_CATEGORY_MISMATCH' }] } }),
   })));
   assert.ok(!/<img|<b>|onerror=alert/.test(html.replace(/&lt;[^&]*&gt;/g, '')), 'nada vindo dos dados vira tag');
   assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
@@ -122,14 +123,81 @@ test('decisões: vazio honesto; vigente com autor/data, justificativa recolhida 
   assert.match(html, /aria-label="Revogar a decisão op-0001"/);
 });
 
+test('decisões: cada estado NÃO resolvido da testemunha tem o SEU texto e o alerta; "sem testemunha" é declarado com a contagem, sem parecer garantia', () => {
+  const inDoubt = decisionDto({ decisionId: 'op-0001', status: 'AMBIGUOUS' });
+  const witness = (status: string, over: Record<string, unknown> = {}) => ({ status, knownHeads: 0, coveredSeq: null, unwitnessedAffecting: 0, ...over }) as never;
+  const unresolved: Array<[string, RegExp]> = [
+    ['NOT_CONFIGURED', /não está configurada neste servidor/],
+    ['UNAVAILABLE', /não pôde ser lida/],
+    ['UNTRUSTED', /NÃO é confiável/],
+    ['HISTORY_REGRESSED', /HOJE FALTA/],
+    ['HISTORY_DIVERGES', /entrada DIFERENTE/],
+  ];
+  for (const [status, reason] of unresolved) {
+    const html = render(createElement(DecisionsPanel, decisionsProps({ decisions: decisionsFixture({ finalizable: false, allDecisions: [inDoubt], ambiguousDecisionIds: ['op-0001'], witness: witness(status, status.startsWith('HISTORY') ? { knownHeads: 1 } : {}) }) })));
+    assert.match(html, /role="alert"/, status);
+    assert.match(text(html), /Integridade do histórico de decisões NÃO resolvida/, status);
+    assert.match(text(html), reason, `${status}: motivo próprio`);
+    assert.match(text(html), /Nenhuma decisão é considerada vigente nem enviada ao motor/, status);
+    assert.ok(!/data-testid="witness-coverage"/.test(html), `${status}: a nota de cobertura é só dos estados resolvidos`);
+  }
+  // resolvido, mas com revogações/substituições que NENHUMA testemunha cobre: declarado, sem alarme e sem soar como garantia
+  const partial = text(render(createElement(DecisionsPanel, decisionsProps({ decisions: decisionsFixture({ witness: witness('UNWITNESSED', { unwitnessedAffecting: 2 }) }) }))));
+  assert.match(partial, /Sem testemunha independente para 2 revogação\(ões\)\/substituição\(ões\)/);
+  assert.match(partial, /nenhum resultado selado cobre este histórico/);
+  assert.match(partial, /não é uma garantia de integridade/);
+  const covered = text(render(createElement(DecisionsPanel, decisionsProps({ decisions: decisionsFixture({ witness: witness('CONSISTENT', { knownHeads: 1, coveredSeq: 3, unwitnessedAffecting: 1 }) }) }))));
+  assert.match(covered, /1 revogação\(ões\)\/substituição\(ões\)/);
+  assert.match(covered, /a cobertura vai até a posição 3/);
+  const none = render(createElement(DecisionsPanel, decisionsProps({ decisions: decisionsFixture({ witness: witness('UNWITNESSED') }) })));
+  assert.ok(!/data-testid="witness-coverage"/.test(none) && !/role="alert"/.test(none), 'nada a declarar ⇒ nenhuma nota');
+});
+
 test('decisões: pendente em alerta (não vale, só o autor), formulário com rótulos e erros ligados; rascunho em conflito avisa que foi mantido', () => {
-  const pending = decisionsFixture({ pending: { confirmed: false, seq: 2, action: 'REVOKE', decisionId: null, revokes: 'op-0001', supersedes: null, reason: 'motivo', record: null, recordedAt: '2026-10-30T10:00:00.000Z', recordedBy: 'ana@empresa.com' } });
-  const p = render(createElement(DecisionsPanel, decisionsProps({ decisions: pending })));
-  assert.match(p, /role="alert"/);
+  const pending = decisionsFixture({ pending: { confirmed: false, entrySha256: 'e'.repeat(64), origin: 'PROVEN', originDetail: null, isMine: true, seq: 2, action: 'REVOKE', decisionId: null, revokes: 'op-0001', supersedes: null, reason: 'motivo', record: null, recordedAt: '2026-10-30T10:00:00.000Z', recordedBy: 'ana@empresa.com' } });
+  const p = render(createElement(DecisionsPanel, decisionsProps({ decisions: { ...pending, ambiguousDecisionIds: ['op-0001'], witness: { status: 'RECEIPT_LOST_WITNESSED', knownHeads: 1, coveredSeq: null, unwitnessedAffecting: 0 } } })));
   assert.match(text(p), /SEM recibo: ela ainda não vale/);
-  assert.match(text(p), /a decisão revogada ainda aparece como vigente/);
-  assert.match(text(p), /Somente o autor pode concluí-la/);
-  assert.match(p, /Reenviar o mesmo pedido/);
+  assert.match(text(p), /Em dúvida: op-0001/);
+  assert.match(text(p), /não é considerada vigente/);
+  assert.match(text(p), /Incidente de integridade: um resultado já selado registrou esta decisão como confirmada/);
+  assert.match(text(p), /interrompida.*removido.*mesmo aspecto/);
+  // origem COMPROVADA e minha: mostra o que será concluído e exige a confirmação explícita (botão desabilitado até marcar a caixa)
+  assert.match(text(p), /comprovou que gravou esta decisão em nome do seu usuário/);
+  assert.match(text(p), /Motivo da revogação motivo/);
+  assert.match(p, /<input type="checkbox"/);
+  assert.match(p, /<button type="button" disabled=""[^>]*>[^]*?Concluir a decisão/);
+  assert.ok(!/Foi você quem o gravou/.test(text(p)));
+  // origem NÃO comprovada: nenhum botão, nem conteúdo nem autor do arquivo; a mensagem diz que nem o suposto autor conclui
+  const forged = decisionsFixture({ pending: { confirmed: false, entrySha256: 'e'.repeat(64), origin: 'UNPROVEN', originDetail: 'MISSING', isMine: false, seq: 2, action: 'RECORD', decisionId: 'op-0002', revokes: null, supersedes: null, reason: null, record: null, recordedAt: '2026-10-30T10:00:00.000Z', recordedBy: null } });
+  const u = render(createElement(DecisionsPanel, decisionsProps({ decisions: forged })));
+  assert.match(text(u), /A origem NÃO foi comprovada pelo servidor/);
+  assert.match(text(u), /Não pode ser concluído por esta tela/);
+  assert.ok(!/Concluir a decisão|Reenviar o mesmo pedido/.test(text(u)), 'sem botão para pendência não comprovada');
+  assert.ok(!/ana@empresa\.com/.test(u), 'o autor citado no arquivo forjado não é exibido');
+  // origem comprovada, de OUTRO operador: sem botão
+  const other = decisionsFixture({ pending: { confirmed: false, entrySha256: 'e'.repeat(64), origin: 'PROVEN', originDetail: null, isMine: false, seq: 2, action: 'RECORD', decisionId: 'op-0002', revokes: null, supersedes: null, reason: null, record: null, recordedAt: '2026-10-30T10:00:00.000Z', recordedBy: 'bia@empresa.com' } });
+  const o = render(createElement(DecisionsPanel, decisionsProps({ decisions: other })));
+  assert.match(text(o), /Somente o autor pode concluí-la/);
+  assert.ok(!/Concluir a decisão/.test(text(o)));
+  // o aviso de ambiguidade, as decisões em dúvida e o estado ESTRUTURADO da testemunha chegam a TODOS os perfis, sem conteúdo privado (R2-MINOR-2a / R3-MINOR-5)
+  for (const [label, decisions, status] of [
+    ['outro operador', other, 'CONSISTENT'],
+    ['origem não comprovada', forged, 'HISTORY_DIVERGES'],
+    ['autor (origem comprovada) com histórico não resolvido', decisionsFixture({ pending: { ...(pending.pending as object), seq: 2 } as never }), 'HISTORY_REGRESSED'],
+  ] as const) {
+    const html = render(createElement(DecisionsPanel, decisionsProps({ decisions: { ...decisions, ambiguousDecisionIds: ['op-0001'], witness: { status, knownHeads: 1, coveredSeq: null, unwitnessedAffecting: 0 } } })));
+    assert.match(text(html), /interrompida.*removido.*mesmo aspecto/, `${label}: a ambiguidade é dita`);
+    assert.match(text(html), /Em dúvida: op-0001/, label);
+    if (status === 'CONSISTENT') assert.match(text(html), /Nenhum resultado selado cobre esta posição/, label);
+    else {
+      assert.match(text(html), /Integridade do histórico de decisões NÃO resolvida/, label);
+      assert.match(html, /role="alert"/, label);
+      assert.match(text(html), /Nenhuma decisão é considerada vigente nem enviada ao motor/, label);
+      assert.ok(!/Concluir a decisão/.test(text(html)), `${label}: sem botão de concluir enquanto a integridade não está resolvida`);
+    }
+    assert.ok(!/ana@empresa\.com|motivo/.test(html.replace(/Motivo da/g, '').replace(/Motivo: /g, '')), `${label}: nada privado`);
+  }
+  assert.ok(!/Em dúvida/.test(text(render(createElement(DecisionsPanel, decisionsProps({ decisions: other }))))), 'sem decisão em dúvida, nenhuma é citada');
   const form = { ...CLOSED_FORM, optionKey: 'C2' as const, phase: 'conflict' as const, value: 'PARTIAL', justification: 'Rascunho que deve ser mantido para revisão.', message: 'O histórico mudou.', fieldErrors: ['A justificativa exige pelo menos 20 caracteres.'] };
   const f = render(createElement(DecisionsPanel, decisionsProps({ form })));
   assert.match(f, /<label for="decisao-valor"/);
@@ -139,7 +207,7 @@ test('decisões: pendente em alerta (não vale, só o autor), formulário com r�
   assert.match(text(f), /Seu rascunho foi mantido/);
   assert.match(f, /Rascunho que deve ser mantido para revisão\./);
   const resend = render(createElement(DecisionsPanel, decisionsProps({ form: { ...form, phase: 'pending', message: 'Gravada, sem recibo.' } })));
-  assert.match(resend, /Reenviar o mesmo pedido/);
+  assert.match(resend, /Reenviar o mesmo pedido/); // reenvio da sessão (pedido guardado localmente), não a pendência do histórico
   assert.ok(!/Registrar decisão<\/button>/.test(resend.split('Cancelar')[0] ?? ''), 'pendente: só o reenvio exato');
   const busy = render(createElement(DecisionsPanel, decisionsProps({ form: { ...form, phase: 'submitting', message: null, fieldErrors: [] } })));
   assert.match(busy, /disabled=""/);
@@ -282,7 +350,7 @@ test('empresa, rastreabilidade, bloqueios e o que falta: texto escapado, campos 
   assert.ok(!/<script|<img/.test(html));
   assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt; Padaria/);
   assert.match(text(html), /CID confirmado 123456789/);
-  assert.match(text(html), /Integridade das evidências OK/);
+  assert.match(text(html), /Integridade local verificada \(SHA-256\)/);
   assert.match(text(html), /Serper \(intermediário\)/);
   assert.match(html, /aria-label="Copiar hash de capture:c0001 completo"/);
   const trace = text(render(createElement(TraceabilityPanel, { preview: previewFixture() })));
@@ -384,5 +452,81 @@ test('foco: restoreFocus devolve o foco a quem iniciou a interação se ele aind
     assert.deepEqual(focused, ['opener', 'summary', 'summary', 'summary', 'summary']);
   } finally {
     (globalThis as { document?: unknown }).document = realDocument;
+  }
+});
+
+test('pendência de RESULTADO: só com origem COMPROVADA e minha mostra os detalhes e exige confirmação explícita; nunca "Foi você quem o gravou"; sem origem comprovada não há botão nem conteúdo do arquivo', () => {
+  const unproven = { origin: 'UNPROVEN', originDetail: 'MISSING', isMine: false, outcome: null, level: null, coveragePercent: null, appliedDecisionCount: null } as const;
+  const mineHtml = render(createElement(PendingRunPanel, { pending: pendingRun({ coveragePercent: 11, appliedDecisionCount: 2, matchesCurrent: false }), busy: false, onComplete: noop }));
+  const mine = text(mineHtml);
+  assert.match(mine, /comprovou que gravou este resultado em nome do seu usuário/);
+  assert.match(mine, /Inconclusivo/);
+  assert.match(mine, /Cobertura 11%/);
+  assert.match(mine, /Decisões aplicadas 2/);
+  assert.match(mine, /MUDOU desde a gravação: depois de concluído ele será HISTÓRICO/);
+  assert.match(mine, /interrompida.*removido.*mesmo aspecto/, 'a limitação "gravação interrompida × recibo removido" é dita');
+  assert.match(mineHtml, /<input type="checkbox"/);
+  assert.match(mineHtml, /<button type="button" disabled=""[^>]*>[^]*?Concluir a confirmação/, 'sem a caixa marcada o botão fica desabilitado');
+  assert.ok(!/Foi você quem o gravou/.test(mine));
+  for (const [label, pending] of [
+    ['origem não comprovada (arquivo sem etiqueta)', pendingRun(unproven)],
+    ['origem adulterada, mas o arquivo diz isMine', pendingRun({ ...unproven, originDetail: 'INVALID' })],
+    ['servidor sem chave', pendingRun({ ...unproven, origin: 'UNVERIFIABLE', originDetail: 'NO_KEY' })],
+  ] as const) {
+    const html = render(createElement(PendingRunPanel, { pending, busy: false, onComplete: noop }));
+    assert.match(text(html), /Não pode ser concluído por esta tela/, label);
+    assert.ok(!/<input type="checkbox"|<button/.test(html), `${label}: sem botão nem caixa`);
+    assert.ok(!/comprovou que gravou|Cobertura|Inconclusivo|Pontuado|Foi você/.test(text(html)), `${label}: nenhum conteúdo nem autoria do arquivo`);
+  }
+  const other = render(createElement(PendingRunPanel, { pending: pendingRun({ isMine: false }), busy: false, onComplete: noop }));
+  assert.match(text(other), /outro operador \(origem comprovada pelo servidor\)\. Somente o autor pode concluí-lo/);
+  assert.ok(!/<button/.test(other));
+});
+
+test('painel da empresa: estados distintos por TEXTO — integridade local, origem autenticada, origem não comprovada, evidência adulterada/incompleta, captura ausente', () => {
+  const evidence = { company: { name: 'Padaria Exemplo', city: 'Cidade Exemplo', stateCode: 'GO' }, identifiers: { confirmed: [{ type: 'cid', value: '123456789' }] }, source: { label: 'Serper' }, collectedAt: '2026-10-22T12:54:48.079Z' } as never;
+  const base = previewFixture();
+  const withProv = (provenance: unknown, integrityStatus = 'OK') => ({ ...base, evidence: { ...base.evidence, integrity: { status: integrityStatus, checkedFiles: 4 }, provenance } }) as never;
+  const view = (preview: never) => text(render(createElement(CompanyPanel, { evidence, preview })));
+  const ok = view(withProv({ status: 'AUTHENTICATED', reason: null, missingRefs: [] }));
+  assert.match(ok, /Integridade local verificada \(SHA-256\)/);
+  assert.match(ok, /Origem da coleta autenticada/);
+  assert.match(ok, /Origem da coleta \(autenticidade\) comprovada por manifesto assinado, fora da pasta de evidências/);
+  assert.match(ok, /origem autenticada/, 'cada evidência usada diz a sua origem por TEXTO');
+  assert.ok(!/Verificadas? usadas?\b|Evidências verificadas usadas/.test(ok), '"verificadas" sem qualificação não aparece mais');
+  const unproven = view(withProv({ status: 'UNAUTHENTICATED', reason: 'EVIDENCE_NOT_SEALED', missingRefs: [] }));
+  assert.match(unproven, /Integridade local verificada \(SHA-256\)/, 'a integridade segue OK: são coisas diferentes');
+  assert.match(unproven, /Origem da coleta NÃO comprovada/);
+  assert.ok(!/Origem da coleta autenticada/.test(unproven));
+  assert.match(unproven, /há evidência que o manifesto assinado não cobre/);
+  assert.match(unproven, /não mostra quem o coletou/);
+  assert.match(unproven, /A finalização fica bloqueada/);
+  assert.match(unproven, /origem NÃO comprovada/, 'cada evidência usada diz a sua origem por TEXTO');
+  const legacy = view(withProv({ status: 'UNAUTHENTICATED', reason: 'LEGACY_NO_SEAL', missingRefs: [] }));
+  assert.match(legacy, /coleta legada, sem manifesto assinado \(nada é atribuído a ela sem prova independente\)/);
+  const missing = view(withProv({ status: 'UNAUTHENTICATED', reason: 'EVIDENCE_MISSING', missingRefs: ['capture:c0002'] }));
+  assert.match(missing, /podem ser de uma coleta ANTERIOR e não devem ser tomados como a situação atual/);
+  assert.match(missing, /ausente: capture:c0002/);
+  const tampered = view(withProv({ status: 'UNAUTHENTICATED', reason: 'NO_SEAL', missingRefs: [] }, 'MISMATCH'));
+  assert.match(tampered, /Evidência adulterada ou ilegível/);
+  assert.ok(!/Integridade local verificada/.test(tampered), 'integridade quebrada nunca aparece como verificada');
+  const incomplete = view(withProv(null, 'INCOMPLETE'));
+  assert.match(incomplete, /Evidência incompleta/);
+});
+
+test('R3-MINOR-5 (interface): o aviso de recibo ausente do RESULTADO aparece para TODOS os perfis (autor, outro operador, origem não comprovada) e nunca como confirmação', () => {
+  const unproven = { origin: 'UNPROVEN', originDetail: 'MISSING', isMine: false, outcome: null, level: null, coveragePercent: null, appliedDecisionCount: null } as const;
+  for (const [label, pending] of [
+    ['autor com origem comprovada', pendingRun()],
+    ['outro operador', pendingRun({ isMine: false })],
+    ['origem não comprovada', pendingRun(unproven)],
+  ] as const) {
+    const html = render(createElement(PendingRunPanel, { pending, busy: false, onComplete: noop }));
+    assert.match(html, /data-testid="pending-run-impact"/, label);
+    assert.match(text(html), /interrompida.*removido.*mesmo aspecto/, `${label}: a ambiguidade é dita`);
+    assert.match(text(html), /Não apague nem mova o arquivo deste resultado/, label);
+    assert.match(text(html), /não é uma confirmação/, label);
+    assert.match(text(html), /nenhum novo resultado é registrado/, label);
+    assert.ok(!/Confirmado e verificado/.test(text(html)), `${label}: ausência de recibo nunca parece sucesso`);
   }
 });

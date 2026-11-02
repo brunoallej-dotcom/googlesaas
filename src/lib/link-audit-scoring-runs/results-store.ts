@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { canonicalJson } from '../link-audit/canonical';
+import { judgeOrigin, type OriginAuthenticator, type OriginVerdict } from '../link-audit-origin';
 import { describeError, nodeFsOps, publishExclusive, withLock, type FsOps } from '../link-audit/snapshot-store';
 import {
   assertBase,
@@ -39,8 +40,10 @@ import { MAX_RUN_ANCHOR_BYTES, MAX_RUN_BYTES, MAX_RUNS, RUN_ANCHOR_FILE, RUN_ANC
  *
  * PROTOCOLO (idêntico ao da 6B, Emenda 1): um resultado só é CONFIRMADO quando o arquivo `sNNNN.json` E o recibo `aNNNN.json` estão
  * duráveis. Entre os dois ele é PENDENTE: existe, mas NÃO vale (não é devolvido como resultado, não é sucesso, nada novo é gravado
- * sobre ele). Só o REENVIO do mesmo pedido pelo mesmo autor o conclui. A perda de um resultado confirmado é sempre detectável
- * (recibo à frente do histórico).
+ * sobre ele). Só o REENVIO do mesmo pedido pelo mesmo autor o conclui, e SOMENTE se o servidor comprovar a ORIGEM do arquivo (etiqueta HMAC
+ * com chave fora das pastas; `link-audit-origin`): o "autor", o conteúdo e o selo SHA-256 são afirmações de quem escreve na pasta, e "mesmo
+ * autor, mesmo pedido" não prova nada (o pedido é montado a partir do próprio arquivo). A perda de um resultado confirmado é detectável
+ * quando o recibo fica à frente do histórico; a remoção do ÚLTIMO recibo é indistinguível de uma gravação interrompida (limite declarado).
  *
  * Por que `appendRun` não reutiliza o `appendEntry` da 6B: aquele é amarrado ao tipo de entrada, ao esquema e à projeção de decisões
  * e a 6B está CONGELADA (I0 provou a refatoração byte a byte); generalizá-lo exigiria mexer no protocolo da 6B. Aqui a mecânica
@@ -61,6 +64,11 @@ export interface WriteOptions extends ReadOptions {
   readonly now: () => string;
   /** Verificação semântica do registro JÁ SELADO, antes de publicar (devolve problemas; vazio = ok). */
   readonly validate?: (sealed: ScoreRun) => readonly string[];
+  /**
+   * Autenticador de ORIGEM (chave do servidor, fora das pastas). Com ele, todo resultado novo sai assinado e uma PENDENTE só é
+   * concluída (recibo) se a etiqueta for válida. SEM ele nada é assinado e NENHUMA pendente é concluída (falha fechada).
+   */
+  readonly origin?: OriginAuthenticator;
 }
 
 const WRITE_RETRIES = 5;
@@ -201,6 +209,16 @@ async function readVerifiedOnce(ops: FsOps, runs: Location, anchors: Location, a
   };
 }
 
+/** `null` = pode ler. Raiz ausente (`mustExist`) ou qualquer erro de E/S ⇒ `STORAGE_UNAVAILABLE`; existe e não é um diretório comum (arquivo, link) ⇒ `NOT_CONFIGURED`. */
+export async function probeDirectory(ops: FsOps, dir: string, mustExist: boolean): Promise<'NOT_CONFIGURED' | 'STORAGE_UNAVAILABLE' | null> {
+  try {
+    const info = await ops.lstat(dir);
+    return info.isDirectory() && !info.isSymbolicLink() ? null : 'NOT_CONFIGURED';
+  } catch (error) {
+    return (error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT' && !mustExist ? null : 'STORAGE_UNAVAILABLE';
+  }
+}
+
 /** Relê TUDO (resultados e recibos: bytes, hashes, encadeamento, sequência, confronto). Nunca escreve. */
 export async function readRunLog(baseDir: unknown, auditId: unknown, options: ReadOptions): Promise<StoreResult<RunLog & { readonly all: readonly ScoreRun[] }>> {
   const projectRoot = options.projectRoot ?? process.cwd();
@@ -234,13 +252,16 @@ export type BuildOutcome<F> =
   | { readonly ok: true; readonly replayOf: number }
   | { readonly ok: false; readonly failure: F };
 
-/** O resultado foi publicado (ou já existia) mas NÃO está confirmado: o recibo falhou, ou há outra pendente no caminho. */
+/** O resultado foi publicado (ou já existia) mas NÃO está confirmado: o recibo falhou, há outra pendente no caminho ou a ORIGEM dela não é comprovada. */
 export interface PendingFailure {
   readonly ok: false;
-  readonly code: 'ANCHOR_PENDING' | 'PENDING_UNCONFIRMED';
+  /** `ORIGIN_UNPROVEN`: o pedido era o reenvio da pendente, mas a etiqueta de origem falta, não confere ou a chave é outra: NENHUM recibo foi gravado. */
+  readonly code: 'ANCHOR_PENDING' | 'PENDING_UNCONFIRMED' | 'ORIGIN_UNPROVEN';
   readonly issues: readonly string[];
   readonly pending: ScoreRun;
   readonly runs: readonly ScoreRun[];
+  /** Só em `ORIGIN_UNPROVEN`. */
+  readonly verdict?: Exclude<OriginVerdict, 'PROVEN'>;
 }
 
 /** `ok: true` SIGNIFICA confirmado: o resultado e o recibo estão duráveis. */
@@ -298,7 +319,11 @@ export async function appendRun<F>(baseDir: unknown, auditId: unknown, build: (c
         const target = all[built.replayOf - 1];
         if (!target) return fail('INTERNAL', 'Reenvio aponta para um resultado que não existe (erro interno).');
         if (target !== pending) return { ok: true, run: target, runs: confirmed, anchored: true, replayed: true, anchors: confirmedSummary(confirmed.length) };
-        // Reenvio da PENDENTE: concluir o recibo agora. Se falhar de novo, continua pendente (e o operador pode reenviar outra vez).
+        // Reenvio da PENDENTE: antes de dar o RECIBO, exige a PROVA DE ORIGEM (o arquivo vive numa pasta que quem escreve nela controla
+        // por inteiro: autor, conteúdo e selo são afirmações dele). Sem prova válida o recibo NÃO é dado e nada é gravado.
+        const verdict = judgeOrigin(options.origin, 'RUN', pending);
+        if (verdict !== 'PROVEN') return { ok: false, code: 'ORIGIN_UNPROVEN', issues: ['A origem desta pendência não pôde ser comprovada pelo servidor; nenhum recibo foi gravado.'], pending, runs: confirmed, verdict };
+        // Se o recibo falhar de novo, continua pendente (e o operador pode reenviar outra vez).
         const concluded = await confirmReceipt(RUN_ANCHORS, ops, anchorLocated.value, pending, anchorFiles[anchorFiles.length - 1], laterOf(options.now(), pending.finalizedAt));
         if (!concluded.ok) return { ok: false, code: 'ANCHOR_PENDING', issues: concluded.issues, pending, runs: confirmed };
         return { ok: true, run: pending, runs: all, anchored: true, replayed: true, anchors: confirmedSummary(all.length) };
@@ -308,7 +333,10 @@ export async function appendRun<F>(baseDir: unknown, auditId: unknown, build: (c
         return { ok: false, code: 'PENDING_UNCONFIRMED', issues: ['Há um resultado publicado ainda sem recibo na pasta de recibos; nada novo é gravado sobre ele.'], pending, runs: confirmed };
       }
 
-      const run = seal({ ...built.draft, seq, prevSha256: confirmed[confirmed.length - 1]?.contentSha256 ?? null });
+      // A primitiva NUNCA grava um resultado sem etiqueta de origem (defesa em profundidade: as rotas e o serviço já recusam sem chave)
+      if (!options.origin) return fail('INTERNAL', 'Sem autenticador de origem, nenhum resultado é gravado.');
+      const unsigned = { ...built.draft, seq, prevSha256: confirmed[confirmed.length - 1]?.contentSha256 ?? null };
+      const run = seal({ ...unsigned, origin: options.origin.sign('RUN', unsigned) });
       const checked = scoreRunSchema.safeParse(run);
       if (!checked.success) return fail('INTERNAL', 'O resultado montado não segue o contrato (erro interno).');
       if (canonicalJson(checked.data) !== canonicalJson(run)) return fail('INTERNAL', 'O esquema alteraria o conteúdo do resultado (erro interno): nada foi gravado.');

@@ -1,8 +1,9 @@
+import { CLOSED_EVIDENCE_PROVENANCE, type EvidenceProvenancePolicy, type EvidenceTrust, type EvidenceTrustReason } from '../link-audit-evidence/provenance';
 import { canonicalJson, sha256Hex } from '../link-audit/canonical';
 import { CRITERIA } from '../link-audit/methodology';
 import type { OperatorRecord, ScoringInput } from '../link-audit/scoring/input';
 import { scoreAudit, SUBCRITERIA, verifyScoreResult, type ScoreOutcome, type ScoreResult } from '../link-audit/scoring/index';
-import { AUDIT_ID_PATTERN, HTTP_STATUS, PUBLIC_MESSAGE, type DecisionDto, type Head, type ListPayload, type ServiceErrorCode, type ServiceResult } from '../link-audit-decisions';
+import { AUDIT_ID_PATTERN, HTTP_STATUS, isUnresolved, PUBLIC_MESSAGE, type DecisionDto, type Head, type ListPayload, type ServiceErrorCode, type ServiceResult, type WitnessStatus } from '../link-audit-decisions';
 import type { ScoringBasisOutcome } from '../link-audit-evidence/scoring-basis';
 import { assembleScoringInput } from './assemble';
 import { verifyAuditIdAlias, type AuditIdAlias } from './audit-id-alias';
@@ -79,6 +80,11 @@ export interface PreviewDeps {
   readonly clock: () => string;
   /** Somente para testes que simulam recusas do motor; o padrão é o motor real. */
   readonly score?: (input: ScoringInput) => ScoreOutcome;
+  /**
+   * PROVA de que as evidências vieram da coleta (autenticidade, independente de a pasta de evidências estar íntegra). Padrão: FECHADA (nada é autêntico ⇒
+   * `EVIDENCE_PROVENANCE_UNPROVEN` bloqueia a finalização). Integridade (SHA-256) NÃO substitui isto: quem escreve na pasta sela o que quiser.
+   */
+  readonly evidenceProvenance?: EvidenceProvenancePolicy;
 }
 
 export interface HeldDecision {
@@ -128,6 +134,8 @@ export interface PreviewPayload {
   };
   readonly evidence: {
     readonly integrity: { readonly status: string; readonly checkedFiles: number | null };
+    /** Autenticidade da coleta (≠ integridade): `null` sem evidência. Sem prova independente a finalização é bloqueada. */
+    readonly provenance: { readonly status: 'AUTHENTICATED' | 'UNAUTHENTICATED'; readonly reason: EvidenceTrustReason | null; readonly missingRefs: readonly string[] } | null;
     readonly layout: 'VERSIONED' | 'LEGACY' | null;
     readonly referenceDate: string | null;
     readonly referenceDateSource: { readonly ref: string; readonly observedAt: string } | null;
@@ -140,6 +148,8 @@ export interface PreviewPayload {
     readonly count: number;
     readonly pending: { readonly seq: number; readonly action: 'RECORD' | 'REVOKE'; readonly decisionId: string | null; readonly revokes: string | null; readonly supersedes: string | null; readonly recordedAt: string; readonly entrySha256: string } | null;
     readonly finalizable: boolean;
+    /** Testemunha do histórico de decisões (cabeças já confirmadas em resultados selados). Não resolvida ⇒ nada é finalizável. */
+    readonly witness: { readonly status: WitnessStatus; readonly knownHeads: number; readonly coveredSeq: number | null; readonly unwitnessedAffecting: number };
     readonly applied: readonly string[];
     readonly held: readonly HeldDecision[];
   };
@@ -175,10 +185,13 @@ const fail = (code: PreviewFailureCode, head?: Head | null): PreviewFailure => (
 interface Snapshot {
   readonly decisions: ListPayload;
   readonly basis: Extract<ScoringBasisOutcome, { status: 'NO_EVIDENCE' | 'READY' }>;
+  /** Autenticidade das evidências da base (`null` quando não há evidência). */
+  readonly trust: EvidenceTrust | null;
 }
 
 export function createScoringPreviewService(deps: PreviewDeps) {
   const score = deps.score ?? scoreAudit;
+  const provenance = deps.evidenceProvenance ?? CLOSED_EVIDENCE_PROVENANCE;
 
   async function snapshot(actor: PreviewActor, auditId: string): Promise<{ ok: true; value: Snapshot } | PreviewFailure> {
     const decisions = await deps.decisions.list(actor, auditId);
@@ -187,12 +200,18 @@ export function createScoringPreviewService(deps: PreviewDeps) {
     if (basis.status === 'NOT_FOUND') return fail('AUDIT_NOT_FOUND');
     if (basis.status === 'INTEGRITY_FAILED') return fail('EVIDENCE_INTEGRITY');
     if (basis.status !== 'NO_EVIDENCE' && basis.status !== 'READY') return fail('INTERNAL_ERROR'); // estado que o leitor não produz: nunca é tratado como pronto
-    return { ok: true, value: { decisions: decisions.value, basis } };
+    // autenticidade: a política NUNCA lança (qualquer falha é "não autêntica"); o hash que o leitor recalculou é o que o manifesto assinado precisa cobrir
+    let trust: EvidenceTrust | null = null;
+    if (basis.status === 'READY') {
+      if (!basis.basis || !Array.isArray(basis.basis.evidences)) return fail('INTERNAL_ERROR'); // forma que o leitor não produz: nunca é tratada como pronta
+      trust = await provenance.classify(auditId, [...basis.basis.evidences, ...(basis.basis.artifacts ?? [])].map((e) => ({ ref: e.ref, contentSha256: e.contentSha256, legacy: e.legacy })));
+    }
+    return { ok: true, value: { decisions: decisions.value, basis, trust } };
   }
 
   /** Mesmo `head`, mesma pendente, mesma lista de vigentes e a MESMA base (hash canônico do que o leitor entregou). */
   function fingerprint(s: Snapshot): string {
-    return sha256Hex(canonicalJson({ head: s.decisions.head, pending: s.decisions.pending?.entrySha256 ?? null, finalizable: s.decisions.finalizable, operatorRecords: s.decisions.operatorRecords, basis: s.basis }));
+    return sha256Hex(canonicalJson({ head: s.decisions.head, pending: s.decisions.pending?.entrySha256 ?? null, finalizable: s.decisions.finalizable, operatorRecords: s.decisions.operatorRecords, basis: s.basis, trust: s.trust }));
   }
 
   const captureNumber = (ref: string): number | null => {
@@ -227,7 +246,10 @@ export function createScoringPreviewService(deps: PreviewDeps) {
       : null;
     const serviceBlockers: PreviewBlocker[] = [];
     // uma pendente nunca vale; se for REVOGAÇÃO, a decisão revogada continua vigente nos registros e fica marcada como "pode estar revogada"
-    if (pending) serviceBlockers.push(previewBlocker('DECISION_PENDING', 'BLOCKING', { decisionIds: [pending.revokes ?? pending.decisionId ?? ''].filter((id) => id !== '') }));
+    const witness = { status: decisions.witness.status, knownHeads: decisions.witness.knownHeads, coveredSeq: decisions.witness.coveredSeq, unwitnessedAffecting: decisions.witness.unwitnessedAffecting };
+    // integridade do histórico NÃO resolvida (retrocesso/divergência/fonte ilegível): a 6B já devolve ZERO decisões vigentes; aqui o motivo é dito e a finalização bloqueada
+    if (isUnresolved(witness.status)) serviceBlockers.push(previewBlocker('DECISIONS_HISTORY_UNRESOLVED', 'BLOCKING', { reasonCode: witness.status }));
+    else if (pending) serviceBlockers.push(previewBlocker('DECISION_PENDING', 'BLOCKING', { decisionIds: [pending.revokes ?? pending.decisionId ?? ''].filter((id) => id !== '') }));
     else if (!decisions.finalizable) serviceBlockers.push(previewBlocker('DECISION_PENDING', 'BLOCKING', { reasonCode: 'FINALIZABLE_FALSE' })); // a 6B disse "não finalizar" sem apontar a pendente: nunca se ignora
 
     if (s.basis.status === 'NO_EVIDENCE') {
@@ -240,8 +262,8 @@ export function createScoringPreviewService(deps: PreviewDeps) {
           auditIdAlias: null,
           state: 'SEM_EVIDENCIA',
           company: { located: false, profileState: 'NO_EVIDENCE', unavailableReason: null, identityMatchedBy: null, websiteHost: null, source: 'Serper (intermediário)' },
-          evidence: { integrity: { status: s.basis.integrity.status, checkedFiles: s.basis.integrity.checkedFiles }, layout: null, referenceDate: null, referenceDateSource: null, profileSource: null, bases: [] },
-          decisions: { head: decisions.head, count: decisions.decisions.length, pending: pendingSummary, finalizable: decisions.finalizable, applied: [], held: [] },
+          evidence: { integrity: { status: s.basis.integrity.status, checkedFiles: s.basis.integrity.checkedFiles }, provenance: null, layout: null, referenceDate: null, referenceDateSource: null, profileSource: null, bases: [] },
+          decisions: { head: decisions.head, count: decisions.decisions.length, pending: pendingSummary, finalizable: decisions.finalizable, witness, applied: [], held: [] },
           decisionOptions: [],
           criteria: buildCriteria(view, null, null),
           outcomePreview: null,
@@ -255,6 +277,8 @@ export function createScoringPreviewService(deps: PreviewDeps) {
 
     const basis = s.basis.basis;
     if (basis.auditId !== auditId) return fail('AUDIT_IDENTITY_MISMATCH');
+    // SEM prova independente de que as evidências vieram da coleta, nada é finalizável (a prévia continua consultável e rotulada)
+    if (s.trust === null || s.trust.status !== 'AUTHENTICATED') serviceBlockers.push(previewBlocker('EVIDENCE_PROVENANCE_UNPROVEN', 'BLOCKING', { reasonCode: s.trust?.status === 'UNAUTHENTICATED' ? s.trust.reason : 'VERIFICATION_ERROR' }));
 
     /* decisões: aplicar ou RETER (campos estruturados; o alias nunca é usado para localizar nada) */
     const recordsById = new Map<string, OperatorRecord>(decisions.operatorRecords.map((record) => [record.id, record]));
@@ -349,6 +373,7 @@ export function createScoringPreviewService(deps: PreviewDeps) {
         },
         evidence: {
           integrity: { status: 'OK', checkedFiles: null },
+          provenance: s.trust === null ? null : { status: s.trust.status, reason: s.trust.status === 'UNAUTHENTICATED' ? s.trust.reason : null, missingRefs: s.trust.status === 'UNAUTHENTICATED' ? [...(s.trust.missingRefs ?? [])] : [] },
           layout: basis.layout,
           referenceDate: mapped.traceability.referenceDate,
           referenceDateSource: mapped.traceability.referenceDateSource ? { ref: mapped.traceability.referenceDateSource.ref, observedAt: mapped.traceability.referenceDateSource.observedAt } : null,
@@ -362,6 +387,7 @@ export function createScoringPreviewService(deps: PreviewDeps) {
           count: decisions.decisions.length,
           pending: pendingSummary,
           finalizable: decisions.finalizable,
+          witness,
           applied: applied.map((record) => record.id),
           held,
         },

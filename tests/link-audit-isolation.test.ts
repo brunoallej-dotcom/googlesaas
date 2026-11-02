@@ -217,6 +217,9 @@ const DECISIONS_TARGETS: ReadonlySet<string> = new Set(['canonical.ts', 'snapsho
  */
 const STORAGE_DIR = 'src/lib/link-audit-storage/';
 const STORAGE_TARGETS: ReadonlySet<string> = new Set(['canonical.ts', 'snapshot-store.ts']);
+/** Remediação do MAJOR-1: o módulo de PROVA DE ORIGEM (HMAC) consome SÓ o selo canônico (serialização estável do corpo assinado); conferido em `link-audit-origin-isolation.test.ts`. */
+const ORIGIN_DIR = 'src/lib/link-audit-origin/';
+const ORIGIN_TARGETS: ReadonlySet<string> = new Set(['canonical.ts']);
 /**
  * Onda 6C (I2): mapeador determinístico (servidor). Consome SÓ o selo canônico, as constantes de metodologia (tipo) e o CONTRATO
  * do motor (entrada, tipos, régua como dados, datas puras e versões). NUNCA o motor que calcula (engine, agregação, avaliadores).
@@ -266,6 +269,7 @@ test('isolamento reverso: só os consumidores declarados importam o módulo, e s
     const isRuntime = name.startsWith(RUNTIME_DIR) || name.startsWith(EVIDENCE_DIR) || name === RUNTIME_CLI || name === EVIDENCE_CLI;
     const isDecisions = name.startsWith(DECISIONS_DIR);
     const isStorage = name.startsWith(STORAGE_DIR);
+    const isOrigin = name.startsWith(ORIGIN_DIR);
     const isScoringRuns = name.startsWith(SCORING_RUNS_DIR);
     for (const statement of importStatements(fs.readFileSync(file, 'utf8'))) {
       const target = targetsModule(file, statement.specifier);
@@ -277,6 +281,9 @@ test('isolamento reverso: só os consumidores declarados importam o módulo, e s
       } else if (isDecisions) {
         const withExtension = target.endsWith('.ts') ? target : `${target}.ts`;
         assert.ok(DECISIONS_TARGETS.has(withExtension), `${name} importa "${statement.specifier}", fora da lista fechada do módulo de decisões`);
+      } else if (isOrigin) {
+        const withExtension = target.endsWith('.ts') ? target : `${target}.ts`;
+        assert.ok(ORIGIN_TARGETS.has(withExtension), `${name} importa "${statement.specifier}", fora da lista fechada do módulo de prova de origem`);
       } else if (isStorage) {
         const withExtension = target.endsWith('.ts') ? target : `${target}.ts`;
         assert.ok(STORAGE_TARGETS.has(withExtension), `${name} importa "${statement.specifier}", fora da lista fechada do módulo neutro de armazenamento`);
@@ -456,6 +463,8 @@ test('Onda 5A/5B: só o runtime, os comandos e as rotas de leitura importam o se
       for (const statement of importStatements(fs.readFileSync(file, 'utf8'))) {
         const resolved = resolveImport(file, statement.specifier);
         if (resolved === null || !(resolved === evidenceRoot || resolved.startsWith(evidenceRoot + path.sep))) continue;
+        // exceção deliberada (R2-MINOR-1): o serviço de prévia usa a POLÍTICA de proveniência das evidências (a fronteira com o motor); mais ninguém do módulo
+        if (name.endsWith('/preview.ts') && resolved === path.join(evidenceRoot, 'provenance')) continue;
         assert.ok(statement.typeOnly && resolved === path.join(evidenceRoot, 'scoring-basis'), `${name} importa "${statement.specifier}": só tipos de scoring-basis são permitidos`);
       }
       continue;
@@ -465,7 +474,7 @@ test('Onda 5A/5B: só o runtime, os comandos e as rotas de leitura importam o se
       for (const statement of importStatements(fs.readFileSync(file, 'utf8'))) {
         const resolved = resolveImport(file, statement.specifier);
         if (resolved === null || !(resolved === evidenceRoot || resolved.startsWith(evidenceRoot + path.sep))) continue;
-        assert.ok(resolved === evidenceRoot || resolved === path.join(evidenceRoot, 'scoring-basis'), `${name} importa "${statement.specifier}": só o índice público e o leitor de pontuação são permitidos`);
+        assert.ok(resolved === evidenceRoot || resolved === path.join(evidenceRoot, 'scoring-basis') || resolved === path.join(evidenceRoot, 'provenance'), `${name} importa "${statement.specifier}": só o índice público, o leitor de pontuação e a política de proveniência são permitidos`);
       }
       continue;
     }

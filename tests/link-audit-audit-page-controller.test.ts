@@ -185,22 +185,41 @@ test('finalizar: após o recibo falhar, "Concluir" a partir do histórico recons
   assert.equal(other.api.count('finalize'), 0, 'pendente de outro operador nunca é reenviada');
 });
 
-test('finalizar: RESULT_PENDING_UNCONFIRMED recarrega o histórico; se a pendente é minha oferece concluir, se não explica que só o autor conclui', async () => {
-  const mine = await loaded();
-  mine.api.q.finalize = [fail('RESULT_PENDING_UNCONFIRMED', 409)];
-  mine.api.q.results = [ok(resultsFixture({ pending: pendingRun() }))];
-  flow.openFinalize(mine.ctx);
-  mine.ctx.dispatch({ type: 'FINALIZE_ACK', acknowledged: true });
-  await flow.confirmFinalize(mine.ctx);
-  assert.equal(mine.state().finalize.phase, 'anchor_pending');
-  const other = await loaded();
-  other.api.q.finalize = [fail('RESULT_PENDING_UNCONFIRMED', 409)];
-  other.api.q.results = [ok(resultsFixture({ pending: pendingRun({ isMine: false }) }))];
-  flow.openFinalize(other.ctx);
-  other.ctx.dispatch({ type: 'FINALIZE_ACK', acknowledged: true });
-  await flow.confirmFinalize(other.ctx);
-  const f = other.state().finalize;
-  assert.ok(f.phase === 'error' && f.request === null && /somente o autor/.test(f.message));
+test('finalizar: pendência (RESULT_PENDING_UNCONFIRMED / ORIGEM NÃO COMPROVADA) recarrega o histórico e NUNCA monta reenvio automático a partir de dados do servidor — nem para a pendente "minha"', async () => {
+  const unproven = pendingRun({ origin: 'UNPROVEN', originDetail: 'INVALID', isMine: false, outcome: null, level: null, coveragePercent: null, appliedDecisionCount: null });
+  for (const [code, pending, expected] of [
+    ['RESULT_PENDING_UNCONFIRMED', pendingRun(), /Confira os dados no aviso de pendência/],
+    ['RESULT_PENDING_UNCONFIRMED', pendingRun({ isMine: false }), /somente o autor/],
+    ['RESULT_PENDING_ORIGIN_UNPROVEN', unproven, /origem do resultado pendente não pôde ser comprovada/],
+  ] as const) {
+    const h = await loaded();
+    h.api.q.finalize = [fail(code, 409)];
+    h.api.q.results = [ok(resultsFixture({ pending }))];
+    flow.openFinalize(h.ctx);
+    h.ctx.dispatch({ type: 'FINALIZE_ACK', acknowledged: true });
+    await flow.confirmFinalize(h.ctx);
+    const f = h.state().finalize;
+    assert.ok(f.phase === 'error' && f.request === null && expected.test(f.message), `${code}: ${JSON.stringify(f).slice(0, 200)}`);
+    assert.equal(h.api.count('finalize'), 1, `${code}: nenhum reenvio automático`);
+    assert.equal(h.api.count('results'), 2, `${code}: o histórico foi recarregado`);
+  }
+});
+
+test('concluir pendência: só com origem COMPROVADA e autor = sessão; pendência não comprovada (ou de outro) NÃO envia nada, mesmo que o botão seja acionado por outro caminho', async () => {
+  for (const [label, pending, sends] of [
+    ['comprovada e minha', pendingRun(), 1],
+    ['comprovada, de outro operador', pendingRun({ isMine: false }), 0],
+    ['origem NÃO comprovada (arquivo forjado citando o operador)', pendingRun({ origin: 'UNPROVEN', originDetail: 'MISSING', isMine: false, outcome: null, level: null, coveragePercent: null, appliedDecisionCount: null }), 0],
+    ['origem não verificável (sem chave no servidor)', pendingRun({ origin: 'UNVERIFIABLE', originDetail: 'NO_KEY', isMine: false, outcome: null, level: null, coveragePercent: null, appliedDecisionCount: null }), 0],
+    ['inconsistente: isMine=true com origem não comprovada (resposta forjada)', pendingRun({ origin: 'UNPROVEN', originDetail: 'INVALID', isMine: true }), 0],
+  ] as const) {
+    const h = await loaded();
+    h.api.q.results = [ok(resultsFixture({ pending }))];
+    await flow.loadSection(h.ctx, 'results');
+    h.api.q.finalize = [ok(finalizeSuccess(), 201)];
+    await flow.completePendingRun(h.ctx);
+    assert.equal(h.api.count('finalize'), sends, label);
+  }
 });
 
 test('finalizar: rede e resposta inesperada deixam o desfecho INCERTO e mantêm o pedido para reenvio seguro; acesso negado não', async () => {
@@ -298,7 +317,7 @@ test('decisão: validação local (justificativa curta, juízo ausente, opção 
   await flow.submitForm(unavailable.ctx);
   assert.match(unavailable.state().form.fieldErrors.join(' '), /não está disponível/);
   const pending = await withForm('C2');
-  pending.api.q.decisions = [ok(decisionsFixture({ pending: { confirmed: false, seq: 2, action: 'RECORD', decisionId: 'op-0002', revokes: null, supersedes: null, reason: null, record: { kind: 'JUDGEMENT' }, recordedAt: '2026-10-30T10:00:00.000Z', recordedBy: 'a@b.com' } }))];
+  pending.api.q.decisions = [ok(decisionsFixture({ pending: { confirmed: false, entrySha256: 'e'.repeat(64), origin: 'PROVEN', originDetail: null, isMine: true, seq: 2, action: 'RECORD', decisionId: 'op-0002', revokes: null, supersedes: null, reason: null, record: { kind: 'JUDGEMENT' }, recordedAt: '2026-10-30T10:00:00.000Z', recordedBy: 'a@b.com' } }))];
   await flow.loadSection(pending.ctx, 'decisions');
   await flow.submitForm(pending.ctx);
   assert.match(pending.state().form.fieldErrors.join(' '), /decisão pendente/);
@@ -452,17 +471,17 @@ test('revogação: exige motivo ≥ 20, envia {revokes, reason, expectedHead}; c
 
 test('decisão pendente vinda do histórico: o reenvio reconstrói o pedido original (registro/revogação) com o head confirmado', async () => {
   const create = await loaded();
-  create.api.q.decisions = [ok(decisionsFixture({ head: head(2, 'b'), pending: { confirmed: false, seq: 3, action: 'RECORD', decisionId: 'op-0003', revokes: null, supersedes: 'op-0001', reason: null, record: { kind: 'JUDGEMENT', subcriterionId: 'C2', value: 'PARTIAL', justification: 'x'.repeat(30) }, recordedAt: '2026-10-30T10:00:00.000Z', recordedBy: 'a@b.com' } }))];
+  create.api.q.decisions = [ok(decisionsFixture({ head: head(2, 'b'), pending: { confirmed: false, entrySha256: 'e'.repeat(64), origin: 'PROVEN', originDetail: null, isMine: true, seq: 3, action: 'RECORD', decisionId: 'op-0003', revokes: null, supersedes: 'op-0001', reason: null, record: { kind: 'JUDGEMENT', subcriterionId: 'C2', value: 'PARTIAL', justification: 'x'.repeat(30) }, recordedAt: '2026-10-30T10:00:00.000Z', recordedBy: 'a@b.com' } }))];
   await flow.loadSection(create.ctx, 'decisions');
   await flow.resendListedPending(create.ctx);
   assert.deepEqual((create.api.calls.find((c) => c.name === 'decide')?.args[0] as { kind: string; body: unknown }), { kind: 'CREATE', body: { record: { kind: 'JUDGEMENT', subcriterionId: 'C2', value: 'PARTIAL', justification: 'x'.repeat(30) }, supersedes: 'op-0001', expectedHead: head(2, 'b') } });
   const revoke = await loaded();
-  revoke.api.q.decisions = [ok(decisionsFixture({ head: head(2, 'b'), pending: { confirmed: false, seq: 3, action: 'REVOKE', decisionId: null, revokes: 'op-0001', supersedes: null, reason: 'Motivo da revogação com mais de vinte caracteres.', record: null, recordedAt: '2026-10-30T10:00:00.000Z', recordedBy: 'a@b.com' } }))];
+  revoke.api.q.decisions = [ok(decisionsFixture({ head: head(2, 'b'), pending: { confirmed: false, entrySha256: 'e'.repeat(64), origin: 'PROVEN', originDetail: null, isMine: true, seq: 3, action: 'REVOKE', decisionId: null, revokes: 'op-0001', supersedes: null, reason: 'Motivo da revogação com mais de vinte caracteres.', record: null, recordedAt: '2026-10-30T10:00:00.000Z', recordedBy: 'a@b.com' } }))];
   await flow.loadSection(revoke.ctx, 'decisions');
   await flow.resendListedPending(revoke.ctx);
   assert.deepEqual((revoke.api.calls.find((c) => c.name === 'decide')?.args[0] as { kind: string; body: unknown }), { kind: 'REVOKE', body: { revokes: 'op-0001', reason: 'Motivo da revogação com mais de vinte caracteres.', expectedHead: head(2, 'b') } });
   const lost = await loaded();
-  lost.api.q.decisions = [ok(decisionsFixture({ pending: { confirmed: false, seq: 3, action: 'RECORD', decisionId: 'op-0003', revokes: null, supersedes: null, reason: null, record: null, recordedAt: '2026-10-30T10:00:00.000Z', recordedBy: 'a@b.com' } }))];
+  lost.api.q.decisions = [ok(decisionsFixture({ pending: { confirmed: false, entrySha256: 'e'.repeat(64), origin: 'PROVEN', originDetail: null, isMine: true, seq: 3, action: 'RECORD', decisionId: 'op-0003', revokes: null, supersedes: null, reason: null, record: null, recordedAt: '2026-10-30T10:00:00.000Z', recordedBy: 'a@b.com' } }))];
   await flow.loadSection(lost.ctx, 'decisions');
   await flow.resendListedPending(lost.ctx);
   assert.equal(lost.api.count('decide'), 0, 'sem o registro original nada é inventado');

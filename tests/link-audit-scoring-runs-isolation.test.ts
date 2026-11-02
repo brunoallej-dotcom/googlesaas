@@ -46,16 +46,16 @@ const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   'blockers.ts': new Set(['../link-audit/scoring/input', '../link-audit/scoring/types', './types']),
   'outcome.ts': new Set(['../link-audit/scoring/types']),
   // Onda 6C (I3): o ÚNICO arquivo que executa o motor (pelo índice) e consome decisões (índice público) e a base (só tipos)
-  'preview.ts': new Set(['../link-audit/canonical', '../link-audit/methodology', '../link-audit/scoring/index', '../link-audit/scoring/input', '../link-audit-decisions', '../link-audit-evidence/scoring-basis', './assemble', './audit-id-alias', './blockers', './criteria-sources', './outcome', './types']),
+  'preview.ts': new Set(['../link-audit/canonical', '../link-audit/methodology', '../link-audit/scoring/index', '../link-audit/scoring/input', '../link-audit-decisions', '../link-audit-evidence/provenance', '../link-audit-evidence/scoring-basis', './assemble', './audit-id-alias', './blockers', './criteria-sources', './outcome', './types']),
   'index.ts': new Set(['./assemble', './audit-id-alias', './blockers', './criteria-sources', './outcome', './preview', './results', './results-types', './types']),
   // Onda 6C (I4): tipos/esquemas puros do registro e do recibo
-  'results-types.ts': new Set(['zod', '../link-audit-storage', './audit-id-alias']),
+  'results-types.ts': new Set(['zod', '../link-audit-origin', '../link-audit-storage', './audit-id-alias']),
   // reexecuta o motor (pelo índice) SÓ para conferir um registro já gravado; puro (sem disco)
   'results-verify.ts': new Set(['../link-audit/canonical', '../link-audit/scoring/index', './audit-id-alias', './outcome', './results-types', './types']),
   // o ÚNICO arquivo que toca o disco: protocolo de arquivos/recibos do I0 + mecanismo único de gravação
-  'results-store.ts': new Set(['node:crypto', 'node:path', '../link-audit/canonical', '../link-audit/snapshot-store', '../link-audit-storage', './audit-id-alias', './results-types']),
+  'results-store.ts': new Set(['node:crypto', 'node:path', '../link-audit/canonical', '../link-audit/snapshot-store', '../link-audit-origin', '../link-audit-storage', './audit-id-alias', './results-types']),
   // orquestra: prévia (avaliação), armazenamento e verificação; nunca o motor, o disco nem as decisões diretamente
-  'results.ts': new Set(['node:path', '../link-audit-evidence/scoring-basis', './audit-id-alias', './blockers', './outcome', './preview', './results-store', './results-types', './results-verify', './types']),
+  'results.ts': new Set(['node:path', '../link-audit-evidence/scoring-basis', '../link-audit-origin', './audit-id-alias', './blockers', './outcome', './preview', './results-store', './results-types', './results-verify', './types']),
   'types.ts': new Set(['../link-audit/methodology', '../link-audit/scoring/input', '../link-audit/scoring/types', '../link-audit-evidence/scoring-basis', './audit-id-alias', './criteria-sources']),
 };
 
@@ -79,9 +79,15 @@ test('consumidores: só a rota da prévia (I3) importa o módulo, e só pelo ín
   for (const file of [...walk(path.join(ROOT, 'src')), ...walk(path.join(ROOT, 'scripts'))]) {
     if (file.startsWith(LIB + path.sep)) continue;
     const route = file.startsWith(path.join(ROOT, 'src', 'app', 'api', 'link-audit', 'scoring') + path.sep);
+    // exceção DELIBERADA (R3-MINOR-2): a composição das rotas de DECISÕES usa `createResultsKnownHeads` (testemunha do histórico) e nada mais do módulo
+    const decisionsComposition = file === path.join(ROOT, 'src', 'app', 'api', 'link-audit', 'decisions', 'shared.ts');
+    if (decisionsComposition) {
+      const names = [...fs.readFileSync(file, 'utf8').matchAll(/import\s*\{([^}]*)\}\s*from\s*'@\/lib\/link-audit-scoring-runs'/g)].flatMap((m) => (m[1] ?? '').split(',').map((n) => n.trim()).filter(Boolean));
+      assert.deepEqual(names, ['createResultsKnownHeads'], 'as rotas de decisões só podem importar o provedor de cabeças conhecidas');
+    }
     for (const { specifier } of importsOf(fs.readFileSync(file, 'utf8'))) {
       const resolved = specifier.startsWith('@/') ? path.join(ROOT, 'src', specifier.slice(2)) : specifier.startsWith('.') ? path.resolve(path.dirname(file), specifier) : null;
-      if (route && resolved === LIB) continue;
+      if ((route || decisionsComposition) && resolved === LIB) continue;
       assert.ok(resolved === null || !(resolved === LIB || resolved.startsWith(LIB + path.sep)), `${path.relative(ROOT, file)} importa o mapeador ("${specifier}")`);
     }
   }
@@ -175,7 +181,8 @@ test('I4: só results-store.ts toca o disco/mecanismo de gravação; só ele usa
   }
   // results-store: o único uso de escrita é publishExclusive (resultado) e confirmReceipt (recibo, protocolo do I0)
   const store = codeOf('results-store.ts');
-  assert.deepEqual([...new Set([...store.matchAll(/\bops\.([a-zA-Z]+)\s*\(/g)].map((m) => m[1]))].sort(), ['readdir']);
+  // `lstat` (R4-MINOR-1/INFO-1, 5ª revisão): sonda SOMENTE LEITURA das pastas da testemunha, para separar "não consigo ler" de "não é um diretório comum"
+  assert.deepEqual([...new Set([...store.matchAll(/\bops\.([a-zA-Z]+)\s*\(/g)].map((m) => m[1]))].sort(), ['lstat', 'readdir']);
   assert.ok(/publishExclusive\(/.test(store) && /confirmReceipt\(/.test(store) && /withLock\(/.test(store) && /atomicOnly\(/.test(store));
   // results.ts: só consulta o caminho real das pastas (configuração); o relógio vem injetado
   assert.deepEqual([...new Set([...codeOf('results.ts').matchAll(/\bops\.([a-zA-Z]+)\s*\(/g)].map((m) => m[1]))].sort(), ['realpath']);

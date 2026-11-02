@@ -1,0 +1,3330 @@
+{
+  "primitives": {
+    "assertBase": [
+      {
+        "code": "UNSAFE_PATH",
+        "issues": [
+          "Diretório base de decisões inválido (precisa ser um caminho absoluto)."
+        ],
+        "ok": false
+      },
+      {
+        "code": "UNSAFE_PATH",
+        "issues": [
+          "Diretório base de decisões inválido (precisa ser um caminho absoluto)."
+        ],
+        "ok": false
+      },
+      {
+        "code": "UNSAFE_PATH",
+        "issues": [
+          "O diretório de decisões não pode ficar em public/ do projeto (área pública ou de código)."
+        ],
+        "ok": false
+      },
+      {
+        "code": "UNSAFE_PATH",
+        "issues": [
+          "O diretório de âncoras não pode ficar em src/ do projeto (área pública ou de código)."
+        ],
+        "ok": false
+      },
+      {
+        "ok": true,
+        "value": "/srv/dados/decisoes"
+      },
+      {
+        "code": "UNSAFE_PATH",
+        "issues": [
+          "Diretório base de decisões inválido (precisa ser um caminho absoluto)."
+        ],
+        "ok": false
+      },
+      {
+        "code": "UNSAFE_PATH",
+        "issues": [
+          "Diretório base de decisões inválido (precisa ser um caminho absoluto)."
+        ],
+        "ok": false
+      }
+    ],
+    "hashOk": [
+      true,
+      false
+    ],
+    "locateIn": [
+      {
+        "ok": true,
+        "value": {
+          "dir": "/srv/dados/decisoes/auditoria-conformidade-01",
+          "root": "/srv/dados/decisoes"
+        }
+      },
+      {
+        "code": "INVALID_ID",
+        "issues": [
+          "auditId inválido (8 a 64 caracteres: letras minúsculas, números, _ e -)."
+        ],
+        "ok": false
+      },
+      {
+        "code": "INVALID_ID",
+        "issues": [
+          "auditId inválido (8 a 64 caracteres: letras minúsculas, números, _ e -)."
+        ],
+        "ok": false
+      },
+      {
+        "code": "INVALID_ID",
+        "issues": [
+          "auditId inválido (8 a 64 caracteres: letras minúsculas, números, _ e -)."
+        ],
+        "ok": false
+      },
+      {
+        "code": "UNSAFE_PATH",
+        "issues": [
+          "Diretório base de âncoras inválido (precisa ser um caminho absoluto)."
+        ],
+        "ok": false
+      }
+    ],
+    "scrubPaths": [
+      "erro em [caminho]",
+      "falhou [caminho]",
+      "sem caminho nenhum"
+    ],
+    "seal": {
+      "a": [
+        3,
+        2,
+        1
+      ],
+      "auditId": "auditoria-conformidade-01",
+      "contentSha256": "4516a4a31439e84004326511c62eabe874f1ebc19069be2e86b1eb4483056dbe",
+      "kind": "AMOSTRA",
+      "schemaVersion": 1,
+      "seq": 1,
+      "texto": "ação — acentuação",
+      "z": 1
+    },
+    "serialize": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"AMOSTRA\",\n  \"auditId\": \"auditoria-conformidade-01\",\n  \"seq\": 1,\n  \"texto\": \"ação — acentuação\",\n  \"z\": 1,\n  \"a\": [\n    3,\n    2,\n    1\n  ],\n  \"contentSha256\": \"4516a4a31439e84004326511c62eabe874f1ebc19069be2e86b1eb4483056dbe\"\n}\n",
+    "splitNames": [
+      {
+        "numbers": [
+          1,
+          2,
+          3
+        ],
+        "orphanTempFiles": [
+          ".tmp-d0006.json-ab"
+        ],
+        "suspicious": [
+          "D0004.JSON",
+          "d0005.json.bak"
+        ],
+        "unexpectedFiles": [
+          "desktop.ini",
+          "leia-me.txt"
+        ]
+      },
+      {
+        "numbers": [
+          1,
+          2
+        ],
+        "orphanTempFiles": [
+          ".tmp-a0005.json-ab"
+        ],
+        "suspicious": [
+          "A0003.json",
+          "a0004.json.orig"
+        ],
+        "unexpectedFiles": [
+          "notas.txt"
+        ]
+      }
+    ]
+  },
+  "steps": [
+    {
+      "result": {
+        "ok": true,
+        "value": {
+          "allDecisions": [],
+          "ambiguousDecisionIds": [],
+          "anchors": {
+            "count": 0,
+            "lastSeq": 0,
+            "unanchored": 0
+          },
+          "auditId": "auditoria-conformidade-01",
+          "decisions": [],
+          "finalizable": true,
+          "head": null,
+          "history": [],
+          "integrity": {
+            "algorithm": "SHA-256",
+            "checkedFiles": 0,
+            "ignoredFiles": 0,
+            "note": "O hash SHA-256 detecta alteração acidental ou inconsistência; não é assinatura. A remoção ou o retrocesso do histórico é detectado pelas âncoras (pasta separada) e pelo expectedHead; quem altera as DUAS pastas ao mesmo tempo (ex.: root na VPS) não é detectado.",
+            "status": "OK"
+          },
+          "limits": {
+            "maxEffectiveRecords": 200,
+            "maxEntries": 9999,
+            "reservedForRevocations": 100
+          },
+          "operatorRecords": [],
+          "pending": null,
+          "witness": {
+            "coveredSeq": null,
+            "knownHeads": 0,
+            "status": "NOT_REQUIRED",
+            "unwitnessedAffecting": 0
+          }
+        }
+      },
+      "step": "list vazio"
+    },
+    {
+      "result": {
+        "ok": true,
+        "value": {
+          "anchored": true,
+          "anchors": {
+            "count": 1,
+            "lastSeq": 1,
+            "unanchored": 0
+          },
+          "decision": {
+            "basis": {
+              "capture": 1,
+              "collectedAt": "2026-10-22T12:54:48.079Z",
+              "report": {
+                "capture": 1,
+                "revision": 1
+              }
+            },
+            "decisionId": "op-0001",
+            "kind": "JUDGEMENT",
+            "record": {
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "JUDGEMENT",
+              "subcriterionId": "C2",
+              "value": "COMPATIBLE"
+            },
+            "recordedAt": "2026-10-21T12:00:01.000Z",
+            "recordedBy": "ana@empresa.com",
+            "revokedAtSeq": null,
+            "seq": 1,
+            "siteDependent": false,
+            "status": "ACTIVE",
+            "supersededBy": null,
+            "supersedes": null
+          },
+          "effectiveCount": 1,
+          "head": {
+            "seq": 1,
+            "sha256": "d21c122964cfdf975735aadc2c384aa93278695980022320fcaa067d9a094658"
+          },
+          "replayed": false
+        }
+      },
+      "step": "cria C2 (histórico vazio)"
+    },
+    {
+      "result": {
+        "ok": true,
+        "value": {
+          "anchored": true,
+          "anchors": {
+            "count": 2,
+            "lastSeq": 2,
+            "unanchored": 0
+          },
+          "decision": {
+            "basis": {
+              "capture": 1,
+              "collectedAt": "2026-10-22T12:54:48.079Z",
+              "report": {
+                "capture": 1,
+                "revision": 1
+              }
+            },
+            "decisionId": "op-0002",
+            "kind": "JUDGEMENT",
+            "record": {
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "JUDGEMENT",
+              "subcriterionId": "C3",
+              "value": "ALL_RELEVANT"
+            },
+            "recordedAt": "2026-10-21T12:00:03.000Z",
+            "recordedBy": "ana@empresa.com",
+            "revokedAtSeq": null,
+            "seq": 2,
+            "siteDependent": false,
+            "status": "ACTIVE",
+            "supersededBy": null,
+            "supersedes": null
+          },
+          "effectiveCount": 2,
+          "head": {
+            "seq": 2,
+            "sha256": "cad9f0ca54d49a86bc438fcf056cf289448249c3e3088a409483a1e1be86c217"
+          },
+          "replayed": false
+        }
+      },
+      "step": "cria C3"
+    },
+    {
+      "result": {
+        "ok": true,
+        "value": {
+          "anchored": true,
+          "anchors": {
+            "count": 3,
+            "lastSeq": 3,
+            "unanchored": 0
+          },
+          "decision": {
+            "basis": {
+              "capture": 1,
+              "collectedAt": "2026-10-22T12:54:48.079Z",
+              "report": {
+                "capture": 1,
+                "revision": 1
+              }
+            },
+            "decisionId": "op-0003",
+            "kind": "JUDGEMENT",
+            "record": {
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "JUDGEMENT",
+              "subcriterionId": "C2",
+              "value": "PARTIAL"
+            },
+            "recordedAt": "2026-10-21T12:00:05.000Z",
+            "recordedBy": "ana@empresa.com",
+            "revokedAtSeq": null,
+            "seq": 3,
+            "siteDependent": false,
+            "status": "ACTIVE",
+            "supersededBy": null,
+            "supersedes": "op-0001"
+          },
+          "effectiveCount": 2,
+          "head": {
+            "seq": 3,
+            "sha256": "28c6b45c6c0d5e6790bcbed4d0469cd7f21dc447ed05dc89226cf3bf441a7062"
+          },
+          "replayed": false
+        }
+      },
+      "step": "substitui op-0001"
+    },
+    {
+      "result": {
+        "ok": true,
+        "value": {
+          "anchored": true,
+          "anchors": {
+            "count": 4,
+            "lastSeq": 4,
+            "unanchored": 0
+          },
+          "effectiveCount": 1,
+          "head": {
+            "seq": 4,
+            "sha256": "67912f19e7d1bbb2daff116108bcb7c818c2f67aa25515acd4d0a614761d4912"
+          },
+          "replayed": false,
+          "revocation": {
+            "action": "REVOKE",
+            "decisionId": null,
+            "entrySha256": "67912f19e7d1bbb2daff116108bcb7c818c2f67aa25515acd4d0a614761d4912",
+            "reason": "Informação conferida e incorreta; decisão desfeita.",
+            "recordedAt": "2026-10-21T12:00:07.000Z",
+            "recordedBy": "ana@empresa.com",
+            "revokes": "op-0002",
+            "seq": 4,
+            "supersedes": null
+          },
+          "revoked": {
+            "basis": {
+              "capture": 1,
+              "collectedAt": "2026-10-22T12:54:48.079Z",
+              "report": {
+                "capture": 1,
+                "revision": 1
+              }
+            },
+            "decisionId": "op-0002",
+            "kind": "JUDGEMENT",
+            "record": {
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "JUDGEMENT",
+              "subcriterionId": "C3",
+              "value": "ALL_RELEVANT"
+            },
+            "recordedAt": "2026-10-21T12:00:03.000Z",
+            "recordedBy": "ana@empresa.com",
+            "revokedAtSeq": 4,
+            "seq": 2,
+            "siteDependent": false,
+            "status": "REVOKED",
+            "supersededBy": null,
+            "supersedes": null
+          }
+        }
+      },
+      "step": "revoga op-0002"
+    },
+    {
+      "result": {
+        "code": "HEAD_MISMATCH",
+        "head": {
+          "seq": 4,
+          "sha256": "67912f19e7d1bbb2daff116108bcb7c818c2f67aa25515acd4d0a614761d4912"
+        },
+        "issues": [
+          "Outras decisões foram gravadas depois da sua visão; recarregue."
+        ],
+        "ok": false,
+        "pending": null
+      },
+      "step": "visão velha → HEAD_MISMATCH"
+    },
+    {
+      "result": {
+        "code": "HISTORY_REGRESSED",
+        "head": {
+          "seq": 4,
+          "sha256": "67912f19e7d1bbb2daff116108bcb7c818c2f67aa25515acd4d0a614761d4912"
+        },
+        "issues": [
+          "A sua visão chegava à posição 99; o histórico atual chega à 4."
+        ],
+        "ok": false,
+        "pending": null
+      },
+      "step": "visão à frente → HISTORY_REGRESSED"
+    },
+    {
+      "result": {
+        "code": "INVALID_BODY",
+        "head": null,
+        "issues": [
+          "expectedHead: Invalid input: expected object, received undefined"
+        ],
+        "ok": false,
+        "pending": null
+      },
+      "step": "sem expectedHead → INVALID_BODY"
+    },
+    {
+      "result": {
+        "code": "FORBIDDEN_FIELDS",
+        "head": null,
+        "issues": [
+          "campo não aceito: points"
+        ],
+        "ok": false,
+        "pending": null
+      },
+      "step": "campo de pontuação → FORBIDDEN_FIELDS"
+    },
+    {
+      "result": {
+        "code": "INVALID_PARAMS",
+        "head": null,
+        "issues": [
+          "auditId inválido."
+        ],
+        "ok": false,
+        "pending": null
+      },
+      "step": "auditId inválido"
+    },
+    {
+      "result": {
+        "ok": true,
+        "value": {
+          "anchored": true,
+          "anchors": {
+            "count": 4,
+            "lastSeq": 4,
+            "unanchored": 0
+          },
+          "decision": {
+            "basis": {
+              "capture": 1,
+              "collectedAt": "2026-10-22T12:54:48.079Z",
+              "report": {
+                "capture": 1,
+                "revision": 1
+              }
+            },
+            "decisionId": "op-0002",
+            "kind": "JUDGEMENT",
+            "record": {
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "JUDGEMENT",
+              "subcriterionId": "C3",
+              "value": "ALL_RELEVANT"
+            },
+            "recordedAt": "2026-10-21T12:00:03.000Z",
+            "recordedBy": "ana@empresa.com",
+            "revokedAtSeq": 4,
+            "seq": 2,
+            "siteDependent": false,
+            "status": "REVOKED",
+            "supersededBy": null,
+            "supersedes": null
+          },
+          "effectiveCount": 1,
+          "head": {
+            "seq": 4,
+            "sha256": "67912f19e7d1bbb2daff116108bcb7c818c2f67aa25515acd4d0a614761d4912"
+          },
+          "replayed": true
+        }
+      },
+      "step": "reenvio de confirmada"
+    },
+    {
+      "result": {
+        "code": "ANCHOR_PENDING",
+        "head": {
+          "seq": 4,
+          "sha256": "67912f19e7d1bbb2daff116108bcb7c818c2f67aa25515acd4d0a614761d4912"
+        },
+        "issues": [],
+        "ok": false,
+        "pending": {
+          "action": "RECORD",
+          "confirmed": false,
+          "decisionId": "op-0005",
+          "entrySha256": "4f8fbf06e9c34cab440df65335cfc792369ed928acff48f5b350a963ac5f2004",
+          "isMine": true,
+          "origin": "PROVEN",
+          "originDetail": null,
+          "reason": null,
+          "record": {
+            "justification": "Conferido no painel do perfil pelo operador responsável.",
+            "kind": "JUDGEMENT",
+            "sampleSize": 5,
+            "subcriterionId": "P3",
+            "value": "SPECIFIC"
+          },
+          "recordedAt": "2026-10-21T12:00:17.000Z",
+          "recordedBy": "ana@empresa.com",
+          "revokes": null,
+          "seq": 5,
+          "supersedes": null
+        }
+      },
+      "step": "recibo falha → ANCHOR_PENDING"
+    },
+    {
+      "result": {
+        "ok": true,
+        "value": {
+          "allDecisions": [
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0001",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "subcriterionId": "C2",
+                "value": "COMPATIBLE"
+              },
+              "recordedAt": "2026-10-21T12:00:01.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 1,
+              "siteDependent": false,
+              "status": "SUPERSEDED",
+              "supersededBy": "op-0003",
+              "supersedes": null
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0002",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "subcriterionId": "C3",
+                "value": "ALL_RELEVANT"
+              },
+              "recordedAt": "2026-10-21T12:00:03.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": 4,
+              "seq": 2,
+              "siteDependent": false,
+              "status": "REVOKED",
+              "supersededBy": null,
+              "supersedes": null
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0003",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "subcriterionId": "C2",
+                "value": "PARTIAL"
+              },
+              "recordedAt": "2026-10-21T12:00:05.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 3,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": "op-0001"
+            }
+          ],
+          "ambiguousDecisionIds": [],
+          "anchors": {
+            "count": 4,
+            "lastSeq": 4,
+            "unanchored": 1
+          },
+          "auditId": "auditoria-conformidade-01",
+          "decisions": [
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0003",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "subcriterionId": "C2",
+                "value": "PARTIAL"
+              },
+              "recordedAt": "2026-10-21T12:00:05.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 3,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": "op-0001"
+            }
+          ],
+          "finalizable": false,
+          "head": {
+            "seq": 4,
+            "sha256": "67912f19e7d1bbb2daff116108bcb7c818c2f67aa25515acd4d0a614761d4912"
+          },
+          "history": [
+            {
+              "action": "RECORD",
+              "decisionId": "op-0001",
+              "entrySha256": "d21c122964cfdf975735aadc2c384aa93278695980022320fcaa067d9a094658",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:01.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 1,
+              "supersedes": null
+            },
+            {
+              "action": "RECORD",
+              "decisionId": "op-0002",
+              "entrySha256": "cad9f0ca54d49a86bc438fcf056cf289448249c3e3088a409483a1e1be86c217",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:03.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 2,
+              "supersedes": null
+            },
+            {
+              "action": "RECORD",
+              "decisionId": "op-0003",
+              "entrySha256": "28c6b45c6c0d5e6790bcbed4d0469cd7f21dc447ed05dc89226cf3bf441a7062",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:05.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 3,
+              "supersedes": "op-0001"
+            },
+            {
+              "action": "REVOKE",
+              "decisionId": null,
+              "entrySha256": "67912f19e7d1bbb2daff116108bcb7c818c2f67aa25515acd4d0a614761d4912",
+              "reason": "Informação conferida e incorreta; decisão desfeita.",
+              "recordedAt": "2026-10-21T12:00:07.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": "op-0002",
+              "seq": 4,
+              "supersedes": null
+            }
+          ],
+          "integrity": {
+            "algorithm": "SHA-256",
+            "checkedFiles": 5,
+            "ignoredFiles": 0,
+            "note": "O hash SHA-256 detecta alteração acidental ou inconsistência; não é assinatura. A remoção ou o retrocesso do histórico é detectado pelas âncoras (pasta separada) e pelo expectedHead; quem altera as DUAS pastas ao mesmo tempo (ex.: root na VPS) não é detectado.",
+            "status": "OK"
+          },
+          "limits": {
+            "maxEffectiveRecords": 200,
+            "maxEntries": 9999,
+            "reservedForRevocations": 100
+          },
+          "operatorRecords": [
+            {
+              "id": "op-0003",
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "JUDGEMENT",
+              "operatorEmail": "ana@empresa.com",
+              "recordedAt": "2026-10-21T12:00:05.000Z",
+              "subcriterionId": "C2",
+              "value": "PARTIAL"
+            }
+          ],
+          "pending": {
+            "action": "RECORD",
+            "confirmed": false,
+            "decisionId": "op-0005",
+            "entrySha256": "4f8fbf06e9c34cab440df65335cfc792369ed928acff48f5b350a963ac5f2004",
+            "isMine": true,
+            "origin": "PROVEN",
+            "originDetail": null,
+            "reason": null,
+            "record": {
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "JUDGEMENT",
+              "sampleSize": 5,
+              "subcriterionId": "P3",
+              "value": "SPECIFIC"
+            },
+            "recordedAt": "2026-10-21T12:00:17.000Z",
+            "recordedBy": "ana@empresa.com",
+            "revokes": null,
+            "seq": 5,
+            "supersedes": null
+          },
+          "witness": {
+            "coveredSeq": null,
+            "knownHeads": 0,
+            "status": "NOT_REQUIRED",
+            "unwitnessedAffecting": 2
+          }
+        }
+      },
+      "step": "lista com pendente"
+    },
+    {
+      "result": {
+        "code": "PENDING_UNCONFIRMED",
+        "head": {
+          "seq": 4,
+          "sha256": "67912f19e7d1bbb2daff116108bcb7c818c2f67aa25515acd4d0a614761d4912"
+        },
+        "issues": [],
+        "ok": false,
+        "pending": {
+          "action": "RECORD",
+          "confirmed": false,
+          "decisionId": "op-0005",
+          "entrySha256": "4f8fbf06e9c34cab440df65335cfc792369ed928acff48f5b350a963ac5f2004",
+          "isMine": false,
+          "origin": "PROVEN",
+          "originDetail": null,
+          "reason": null,
+          "record": null,
+          "recordedAt": "2026-10-21T12:00:17.000Z",
+          "recordedBy": "ana@empresa.com",
+          "revokes": null,
+          "seq": 5,
+          "supersedes": null
+        }
+      },
+      "step": "outro operador sobre a pendente"
+    },
+    {
+      "result": {
+        "code": "PENDING_UNCONFIRMED",
+        "head": {
+          "seq": 4,
+          "sha256": "67912f19e7d1bbb2daff116108bcb7c818c2f67aa25515acd4d0a614761d4912"
+        },
+        "issues": [],
+        "ok": false,
+        "pending": {
+          "action": "RECORD",
+          "confirmed": false,
+          "decisionId": "op-0005",
+          "entrySha256": "4f8fbf06e9c34cab440df65335cfc792369ed928acff48f5b350a963ac5f2004",
+          "isMine": true,
+          "origin": "PROVEN",
+          "originDetail": null,
+          "reason": null,
+          "record": {
+            "justification": "Conferido no painel do perfil pelo operador responsável.",
+            "kind": "JUDGEMENT",
+            "sampleSize": 5,
+            "subcriterionId": "P3",
+            "value": "SPECIFIC"
+          },
+          "recordedAt": "2026-10-21T12:00:17.000Z",
+          "recordedBy": "ana@empresa.com",
+          "revokes": null,
+          "seq": 5,
+          "supersedes": null
+        }
+      },
+      "step": "autor com outro pedido sobre a pendente"
+    },
+    {
+      "result": {
+        "code": "PENDING_UNCONFIRMED",
+        "head": {
+          "seq": 4,
+          "sha256": "67912f19e7d1bbb2daff116108bcb7c818c2f67aa25515acd4d0a614761d4912"
+        },
+        "issues": [],
+        "ok": false,
+        "pending": {
+          "action": "RECORD",
+          "confirmed": false,
+          "decisionId": "op-0005",
+          "entrySha256": "4f8fbf06e9c34cab440df65335cfc792369ed928acff48f5b350a963ac5f2004",
+          "isMine": false,
+          "origin": "PROVEN",
+          "originDetail": null,
+          "reason": null,
+          "record": null,
+          "recordedAt": "2026-10-21T12:00:17.000Z",
+          "recordedBy": "ana@empresa.com",
+          "revokes": null,
+          "seq": 5,
+          "supersedes": null
+        }
+      },
+      "step": "revogação alheia sobre a pendente"
+    },
+    {
+      "result": {
+        "ok": true,
+        "value": {
+          "anchored": true,
+          "anchors": {
+            "count": 5,
+            "lastSeq": 5,
+            "unanchored": 0
+          },
+          "decision": {
+            "basis": {
+              "capture": 1,
+              "collectedAt": "2026-10-22T12:54:48.079Z",
+              "report": {
+                "capture": 1,
+                "revision": 1
+              }
+            },
+            "decisionId": "op-0005",
+            "kind": "JUDGEMENT",
+            "record": {
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "JUDGEMENT",
+              "sampleSize": 5,
+              "subcriterionId": "P3",
+              "value": "SPECIFIC"
+            },
+            "recordedAt": "2026-10-21T12:00:17.000Z",
+            "recordedBy": "ana@empresa.com",
+            "revokedAtSeq": null,
+            "seq": 5,
+            "siteDependent": false,
+            "status": "ACTIVE",
+            "supersededBy": null,
+            "supersedes": null
+          },
+          "effectiveCount": 2,
+          "head": {
+            "seq": 5,
+            "sha256": "4f8fbf06e9c34cab440df65335cfc792369ed928acff48f5b350a963ac5f2004"
+          },
+          "replayed": true
+        }
+      },
+      "step": "reenvio conclui a pendente"
+    },
+    {
+      "result": {
+        "ok": true,
+        "value": {
+          "anchored": true,
+          "anchors": {
+            "count": 5,
+            "lastSeq": 5,
+            "unanchored": 0
+          },
+          "decision": {
+            "basis": {
+              "capture": 1,
+              "collectedAt": "2026-10-22T12:54:48.079Z",
+              "report": {
+                "capture": 1,
+                "revision": 1
+              }
+            },
+            "decisionId": "op-0005",
+            "kind": "JUDGEMENT",
+            "record": {
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "JUDGEMENT",
+              "sampleSize": 5,
+              "subcriterionId": "P3",
+              "value": "SPECIFIC"
+            },
+            "recordedAt": "2026-10-21T12:00:17.000Z",
+            "recordedBy": "ana@empresa.com",
+            "revokedAtSeq": null,
+            "seq": 5,
+            "siteDependent": false,
+            "status": "ACTIVE",
+            "supersededBy": null,
+            "supersedes": null
+          },
+          "effectiveCount": 2,
+          "head": {
+            "seq": 5,
+            "sha256": "4f8fbf06e9c34cab440df65335cfc792369ed928acff48f5b350a963ac5f2004"
+          },
+          "replayed": true
+        }
+      },
+      "step": "reenvio repetido"
+    },
+    {
+      "result": {
+        "ok": true,
+        "value": {
+          "anchored": true,
+          "anchors": {
+            "count": 6,
+            "lastSeq": 6,
+            "unanchored": 0
+          },
+          "decision": {
+            "basis": {
+              "capture": 1,
+              "collectedAt": "2026-10-22T12:54:48.079Z",
+              "report": {
+                "capture": 1,
+                "revision": 1
+              }
+            },
+            "decisionId": "op-0006",
+            "kind": "NOT_APPLICABLE",
+            "record": {
+              "causeEvidenceIds": [],
+              "code": "BUSINESS_MODEL",
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "NOT_APPLICABLE",
+              "subcriterionIds": [
+                "S4"
+              ]
+            },
+            "recordedAt": "2026-10-21T12:00:31.000Z",
+            "recordedBy": "ana@empresa.com",
+            "revokedAtSeq": null,
+            "seq": 6,
+            "siteDependent": false,
+            "status": "ACTIVE",
+            "supersededBy": null,
+            "supersedes": null
+          },
+          "effectiveCount": 3,
+          "head": {
+            "seq": 6,
+            "sha256": "0e55f6a86cc94feecfa9dd86ac0bc92ad4587ded774b737b3f54f1efdfc43500"
+          },
+          "replayed": false
+        }
+      },
+      "step": "cria N/A"
+    },
+    {
+      "result": {
+        "code": "ANCHOR_PENDING",
+        "head": {
+          "seq": 6,
+          "sha256": "0e55f6a86cc94feecfa9dd86ac0bc92ad4587ded774b737b3f54f1efdfc43500"
+        },
+        "issues": [],
+        "ok": false,
+        "pending": {
+          "action": "RECORD",
+          "confirmed": false,
+          "decisionId": "op-0007",
+          "entrySha256": "20312ed62321f68773e75adffcef93ba8b0b29d541e3927720cf891c50c5f946",
+          "isMine": true,
+          "origin": "PROVEN",
+          "originDetail": null,
+          "reason": null,
+          "record": {
+            "justification": "Conferido no painel do perfil pelo operador responsável.",
+            "kind": "NAME_EQUIVALENCE",
+            "nameA": "Padaria Exemplo Ltda",
+            "nameB": "Padaria Exemplo"
+          },
+          "recordedAt": "2026-10-21T12:00:33.000Z",
+          "recordedBy": "ana@empresa.com",
+          "revokes": null,
+          "seq": 7,
+          "supersedes": null
+        }
+      },
+      "step": "EIO no recibo → ANCHOR_PENDING"
+    },
+    {
+      "result": {
+        "code": "DECISIONS_STORAGE_UNAVAILABLE",
+        "head": null,
+        "issues": [],
+        "ok": false,
+        "pending": null
+      },
+      "step": "escrita seguinte bloqueada"
+    },
+    {
+      "result": {
+        "ok": true,
+        "value": {
+          "allDecisions": [
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0001",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "subcriterionId": "C2",
+                "value": "COMPATIBLE"
+              },
+              "recordedAt": "2026-10-21T12:00:01.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 1,
+              "siteDependent": false,
+              "status": "SUPERSEDED",
+              "supersededBy": "op-0003",
+              "supersedes": null
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0002",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "subcriterionId": "C3",
+                "value": "ALL_RELEVANT"
+              },
+              "recordedAt": "2026-10-21T12:00:03.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": 4,
+              "seq": 2,
+              "siteDependent": false,
+              "status": "REVOKED",
+              "supersededBy": null,
+              "supersedes": null
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0003",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "subcriterionId": "C2",
+                "value": "PARTIAL"
+              },
+              "recordedAt": "2026-10-21T12:00:05.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 3,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": "op-0001"
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0005",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "sampleSize": 5,
+                "subcriterionId": "P3",
+                "value": "SPECIFIC"
+              },
+              "recordedAt": "2026-10-21T12:00:17.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 5,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": null
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0006",
+              "kind": "NOT_APPLICABLE",
+              "record": {
+                "causeEvidenceIds": [],
+                "code": "BUSINESS_MODEL",
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "NOT_APPLICABLE",
+                "subcriterionIds": [
+                  "S4"
+                ]
+              },
+              "recordedAt": "2026-10-21T12:00:31.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 6,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": null
+            }
+          ],
+          "ambiguousDecisionIds": [],
+          "anchors": {
+            "count": 6,
+            "lastSeq": 6,
+            "unanchored": 1
+          },
+          "auditId": "auditoria-conformidade-01",
+          "decisions": [
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0003",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "subcriterionId": "C2",
+                "value": "PARTIAL"
+              },
+              "recordedAt": "2026-10-21T12:00:05.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 3,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": "op-0001"
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0005",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "sampleSize": 5,
+                "subcriterionId": "P3",
+                "value": "SPECIFIC"
+              },
+              "recordedAt": "2026-10-21T12:00:17.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 5,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": null
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0006",
+              "kind": "NOT_APPLICABLE",
+              "record": {
+                "causeEvidenceIds": [],
+                "code": "BUSINESS_MODEL",
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "NOT_APPLICABLE",
+                "subcriterionIds": [
+                  "S4"
+                ]
+              },
+              "recordedAt": "2026-10-21T12:00:31.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 6,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": null
+            }
+          ],
+          "finalizable": false,
+          "head": {
+            "seq": 6,
+            "sha256": "0e55f6a86cc94feecfa9dd86ac0bc92ad4587ded774b737b3f54f1efdfc43500"
+          },
+          "history": [
+            {
+              "action": "RECORD",
+              "decisionId": "op-0001",
+              "entrySha256": "d21c122964cfdf975735aadc2c384aa93278695980022320fcaa067d9a094658",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:01.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 1,
+              "supersedes": null
+            },
+            {
+              "action": "RECORD",
+              "decisionId": "op-0002",
+              "entrySha256": "cad9f0ca54d49a86bc438fcf056cf289448249c3e3088a409483a1e1be86c217",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:03.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 2,
+              "supersedes": null
+            },
+            {
+              "action": "RECORD",
+              "decisionId": "op-0003",
+              "entrySha256": "28c6b45c6c0d5e6790bcbed4d0469cd7f21dc447ed05dc89226cf3bf441a7062",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:05.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 3,
+              "supersedes": "op-0001"
+            },
+            {
+              "action": "REVOKE",
+              "decisionId": null,
+              "entrySha256": "67912f19e7d1bbb2daff116108bcb7c818c2f67aa25515acd4d0a614761d4912",
+              "reason": "Informação conferida e incorreta; decisão desfeita.",
+              "recordedAt": "2026-10-21T12:00:07.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": "op-0002",
+              "seq": 4,
+              "supersedes": null
+            },
+            {
+              "action": "RECORD",
+              "decisionId": "op-0005",
+              "entrySha256": "4f8fbf06e9c34cab440df65335cfc792369ed928acff48f5b350a963ac5f2004",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:17.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 5,
+              "supersedes": null
+            },
+            {
+              "action": "RECORD",
+              "decisionId": "op-0006",
+              "entrySha256": "0e55f6a86cc94feecfa9dd86ac0bc92ad4587ded774b737b3f54f1efdfc43500",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:31.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 6,
+              "supersedes": null
+            }
+          ],
+          "integrity": {
+            "algorithm": "SHA-256",
+            "checkedFiles": 7,
+            "ignoredFiles": 0,
+            "note": "O hash SHA-256 detecta alteração acidental ou inconsistência; não é assinatura. A remoção ou o retrocesso do histórico é detectado pelas âncoras (pasta separada) e pelo expectedHead; quem altera as DUAS pastas ao mesmo tempo (ex.: root na VPS) não é detectado.",
+            "status": "OK"
+          },
+          "limits": {
+            "maxEffectiveRecords": 200,
+            "maxEntries": 9999,
+            "reservedForRevocations": 100
+          },
+          "operatorRecords": [
+            {
+              "id": "op-0003",
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "JUDGEMENT",
+              "operatorEmail": "ana@empresa.com",
+              "recordedAt": "2026-10-21T12:00:05.000Z",
+              "subcriterionId": "C2",
+              "value": "PARTIAL"
+            },
+            {
+              "id": "op-0005",
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "JUDGEMENT",
+              "operatorEmail": "ana@empresa.com",
+              "recordedAt": "2026-10-21T12:00:17.000Z",
+              "sampleSize": 5,
+              "subcriterionId": "P3",
+              "value": "SPECIFIC"
+            },
+            {
+              "causeEvidenceIds": [],
+              "code": "BUSINESS_MODEL",
+              "id": "op-0006",
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "NOT_APPLICABLE",
+              "operatorEmail": "ana@empresa.com",
+              "recordedAt": "2026-10-21T12:00:31.000Z",
+              "subcriterionIds": [
+                "S4"
+              ]
+            }
+          ],
+          "pending": {
+            "action": "RECORD",
+            "confirmed": false,
+            "decisionId": "op-0007",
+            "entrySha256": "20312ed62321f68773e75adffcef93ba8b0b29d541e3927720cf891c50c5f946",
+            "isMine": true,
+            "origin": "PROVEN",
+            "originDetail": null,
+            "reason": null,
+            "record": {
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "NAME_EQUIVALENCE",
+              "nameA": "Padaria Exemplo Ltda",
+              "nameB": "Padaria Exemplo"
+            },
+            "recordedAt": "2026-10-21T12:00:33.000Z",
+            "recordedBy": "ana@empresa.com",
+            "revokes": null,
+            "seq": 7,
+            "supersedes": null
+          },
+          "witness": {
+            "coveredSeq": null,
+            "knownHeads": 0,
+            "status": "NOT_REQUIRED",
+            "unwitnessedAffecting": 2
+          }
+        }
+      },
+      "step": "leitura continua"
+    },
+    {
+      "result": {
+        "ok": true,
+        "value": {
+          "anchored": true,
+          "anchors": {
+            "count": 7,
+            "lastSeq": 7,
+            "unanchored": 0
+          },
+          "decision": {
+            "basis": {
+              "capture": 1,
+              "collectedAt": "2026-10-22T12:54:48.079Z",
+              "report": {
+                "capture": 1,
+                "revision": 1
+              }
+            },
+            "decisionId": "op-0007",
+            "kind": "NAME_EQUIVALENCE",
+            "record": {
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "NAME_EQUIVALENCE",
+              "nameA": "Padaria Exemplo Ltda",
+              "nameB": "Padaria Exemplo"
+            },
+            "recordedAt": "2026-10-21T12:00:33.000Z",
+            "recordedBy": "ana@empresa.com",
+            "revokedAtSeq": null,
+            "seq": 7,
+            "siteDependent": false,
+            "status": "ACTIVE",
+            "supersededBy": null,
+            "supersedes": null
+          },
+          "effectiveCount": 4,
+          "head": {
+            "seq": 7,
+            "sha256": "20312ed62321f68773e75adffcef93ba8b0b29d541e3927720cf891c50c5f946"
+          },
+          "replayed": true
+        }
+      },
+      "step": "depois de reiniciar: reenvio conclui"
+    },
+    {
+      "result": {
+        "ok": true,
+        "value": {
+          "allDecisions": [
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0001",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "subcriterionId": "C2",
+                "value": "COMPATIBLE"
+              },
+              "recordedAt": "2026-10-21T12:00:01.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 1,
+              "siteDependent": false,
+              "status": "SUPERSEDED",
+              "supersededBy": "op-0003",
+              "supersedes": null
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0002",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "subcriterionId": "C3",
+                "value": "ALL_RELEVANT"
+              },
+              "recordedAt": "2026-10-21T12:00:03.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": 4,
+              "seq": 2,
+              "siteDependent": false,
+              "status": "REVOKED",
+              "supersededBy": null,
+              "supersedes": null
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0003",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "subcriterionId": "C2",
+                "value": "PARTIAL"
+              },
+              "recordedAt": "2026-10-21T12:00:05.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 3,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": "op-0001"
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0005",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "sampleSize": 5,
+                "subcriterionId": "P3",
+                "value": "SPECIFIC"
+              },
+              "recordedAt": "2026-10-21T12:00:17.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 5,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": null
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0006",
+              "kind": "NOT_APPLICABLE",
+              "record": {
+                "causeEvidenceIds": [],
+                "code": "BUSINESS_MODEL",
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "NOT_APPLICABLE",
+                "subcriterionIds": [
+                  "S4"
+                ]
+              },
+              "recordedAt": "2026-10-21T12:00:31.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 6,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": null
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0007",
+              "kind": "NAME_EQUIVALENCE",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "NAME_EQUIVALENCE",
+                "nameA": "Padaria Exemplo Ltda",
+                "nameB": "Padaria Exemplo"
+              },
+              "recordedAt": "2026-10-21T12:00:33.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 7,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": null
+            }
+          ],
+          "ambiguousDecisionIds": [],
+          "anchors": {
+            "count": 7,
+            "lastSeq": 7,
+            "unanchored": 0
+          },
+          "auditId": "auditoria-conformidade-01",
+          "decisions": [
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0003",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "subcriterionId": "C2",
+                "value": "PARTIAL"
+              },
+              "recordedAt": "2026-10-21T12:00:05.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 3,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": "op-0001"
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0005",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "sampleSize": 5,
+                "subcriterionId": "P3",
+                "value": "SPECIFIC"
+              },
+              "recordedAt": "2026-10-21T12:00:17.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 5,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": null
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0006",
+              "kind": "NOT_APPLICABLE",
+              "record": {
+                "causeEvidenceIds": [],
+                "code": "BUSINESS_MODEL",
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "NOT_APPLICABLE",
+                "subcriterionIds": [
+                  "S4"
+                ]
+              },
+              "recordedAt": "2026-10-21T12:00:31.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 6,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": null
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0007",
+              "kind": "NAME_EQUIVALENCE",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "NAME_EQUIVALENCE",
+                "nameA": "Padaria Exemplo Ltda",
+                "nameB": "Padaria Exemplo"
+              },
+              "recordedAt": "2026-10-21T12:00:33.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 7,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": null
+            }
+          ],
+          "finalizable": true,
+          "head": {
+            "seq": 7,
+            "sha256": "20312ed62321f68773e75adffcef93ba8b0b29d541e3927720cf891c50c5f946"
+          },
+          "history": [
+            {
+              "action": "RECORD",
+              "decisionId": "op-0001",
+              "entrySha256": "d21c122964cfdf975735aadc2c384aa93278695980022320fcaa067d9a094658",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:01.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 1,
+              "supersedes": null
+            },
+            {
+              "action": "RECORD",
+              "decisionId": "op-0002",
+              "entrySha256": "cad9f0ca54d49a86bc438fcf056cf289448249c3e3088a409483a1e1be86c217",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:03.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 2,
+              "supersedes": null
+            },
+            {
+              "action": "RECORD",
+              "decisionId": "op-0003",
+              "entrySha256": "28c6b45c6c0d5e6790bcbed4d0469cd7f21dc447ed05dc89226cf3bf441a7062",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:05.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 3,
+              "supersedes": "op-0001"
+            },
+            {
+              "action": "REVOKE",
+              "decisionId": null,
+              "entrySha256": "67912f19e7d1bbb2daff116108bcb7c818c2f67aa25515acd4d0a614761d4912",
+              "reason": "Informação conferida e incorreta; decisão desfeita.",
+              "recordedAt": "2026-10-21T12:00:07.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": "op-0002",
+              "seq": 4,
+              "supersedes": null
+            },
+            {
+              "action": "RECORD",
+              "decisionId": "op-0005",
+              "entrySha256": "4f8fbf06e9c34cab440df65335cfc792369ed928acff48f5b350a963ac5f2004",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:17.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 5,
+              "supersedes": null
+            },
+            {
+              "action": "RECORD",
+              "decisionId": "op-0006",
+              "entrySha256": "0e55f6a86cc94feecfa9dd86ac0bc92ad4587ded774b737b3f54f1efdfc43500",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:31.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 6,
+              "supersedes": null
+            },
+            {
+              "action": "RECORD",
+              "decisionId": "op-0007",
+              "entrySha256": "20312ed62321f68773e75adffcef93ba8b0b29d541e3927720cf891c50c5f946",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:33.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 7,
+              "supersedes": null
+            }
+          ],
+          "integrity": {
+            "algorithm": "SHA-256",
+            "checkedFiles": 7,
+            "ignoredFiles": 0,
+            "note": "O hash SHA-256 detecta alteração acidental ou inconsistência; não é assinatura. A remoção ou o retrocesso do histórico é detectado pelas âncoras (pasta separada) e pelo expectedHead; quem altera as DUAS pastas ao mesmo tempo (ex.: root na VPS) não é detectado.",
+            "status": "OK"
+          },
+          "limits": {
+            "maxEffectiveRecords": 200,
+            "maxEntries": 9999,
+            "reservedForRevocations": 100
+          },
+          "operatorRecords": [
+            {
+              "id": "op-0003",
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "JUDGEMENT",
+              "operatorEmail": "ana@empresa.com",
+              "recordedAt": "2026-10-21T12:00:05.000Z",
+              "subcriterionId": "C2",
+              "value": "PARTIAL"
+            },
+            {
+              "id": "op-0005",
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "JUDGEMENT",
+              "operatorEmail": "ana@empresa.com",
+              "recordedAt": "2026-10-21T12:00:17.000Z",
+              "sampleSize": 5,
+              "subcriterionId": "P3",
+              "value": "SPECIFIC"
+            },
+            {
+              "causeEvidenceIds": [],
+              "code": "BUSINESS_MODEL",
+              "id": "op-0006",
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "NOT_APPLICABLE",
+              "operatorEmail": "ana@empresa.com",
+              "recordedAt": "2026-10-21T12:00:31.000Z",
+              "subcriterionIds": [
+                "S4"
+              ]
+            },
+            {
+              "id": "op-0007",
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "NAME_EQUIVALENCE",
+              "nameA": "Padaria Exemplo Ltda",
+              "nameB": "Padaria Exemplo",
+              "operatorEmail": "ana@empresa.com",
+              "recordedAt": "2026-10-21T12:00:33.000Z"
+            }
+          ],
+          "pending": null,
+          "witness": {
+            "coveredSeq": null,
+            "knownHeads": 0,
+            "status": "NOT_REQUIRED",
+            "unwitnessedAffecting": 2
+          }
+        }
+      },
+      "step": "lista final"
+    },
+    {
+      "result": {
+        "code": "DECISIONS_TRUNCATED",
+        "head": null,
+        "issues": [
+          "O histórico de decisões tem 6 arquivo(s), mas há âncora(s) até a posição 7: arquivos de decisão foram removidos ou o histórico foi restaurado de uma cópia antiga."
+        ],
+        "ok": false,
+        "pending": null
+      },
+      "step": "adulteração: último arquivo apagado"
+    },
+    {
+      "result": {
+        "code": "DECISIONS_TRUNCATED",
+        "head": null,
+        "issues": [
+          "O histórico de decisões tem 0 arquivo(s), mas há âncora(s) até a posição 7: arquivos de decisão foram removidos ou o histórico foi restaurado de uma cópia antiga."
+        ],
+        "ok": false,
+        "pending": null
+      },
+      "step": "adulteração: pasta de decisões inteira apagada"
+    },
+    {
+      "result": {
+        "code": "ANCHOR_MISMATCH",
+        "head": null,
+        "issues": [
+          "A decisão 7 não confere com a âncora gravada na pasta separada (arquivo reescrito ou substituído)."
+        ],
+        "ok": false,
+        "pending": null
+      },
+      "step": "adulteração: último arquivo re-selado"
+    },
+    {
+      "result": {
+        "code": "ANCHOR_INTEGRITY",
+        "head": null,
+        "issues": [
+          "Lacuna na sequência de âncoras (esperado a0004.json, achado a0005.json)."
+        ],
+        "ok": false,
+        "pending": null
+      },
+      "step": "adulteração: recibo do meio apagado"
+    },
+    {
+      "result": {
+        "code": "ANCHOR_INTEGRITY",
+        "head": null,
+        "issues": [
+          "2 decisões estão sem âncora (o máximo tolerado é 1): âncoras removidas ou pasta de âncoras trocada."
+        ],
+        "ok": false,
+        "pending": null
+      },
+      "step": "adulteração: dois últimos recibos apagados"
+    },
+    {
+      "result": {
+        "ok": true,
+        "value": {
+          "allDecisions": [
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0001",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "subcriterionId": "C2",
+                "value": "COMPATIBLE"
+              },
+              "recordedAt": "2026-10-21T12:00:01.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 1,
+              "siteDependent": false,
+              "status": "SUPERSEDED",
+              "supersededBy": "op-0003",
+              "supersedes": null
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0002",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "subcriterionId": "C3",
+                "value": "ALL_RELEVANT"
+              },
+              "recordedAt": "2026-10-21T12:00:03.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": 4,
+              "seq": 2,
+              "siteDependent": false,
+              "status": "REVOKED",
+              "supersededBy": null,
+              "supersedes": null
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0003",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "subcriterionId": "C2",
+                "value": "PARTIAL"
+              },
+              "recordedAt": "2026-10-21T12:00:05.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 3,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": "op-0001"
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0005",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "sampleSize": 5,
+                "subcriterionId": "P3",
+                "value": "SPECIFIC"
+              },
+              "recordedAt": "2026-10-21T12:00:17.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 5,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": null
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0006",
+              "kind": "NOT_APPLICABLE",
+              "record": {
+                "causeEvidenceIds": [],
+                "code": "BUSINESS_MODEL",
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "NOT_APPLICABLE",
+                "subcriterionIds": [
+                  "S4"
+                ]
+              },
+              "recordedAt": "2026-10-21T12:00:31.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 6,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": null
+            }
+          ],
+          "ambiguousDecisionIds": [],
+          "anchors": {
+            "count": 6,
+            "lastSeq": 6,
+            "unanchored": 1
+          },
+          "auditId": "auditoria-conformidade-01",
+          "decisions": [
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0003",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "subcriterionId": "C2",
+                "value": "PARTIAL"
+              },
+              "recordedAt": "2026-10-21T12:00:05.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 3,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": "op-0001"
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0005",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "sampleSize": 5,
+                "subcriterionId": "P3",
+                "value": "SPECIFIC"
+              },
+              "recordedAt": "2026-10-21T12:00:17.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 5,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": null
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0006",
+              "kind": "NOT_APPLICABLE",
+              "record": {
+                "causeEvidenceIds": [],
+                "code": "BUSINESS_MODEL",
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "NOT_APPLICABLE",
+                "subcriterionIds": [
+                  "S4"
+                ]
+              },
+              "recordedAt": "2026-10-21T12:00:31.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 6,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": null
+            }
+          ],
+          "finalizable": false,
+          "head": {
+            "seq": 6,
+            "sha256": "0e55f6a86cc94feecfa9dd86ac0bc92ad4587ded774b737b3f54f1efdfc43500"
+          },
+          "history": [
+            {
+              "action": "RECORD",
+              "decisionId": "op-0001",
+              "entrySha256": "d21c122964cfdf975735aadc2c384aa93278695980022320fcaa067d9a094658",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:01.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 1,
+              "supersedes": null
+            },
+            {
+              "action": "RECORD",
+              "decisionId": "op-0002",
+              "entrySha256": "cad9f0ca54d49a86bc438fcf056cf289448249c3e3088a409483a1e1be86c217",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:03.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 2,
+              "supersedes": null
+            },
+            {
+              "action": "RECORD",
+              "decisionId": "op-0003",
+              "entrySha256": "28c6b45c6c0d5e6790bcbed4d0469cd7f21dc447ed05dc89226cf3bf441a7062",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:05.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 3,
+              "supersedes": "op-0001"
+            },
+            {
+              "action": "REVOKE",
+              "decisionId": null,
+              "entrySha256": "67912f19e7d1bbb2daff116108bcb7c818c2f67aa25515acd4d0a614761d4912",
+              "reason": "Informação conferida e incorreta; decisão desfeita.",
+              "recordedAt": "2026-10-21T12:00:07.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": "op-0002",
+              "seq": 4,
+              "supersedes": null
+            },
+            {
+              "action": "RECORD",
+              "decisionId": "op-0005",
+              "entrySha256": "4f8fbf06e9c34cab440df65335cfc792369ed928acff48f5b350a963ac5f2004",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:17.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 5,
+              "supersedes": null
+            },
+            {
+              "action": "RECORD",
+              "decisionId": "op-0006",
+              "entrySha256": "0e55f6a86cc94feecfa9dd86ac0bc92ad4587ded774b737b3f54f1efdfc43500",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:31.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 6,
+              "supersedes": null
+            }
+          ],
+          "integrity": {
+            "algorithm": "SHA-256",
+            "checkedFiles": 7,
+            "ignoredFiles": 0,
+            "note": "O hash SHA-256 detecta alteração acidental ou inconsistência; não é assinatura. A remoção ou o retrocesso do histórico é detectado pelas âncoras (pasta separada) e pelo expectedHead; quem altera as DUAS pastas ao mesmo tempo (ex.: root na VPS) não é detectado.",
+            "status": "OK"
+          },
+          "limits": {
+            "maxEffectiveRecords": 200,
+            "maxEntries": 9999,
+            "reservedForRevocations": 100
+          },
+          "operatorRecords": [
+            {
+              "id": "op-0003",
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "JUDGEMENT",
+              "operatorEmail": "ana@empresa.com",
+              "recordedAt": "2026-10-21T12:00:05.000Z",
+              "subcriterionId": "C2",
+              "value": "PARTIAL"
+            },
+            {
+              "id": "op-0005",
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "JUDGEMENT",
+              "operatorEmail": "ana@empresa.com",
+              "recordedAt": "2026-10-21T12:00:17.000Z",
+              "sampleSize": 5,
+              "subcriterionId": "P3",
+              "value": "SPECIFIC"
+            },
+            {
+              "causeEvidenceIds": [],
+              "code": "BUSINESS_MODEL",
+              "id": "op-0006",
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "NOT_APPLICABLE",
+              "operatorEmail": "ana@empresa.com",
+              "recordedAt": "2026-10-21T12:00:31.000Z",
+              "subcriterionIds": [
+                "S4"
+              ]
+            }
+          ],
+          "pending": {
+            "action": "RECORD",
+            "confirmed": false,
+            "decisionId": "op-0007",
+            "entrySha256": "20312ed62321f68773e75adffcef93ba8b0b29d541e3927720cf891c50c5f946",
+            "isMine": true,
+            "origin": "PROVEN",
+            "originDetail": null,
+            "reason": null,
+            "record": {
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "NAME_EQUIVALENCE",
+              "nameA": "Padaria Exemplo Ltda",
+              "nameB": "Padaria Exemplo"
+            },
+            "recordedAt": "2026-10-21T12:00:33.000Z",
+            "recordedBy": "ana@empresa.com",
+            "revokes": null,
+            "seq": 7,
+            "supersedes": null
+          },
+          "witness": {
+            "coveredSeq": null,
+            "knownHeads": 0,
+            "status": "NOT_REQUIRED",
+            "unwitnessedAffecting": 2
+          }
+        }
+      },
+      "step": "último recibo apagado → pendente"
+    },
+    {
+      "result": {
+        "code": "DECISIONS_INTEGRITY",
+        "head": null,
+        "issues": [
+          "Arquivo suspeito na pasta de decisões: d0008.json.bak."
+        ],
+        "ok": false,
+        "pending": null
+      },
+      "step": "nome suspeito na pasta de decisões"
+    },
+    {
+      "result": {
+        "code": "ANCHOR_INTEGRITY",
+        "head": null,
+        "issues": [
+          "Arquivo suspeito na pasta de âncoras: a0008.json.orig."
+        ],
+        "ok": false,
+        "pending": null
+      },
+      "step": "nome suspeito na pasta de recibos"
+    },
+    {
+      "result": {
+        "ok": true,
+        "value": {
+          "allDecisions": [
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0001",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "subcriterionId": "C2",
+                "value": "COMPATIBLE"
+              },
+              "recordedAt": "2026-10-21T12:00:01.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 1,
+              "siteDependent": false,
+              "status": "SUPERSEDED",
+              "supersededBy": "op-0003",
+              "supersedes": null
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0002",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "subcriterionId": "C3",
+                "value": "ALL_RELEVANT"
+              },
+              "recordedAt": "2026-10-21T12:00:03.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": 4,
+              "seq": 2,
+              "siteDependent": false,
+              "status": "REVOKED",
+              "supersededBy": null,
+              "supersedes": null
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0003",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "subcriterionId": "C2",
+                "value": "PARTIAL"
+              },
+              "recordedAt": "2026-10-21T12:00:05.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 3,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": "op-0001"
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0005",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "sampleSize": 5,
+                "subcriterionId": "P3",
+                "value": "SPECIFIC"
+              },
+              "recordedAt": "2026-10-21T12:00:17.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 5,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": null
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0006",
+              "kind": "NOT_APPLICABLE",
+              "record": {
+                "causeEvidenceIds": [],
+                "code": "BUSINESS_MODEL",
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "NOT_APPLICABLE",
+                "subcriterionIds": [
+                  "S4"
+                ]
+              },
+              "recordedAt": "2026-10-21T12:00:31.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 6,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": null
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0007",
+              "kind": "NAME_EQUIVALENCE",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "NAME_EQUIVALENCE",
+                "nameA": "Padaria Exemplo Ltda",
+                "nameB": "Padaria Exemplo"
+              },
+              "recordedAt": "2026-10-21T12:00:33.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 7,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": null
+            }
+          ],
+          "ambiguousDecisionIds": [],
+          "anchors": {
+            "count": 7,
+            "lastSeq": 7,
+            "unanchored": 0
+          },
+          "auditId": "auditoria-conformidade-01",
+          "decisions": [
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0003",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "subcriterionId": "C2",
+                "value": "PARTIAL"
+              },
+              "recordedAt": "2026-10-21T12:00:05.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 3,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": "op-0001"
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0005",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "sampleSize": 5,
+                "subcriterionId": "P3",
+                "value": "SPECIFIC"
+              },
+              "recordedAt": "2026-10-21T12:00:17.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 5,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": null
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0006",
+              "kind": "NOT_APPLICABLE",
+              "record": {
+                "causeEvidenceIds": [],
+                "code": "BUSINESS_MODEL",
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "NOT_APPLICABLE",
+                "subcriterionIds": [
+                  "S4"
+                ]
+              },
+              "recordedAt": "2026-10-21T12:00:31.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 6,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": null
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0007",
+              "kind": "NAME_EQUIVALENCE",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "NAME_EQUIVALENCE",
+                "nameA": "Padaria Exemplo Ltda",
+                "nameB": "Padaria Exemplo"
+              },
+              "recordedAt": "2026-10-21T12:00:33.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 7,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": null
+            }
+          ],
+          "finalizable": true,
+          "head": {
+            "seq": 7,
+            "sha256": "20312ed62321f68773e75adffcef93ba8b0b29d541e3927720cf891c50c5f946"
+          },
+          "history": [
+            {
+              "action": "RECORD",
+              "decisionId": "op-0001",
+              "entrySha256": "d21c122964cfdf975735aadc2c384aa93278695980022320fcaa067d9a094658",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:01.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 1,
+              "supersedes": null
+            },
+            {
+              "action": "RECORD",
+              "decisionId": "op-0002",
+              "entrySha256": "cad9f0ca54d49a86bc438fcf056cf289448249c3e3088a409483a1e1be86c217",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:03.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 2,
+              "supersedes": null
+            },
+            {
+              "action": "RECORD",
+              "decisionId": "op-0003",
+              "entrySha256": "28c6b45c6c0d5e6790bcbed4d0469cd7f21dc447ed05dc89226cf3bf441a7062",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:05.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 3,
+              "supersedes": "op-0001"
+            },
+            {
+              "action": "REVOKE",
+              "decisionId": null,
+              "entrySha256": "67912f19e7d1bbb2daff116108bcb7c818c2f67aa25515acd4d0a614761d4912",
+              "reason": "Informação conferida e incorreta; decisão desfeita.",
+              "recordedAt": "2026-10-21T12:00:07.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": "op-0002",
+              "seq": 4,
+              "supersedes": null
+            },
+            {
+              "action": "RECORD",
+              "decisionId": "op-0005",
+              "entrySha256": "4f8fbf06e9c34cab440df65335cfc792369ed928acff48f5b350a963ac5f2004",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:17.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 5,
+              "supersedes": null
+            },
+            {
+              "action": "RECORD",
+              "decisionId": "op-0006",
+              "entrySha256": "0e55f6a86cc94feecfa9dd86ac0bc92ad4587ded774b737b3f54f1efdfc43500",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:31.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 6,
+              "supersedes": null
+            },
+            {
+              "action": "RECORD",
+              "decisionId": "op-0007",
+              "entrySha256": "20312ed62321f68773e75adffcef93ba8b0b29d541e3927720cf891c50c5f946",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:33.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 7,
+              "supersedes": null
+            }
+          ],
+          "integrity": {
+            "algorithm": "SHA-256",
+            "checkedFiles": 7,
+            "ignoredFiles": 2,
+            "note": "O hash SHA-256 detecta alteração acidental ou inconsistência; não é assinatura. A remoção ou o retrocesso do histórico é detectado pelas âncoras (pasta separada) e pelo expectedHead; quem altera as DUAS pastas ao mesmo tempo (ex.: root na VPS) não é detectado.",
+            "status": "OK"
+          },
+          "limits": {
+            "maxEffectiveRecords": 200,
+            "maxEntries": 9999,
+            "reservedForRevocations": 100
+          },
+          "operatorRecords": [
+            {
+              "id": "op-0003",
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "JUDGEMENT",
+              "operatorEmail": "ana@empresa.com",
+              "recordedAt": "2026-10-21T12:00:05.000Z",
+              "subcriterionId": "C2",
+              "value": "PARTIAL"
+            },
+            {
+              "id": "op-0005",
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "JUDGEMENT",
+              "operatorEmail": "ana@empresa.com",
+              "recordedAt": "2026-10-21T12:00:17.000Z",
+              "sampleSize": 5,
+              "subcriterionId": "P3",
+              "value": "SPECIFIC"
+            },
+            {
+              "causeEvidenceIds": [],
+              "code": "BUSINESS_MODEL",
+              "id": "op-0006",
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "NOT_APPLICABLE",
+              "operatorEmail": "ana@empresa.com",
+              "recordedAt": "2026-10-21T12:00:31.000Z",
+              "subcriterionIds": [
+                "S4"
+              ]
+            },
+            {
+              "id": "op-0007",
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "NAME_EQUIVALENCE",
+              "nameA": "Padaria Exemplo Ltda",
+              "nameB": "Padaria Exemplo",
+              "operatorEmail": "ana@empresa.com",
+              "recordedAt": "2026-10-21T12:00:33.000Z"
+            }
+          ],
+          "pending": null,
+          "witness": {
+            "coveredSeq": null,
+            "knownHeads": 0,
+            "status": "NOT_REQUIRED",
+            "unwitnessedAffecting": 2
+          }
+        }
+      },
+      "step": "ruído comum e temporário órfão são ignorados"
+    },
+    {
+      "result": {
+        "code": "ANCHOR_INTEGRITY",
+        "head": null,
+        "issues": [
+          "a0002.json não segue o formato esperado."
+        ],
+        "ok": false,
+        "pending": null
+      },
+      "step": "adulteração: bytes do recibo alterados"
+    },
+    {
+      "result": {
+        "ok": true,
+        "value": {
+          "allDecisions": [
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0001",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "subcriterionId": "C2",
+                "value": "COMPATIBLE"
+              },
+              "recordedAt": "2026-10-21T12:00:01.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 1,
+              "siteDependent": false,
+              "status": "SUPERSEDED",
+              "supersededBy": "op-0003",
+              "supersedes": null
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0002",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "subcriterionId": "C3",
+                "value": "ALL_RELEVANT"
+              },
+              "recordedAt": "2026-10-21T12:00:03.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": 4,
+              "seq": 2,
+              "siteDependent": false,
+              "status": "REVOKED",
+              "supersededBy": null,
+              "supersedes": null
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0003",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "subcriterionId": "C2",
+                "value": "PARTIAL"
+              },
+              "recordedAt": "2026-10-21T12:00:05.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 3,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": "op-0001"
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0005",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "sampleSize": 5,
+                "subcriterionId": "P3",
+                "value": "SPECIFIC"
+              },
+              "recordedAt": "2026-10-21T12:00:17.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 5,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": null
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0006",
+              "kind": "NOT_APPLICABLE",
+              "record": {
+                "causeEvidenceIds": [],
+                "code": "BUSINESS_MODEL",
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "NOT_APPLICABLE",
+                "subcriterionIds": [
+                  "S4"
+                ]
+              },
+              "recordedAt": "2026-10-21T12:00:31.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 6,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": null
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0007",
+              "kind": "NAME_EQUIVALENCE",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "NAME_EQUIVALENCE",
+                "nameA": "Padaria Exemplo Ltda",
+                "nameB": "Padaria Exemplo"
+              },
+              "recordedAt": "2026-10-21T12:00:33.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 7,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": null
+            }
+          ],
+          "ambiguousDecisionIds": [],
+          "anchors": {
+            "count": 7,
+            "lastSeq": 7,
+            "unanchored": 0
+          },
+          "auditId": "auditoria-conformidade-01",
+          "decisions": [
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0003",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "subcriterionId": "C2",
+                "value": "PARTIAL"
+              },
+              "recordedAt": "2026-10-21T12:00:05.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 3,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": "op-0001"
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0005",
+              "kind": "JUDGEMENT",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "JUDGEMENT",
+                "sampleSize": 5,
+                "subcriterionId": "P3",
+                "value": "SPECIFIC"
+              },
+              "recordedAt": "2026-10-21T12:00:17.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 5,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": null
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0006",
+              "kind": "NOT_APPLICABLE",
+              "record": {
+                "causeEvidenceIds": [],
+                "code": "BUSINESS_MODEL",
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "NOT_APPLICABLE",
+                "subcriterionIds": [
+                  "S4"
+                ]
+              },
+              "recordedAt": "2026-10-21T12:00:31.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 6,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": null
+            },
+            {
+              "basis": {
+                "capture": 1,
+                "collectedAt": "2026-10-22T12:54:48.079Z",
+                "report": {
+                  "capture": 1,
+                  "revision": 1
+                }
+              },
+              "decisionId": "op-0007",
+              "kind": "NAME_EQUIVALENCE",
+              "record": {
+                "justification": "Conferido no painel do perfil pelo operador responsável.",
+                "kind": "NAME_EQUIVALENCE",
+                "nameA": "Padaria Exemplo Ltda",
+                "nameB": "Padaria Exemplo"
+              },
+              "recordedAt": "2026-10-21T12:00:33.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokedAtSeq": null,
+              "seq": 7,
+              "siteDependent": false,
+              "status": "ACTIVE",
+              "supersededBy": null,
+              "supersedes": null
+            }
+          ],
+          "finalizable": true,
+          "head": {
+            "seq": 7,
+            "sha256": "20312ed62321f68773e75adffcef93ba8b0b29d541e3927720cf891c50c5f946"
+          },
+          "history": [
+            {
+              "action": "RECORD",
+              "decisionId": "op-0001",
+              "entrySha256": "d21c122964cfdf975735aadc2c384aa93278695980022320fcaa067d9a094658",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:01.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 1,
+              "supersedes": null
+            },
+            {
+              "action": "RECORD",
+              "decisionId": "op-0002",
+              "entrySha256": "cad9f0ca54d49a86bc438fcf056cf289448249c3e3088a409483a1e1be86c217",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:03.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 2,
+              "supersedes": null
+            },
+            {
+              "action": "RECORD",
+              "decisionId": "op-0003",
+              "entrySha256": "28c6b45c6c0d5e6790bcbed4d0469cd7f21dc447ed05dc89226cf3bf441a7062",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:05.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 3,
+              "supersedes": "op-0001"
+            },
+            {
+              "action": "REVOKE",
+              "decisionId": null,
+              "entrySha256": "67912f19e7d1bbb2daff116108bcb7c818c2f67aa25515acd4d0a614761d4912",
+              "reason": "Informação conferida e incorreta; decisão desfeita.",
+              "recordedAt": "2026-10-21T12:00:07.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": "op-0002",
+              "seq": 4,
+              "supersedes": null
+            },
+            {
+              "action": "RECORD",
+              "decisionId": "op-0005",
+              "entrySha256": "4f8fbf06e9c34cab440df65335cfc792369ed928acff48f5b350a963ac5f2004",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:17.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 5,
+              "supersedes": null
+            },
+            {
+              "action": "RECORD",
+              "decisionId": "op-0006",
+              "entrySha256": "0e55f6a86cc94feecfa9dd86ac0bc92ad4587ded774b737b3f54f1efdfc43500",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:31.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 6,
+              "supersedes": null
+            },
+            {
+              "action": "RECORD",
+              "decisionId": "op-0007",
+              "entrySha256": "20312ed62321f68773e75adffcef93ba8b0b29d541e3927720cf891c50c5f946",
+              "reason": null,
+              "recordedAt": "2026-10-21T12:00:33.000Z",
+              "recordedBy": "ana@empresa.com",
+              "revokes": null,
+              "seq": 7,
+              "supersedes": null
+            }
+          ],
+          "integrity": {
+            "algorithm": "SHA-256",
+            "checkedFiles": 7,
+            "ignoredFiles": 0,
+            "note": "O hash SHA-256 detecta alteração acidental ou inconsistência; não é assinatura. A remoção ou o retrocesso do histórico é detectado pelas âncoras (pasta separada) e pelo expectedHead; quem altera as DUAS pastas ao mesmo tempo (ex.: root na VPS) não é detectado.",
+            "status": "OK"
+          },
+          "limits": {
+            "maxEffectiveRecords": 200,
+            "maxEntries": 9999,
+            "reservedForRevocations": 100
+          },
+          "operatorRecords": [
+            {
+              "id": "op-0003",
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "JUDGEMENT",
+              "operatorEmail": "ana@empresa.com",
+              "recordedAt": "2026-10-21T12:00:05.000Z",
+              "subcriterionId": "C2",
+              "value": "PARTIAL"
+            },
+            {
+              "id": "op-0005",
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "JUDGEMENT",
+              "operatorEmail": "ana@empresa.com",
+              "recordedAt": "2026-10-21T12:00:17.000Z",
+              "sampleSize": 5,
+              "subcriterionId": "P3",
+              "value": "SPECIFIC"
+            },
+            {
+              "causeEvidenceIds": [],
+              "code": "BUSINESS_MODEL",
+              "id": "op-0006",
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "NOT_APPLICABLE",
+              "operatorEmail": "ana@empresa.com",
+              "recordedAt": "2026-10-21T12:00:31.000Z",
+              "subcriterionIds": [
+                "S4"
+              ]
+            },
+            {
+              "id": "op-0007",
+              "justification": "Conferido no painel do perfil pelo operador responsável.",
+              "kind": "NAME_EQUIVALENCE",
+              "nameA": "Padaria Exemplo Ltda",
+              "nameB": "Padaria Exemplo",
+              "operatorEmail": "ana@empresa.com",
+              "recordedAt": "2026-10-21T12:00:33.000Z"
+            }
+          ],
+          "pending": null,
+          "witness": {
+            "coveredSeq": null,
+            "knownHeads": 0,
+            "status": "NOT_REQUIRED",
+            "unwitnessedAffecting": 2
+          }
+        }
+      },
+      "step": "lista em estado íntegro depois de restaurar"
+    }
+  ],
+  "storeNegatives": {
+    "anchorBaseMissing": {
+      "code": "ANCHOR_MISSING",
+      "issues": [
+        "O armazenamento de âncoras não existe neste servidor."
+      ],
+      "ok": false
+    },
+    "decisionsBaseMissing": {
+      "code": "STORAGE_MISSING",
+      "issues": [
+        "O armazenamento de decisões não existe neste servidor."
+      ],
+      "ok": false
+    },
+    "emptyAudit": {
+      "ok": true,
+      "value": {
+        "anchors": {
+          "count": 0,
+          "lastSeq": 0,
+          "unanchored": 0
+        },
+        "checkedFiles": 0,
+        "orphanTempFiles": [],
+        "pending": null,
+        "state": {
+          "decisions": [],
+          "effective": [],
+          "entries": [],
+          "head": null
+        },
+        "unexpectedFiles": []
+      }
+    },
+    "invalidId": {
+      "code": "INVALID_ID",
+      "issues": [
+        "auditId inválido (8 a 64 caracteres: letras minúsculas, números, _ e -)."
+      ],
+      "ok": false
+    },
+    "relativeAnchors": {
+      "code": "UNSAFE_PATH",
+      "issues": [
+        "Diretório base de âncoras inválido (precisa ser um caminho absoluto)."
+      ],
+      "ok": false
+    },
+    "relativeBase": {
+      "code": "UNSAFE_PATH",
+      "issues": [
+        "Diretório base de decisões inválido (precisa ser um caminho absoluto)."
+      ],
+      "ok": false
+    }
+  },
+  "trees": {
+    "afterTamperRestore": {
+      "anchors": {
+        "auditoria-conformidade-01/a0001.json": "4eb47bd6b54954ae50e9596cde7f9a30dfaa881bf7d40d266dca9182c5d02be0",
+        "auditoria-conformidade-01/a0002.json": "3b29c28143e4607b50b8ecfd6a2f2d038f7e4de153c3b937ebd394bc189b9b81",
+        "auditoria-conformidade-01/a0003.json": "132a8e287a3b4409b75ebd9c7ce40590f3cfd9c501216415aff85d12dfddac85",
+        "auditoria-conformidade-01/a0004.json": "8a3278976175c16ee41b8d568da4b5202314f5b98ef7ec6d148d8d2f8ddeb06e",
+        "auditoria-conformidade-01/a0005.json": "ad1cf42752c685ac82f9ad823be50dd968d7d6e6a56f01928715520516a34329",
+        "auditoria-conformidade-01/a0006.json": "f0ea625db314d96073e3715c711f9b6f52e2708e3381b173072b2946bd7a0a12",
+        "auditoria-conformidade-01/a0007.json": "4a5a5ec962a543d47fccae6eb09cbfe032ff1c82291473baab091cc01a7d202e"
+      },
+      "decisions": {
+        "auditoria-conformidade-01/d0001.json": "15c5f7eb98432b5516d6d5c3f24b561de96af7e4b4d070ca5063e22af0fb9367",
+        "auditoria-conformidade-01/d0002.json": "7c3b90df921df894700a609bcb8215ab1765ebd0a8a3b6681319150e46cd714d",
+        "auditoria-conformidade-01/d0003.json": "c5d158ea0f00270bce913ae04520ebac8eb22f2487a5e94bf151f9ce0502d2b0",
+        "auditoria-conformidade-01/d0004.json": "b95f52fa24f1bffd7950ea3651412aaa91e5a24e271def73923b79ea6106cdcf",
+        "auditoria-conformidade-01/d0005.json": "fd92f41b7d9de1cffe821f89f9f9c166c4fc7d56266f1464e57c21f26c238375",
+        "auditoria-conformidade-01/d0006.json": "8eb32c1ea1d1b9cea08bcb18fa83a31e02cea10f6797c60186f6fd176dbdfba0",
+        "auditoria-conformidade-01/d0007.json": "2a3a1a91c72444001f9d9b1861f253cd677e8247bb015c806e839268a7d2f05b"
+      }
+    },
+    "afterWrites": {
+      "anchors": {
+        "auditoria-conformidade-01/a0001.json": "4eb47bd6b54954ae50e9596cde7f9a30dfaa881bf7d40d266dca9182c5d02be0",
+        "auditoria-conformidade-01/a0002.json": "3b29c28143e4607b50b8ecfd6a2f2d038f7e4de153c3b937ebd394bc189b9b81",
+        "auditoria-conformidade-01/a0003.json": "132a8e287a3b4409b75ebd9c7ce40590f3cfd9c501216415aff85d12dfddac85",
+        "auditoria-conformidade-01/a0004.json": "8a3278976175c16ee41b8d568da4b5202314f5b98ef7ec6d148d8d2f8ddeb06e",
+        "auditoria-conformidade-01/a0005.json": "ad1cf42752c685ac82f9ad823be50dd968d7d6e6a56f01928715520516a34329",
+        "auditoria-conformidade-01/a0006.json": "f0ea625db314d96073e3715c711f9b6f52e2708e3381b173072b2946bd7a0a12",
+        "auditoria-conformidade-01/a0007.json": "4a5a5ec962a543d47fccae6eb09cbfe032ff1c82291473baab091cc01a7d202e"
+      },
+      "decisions": {
+        "auditoria-conformidade-01/d0001.json": "15c5f7eb98432b5516d6d5c3f24b561de96af7e4b4d070ca5063e22af0fb9367",
+        "auditoria-conformidade-01/d0002.json": "7c3b90df921df894700a609bcb8215ab1765ebd0a8a3b6681319150e46cd714d",
+        "auditoria-conformidade-01/d0003.json": "c5d158ea0f00270bce913ae04520ebac8eb22f2487a5e94bf151f9ce0502d2b0",
+        "auditoria-conformidade-01/d0004.json": "b95f52fa24f1bffd7950ea3651412aaa91e5a24e271def73923b79ea6106cdcf",
+        "auditoria-conformidade-01/d0005.json": "fd92f41b7d9de1cffe821f89f9f9c166c4fc7d56266f1464e57c21f26c238375",
+        "auditoria-conformidade-01/d0006.json": "8eb32c1ea1d1b9cea08bcb18fa83a31e02cea10f6797c60186f6fd176dbdfba0",
+        "auditoria-conformidade-01/d0007.json": "2a3a1a91c72444001f9d9b1861f253cd677e8247bb015c806e839268a7d2f05b"
+      }
+    }
+  }
+}

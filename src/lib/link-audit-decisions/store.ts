@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { canonicalJson } from '../link-audit/canonical';
+import { judgeOrigin, type OriginAuthenticator, type OriginVerdict } from '../link-audit-origin';
 import { describeError, nodeFsOps, publishExclusive, withLock, type FsOps } from '../link-audit/snapshot-store';
 import { confirmAnchor, prepareAnchorDirectory, readAnchors, verifyAnchors, type AnchorSummary } from './anchor-store';
 import {
@@ -35,8 +36,10 @@ import { decisionEntrySchema, ENTRY_FILE, entryFileName, MAX_ENTRY_BYTES, MAX_SE
  *
  * PROTOCOLO (Emenda 1 do ADR): uma decisão só é CONFIRMADA quando o arquivo `dNNNN.json` E o recibo `aNNNN.json` estão duráveis.
  * Entre os dois ela é PENDENTE: existe, mas NÃO vale (não entra no estado devolvido, não é sucesso, nada novo é gravado sobre
- * ela). Só o REENVIO do mesmo pedido a conclui. Assim a perda de uma pendente não contradiz nenhuma promessa feita, e a perda
- * de uma confirmada é sempre detectável (recibo à frente do histórico).
+ * ela). Só o REENVIO do mesmo pedido a conclui, e SOMENTE se o servidor comprovar a ORIGEM do arquivo (etiqueta HMAC com chave fora
+ * das pastas; `link-audit-origin`): o "autor", o conteúdo e o selo SHA-256 de um arquivo são afirmações de quem escreve na pasta, e
+ * "mesmo autor, mesmo pedido" não prova nada (o pedido é montado a partir do próprio arquivo). A perda de uma confirmada é detectável
+ * quando o recibo fica à frente do histórico; a remoção do ÚLTIMO recibo é indistinguível de uma gravação interrompida (limite declarado).
  */
 export { clearStorageFatal, hashOk, isStorageFatal, scrubPaths, seal, serialize } from './files';
 export type { Location, StoreErrorCode, StoreFailure, StoreOptions, StoreResult } from './files';
@@ -48,6 +51,11 @@ export interface ReadOptions extends StoreOptions {
 export interface WriteOptions extends ReadOptions {
   /** Relógio do servidor (ISO UTC com milissegundos). O módulo nunca consulta o relógio sozinho. */
   readonly now: () => string;
+  /**
+   * Autenticador de ORIGEM (chave do servidor, fora das pastas). Com ele, toda entrada nova sai assinada e uma PENDENTE só é
+   * concluída (recibo) se a etiqueta for válida. SEM ele nada é assinado e NENHUMA pendente é concluída (falha fechada).
+   */
+  readonly origin?: OriginAuthenticator;
 }
 
 const WRITE_RETRIES = 5;
@@ -228,12 +236,18 @@ export type BuildOutcome<F> =
 /** A entrada foi publicada (ou já existia) mas NÃO está confirmada: o recibo falhou, ou há outra pendente no caminho. */
 export interface PendingFailure {
   readonly ok: false;
-  /** `ANCHOR_PENDING`: esta chamada publicou a entrada e o recibo falhou. `PENDING_UNCONFIRMED`: já havia uma pendente e o pedido não é o reenvio dela. */
-  readonly code: 'ANCHOR_PENDING' | 'PENDING_UNCONFIRMED';
+  /**
+   * `ANCHOR_PENDING`: esta chamada publicou a entrada e o recibo falhou. `PENDING_UNCONFIRMED`: já havia uma pendente e o pedido não é
+   * o reenvio dela. `ORIGIN_UNPROVEN`: o pedido era o reenvio da pendente, mas a etiqueta de origem falta, não confere ou a chave é
+   * outra: NENHUM recibo foi gravado.
+   */
+  readonly code: 'ANCHOR_PENDING' | 'PENDING_UNCONFIRMED' | 'ORIGIN_UNPROVEN';
   readonly issues: readonly string[];
   readonly pending: DecisionEntry;
   /** Estado CONFIRMADO (sem a pendente): o `head` a usar ao reenviar. */
   readonly state: LogState;
+  /** Só em `ORIGIN_UNPROVEN`. */
+  readonly verdict?: Exclude<OriginVerdict, 'PROVEN'>;
 }
 
 /** `ok: true` SIGNIFICA confirmado: a decisão e o recibo estão duráveis. Não existe mais "gravada, mas sem recibo" como sucesso. */
@@ -251,7 +265,8 @@ const confirmedSummary = (count: number): AnchorSummary => ({ count, lastSeq: co
  * `aNNNN.json` na pasta separada. SÓ depois do (2) devolve sucesso. Antes de gravar: confere decisões e âncoras e chama o
  * `build` com o estado CONFIRMADO. Se existir uma entrada PENDENTE (publicada sem recibo), nada novo é gravado sobre ela: o
  * `build` pode reconhecer o pedido como o REENVIO dela (`replayOf`), e então o recibo é concluído agora; qualquer outro pedido
- * recebe `PENDING_UNCONFIRMED` (quem escreve na pasta de decisões não consegue "legitimar" uma entrada só por existir). Em
+ * recebe `PENDING_UNCONFIRMED`; o reenvio da pendente só ganha recibo com a ORIGEM comprovada (`ORIGIN_UNPROVEN` caso contrário: quem escreve na
+ * pasta de decisões não consegue "legitimar" uma entrada, nem pelo reenvio do autor nomeado nela). Em
  * corrida com outro processo (o `link()` exclusivo falha com EEXIST), relê e reavalia até `WRITE_RETRIES` vezes: a decisão
  * nunca é gravada sobre um estado desatualizado. Se o recibo falhar, a entrada fica PENDENTE e a resposta é `ANCHOR_PENDING`.
  */
@@ -293,7 +308,11 @@ export async function appendEntry<F>(baseDir: unknown, auditId: unknown, build: 
         const target = entries[built.replayOf - 1];
         if (!target) return fail('INTERNAL', 'Reenvio aponta para uma entrada que não existe (erro interno).');
         if (target !== pending) return { ok: true, entry: target, state: confirmed, anchored: true, replayed: true, anchors: confirmedSummary(confirmed.entries.length) };
-        // Reenvio da PENDENTE: concluir o recibo agora. Se falhar de novo, continua pendente (e o operador pode reenviar outra vez).
+        // Reenvio da PENDENTE: antes de dar o RECIBO, exige a PROVA DE ORIGEM (o arquivo vive numa pasta que quem escreve nela controla
+        // por inteiro: autor, conteúdo e selo são afirmações dele). Sem prova válida o recibo NÃO é dado e nada é gravado.
+        const verdict = judgeOrigin(options.origin, 'DECISION', pending);
+        if (verdict !== 'PROVEN') return { ok: false, code: 'ORIGIN_UNPROVEN', issues: ['A origem desta pendência não pôde ser comprovada pelo servidor; nenhum recibo foi gravado.'], pending, state: confirmed, verdict };
+        // Se falhar de novo, continua pendente (e o operador pode reenviar outra vez).
         const concluded = await confirmAnchor(ops, anchorLocated.value, pending, anchorFiles[anchorFiles.length - 1], laterOf(options.now(), pending.recordedAt));
         if (!concluded.ok) return { ok: false, code: 'ANCHOR_PENDING', issues: concluded.issues, pending, state: confirmed };
         const whole = replay(entries);
@@ -304,7 +323,10 @@ export async function appendEntry<F>(baseDir: unknown, auditId: unknown, build: 
         return { ok: false, code: 'PENDING_UNCONFIRMED', issues: ['Há uma decisão publicada ainda sem recibo na pasta de âncoras; nada novo é gravado sobre ela.'], pending, state: confirmed };
       }
 
-      const entry = seal({ ...built.draft, seq, prevSha256: confirmed.head?.sha256 ?? null });
+      // A primitiva NUNCA grava uma entrada sem etiqueta de origem (defesa em profundidade: as rotas e o serviço já recusam sem chave)
+      if (!options.origin) return fail('INTERNAL', 'Sem autenticador de origem, nenhuma entrada é gravada.');
+      const unsigned = { ...built.draft, seq, prevSha256: confirmed.head?.sha256 ?? null };
+      const entry = seal({ ...unsigned, origin: options.origin.sign('DECISION', unsigned) });
       const checked = decisionEntrySchema.safeParse(entry);
       if (!checked.success) return fail('INTERNAL', 'A entrada montada não segue o contrato (erro interno).');
       if (canonicalJson(checked.data) !== canonicalJson(entry)) return fail('INTERNAL', 'O esquema alteraria o conteúdo da entrada (erro interno): nada foi gravado.');

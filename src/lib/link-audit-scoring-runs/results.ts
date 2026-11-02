@@ -1,10 +1,11 @@
 import path from 'node:path';
 import type { WebsiteExpectation } from '../link-audit-evidence/scoring-basis';
+import { judgeOrigin, originStatusOf, type OriginAuthenticator, type OriginStatus, type OriginVerdict } from '../link-audit-origin';
 import { STORE_AUDIT_ID } from './audit-id-alias';
 import type { PreviewBlocker } from './blockers';
 import { MINIMUM_COVERAGE_PERCENT } from './outcome';
 import { PREVIEW_HTTP_STATUS, PREVIEW_MESSAGE, type Evaluation, type PreviewActor, type PreviewFailure, type PreviewFailureCode } from './preview';
-import { appendRun, assertResultsBase, nodeFsOps, readRunLog, type FsOps, type RunAnchorSummary, type StoreErrorCode } from './results-store';
+import { appendRun, assertResultsBase, nodeFsOps, probeDirectory, readRunLog, type FsOps, type RunAnchorSummary, type StoreErrorCode } from './results-store';
 import { finalizeBodySchema, INTEGRITY_NOTE, RUN_FILE_KIND, RUN_SCHEMA_VERSION, type RunHead as Head, type ScoreRun, type ScoreRunDraft } from './results-types';
 import { toPublicRun, verifyRunRecord } from './results-verify';
 import { MAPPER_VERSION } from './types';
@@ -26,7 +27,9 @@ import { MAPPER_VERSION } from './types';
  *     estado que ele grava e fica detectavelmente DESATUALIZADO (`stale`) se algo mudar depois. Depois do recibo há uma última
  *     releitura que avisa (`stateChangedAfterFinalization`) se o estado já mudou.
  *  4. Mesmo pedido (mesmo `inputSha256` e `head`) duas vezes ⇒ 200 `replayed`, um só resultado. Duas finalizações simultâneas do
- *     mesmo estado ⇒ um resultado. Pendente (sem recibo): só o autor, reenviando o mesmo pedido, a conclui.
+ *     mesmo estado ⇒ um resultado. Pendente (sem recibo): só é concluída pelo autor AUTENTICADO e SE o servidor comprovar a ORIGEM do
+ *     arquivo (etiqueta HMAC com chave fora das pastas) e o registro ainda se explicar (ver `link-audit-origin`). O pedido de reenvio
+ *     vem da interface a partir do próprio arquivo, então NÃO é prova de nada: um arquivo forjado numa pasta nunca vira confirmado.
  *  5. O relógio do cliente nunca é fonte de verdade: `finalizedAt` é do servidor e monotônico.
  */
 export type ResultsFailureCode =
@@ -34,6 +37,8 @@ export type ResultsFailureCode =
   | 'NOT_FINALIZABLE'
   | 'INPUT_CHANGED'
   | 'RESULT_PENDING_UNCONFIRMED'
+  | 'RESULT_PENDING_ORIGIN_UNPROVEN'
+  | 'ORIGIN_KEY_NOT_CONFIGURED'
   | 'RESULT_ANCHOR_PENDING'
   | 'RESULTS_NOT_CONFIGURED'
   | 'RESULT_ANCHOR_NOT_CONFIGURED'
@@ -55,6 +60,8 @@ export const RESULTS_HTTP_STATUS: Readonly<Record<ResultsFailureCode, number>> =
   NOT_FINALIZABLE: 409,
   INPUT_CHANGED: 409,
   RESULT_PENDING_UNCONFIRMED: 409,
+  RESULT_PENDING_ORIGIN_UNPROVEN: 409,
+  ORIGIN_KEY_NOT_CONFIGURED: 503,
   RESULT_ANCHOR_PENDING: 503,
   RESULTS_NOT_CONFIGURED: 503,
   RESULT_ANCHOR_NOT_CONFIGURED: 503,
@@ -77,6 +84,8 @@ export const RESULTS_MESSAGE: Readonly<Record<ResultsFailureCode, string>> = Obj
   NOT_FINALIZABLE: 'A prévia não é finalizável: há bloqueios, decisão pendente ou a entrada foi recusada. Nada foi gravado.',
   INPUT_CHANGED: 'A entrada do motor mudou desde a prévia que você viu. Nada foi gravado; recarregue a prévia.',
   RESULT_PENDING_UNCONFIRMED: 'Há um resultado gravado e ainda não confirmado (sem recibo) nesta auditoria; só o autor, reenviando o mesmo pedido, o conclui. Nada foi gravado.',
+  RESULT_PENDING_ORIGIN_UNPROVEN: 'A origem deste resultado pendente NÃO pôde ser comprovada pelo servidor (arquivo adulterado, forjado, anterior à proteção ou de outra chave). Ele NÃO pode ser concluído por esta tela e nenhum recibo foi gravado; siga o procedimento de quarentena.',
+  ORIGIN_KEY_NOT_CONFIGURED: 'A chave de comprovação de origem dos resultados não está configurada (ou é fraca) neste servidor; nenhum resultado é gravado ou concluído.',
   RESULT_ANCHOR_PENDING: 'O resultado foi gravado, mas o recibo NÃO foi confirmado: ele ainda NÃO vale. Reenvie o MESMO pedido (é seguro repetir) para concluir.',
   RESULTS_NOT_CONFIGURED: 'O armazenamento de resultados não está configurado neste servidor.',
   RESULT_ANCHOR_NOT_CONFIGURED: 'O armazenamento de recibos de resultados não está configurado neste servidor; nenhum resultado é gravado.',
@@ -122,12 +131,28 @@ const DETAILED: ReadonlySet<ResultsFailureCode> = new Set(['RESULT_INTEGRITY', '
 export interface PendingRunDto {
   readonly seq: number;
   readonly finalizedAt: string;
-  /** O resultado pendente é DESTA sessão? Só o autor conclui; o e-mail de ninguém é revelado. */
+  /**
+   * ORIGEM comprovada pelo SERVIDOR (etiqueta HMAC com chave fora das pastas): `PROVEN`; `UNPROVEN` (sem etiqueta, adulterada, forjada ou
+   * de outra chave: NÃO pode ser concluída); `UNVERIFIABLE` (este servidor não tem chave para comprovar). O arquivo, sozinho, nunca prova nada.
+   */
+  readonly origin: OriginStatus;
+  /** Por que não foi comprovada (`null` quando comprovada). Não revela a etiqueta nem a chave. */
+  readonly originDetail: Exclude<OriginVerdict, 'PROVEN'> | null;
+  /** Origem COMPROVADA e o autor autenticado é DESTA sessão. Nunca derivado só do campo `finalizedBy` do arquivo; o e-mail de ninguém é revelado. */
   readonly isMine: boolean;
-  readonly outcome: 'PONTUADO' | 'INCONCLUSIVO';
+  /** Estado ESTRUTURADO para todos os perfis: o recibo falta (gravação interrompida OU recibo removido: indistinguíveis) e isso bloqueia novas finalizações. Nunca é confirmação. */
+  readonly receipt: 'MISSING';
+  readonly blocksFinalization: true;
+  /** `outcome`, `level`, `coveragePercent` e `appliedDecisionCount` só são informados quando a origem foi comprovada (senão o conteúdo é do arquivo, não do servidor). */
+  readonly outcome: 'PONTUADO' | 'INCONCLUSIVO' | null;
+  readonly level: string | null;
+  readonly coveragePercent: number | null;
+  readonly appliedDecisionCount: number | null;
   readonly inputSha256: string;
   /** Head das decisões gravado: com `inputSha256`, é o pedido que o autor precisa reenviar para concluir. */
   readonly decisionsHead: Head | null;
+  /** A entrada gravada é a MESMA de hoje? `false` = o resultado já nasce histórico; `null` = não foi possível comparar agora. */
+  readonly matchesCurrent: boolean | null;
   readonly contentSha256: string;
 }
 
@@ -215,6 +240,11 @@ export interface ResultsDeps {
   readonly clock: () => string;
   readonly fs?: FsOps;
   readonly projectRoot?: string;
+  /**
+   * Autenticador de ORIGEM (chave do servidor FORA das pastas de dados). Com ele, os resultados novos saem assinados e uma pendente só é
+   * concluída com a etiqueta válida. Sem ele nenhuma pendente é concluída (falha fechada) e a origem fica `UNVERIFIABLE`.
+   */
+  readonly origin?: OriginAuthenticator;
 }
 
 const ISO_MS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -240,7 +270,35 @@ const unexplained = (runs: readonly ScoreRun[]): ResultsFailure | null => {
   return bad ? failure('RESULT_INTEGRITY', `${String(bad.seq).padStart(4, '0')}: o registro não se explica a partir de si mesmo.`) : null;
 };
 const sameHead = (a: Head | null, b: Head | null): boolean => (a === null || b === null ? a === b : a.seq === b.seq && a.sha256 === b.sha256);
-const pendingOf = (run: ScoreRun, operator: string | null): PendingRunDto => ({ seq: run.seq, finalizedAt: run.finalizedAt, isMine: operator !== null && run.finalizedBy === operator, outcome: run.outcome, inputSha256: run.inputSha256, decisionsHead: run.decisions.head, contentSha256: run.contentSha256 });
+/** Quem olha e o que se sabe de HOJE: a origem da pendente é julgada pelo servidor; `currentInputSha256` (se conhecido) diz se ela já nasce histórica. */
+interface Viewer {
+  readonly operator: string | null;
+  readonly origin: OriginAuthenticator | undefined;
+  readonly currentInputSha256?: string | null;
+}
+const pendingOf = (run: ScoreRun, viewer: Viewer): PendingRunDto => {
+  const verdict = judgeOrigin(viewer.origin, 'RUN', run);
+  const proven = verdict === 'PROVEN';
+  const totals = (run.result as { totals?: { coveragePercent?: unknown } }).totals;
+  const coverage = run.inconclusive?.coveragePercent ?? (typeof totals?.coveragePercent === 'number' ? totals.coveragePercent : null);
+  return {
+    seq: run.seq,
+    finalizedAt: run.finalizedAt,
+    origin: originStatusOf(verdict),
+    originDetail: proven ? null : verdict,
+    receipt: 'MISSING',
+    blocksFinalization: true,
+    isMine: proven && viewer.operator !== null && run.finalizedBy === viewer.operator,
+    outcome: proven ? run.outcome : null,
+    level: proven ? (run.scored?.level ?? null) : null,
+    coveragePercent: proven ? coverage : null,
+    appliedDecisionCount: proven ? run.decisions.appliedIds.length : null,
+    inputSha256: run.inputSha256,
+    decisionsHead: run.decisions.head,
+    matchesCurrent: viewer.currentInputSha256 === undefined || viewer.currentInputSha256 === null ? null : viewer.currentInputSha256 === run.inputSha256,
+    contentSha256: run.contentSha256,
+  };
+};
 const chainHead = (runs: readonly ScoreRun[]): Head | null => {
   const last = runs[runs.length - 1];
   return last ? { seq: last.seq, sha256: last.contentSha256 } : null;
@@ -250,6 +308,7 @@ export function createScoringResultsService(deps: ResultsDeps) {
   const ops = deps.fs ?? nodeFsOps;
   const projectRoot = deps.projectRoot ?? process.cwd();
   const storeOptions = { fs: ops, projectRoot, anchorDir: deps.anchorDir };
+  const viewerOf = (actor: PreviewActor, currentInputSha256?: string | null): Viewer => ({ operator: operatorOf(actor), origin: deps.origin, ...(currentInputSha256 !== undefined ? { currentInputSha256 } : {}) });
 
   async function realOrResolved(dir: string): Promise<string> {
     try {
@@ -359,9 +418,11 @@ export function createScoringResultsService(deps: ResultsDeps) {
       if (!validAuditId(auditId)) return failure('INVALID_PARAMS', 'auditId inválido.');
       const operator = operatorOf(actor);
       if (operator === null) return failure('OPERATOR_IDENTITY_INVALID');
+      const viewer = viewerOf(actor);
       if (!ISO_MS.test(deps.clock())) return failure('INTERNAL_ERROR');
       const config = await checkConfiguration();
       if (config) return config;
+      if (!deps.origin) return failure('ORIGIN_KEY_NOT_CONFIGURED'); // sem autenticador de origem nada é gravado (as rotas já respondem 503)
       if (typeof rawBody !== 'object' || rawBody === null || Array.isArray(rawBody)) return failure('INVALID_BODY');
       const extra = Object.keys(rawBody).filter((key) => key !== 'expectedHead' && key !== 'expectedInputSha256');
       if (extra.length > 0) return failure('FORBIDDEN_FIELDS', ...extra.slice(0, 10).map((key) => `campo não aceito: ${key.slice(0, 40)}`));
@@ -379,19 +440,29 @@ export function createScoringResultsService(deps: ResultsDeps) {
           // 1. reenvio idêntico (mesmo `inputSha256` e mesmo `head` das decisões) do último arquivo publicado
           const last = ctx.all[ctx.all.length - 1];
           if (last && last.inputSha256 === expectedInputSha256 && sameHead(last.decisions.head, expectedHead)) {
-            if (last === ctx.pending && last.finalizedBy !== operator) return reject({ ...failure('RESULT_PENDING_UNCONFIRMED'), pending: pendingOf(last, operator) });
-            if (!explains(last)) return reject(failure('RESULT_INTEGRITY')); // nunca se dá recibo a um registro que não se explica
+            if (last === ctx.pending && last.finalizedBy !== operator) return reject({ ...failure('RESULT_PENDING_UNCONFIRMED'), pending: pendingOf(last, viewer) });
             concludedPending = last === ctx.pending;
             if (concludedPending) {
-              // o recibo só é dado se as evidências citadas ainda existem com os mesmos hashes (não vira "cartório" de arquivo forjado em uma pasta)
+              // CONCLUIR uma pendente = dar o recibo a um arquivo que vive numa pasta que quem escreve nela controla por inteiro. Camadas,
+              // todas FECHADAS: (1) ORIGEM comprovada pelo servidor (etiqueta HMAC com chave fora das pastas; "autor" no arquivo não prova nada);
+              // (2) o registro se explica (reexecuta o motor sobre a entrada gravada); (3) as evidências citadas existem HOJE com os mesmos hashes;
+              // (4) o histórico de decisões não regrediu desde o head gravado. O pedido do operador (`expectedHead`/`expectedInputSha256`) vem da
+              // interface a partir do próprio arquivo: NÃO é prova de nada.
+              if (judgeOrigin(deps.origin, 'RUN', last) !== 'PROVEN') return reject({ ...failure('RESULT_PENDING_ORIGIN_UNPROVEN'), pending: pendingOf(last, viewer) });
+              if (!explains(last)) return reject(failure('RESULT_INTEGRITY')); // nunca se dá recibo a um registro que não se explica
               const now = await deps.preview.evaluate(actor, auditId);
               if (!now.ok) return reject({ ...failure(now.code, ...now.issues), ...(now.head !== undefined ? { head: now.head } : {}) });
+              // (2b) a conclusão também DEPENDE das evidências e do histórico de decisões: sem prova de coleta, ou com a integridade do histórico NÃO resolvida, ninguém dá recibo (falha fechada)
+              if (now.value.payload.blockers.some((b) => b.code === 'EVIDENCE_PROVENANCE_UNPROVEN' || b.code === 'DECISIONS_HISTORY_UNRESOLVED')) return reject({ ...failure('NOT_FINALIZABLE'), blockers: now.value.payload.blockers });
               const problems = pendingEvidenceProblems(last, now.value);
               if (problems.length > 0) return reject(failure('EVIDENCE_HASH_CHANGED', ...problems.slice(0, 10)));
-            }
+              const gravado = last.decisions.head;
+              const hoje = now.value.decisions.head;
+              if (gravado !== null && (hoje === null || hoje.seq < gravado.seq)) return reject({ ...failure('HISTORY_REGRESSED'), head: hoje });
+            } else if (!explains(last)) return reject(failure('RESULT_INTEGRITY')); // reenvio de um CONFIRMADO: nada é gravado, mas só se devolve o que se explica
             return { ok: true, replayOf: last.seq };
           }
-          if (ctx.pending) return reject({ ...failure('RESULT_PENDING_UNCONFIRMED'), pending: pendingOf(ctx.pending, operator) });
+          if (ctx.pending) return reject({ ...failure('RESULT_PENDING_UNCONFIRMED'), pending: pendingOf(ctx.pending, viewer) });
 
           // 2. avaliação (leitura dupla concordante) e confronto com o que o operador viu
           const ev = await deps.preview.evaluate(actor, auditId);
@@ -429,7 +500,7 @@ export function createScoringResultsService(deps: ResultsDeps) {
           if (!draft) return reject(failure('INTERNAL_ERROR'));
           return { ok: true, draft };
         },
-        { ...storeOptions, now: deps.clock, validate: (sealed) => verifyRunRecord(sealed) },
+        { ...storeOptions, now: deps.clock, validate: (sealed) => verifyRunRecord(sealed), ...(deps.origin ? { origin: deps.origin } : {}) },
       );
 
       if (appended.ok) {
@@ -450,8 +521,9 @@ export function createScoringResultsService(deps: ResultsDeps) {
         return { ok: true, value: { definitive: true, replayed: appended.replayed, head: { seq: last.seq, sha256: last.contentSha256 }, anchored: true, stateChangedAfterFinalization: changedAfter, recoveredPending: concludedPending, run: toPublicRun(appended.run).detail } };
       }
       if (appended.code === 'REJECTED') return appended.failure;
-      if (appended.code === 'ANCHOR_PENDING') return { ...failure('RESULT_ANCHOR_PENDING'), pending: pendingOf(appended.pending, operator) };
-      if (appended.code === 'PENDING_UNCONFIRMED') return { ...failure('RESULT_PENDING_UNCONFIRMED'), pending: pendingOf(appended.pending, operator) };
+      if (appended.code === 'ANCHOR_PENDING') return { ...failure('RESULT_ANCHOR_PENDING'), pending: pendingOf(appended.pending, viewer) };
+      if (appended.code === 'PENDING_UNCONFIRMED') return { ...failure('RESULT_PENDING_UNCONFIRMED'), pending: pendingOf(appended.pending, viewer) };
+      if (appended.code === 'ORIGIN_UNPROVEN') return { ...failure('RESULT_PENDING_ORIGIN_UNPROVEN'), pending: pendingOf(appended.pending, viewer) };
       return fromStore(appended as unknown as { readonly code: StoreErrorCode; readonly issues: readonly string[] });
     },
 
@@ -497,7 +569,7 @@ export function createScoringResultsService(deps: ResultsDeps) {
           auditId,
           results,
           head: chainHead(runs),
-          pending: read.value.pending ? pendingOf(read.value.pending, operatorOf(actor)) : null,
+          pending: read.value.pending ? pendingOf(read.value.pending, viewerOf(actor, currentInputSha256)) : null,
           anchors: read.value.anchors,
           currentInputSha256,
           currentDecisionsHead,
@@ -515,7 +587,7 @@ export function createScoringResultsService(deps: ResultsDeps) {
       if (!read.ok) return fromStore(read);
       const runs = read.value.runs;
       const run = runs.find((item) => item.seq === seq);
-      if (!run) return read.value.pending?.seq === seq ? { ...failure('RESULT_PENDING_UNCONFIRMED'), pending: pendingOf(read.value.pending, operatorOf(actor)) } : failure('RESULT_NOT_FOUND');
+      if (!run) return read.value.pending?.seq === seq ? { ...failure('RESULT_PENDING_UNCONFIRMED'), pending: pendingOf(read.value.pending, viewerOf(actor)) } : failure('RESULT_NOT_FOUND');
       const inconsistent = unexplained(runs); // consulta INTEGRAL: um registro inconsistente em qualquer posição invalida a consulta inteira
       if (inconsistent) return inconsistent;
       const latest = runs[runs.length - 1] === run;
@@ -531,3 +603,91 @@ export function createScoringResultsService(deps: ResultsDeps) {
 }
 
 export type ScoringResultsService = ReturnType<typeof createScoringResultsService>;
+
+/**
+ * Fornece à 6B as CABEÇAS CONHECIDAS do histórico de decisões (testemunha independente; R3-MINOR-2, R4-MINOR-1, INFO-1), a partir dos resultados em OUTRAS
+ * pastas. Três classes, que NUNCA se misturam:
+ *  - `heads` (testemunhas): o `decisions.head` de cada resultado CONFIRMADO (resultado + recibo) e o do resultado PENDENTE cuja ORIGEM o servidor comprova
+ *    com uma chave em vigor (atual ou aposentada dentro da validade). Remover o recibo do resultado não apaga a testemunha enquanto a origem for comprovável;
+ *  - `unverifiedHeads` (INDÍCIOS): o head de um resultado PENDENTE cuja origem NÃO é comprovada — forjado, ou assinado por chave aposentada VENCIDA,
+ *    REVOGADA ou desconhecida, ou lido por um servidor sem autenticador. Um indício NUNCA é testemunha e uma chave comprometida NUNCA o torna confiável;
+ *    a 6B só o usa para DENUNCIAR: se ele afirma uma posição que o histórico de hoje não tem (ou outra entrada), a testemunha deixa de ser confiável;
+ *  - falha explícita (nunca "lista vazia"): `NOT_CONFIGURED` (caminho inseguro/ausente), `STORAGE_UNAVAILABLE` (não leu), `UNTRUSTED` (a cadeia de
+ *    resultados não confere: adulterada, truncada, recibos incoerentes).
+ * Sem resultados em pasta legível e configurada ⇒ `{ ok: true, heads: [] }` (a 6B diz `UNWITNESSED`: a testemunha ainda não existe; não é garantia).
+ */
+/** Mesma forma estrutural que a 6B espera (a 6C NÃO importa as decisões). */
+export type KnownHeadsProvider = (
+  auditId: string,
+) => Promise<
+  | { readonly ok: true; readonly heads: ReadonlyArray<{ readonly seq: number; readonly sha256: string }>; readonly unverifiedHeads?: ReadonlyArray<{ readonly seq: number; readonly sha256: string }> }
+  | { readonly ok: false; readonly reason: 'NOT_CONFIGURED' | 'STORAGE_UNAVAILABLE' | 'UNTRUSTED' }
+>;
+
+const INTEGRITY_CODES: ReadonlySet<StoreErrorCode> = new Set(['CORRUPT', 'HASH_MISMATCH', 'CHAIN_BROKEN', 'SEQUENCE_GAP', 'SCHEMA', 'SEMANTIC', 'TRUNCATED', 'ANCHOR_MISMATCH', 'ANCHOR_INTEGRITY']);
+/**
+ * O armazenamento rotula erro de leitura/listagem do sistema operacional (EIO, EACCES, exceção desconhecida…) como `CORRUPT` (resultados) ou `ANCHOR_INTEGRITY`
+ * (recibos) com "leitura: E…" / "listagem … : E…" / "listagem: DESCONHECIDO …": isso é DISPONIBILIDADE, não adulteração. Só diagnóstico: as duas classes falham fechado.
+ */
+const READ_ERRNO = /\b(?:leitura|listagem)[^:]*: (?:E[A-Z0-9]+|DESCONHECIDO)\b/;
+
+export interface ResultsKnownHeadsOptions {
+  readonly baseDir: string;
+  readonly anchorDir: string;
+  /**
+   * Pastas que NÃO podem coincidir nem se aninhar com as duas acima (decisões, recibos das decisões, evidências, manifestos): sobreposição ⇒ `NOT_CONFIGURED`.
+   * OBRIGATÓRIO (pode ser `[]` só em testes da própria primitiva): esquecer a defesa seria configuração insegura lida como "sem inconsistência" (INFO-1).
+   */
+  readonly otherDirs: ReadonlyArray<string | null | undefined>;
+  readonly fs?: FsOps;
+  readonly projectRoot?: string;
+  readonly origin?: OriginAuthenticator;
+}
+
+/** Duas pastas da testemunha iguais ou aninhadas (inclusive por link simbólico) anulam a separação resultado × recibo: configuração inválida. */
+async function overlappingDirs(dirs: readonly string[], ops: FsOps): Promise<boolean> {
+  const real = async (target: string): Promise<string> => {
+    try {
+      return (await ops.realpath(target)).toLowerCase();
+    } catch {
+      return path.resolve(target).toLowerCase();
+    }
+  };
+  const resolved = await Promise.all(dirs.map(real));
+  return resolved.some((a, i) => resolved.some((b, j) => i !== j && (a === b || a.startsWith(b + path.sep))));
+}
+
+export function createResultsKnownHeads(options: ResultsKnownHeadsOptions): KnownHeadsProvider {
+  return async (auditId) => {
+    try {
+      const ops = options.fs ?? nodeFsOps;
+      const others = options.otherDirs.filter((dir): dir is string => typeof dir === 'string' && dir !== '');
+      if (await overlappingDirs([options.baseDir, options.anchorDir, ...others], ops)) return { ok: false, reason: 'NOT_CONFIGURED' };
+      // Sonda das pastas ANTES da leitura, para distinguir "não consigo ler" (armazenamento indisponível) de "não é um diretório comum" (configuração insegura):
+      // o armazenamento rotula as duas coisas como UNSAFE_PATH. Raiz ausente ou erro de E/S ⇒ UNAVAILABLE; existe e não é diretório/é link ⇒ NOT_CONFIGURED.
+      if (path.isAbsolute(options.baseDir) && path.isAbsolute(options.anchorDir)) {
+        const subdirs = typeof auditId === 'string' && STORE_AUDIT_ID.test(auditId) ? [path.join(options.baseDir, auditId), path.join(options.anchorDir, auditId)] : [];
+        for (const [dir, mustExist] of [[options.baseDir, true], [options.anchorDir, true], ...subdirs.map((sub): [string, boolean] => [sub, false])] as Array<[string, boolean]>) {
+          const probed = await probeDirectory(ops, dir, mustExist);
+          if (probed) return { ok: false, reason: probed };
+        }
+      }
+      const read = await readRunLog(options.baseDir, auditId, { anchorDir: options.anchorDir, ...(options.fs ? { fs: options.fs } : {}), ...(options.projectRoot ? { projectRoot: options.projectRoot } : {}) });
+      if (!read.ok) {
+        if (read.code === 'UNSAFE_PATH') return { ok: false, reason: 'NOT_CONFIGURED' };
+        if ((read.code === 'CORRUPT' || read.code === 'ANCHOR_INTEGRITY') && read.issues.some((issue) => READ_ERRNO.test(issue))) return { ok: false, reason: 'STORAGE_UNAVAILABLE' };
+        return { ok: false, reason: INTEGRITY_CODES.has(read.code) ? 'UNTRUSTED' : 'STORAGE_UNAVAILABLE' };
+      }
+      const headOf = (run: ScoreRun): { seq: number; sha256: string }[] => (run.decisions.head ? [{ seq: run.decisions.head.seq, sha256: run.decisions.head.sha256 }] : []);
+      const pending = read.value.pending;
+      const proven = pending !== null && judgeOrigin(options.origin, 'RUN', pending) === 'PROVEN';
+      return {
+        ok: true,
+        heads: [...read.value.runs.flatMap(headOf), ...(pending && proven ? headOf(pending) : [])],
+        unverifiedHeads: pending && !proven ? headOf(pending) : [],
+      };
+    } catch {
+      return { ok: false, reason: 'STORAGE_UNAVAILABLE' };
+    }
+  };
+}

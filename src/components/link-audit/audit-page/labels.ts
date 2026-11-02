@@ -72,7 +72,19 @@ export const OPTION_UNAVAILABLE_LABELS: Readonly<Record<string, string>> = {
   EXISTING_DECISION_REPLACE: 'Já existe uma decisão vigente: a nova a substituirá (a anterior permanece no histórico).',
 };
 
-export const DECISION_STATUS_LABELS: Readonly<Record<string, string>> = { ACTIVE: 'Vigente', SUPERSEDED: 'Substituída', REVOKED: 'Revogada' };
+/** Por que a coleta NÃO é tratada como autêntica (códigos fixos do servidor). */
+export const PROVENANCE_REASON_LABELS: Readonly<Record<string, string>> = {
+  PROOF_NOT_CONFIGURED: 'este servidor não tem prova de coleta configurada',
+  NO_SEAL: 'não há manifesto assinado desta coleta',
+  LEGACY_NO_SEAL: 'coleta legada, sem manifesto assinado (nada é atribuído a ela sem prova independente)',
+  SEAL_INVALID: 'o manifesto assinado não confere (ausente de chave de confiança, adulterado ou de outra auditoria)',
+  EVIDENCE_NOT_SEALED: 'há evidência que o manifesto assinado não cobre (por exemplo, captura adicionada depois)',
+  EVIDENCE_MISSING: 'o manifesto assinado atesta evidência que NÃO existe mais na coleta (captura, relatório ou arquivo removido): os dados exibidos podem ser de uma coleta ANTERIOR e não devem ser tomados como a situação atual',
+  EVIDENCE_HASH_MISMATCH: 'o conteúdo de uma evidência difere do que o manifesto assinado atesta',
+  VERIFICATION_ERROR: 'a verificação não pôde ser concluída (tratada como não comprovada)',
+};
+
+export const DECISION_STATUS_LABELS: Readonly<Record<string, string>> = { ACTIVE: 'Vigente', SUPERSEDED: 'Substituída', REVOKED: 'Revogada', AMBIGUOUS: 'Em dúvida (operação pendente)' };
 
 /** Meios-pontos do motor exibidos em pontos (só conversão de unidade para leitura; nada é somado nem recalculado no navegador). */
 export function formatHalfPoints(halfPoints: number | null | undefined): string {

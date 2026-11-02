@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { originProofSchema } from '../link-audit-origin';
 import { operatorRecordSchema, type OperatorRecord } from '../link-audit/scoring/input';
 
 /*
@@ -75,6 +76,8 @@ const common = {
   seq: z.number().int().min(1).max(MAX_SEQ),
   recordedAt: iso,
   recordedBy: email,
+  /** PROVA DE ORIGEM (HMAC do servidor, chave fora das pastas): presente nas entradas gravadas depois da remediação do MAJOR-1; ausente nas anteriores (se ficarem pendentes não podem ser concluídas). */
+  origin: originProofSchema.optional(),
   prevSha256: hex64.nullable(),
   contentSha256: hex64,
 };

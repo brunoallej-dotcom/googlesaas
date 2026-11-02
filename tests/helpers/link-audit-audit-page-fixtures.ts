@@ -19,13 +19,14 @@ export function previewFixture(over: Partial<PreviewPayload> = {}): PreviewPaylo
     company: { located: true, profileState: 'AVAILABLE', unavailableReason: null, websiteHost: 'www.padaria-exemplo.example', source: 'Serper (intermediário)' },
     evidence: {
       integrity: { status: 'OK', checkedFiles: 4 },
+      provenance: { status: 'AUTHENTICATED', reason: null, missingRefs: [] },
       layout: 'VERSIONED',
       referenceDate: '2026-10-22',
       referenceDateSource: { ref: 'capture:c0001', observedAt: '2026-10-22T12:54:48.079Z' },
       profileSource: { ref: 'capture:c0001', observedAt: '2026-10-22T12:54:48.079Z' },
       bases: [{ ref: 'capture:c0001', kind: 'CAPTURE', observedAt: '2026-10-22T12:54:48.079Z', origin: 'GOOGLE_NATIVE', contentSha256: H('1'), legacy: false, superseded: false }],
     },
-    decisions: { head: null, count: 0, pending: null, finalizable: true, applied: [], held: [] },
+    decisions: { head: null, count: 0, pending: null, finalizable: true, witness: { status: 'NOT_REQUIRED', knownHeads: 0, coveredSeq: null, unwitnessedAffecting: 0 }, applied: [], held: [] },
     decisionOptions: [
       { type: 'JUDGEMENT', subcriterionId: 'C2', code: null, available: true, reasonCode: null },
       { type: 'NOT_APPLICABLE', subcriterionId: 'S4', code: 'BUSINESS_MODEL', available: true, reasonCode: null },
@@ -72,7 +73,7 @@ export function decisionDto(over: Partial<DecisionDto> = {}): DecisionDto {
   return { decisionId: 'op-0001', seq: 1, kind: 'JUDGEMENT', record: { kind: 'JUDGEMENT', subcriterionId: 'C2', value: 'COMPATIBLE', justification: 'Conferido no painel do perfil pelo operador.' }, recordedAt: '2026-10-23T10:00:00.000Z', recordedBy: 'ana@empresa.com', supersedes: null, supersededBy: null, status: 'ACTIVE', siteDependent: false, ...over };
 }
 export function decisionsFixture(over: Partial<DecisionsList> = {}): DecisionsList {
-  return { auditId: AUDIT, head: null, pending: null, finalizable: true, decisions: [], history: [], allDecisions: [], ...over };
+  return { auditId: AUDIT, head: null, pending: null, finalizable: true, decisions: [], witness: { status: 'NOT_REQUIRED', knownHeads: 0, coveredSeq: null, unwitnessedAffecting: 0 }, ambiguousDecisionIds: [], history: [], allDecisions: [], ...over };
 }
 export function runSummary(over: Partial<RunSummary> = {}): RunSummary {
   return { seq: 1, finalizedAt: '2026-10-30T12:00:00.000Z', finalizedBy: 'bia@empresa.com', outcome: 'INCONCLUSIVO', level: null, reasonCode: 'COBERTURA_INSUFICIENTE', coveragePercent: 11, inputSha256: H('2'), resultSha256: H('3'), contentSha256: H('4'), decisionsHead: null, superseded: false, stale: false, decisionsChanged: false, ...over };
@@ -84,7 +85,7 @@ export function resultsFixture(over: Partial<ResultsList> = {}): ResultsList {
   return { definitive: true, auditId: AUDIT, results, head: last ? { seq: last.seq, sha256: last.contentSha256 } : null, pending: null, currentInputSha256: H('2'), currentDecisionsHead: null, ...over };
 }
 export function pendingRun(over: Partial<PendingRun> = {}): PendingRun {
-  return { seq: 1, finalizedAt: '2026-10-30T12:00:00.000Z', isMine: true, outcome: 'INCONCLUSIVO', inputSha256: H('2'), decisionsHead: null, contentSha256: H('4'), ...over };
+  return { seq: 1, finalizedAt: '2026-10-30T12:00:00.000Z', receipt: 'MISSING', blocksFinalization: true, origin: 'PROVEN', originDetail: null, isMine: true, outcome: 'INCONCLUSIVO', level: null, coveragePercent: 11, appliedDecisionCount: 0, inputSha256: H('2'), decisionsHead: null, matchesCurrent: true, contentSha256: H('4'), ...over };
 }
 export function runDetail(over: Partial<RunDetail> = {}): RunDetail {
   return {

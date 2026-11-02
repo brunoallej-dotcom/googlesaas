@@ -1,3 +1,4 @@
+import { WITNESS_NOT_REQUIRED } from '../src/lib/link-audit-decisions/witness';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -8,6 +9,7 @@ import { createEvidenceReader } from '../src/lib/link-audit-evidence';
 import { parseScoringInput } from '../src/lib/link-audit/scoring/input';
 import { ALL_KIND_EXAMPLES, ANA, BIA, clock, entryPath, hashTree, must, rec, registerCleanup, tmpDir, withAutoHead, world } from './helpers/link-audit-decisions-fixtures';
 import { evidence, richInput, run, scoreAudit, sub } from './helpers/link-audit-scoring-fixtures';
+import { TEST_ORIGIN } from './helpers/link-audit-origin-fixtures';
 
 registerCleanup();
 
@@ -331,7 +333,7 @@ test('configuração insegura ou ausente: pastas iguais ou aninhadas (decisões,
   const w = await world();
   const status = async (over: { baseDir?: string; anchorDir?: string; evidenceBaseDir?: string | null } = {}): Promise<string> => {
     const evidenceBaseDir = over.evidenceBaseDir === undefined ? w.evidenceDir : over.evidenceBaseDir;
-    const s = createDecisionService({ baseDir: over.baseDir ?? w.decisionsDir, anchorDir: over.anchorDir ?? w.anchorDir, evidence: w.reader, ...(evidenceBaseDir ? { evidenceBaseDir } : {}) });
+    const s = createDecisionService({ knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: over.baseDir ?? w.decisionsDir, anchorDir: over.anchorDir ?? w.anchorDir, evidence: w.reader, ...(evidenceBaseDir ? { evidenceBaseDir } : {}) });
     const r = await s.list(ANA, w.auditId);
     return r.ok ? 'OK' : r.code;
   };
@@ -361,7 +363,7 @@ test('configuração insegura ou ausente: pastas iguais ou aninhadas (decisões,
 
 test('limite de 200 decisões vigentes (o mesmo teto do motor): a 201ª é recusada; revogar libera espaço', async () => {
   const dir = tmpDir('lad-lim-');
-  const raw = createDecisionService({ baseDir: dir, anchorDir: tmpDir('lad-lim-an-'), evidence: fakeEvidence() });
+  const raw = createDecisionService({ knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: dir, anchorDir: tmpDir('lad-lim-an-'), evidence: fakeEvidence() });
   const AUDIT = 'auditoria-limite-01';
   let head: { seq: number; sha256: string } | null = null; // a cada resposta, o head novo (sem reler tudo a cada passo)
   for (let i = 1; i <= 200; i++) {
@@ -482,7 +484,7 @@ test('layout LEGADO real (TUVAPLAST), SOMENTE LEITURA: os identificadores captur
   const before = hashTree(path.join(REAL_BASE, REAL_AUDIT));
   const reader = createEvidenceReader({ baseDir: REAL_BASE, authorize: (a) => a.email === ANA.email });
   const decisionsDir = tmpDir('lad-real-');
-  const service = withAutoHead(createDecisionService({ baseDir: decisionsDir, anchorDir: tmpDir('lad-real-an-'), evidence: reader, evidenceBaseDir: REAL_BASE }));
+  const service = withAutoHead(createDecisionService({ knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: decisionsDir, anchorDir: tmpDir('lad-real-an-'), evidence: reader, evidenceBaseDir: REAL_BASE }));
   const made = await must(service.create(ANA, REAL_AUDIT, { record: rec.naFeature(['capture:c0001', 'report:c0001-r0002', 'report:c0001-r0001']) }, clock()));
   assert.deepEqual(made.decision.basis.report, { capture: 1, revision: 2 });
   const missing = await service.create(ANA, REAL_AUDIT, { record: rec.images(['report:c0001-r0003']) }, clock());

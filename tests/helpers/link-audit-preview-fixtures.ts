@@ -3,6 +3,7 @@ import type { DecisionDto, Head, ListPayload, PendingDto } from '../../src/lib/l
 import type { OperatorRecord } from '../../src/lib/link-audit/scoring';
 import { createScoringPreviewService, type PreviewDeps } from '../../src/lib/link-audit-scoring-runs';
 import { ANA, type World } from './link-audit-decisions-fixtures';
+import { TRUSTING_EVIDENCE_POLICY } from './link-audit-evidence-provenance-fixtures';
 
 /* Dados 100% FICTÍCIOS. Stores reais (pastas temporárias) para o fluxo normal; doubles só onde a falha não é alcançável sem adulterar o disco. */
 export const NOW = '2026-10-23T10:00:00.000Z';
@@ -15,6 +16,7 @@ export function previewOver(w: Pick<World, 'evidenceDir' | 'raw'>, over: Partial
     basisReader: createScoringBasisReader({ baseDir: w.evidenceDir, authorize: () => true }),
     decisions: w.raw,
     clock: clockFixed,
+    evidenceProvenance: TRUSTING_EVIDENCE_POLICY, // testes de OUTROS assuntos; a prova de coleta tem testes próprios com a política real
     ...over,
   });
 }
@@ -46,6 +48,8 @@ export function fakeList(auditId: string, records: readonly OperatorRecord[], ov
     pending: over.pending ?? null,
     finalizable: over.finalizable ?? true,
     decisions,
+    ambiguousDecisionIds: [],
+    witness: { status: 'NOT_REQUIRED', knownHeads: 0, coveredSeq: null, unwitnessedAffecting: 0 },
     history: [],
     allDecisions: decisions,
     operatorRecords: records,

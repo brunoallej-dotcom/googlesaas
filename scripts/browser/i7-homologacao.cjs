@@ -8,6 +8,7 @@
  * `I7_ONLY=A,B` (só desenvolvimento) roda um subconjunto; sem a variável, roda tudo, em ordem. Uso: ver scripts/browser/README.md.
  * Limites: Chromium headless apenas; sem leitor de tela, outros navegadores nem dispositivo físico (SKIPPED no resultado).
  */
+const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const { createHarness } = require('./harness.cjs');
@@ -16,7 +17,7 @@ const only = (process.env.I7_ONLY || '').split(',').map((s) => s.trim()).filter(
 const want = (section) => only.length === 0 || only.includes(section);
 
 (async () => {
-  const h = await createHarness({ name: 'i7', seed: 'tests/helpers/browser-seed-i6.ts', seedArgs: ['with-scored'], port: 3989, debugPort: 9335 });
+  const h = await createHarness({ name: 'i7', seed: 'tests/helpers/browser-seed-i6.ts', seedArgs: ['with-scored,with-forged'], port: 3989, debugPort: 9335 });
   const { check, waitFor, evalJs, text, has, sleep, send, BASE, IDS, root } = h;
   const go = h.go;
   const clickText = h.clickText;
@@ -75,7 +76,7 @@ const want = (section) => only.length === 0 || only.includes(section);
   if (want('A')) {
     h.log('---- A. fluxo operacional (14 passos)');
     // 1. abrir a Auditoria por Link
-    check('1. a Auditoria por Link abre e lista as 6 auditorias fictícias', !!(await go(`${BASE}/auditoria-por-link`, listReady)) && (await evalJs(`document.querySelectorAll('#auditorias-armazenadas li > a[href^="/auditoria-por-link/"]').length`)) === 6 && (await has(/6 empresas/)));
+    check('1. a Auditoria por Link abre e lista as 10 auditorias fictícias', !!(await go(`${BASE}/auditoria-por-link`, listReady)) && (await evalJs(`document.querySelectorAll('#auditorias-armazenadas li > a[href^="/auditoria-por-link/"]').length`)) === 10 && (await has(/10 empresas/)));
     // 2. selecionar uma auditoria
     const cardBefore = await cardText(IDS.main);
     await evalJs(`document.querySelector('#auditorias-armazenadas li > a[href$="${IDS.main}"]').closest('li').querySelector('button').click()`);
@@ -86,7 +87,7 @@ const want = (section) => only.length === 0 || only.includes(section);
     await openAll();
     // 4. evidências verificadas
     let t = await text();
-    check('4. evidências verificadas: integridade OK, CID, captura de origem e hashes curtos', /Integridade das evidências OK/.test(t) && /CID confirmado\s*\d{10,}/.test(t) && /EVIDÊNCIAS VERIFICADAS USADAS/i.test(t) && /capture:c0001/.test(t) && /[0-9a-f]{6}…[0-9a-f]{4}/.test(t));
+    check('4. evidências: integridade local verificada (SHA-256) e origem da coleta autenticada, CID, captura de origem e hashes curtos', /Integridade local verificada \(SHA-256\)/.test(t) && /CID confirmado\s*\d{10,}/.test(t) && /EVIDÊNCIAS USADAS \(INTEGRIDADE LOCAL VERIFICADA POR SHA-256\)/i.test(t) && /Origem da coleta autenticada/.test(t) && /origem autenticada/.test(t) && /capture:c0001/.test(t) && /[0-9a-f]{6}…[0-9a-f]{4}/.test(t));
     // 5. prévia calculada pelo motor
     mainBefore = await previewOf(IDS.main);
     dumpKeys('prévia', mainBefore && { keys: Object.keys(mainBefore), fin: mainBefore.finalization, blockers: (mainBefore.blockers || []).length });
@@ -183,14 +184,14 @@ const want = (section) => only.length === 0 || only.includes(section);
     await waitFor(() => has(/Nenhum resultado registrado ainda/), 10000);
     check('D2. DECISÃO PENDENTE: faixa própria, a decisão NÃO vale, sem resultado e registro bloqueado', (await has(/Decisão pendente/)) && (await has(/Nenhum resultado registrado ainda/)) && (await evalJs(`[...document.querySelectorAll('button')].find(b=>b.innerText.trim().startsWith('Registrar resultado'))?.disabled===true`)));
     check('13c. decisão pendente: não vale (sem recibo), o registro do resultado fica bloqueado', (await has(/SEM recibo: ela ainda não vale/)) && (await evalJs(`[...document.querySelectorAll('button')].find(b=>b.innerText.trim().startsWith('Registrar resultado'))?.disabled===true`)));
-    await clickText('Reenviar o mesmo pedido');
-    check('13d. recuperação: reenviar o MESMO pedido conclui e grava o recibo', !!(await waitFor(() => has(/Decisão pendente concluída e confirmada/), 15000)) && (fs.existsSync(decAnchors) ? fs.readdirSync(decAnchors).length : 0) > decReceiptsBefore, `recibos ${decReceiptsBefore} → ${fs.existsSync(decAnchors) ? fs.readdirSync(decAnchors).length : 0}`);
+    const decisionConclusion = await h.concludePending('Concluir a decisão');
+    check('13d. recuperação: com a origem COMPROVADA e a confirmação explícita, a decisão pendente conclui e grava o recibo', decisionConclusion.disabledBefore && decisionConclusion.enabledAfter && decisionConclusion.clicked && !!(await waitFor(() => has(/Decisão pendente concluída e confirmada/), 15000)) && (fs.existsSync(decAnchors) ? fs.readdirSync(decAnchors).length : 0) > decReceiptsBefore, `recibos ${decReceiptsBefore} → ${fs.existsSync(decAnchors) ? fs.readdirSync(decAnchors).length : 0}`);
     const resAnchors = path.join(root, 'resanchors', IDS.pres);
     check('13e. resultado gravado SEM recibo: nenhum recibo no volume independente', !fs.existsSync(resAnchors) || fs.readdirSync(resAnchors).length === 0);
     await go(lumos('pres'), (x) => /gravado e NÃO confirmado/.test(x));
     check('13f. resultado pendente: aparece como NÃO confirmado e só oferece concluir (não vale como resultado)', (await has(/NÃO confirmado/)) && (await evalJs(`[...document.querySelectorAll('button')].some(b=>b.innerText.includes('Concluir a confirmação'))`)));
-    await clickText('Concluir a confirmação');
-    check('13g. concluir a confirmação: VERIFICADO e o recibo agora existe', !!(await waitFor(() => has(/Confirmado e verificado/), 20000)) && fs.existsSync(resAnchors) && fs.readdirSync(resAnchors).length >= 1);
+    const runConclusion = await h.concludePending('Concluir a confirmação');
+    check('13g. concluir a confirmação (com a caixa marcada): VERIFICADO e o recibo agora existe', runConclusion.disabledBefore && runConclusion.enabledAfter && runConclusion.clicked && !!(await waitFor(() => has(/Confirmado e verificado/), 20000)) && fs.existsSync(resAnchors) && fs.readdirSync(resAnchors).length >= 1);
     // 14. retorno à listagem sem trocar a identidade
     await go(lumos('main'), ready);
     const cardOnList = await cardText(IDS.main);
@@ -363,10 +364,147 @@ const want = (section) => only.length === 0 || only.includes(section);
       fs.rmSync(receiptFile);
       const noReceipt = await api(`/api/link-audit/scoring/${IDS.hist}/results/1`);
       const noReceiptList = await api(`/api/link-audit/scoring/${IDS.hist}/results`);
-      check('B12. recibo REMOVIDO do volume independente: o detalhe é recusado (409) e a lista não conta o registro como confirmado (vira pendente)', noReceipt.status === 409 && noReceiptList.status === 200 && (parse(noReceiptList) || {}).results.length === 0 && !!(parse(noReceiptList) || {}).pending, `detalhe=${noReceipt.status} lista=${noReceiptList.status} ${noReceiptList.body.slice(0, 120)}`);
+      const noReceiptPending = (parse(noReceiptList) || {}).pending || {};
+      check('B12. recibo REMOVIDO do volume independente (MINOR-2): o detalhe é recusado (409) e a lista NÃO o conta como confirmado: vira pendente com origem COMPROVADA (a limitação — gravação interrompida × recibo removido — é indistinguível e fica dita na tela)', noReceipt.status === 409 && noReceiptList.status === 200 && (parse(noReceiptList) || {}).results.length === 0 && noReceiptPending.origin === 'PROVEN', `detalhe=${noReceipt.status} lista=${noReceiptList.status} ${noReceiptList.body.slice(0, 120)}`);
       fs.writeFileSync(receiptFile, receiptOriginal);
       fs.chmodSync(receiptFile, 0o444);
     } else h.skip('B12. recibo removido', 'sem recibo no volume para a auditoria "hist"');
+
+    // B13 — O ATAQUE ORIGINAL (MAJOR-1): pendências FORJADAS por quem só escreve numa pasta de dados, citando o operador autorizado como autor
+    await h.restartServer();
+    await go(lumos('forgedDec'), (x) => /Decisão pendente/.test(x));
+    const forgedDecPanel = await evalJs(`(()=>{const s=document.querySelector('section[aria-labelledby$="-t"]');return s?s.innerText:''})()`);
+    check('B13a. decisão FORJADA (UI): a tela diz que a origem NÃO foi comprovada, não mostra autor nem conteúdo do arquivo e NÃO oferece botão nem caixa', /A origem NÃO foi comprovada pelo servidor/.test(forgedDecPanel) && /Não pode ser concluído por esta tela/.test(forgedDecPanel) && !/ana@empresa\.com|Padaria Exemplo/.test(forgedDecPanel) && (await evalJs(`document.querySelectorAll('section[aria-labelledby$="-t"] button, section[aria-labelledby$="-t"] input').length`)) === 0, forgedDecPanel.replace(/\s+/g, ' ').slice(0, 160));
+    const forgedFile = JSON.parse(fs.readFileSync(path.join(root, 'decisions', IDS.forgedDec, 'd0001.json'), 'utf8'));
+    const decReceipts = path.join(root, 'anchors', IDS.forgedDec);
+    const listing = (dir) => (fs.existsSync(dir) ? fs.readdirSync(dir).sort().join() : '');
+    const decReceiptsBefore2 = listing(decReceipts);
+    const decisionsFileBefore = fs.readFileSync(path.join(root, 'decisions', IDS.forgedDec, 'd0001.json'), 'utf8');
+    const attackDecision = await post(`/api/link-audit/decisions/${IDS.forgedDec}`, { record: forgedFile.record, expectedHead: null }); // a PRÓPRIA ana reenvia a operação do arquivo
+    const attackDecisionBody = parse(attackDecision) || {};
+    const forgedDecList = (await decisionsOf(IDS.forgedDec)) || {};
+    check('B13b. decisão FORJADA (API): a própria "ana" reenvia a operação do arquivo ⇒ 409 PENDING_ORIGIN_UNPROVEN; nenhum recibo; o arquivo intacto; continua pendente, sem decisão vigente e bloqueando', attackDecision.status === 409 && attackDecisionBody.code === 'PENDING_ORIGIN_UNPROVEN' && listing(decReceipts) === decReceiptsBefore2 && fs.readFileSync(path.join(root, 'decisions', IDS.forgedDec, 'd0001.json'), 'utf8') === decisionsFileBefore && (forgedDecList.decisions || []).length === 0 && forgedDecList.finalizable === false && (forgedDecList.pending || {}).origin === 'UNPROVEN' && (forgedDecList.pending || {}).record === null && (forgedDecList.pending || {}).recordedBy === null, `status=${attackDecision.status} ${attackDecisionBody.code}`);
+    await go(lumos('forgedRun'), (x) => /NÃO confirmado/.test(x));
+    const forgedRunPanel = await evalJs(`(()=>{const s=document.querySelector('section[aria-labelledby$="-t"]');return s?s.innerText:''})()`);
+    check('B13c. resultado FORJADO (UI): origem NÃO comprovada, sem botão, sem desfecho/cobertura/autor do arquivo', /A origem NÃO foi comprovada pelo servidor/.test(forgedRunPanel) && /Não pode ser concluído por esta tela/.test(forgedRunPanel) && !/Cobertura|Inconclusivo|Pontuado|ana@empresa\.com|Foi você/.test(forgedRunPanel) && (await evalJs(`document.querySelectorAll('section[aria-labelledby$="-t"] button, section[aria-labelledby$="-t"] input').length`)) === 0, forgedRunPanel.replace(/\s+/g, ' ').slice(0, 160));
+    const forgedRunList = (await resultsOf(IDS.forgedRun)) || {};
+    const runReceipts = path.join(root, 'resanchors', IDS.forgedRun);
+    const runReceiptsBefore = listing(runReceipts);
+    const attackRun = await post(`/api/link-audit/scoring/${IDS.forgedRun}/finalize`, { expectedHead: (forgedRunList.pending || {}).decisionsHead ?? null, expectedInputSha256: (forgedRunList.pending || {}).inputSha256 }); // o pedido que a interface montava a partir do servidor
+    const attackRunBody = parse(attackRun) || {};
+    const forgedRunAfter = (await resultsOf(IDS.forgedRun)) || {};
+    check('B13d. resultado FORJADO (API): a própria "ana" conclui com o pedido montado do servidor ⇒ 409 RESULT_PENDING_ORIGIN_UNPROVEN; nenhum recibo; nenhum resultado confirmado; o detalhe não é entregue', attackRun.status === 409 && attackRunBody.code === 'RESULT_PENDING_ORIGIN_UNPROVEN' && listing(runReceipts) === runReceiptsBefore && (forgedRunList.pending || {}).origin === 'UNPROVEN' && (forgedRunList.pending || {}).outcome === null && (forgedRunAfter.results || []).length === 0 && (await api(`/api/link-audit/scoring/${IDS.forgedRun}/results/1`)).status === 409, `status=${attackRun.status} ${attackRunBody.code}`);
+
+    // B14 — MINOR-1 no nível HTTP: um FIFO no lugar do próximo arquivo de resultados NÃO trava o servidor (409 de integridade) e as demais auditorias seguem respondendo
+    const fifo = path.join(root, 'results', IDS.hist, 's0002.json');
+    execFileSync('mkfifo', [fifo]);
+    try {
+      const started = Date.now();
+      const viaFifo = await evalJs(`(async()=>{const c=new AbortController();setTimeout(()=>c.abort(),8000);try{const r=await fetch('/api/link-audit/scoring/${IDS.hist}/results',{signal:c.signal});return {status:r.status}}catch(e){return {status:'abortado'}}})()`);
+      const during = await api(`/api/link-audit/scoring/${IDS.main}/results`);
+      check('B14. FIFO no lugar de um arquivo de resultados: a consulta responde 409 (integridade) em menos de 8 s, sem travar, e outra auditoria segue respondendo 200', viaFifo.status === 409 && Date.now() - started < 8000 && during.status === 200, `fifo=${viaFifo.status} outra=${during.status} ${Date.now() - started} ms`);
+    } finally {
+      fs.rmSync(fifo, { force: true });
+    }
+    check('B14b. removido o FIFO, a auditoria volta a ser lida normalmente', (await api(`/api/link-audit/scoring/${IDS.hist}/results`)).status === 200);
+
+    // B15 — PROVA DE COLETA (R2-MINOR-1): integridade ≠ autenticidade. A auditoria `unsealed` tem evidência ÍNTEGRA mas SEM manifesto assinado.
+    await h.restartServer();
+    const sealedPreview = await previewOf(IDS.main);
+    const unsealedPreview = await previewOf(IDS.unsealed);
+    check('B15a. coleta ATESTADA (manifesto assinado por chave de confiança): autenticidade comprovada e finalização permitida pela API', !!sealedPreview && sealedPreview.evidence.provenance.status === 'AUTHENTICATED' && sealedPreview.finalization.allowed === true, JSON.stringify(sealedPreview && sealedPreview.evidence.provenance));
+    check('B15b. coleta SEM manifesto (integridade OK): a prévia é consultável, a integridade é OK, mas a autenticidade é NÃO comprovada e a finalização NÃO é permitida', !!unsealedPreview && unsealedPreview.evidence.integrity.status === 'OK' && unsealedPreview.evidence.provenance.status === 'UNAUTHENTICATED' && unsealedPreview.evidence.provenance.reason === 'NO_SEAL' && unsealedPreview.finalization.allowed === false && unsealedPreview.blockers.some((b) => b.code === 'EVIDENCE_PROVENANCE_UNPROVEN'), JSON.stringify(unsealedPreview && unsealedPreview.evidence.provenance));
+    const filesIn = (dir) => (fs.existsSync(dir) ? fs.readdirSync(dir).length : 0);
+    const unsealedResults = path.join(root, 'results', IDS.unsealed);
+    const unsealedReceipts = path.join(root, 'resanchors', IDS.unsealed);
+    // o pedido que a interface montaria a partir do servidor (cabeça e hash da própria prévia): a recusa tem de ser pela PROVA, não por visão desatualizada
+    const forcedFinalize = await post(`/api/link-audit/scoring/${IDS.unsealed}/finalize`, { expectedHead: unsealedPreview ? unsealedPreview.finalization.expectedHead : null, expectedInputSha256: (unsealedPreview && unsealedPreview.finalization.expectedInputSha256) || 'a'.repeat(64) });
+    const forcedBody = parse(forcedFinalize) || {};
+    check('B15c. finalizar a coleta sem manifesto pela API é recusado (409 NOT_FINALIZABLE com o bloqueio de proveniência) e nada é gravado (nem resultado, nem recibo)', forcedFinalize.status === 409 && forcedBody.code === 'NOT_FINALIZABLE' && (forcedBody.blockers || []).some((b) => b.code === 'EVIDENCE_PROVENANCE_UNPROVEN') && filesIn(unsealedResults) === 0 && filesIn(unsealedReceipts) === 0, `${forcedFinalize.status} ${forcedFinalize.body.slice(0, 160)}`);
+    await go(lumos('unsealed'), (x) => /Origem da coleta/.test(x));
+    const unsealedText = await text();
+    check('B15d. na tela: a origem da coleta aparece como NÃO comprovada (distinta da integridade OK), diz que SHA-256 não mostra quem coletou e o registro fica desabilitado', /Integridade local verificada \(SHA-256\)/.test(unsealedText) && /NÃO comprovada/.test(unsealedText) && /não mostra quem o coletou/.test(unsealedText) && !(await enabledButton('Registrar resultado')));
+    await h.shot('i7-B15-coleta-sem-prova');
+
+    // B16 — R3-MINOR-2: a revogação confirmada NUNCA é reativada por recibo removido nem por quarentena da pendente (testemunha = resultado selado em outras pastas)
+    await h.restartServer();
+    const revId = IDS.revoked;
+    const decisionsOf2 = async () => parse(await api(`/api/link-audit/decisions/${revId}`)) || {};
+    const decFile = path.join(root, 'decisions', revId, 'd0002.json');
+    const decReceipt = path.join(root, 'anchors', revId, 'a0002.json');
+    const quarantineDir = path.join(root, 'quarentena-revogacao');
+    await go(lumos('revoked'), ready);
+    const ok0 = await decisionsOf2();
+    check('B16a. revogação confirmada + resultado selado: testemunha CONSISTENTE, nenhuma decisão vigente, finalizável pelo lado das decisões', (ok0.witness || {}).status === 'CONSISTENT' && (ok0.decisions || []).length === 0 && ok0.finalizable === true, JSON.stringify(ok0.witness));
+    fs.chmodSync(decReceipt, 0o644);
+    fs.rmSync(decReceipt);
+    const lost = await decisionsOf2();
+    check('B16b. recibo da REVOGAÇÃO removido: RECEIPT_LOST_WITNESSED, a decisão revogada NÃO volta a valer (EM DÚVIDA), nada finalizável', (lost.witness || {}).status === 'RECEIPT_LOST_WITNESSED' && (lost.decisions || []).length === 0 && (lost.operatorRecords || []).length === 0 && lost.finalizable === false && JSON.stringify(lost.ambiguousDecisionIds) === '["op-0001"]', JSON.stringify([lost.witness, lost.ambiguousDecisionIds]));
+    await go(lumos('revoked'), ready);
+    check('B16c. na tela: o incidente de integridade é dito (inclusive a quem não é o autor), sem botão de finalizar', (await has(/Incidente de integridade/)) && (await has(/Em dúvida: op-0001/)) && !(await enabledButton('Registrar resultado')));
+    fs.mkdirSync(quarantineDir, { recursive: true });
+    fs.renameSync(decFile, path.join(quarantineDir, 'd0002.json')); // o operador "resolve" mandando a pendente para a quarentena (o procedimento antigo)
+    const regressed = await decisionsOf2();
+    check('B16d. pendência MOVIDA para a quarentena: histórico NÃO resolvido (HISTORY_REGRESSED), ZERO decisões vigentes, motor sem decisões, nada finalizável', (regressed.witness || {}).status === 'HISTORY_REGRESSED' && (regressed.decisions || []).length === 0 && (regressed.operatorRecords || []).length === 0 && regressed.finalizable === false, JSON.stringify(regressed.witness));
+    const prevView = await previewOf(revId);
+    check('B16e. a prévia aponta o bloqueio DECISIONS_HISTORY_UNRESOLVED, não aplica nenhuma decisão e não permite finalizar', !!prevView && prevView.finalization.allowed === false && (prevView.decisions.applied || []).length === 0 && prevView.blockers.some((b) => b.code === 'DECISIONS_HISTORY_UNRESOLVED'), JSON.stringify(prevView && prevView.blockers.map((b) => b.code)));
+    const writeTry = await post(`/api/link-audit/decisions/${revId}`, { record: { kind: 'JUDGEMENT', subcriterionId: 'C2', value: 'COMPATIBLE', justification: 'Conferido no painel do perfil pelo operador.' }, expectedHead: regressed.head });
+    check('B16f. nenhuma decisão nova é aceita com o histórico não resolvido (409 DECISIONS_HISTORY_UNRESOLVED) e nada é gravado', writeTry.status === 409 && (parse(writeTry) || {}).code === 'DECISIONS_HISTORY_UNRESOLVED' && !fs.existsSync(decFile), `${writeTry.status} ${writeTry.body.slice(0, 120)}`);
+    await go(lumos('revoked'), ready);
+    check('B16g. na tela: aviso de integridade NÃO resolvida a todos, sem decisão vigente e sem botão de finalizar', (await has(/Integridade do histórico de decisões NÃO resolvida/)) && !(await enabledButton('Registrar resultado')));
+    await h.shot('i7-B16-historico-nao-resolvido');
+    fs.renameSync(path.join(quarantineDir, 'd0002.json'), decFile); // restauração PARCIAL: só o arquivo
+    const half = await decisionsOf2();
+    check('B16h. restauração parcial (arquivo sem recibo): volta a RECEIPT_LOST_WITNESSED, ainda sem decisão vigente', (half.witness || {}).status === 'RECEIPT_LOST_WITNESSED' && (half.decisions || []).length === 0, JSON.stringify(half.witness));
+    const concluded = await post(`/api/link-audit/decisions/${revId}/revocations`, { revokes: 'op-0001', reason: 'Revogada porque o juízo estava errado e foi refeito.', expectedHead: half.head });
+    const done = await decisionsOf2();
+    check('B16i. o AUTOR (origem comprovada) conclui a recuperação: recibo recriado, testemunha CONSISTENTE, decisão REVOGADA, nada reativado', (concluded.status === 200 || concluded.status === 201) && (done.witness || {}).status === 'CONSISTENT' && (done.decisions || []).length === 0 && (done.allDecisions || []).every((d) => d.status === 'REVOKED') && done.finalizable === true, `${concluded.status} ${JSON.stringify(done.witness)}`);
+
+    // B17 — R4-MINOR-1: a ROTAÇÃO da chave não faz o sistema esquecer a testemunha (recibos removidos + quarentena + chave rotacionada ⇒ NÃO resolvido);
+    //       INFO-1: dependência da testemunha ausente NÃO é "sem inconsistência". Chaves geradas na hora; nada fixo.
+    const receiptsDir = path.join(root, 'resanchors', revId);
+    const resultReceipt = path.join(receiptsDir, 'a0001.json');
+    const backupDir = path.join(root, 'backup-r4');
+    fs.mkdirSync(backupDir, { recursive: true });
+    const keep = [[resultReceipt, 'a0001-resultado.json'], [decReceipt, 'a0002-decisao.json'], [decFile, 'd0002.json']];
+    for (const [file, name] of keep) fs.copyFileSync(file, path.join(backupDir, name));
+    for (const file of [resultReceipt, decReceipt]) { fs.chmodSync(file, 0o644); fs.rmSync(file); }
+    fs.renameSync(decFile, path.join(quarantineDir, 'd0002.json'));
+    h.setServerEnv({ GMN_LINK_AUDIT_ORIGIN_KEY: h.freshOriginKey(), GMN_LINK_AUDIT_ORIGIN_REVOKED_KEY_IDS: h.originKeyId });
+    await h.restartServer();
+    const rotated = await decisionsOf2();
+    check('B17a. chave ROTACIONADA (a antiga revogada) + os DOIS recibos removidos + d0002 em quarentena: histórico NÃO resolvido (UNTRUSTED), ZERO decisões vigentes, motor vazio, nada finalizável', (rotated.witness || {}).status === 'UNTRUSTED' && (rotated.decisions || []).length === 0 && (rotated.operatorRecords || []).length === 0 && rotated.finalizable === false && (rotated.allDecisions || []).every((d) => d.status !== 'ACTIVE'), JSON.stringify(rotated.witness));
+    const rotatedPreview = await previewOf(revId);
+    check('B17b. a prévia aponta DECISIONS_HISTORY_UNRESOLVED (motivo UNTRUSTED), não aplica nenhuma decisão e não permite finalizar', !!rotatedPreview && rotatedPreview.finalization.allowed === false && (rotatedPreview.decisions.applied || []).length === 0 && rotatedPreview.blockers.some((b) => b.code === 'DECISIONS_HISTORY_UNRESOLVED' && b.reasonCode === 'UNTRUSTED'), JSON.stringify(rotatedPreview && rotatedPreview.blockers.map((b) => b.code)));
+    const rotatedWrite = await post(`/api/link-audit/decisions/${revId}`, { record: { kind: 'JUDGEMENT', subcriterionId: 'C2', value: 'COMPATIBLE', justification: 'Conferido no painel do perfil pelo operador.' }, expectedHead: rotated.head });
+    check('B17c. nenhuma escrita é aceita (409 DECISIONS_HISTORY_UNRESOLVED) e nada é gravado', rotatedWrite.status === 409 && (parse(rotatedWrite) || {}).code === 'DECISIONS_HISTORY_UNRESOLVED' && !fs.existsSync(decFile), `${rotatedWrite.status} ${rotatedWrite.body.slice(0, 120)}`);
+    await go(lumos('revoked'), ready);
+    check('B17d. na tela: aviso de integridade NÃO resolvida com o motivo "testemunha NÃO é confiável", sem botão de finalizar', (await has(/Integridade do histórico de decisões NÃO resolvida/)) && (await has(/NÃO é confiável/)) && !(await enabledButton('Registrar resultado')));
+    await h.shot('i7-B17-rotacao-testemunha-nao-confiavel');
+    // recuperação LEGÍTIMA: a partir do backup independente (fora do sistema), com a configuração original
+    for (const [file, name] of keep) fs.copyFileSync(path.join(backupDir, name), file);
+    fs.chmodSync(decFile, 0o444);
+    h.resetServerEnv();
+    await h.restartServer();
+    const afterRestore = await decisionsOf2();
+    check('B17e. restaurado o par do backup e a configuração original: testemunha CONSISTENTE, decisão revogada, nada reativado', (afterRestore.witness || {}).status === 'CONSISTENT' && (afterRestore.decisions || []).length === 0 && (afterRestore.allDecisions || []).every((d) => d.status === 'REVOKED'), JSON.stringify(afterRestore.witness));
+    // INFO-1: a pasta de recibos dos resultados NÃO está configurada
+    const mainBefore17 = await decisionsOf(IDS.main);
+    const effectiveBefore = ((mainBefore17 || {}).decisions || []).length;
+    check('B17f0. precondição: a auditoria principal TEM decisão vigente com a configuração íntegra (senão "zero vigentes" não provaria nada)', effectiveBefore > 0 && ((mainBefore17 || {}).witness || {}).status !== 'NOT_CONFIGURED', JSON.stringify({ vigentes: effectiveBefore, witness: (mainBefore17 || {}).witness }));
+    h.setServerEnv({ GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR: undefined });
+    await h.restartServer();
+    const mainView = await decisionsOf(IDS.main);
+    check('B17f. SEM a pasta de recibos dos resultados: NOT_CONFIGURED, ZERO decisões vigentes (inclusive as que existem), nada finalizável', ((mainView || {}).witness || {}).status === 'NOT_CONFIGURED' && ((mainView || {}).decisions || []).length === 0 && (mainView || {}).finalizable === false, JSON.stringify((mainView || {}).witness));
+    const mainPreview = await previewOf(IDS.main);
+    check('B17g. SEM a testemunha configurada, a prévia não é finalizável e diz por quê', !!mainPreview && mainPreview.finalization.allowed === false && mainPreview.blockers.some((b) => b.code === 'DECISIONS_HISTORY_UNRESOLVED' && b.reasonCode === 'NOT_CONFIGURED'), JSON.stringify(mainPreview && mainPreview.blockers.map((b) => b.code)));
+    await go(lumos('main'), ready);
+    check('B17h. na tela: "não está configurada neste servidor", nenhuma decisão vigente enviada ao motor, sem botão de finalizar', (await has(/não está configurada neste servidor/)) && !(await enabledButton('Registrar resultado')));
+    await h.shot('i7-B17-testemunha-nao-configurada');
+    h.resetServerEnv();
+    await h.restartServer();
+    const back = await decisionsOf(IDS.main);
+    check('B17i. configuração restaurada: a testemunha volta a ser lida, as mesmas decisões voltam a ser vigentes e continuam finalizáveis (nenhum estado preso)', ((back || {}).witness || {}).status !== 'NOT_CONFIGURED' && ((back || {}).decisions || []).length === effectiveBefore && (back || {}).finalizable === (mainBefore17 || {}).finalizable, JSON.stringify({ vigentes: ((back || {}).decisions || []).length, esperado: effectiveBefore, witness: (back || {}).witness, finalizable: (back || {}).finalizable }));
   }
 
   /* ============================================================ C. EXPERIÊNCIA DO USUÁRIO ============================================================ */

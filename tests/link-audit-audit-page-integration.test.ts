@@ -1,3 +1,4 @@
+import { proveEvidenceForRoutes } from './helpers/link-audit-evidence-provenance-fixtures';
 import assert from 'node:assert/strict';
 import test, { afterEach } from 'node:test';
 import { GET as evidenceRoute } from '../src/app/api/link-audit/evidence/[auditId]/route';
@@ -13,6 +14,7 @@ import { initialPageState, pageReducer } from '../src/components/link-audit/audi
 import { deriveRegistry } from '../src/components/link-audit/audit-page/status';
 import { createSessionToken, SESSION_COOKIE } from '../src/lib/auth/session';
 import { registerCleanup, tmpDir, world, rec, must, clock } from './helpers/link-audit-decisions-fixtures';
+import { TEST_ORIGIN_KEY } from './helpers/link-audit-origin-fixtures';
 
 /*
  * Onda 6C, I5 — o CLIENTE da página (HTTP + controlador) contra as ROTAS REAIS, com sessão assinada por segredo fictício, evidências
@@ -30,11 +32,13 @@ const operators = Array.from({ length: 200 }, (_, i) => `ui${i}@empresa.com`);
 
 async function setup() {
   const w = await world();
+  await proveEvidenceForRoutes(env, w);
   const results = tmpDir('lad-ui-rs-');
   const anchors = tmpDir('lad-ui-ra-');
   env.SUPABASE_SERVICE_ROLE_KEY = SECRET;
   env.GMN_OPERATOR_EMAILS = operators.join(',');
   delete env.GMN_AUTH_DISABLED;
+  env.GMN_LINK_AUDIT_ORIGIN_KEY = TEST_ORIGIN_KEY;
   env.GMN_LINK_AUDIT_EVIDENCE_DIR = w.evidenceDir;
   env.GMN_LINK_AUDIT_DECISIONS_DIR = w.decisionsDir;
   env.GMN_LINK_AUDIT_DECISIONS_ANCHOR_DIR = w.anchorDir;
