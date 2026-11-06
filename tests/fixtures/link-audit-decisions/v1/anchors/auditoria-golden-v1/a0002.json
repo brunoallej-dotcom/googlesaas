@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "kind": "LINK_AUDIT_DECISION_ANCHOR",
+  "auditId": "auditoria-golden-v1",
+  "seq": 2,
+  "headSha256": "9f84b69a0fc0cddbedf3e0f6dffd8f1f46a09cb478662a9929e86a741df1b3ec",
+  "anchoredAt": "2026-10-21T12:00:02.000Z",
+  "prevAnchorSha256": "531cf107b00bd1f419147bc8edff7633fa7608d7429a7a7187d4b9b15fdeac0f",
+  "contentSha256": "c19e771ed924387fc4df6f5c730b60a7f2946075f6886b766b175c50e38ae45a"
+}

@@ -80,7 +80,8 @@ Achados e tratamento (todos corrigidos, com teste de regressão):
 | 15 | Baixo | Hora impossível aceita; capturas antigas descartadas não registradas; concorrentes clones | hora validada; demais itens documentados como limites (abaixo) |
 Observação do revisor aceita e documentada: `OPERATOR_STATEMENT`/`AGGREGATOR` (secundárias) fundamentam pontos mas reduzem a confiabilidade (D3B §6.3); o `justification` do operador (texto livre) aparece nos motivos de N/A.
 
-## 8. Limites e pendências para a Onda 6B
+## 8. Limites e pendências (6B → 6C)
+> **Atualização de numeração (28/10/2026):** o item 1 (armazenamento das confirmações do operador/N/A) foi a **Onda 6B** (concluída: `onda6b-decisoes-humanas.md`). Os itens 0, 2, 3 e 4 passam à **Onda 6C** (integração com o motor e interface) ou dependem de autorização de coleta (D5); o item 5 e o PDF são a **Onda 7**. Nenhuma regra normativa mudou.
 0. **Invariante de integração (achado 5):** `referenceDate` deve ser derivada do snapshot armazenado (nunca do cliente) e `recordedAt` dos registros do operador não pode ser futura; o motor puro só garante que nenhuma evidência é posterior à data de referência. Também deduplicar concorrentes (mesma entidade/clones) e registrar as capturas antigas descartadas no histórico, na camada que conhece o armazenamento.
 1. **Armazenamento** da confirmação do operador e do registro de N/A (hoje só entradas validadas).
 2. **Conexão** do motor à leitura das evidências armazenadas (mapa `report.json`/capturas → entrada do motor) e à tela, com rótulos "provisório" e exibição de cobertura, confiança, limitações e `naSensitivity`.

@@ -461,6 +461,8 @@ Legenda de dependência: **D5** = decisão pendente de coleta/IA/concorrentes; *
 **Fora de escopo:** interface, PDF, rota HTTP, persistência da confirmação do operador e do registro de N/A (Onda 6B), ampliação do coletor de sites, concorrentes reais (D5), Serper Reviews, qualquer IA.
 **Ondas seguintes (propostas):** 6B conectar o cálculo à leitura das evidências e à tela, com rótulos "provisório", e armazenar confirmações; 6C coleta ampliada (D5); 6D concorrentes; PDF após D4.
 
+> **Atualização de numeração (28/10/2026; texto NÃO normativo — pesos, faixas, regras, invariantes e decisões D3B-1…17 não mudam).** A divisão aprovada das ondas é: **6B** = persistência das decisões humanas e APIs autenticadas (implementada: `onda6b-decisoes-humanas.md`); **6C** = integração com o Motor Lumos (mapeamento das evidências armazenadas → entrada do motor) e interface operacional; **Onda 7** = relatório PDF. A coleta ampliada (D5) e os concorrentes continuam dependentes de autorização e não têm número de onda definido.
+
 ## 13. Riscos
 1. Faixas e limiares são julgamento do projeto, não do Lumos; revisar com dados reais após a 6B.
 2. **Viés ascendente:** como ausência/zero de site é N/V, subcritérios de site só pontuam no nível máximo; isso pode inflar o índice de perfis parcialmente lidos. Mitigação: cobertura mínima de 40 %, rótulo "provisório", confiança (confiabilidade e amplitude) e relatório do escopo lido.

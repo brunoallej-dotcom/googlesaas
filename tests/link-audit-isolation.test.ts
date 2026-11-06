@@ -205,6 +205,12 @@ const RUNTIME_CLI = 'scripts/link-audit-collect.ts';
 const EVIDENCE_CLI = 'scripts/link-audit-evidence.ts';
 /** Onda 5A: serviço de evidências (servidor; único com disco além do snapshot-store). */
 const EVIDENCE_DIR = 'src/lib/link-audit-evidence/';
+/**
+ * Onda 6B: o módulo de decisões humanas (servidor) consome SÓ estes arquivos do módulo: o selo canônico, o mecanismo único
+ * de gravação e o CONTRATO de entrada do motor (input/versions). Nunca o motor que calcula (engine) nem o coletor.
+ */
+const DECISIONS_DIR = 'src/lib/link-audit-decisions/';
+const DECISIONS_TARGETS: ReadonlySet<string> = new Set(['canonical.ts', 'snapshot-store.ts', 'scoring/input.ts', 'scoring/versions.ts']);
 const CLIENT_DIRS = ['src/components/link-audit/', 'src/app/auditoria-por-link/'];
 /** Único valor (não só tipo) que o navegador pode importar: constantes puras, sem nenhum import. */
 const CLIENT_VALUE_IMPORTS: ReadonlySet<string> = new Set(['methodology']);
@@ -241,11 +247,15 @@ test('isolamento reverso: só os consumidores declarados importam o módulo, e s
     const isClient = CLIENT_DIRS.some((dir) => name.startsWith(dir));
     const allowedRoute = ROUTE_CONSUMERS[name];
     const isRuntime = name.startsWith(RUNTIME_DIR) || name.startsWith(EVIDENCE_DIR) || name === RUNTIME_CLI || name === EVIDENCE_CLI;
+    const isDecisions = name.startsWith(DECISIONS_DIR);
     for (const statement of importStatements(fs.readFileSync(file, 'utf8'))) {
       const target = targetsModule(file, statement.specifier);
       if (target === null) continue;
       consumersSeen.add(name);
-      if (isRuntime) {
+      if (isDecisions) {
+        const withExtension = target.endsWith('.ts') ? target : `${target}.ts`;
+        assert.ok(DECISIONS_TARGETS.has(withExtension), `${name} importa "${statement.specifier}", fora da lista fechada do módulo de decisões`);
+      } else if (isRuntime) {
         continue;
       } else if (allowedRoute) {
         assert.ok(allowedRoute.includes(target), `${name} importa "${statement.specifier}", fora do que a rota pode usar`);
@@ -406,11 +416,13 @@ test('Onda 4D: o comando de evidências é offline (sem rede, sem runtime, sem .
  * (pelo índice público); o navegador só pode importar TIPOS (apagados na compilação). Ninguém mais.
  */
 const EVIDENCE_ROUTES_DIR = 'src/app/api/link-audit/evidence/';
+/** Onda 6B: as rotas de decisões também criam o leitor autorizado de evidências (pelo índice público) para validar referências. */
+const DECISIONS_ROUTES_DIR = 'src/app/api/link-audit/decisions/';
 
 test('Onda 5A/5B: só o runtime, os comandos e as rotas de leitura importam o serviço de evidências; o navegador só importa tipos', () => {
   const evidenceRoot = path.join(ROOT, 'src', 'lib', 'link-audit-evidence');
   const allowedImporters = (name: string): boolean =>
-    name.startsWith('src/lib/link-audit-evidence/') || name.startsWith(RUNTIME_DIR) || name === RUNTIME_CLI || name === EVIDENCE_CLI || name.startsWith(EVIDENCE_ROUTES_DIR);
+    name.startsWith('src/lib/link-audit-evidence/') || name.startsWith(RUNTIME_DIR) || name === RUNTIME_CLI || name === EVIDENCE_CLI || name.startsWith(EVIDENCE_ROUTES_DIR) || name.startsWith(DECISIONS_ROUTES_DIR);
   for (const file of [...walk(path.join(ROOT, 'src')), ...walk(path.join(ROOT, 'scripts'))]) {
     const name = rel(file);
     if (allowedImporters(name)) continue;
@@ -422,7 +434,7 @@ test('Onda 5A/5B: só o runtime, os comandos e as rotas de leitura importam o se
     }
   }
   // as rotas usam só o índice público (leitor + apresentação), nunca o armazenamento nem os segredos
-  for (const file of walk(path.join(ROOT, 'src', 'app', 'api', 'link-audit', 'evidence'))) {
+  for (const file of [...walk(path.join(ROOT, 'src', 'app', 'api', 'link-audit', 'evidence')), ...walk(path.join(ROOT, 'src', 'app', 'api', 'link-audit', 'decisions'))]) {
     for (const { specifier } of importStatements(fs.readFileSync(file, 'utf8'))) {
       const resolved = resolveImport(file, specifier);
       if (resolved === null || !resolved.startsWith(evidenceRoot)) continue;

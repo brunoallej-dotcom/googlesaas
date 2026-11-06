@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "kind": "LINK_AUDIT_OPERATOR_DECISION",
+  "auditId": "auditoria-golden-v1",
+  "action": "RECORD",
+  "recordedAt": "2026-10-21T12:00:02.000Z",
+  "recordedBy": "ana@empresa.com",
+  "decisionId": "op-0002",
+  "record": {
+    "justification": "Conferido no painel do perfil pelo operador responsável.",
+    "kind": "NOT_APPLICABLE",
+    "subcriterionIds": [
+      "S3"
+    ],
+    "code": "FEATURE_UNAVAILABLE",
+    "causeEvidenceIds": [
+      "capture:c0001"
+    ]
+  },
+  "supersedes": null,
+  "basis": {
+    "capture": 1,
+    "report": {
+      "capture": 1,
+      "revision": 1
+    },
+    "collectedAt": "2026-10-22T12:54:48.079Z"
+  },
+  "seq": 2,
+  "prevSha256": "a5c78ae9e321b888ea4047b2800bc1ccbdac95d3d264400f3302448ecbd1a972",
+  "contentSha256": "9f84b69a0fc0cddbedf3e0f6dffd8f1f46a09cb478662a9929e86a741df1b3ec"
+}
