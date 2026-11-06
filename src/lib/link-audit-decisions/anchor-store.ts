@@ -1,86 +1,81 @@
-import { randomBytes } from 'node:crypto';
-import path from 'node:path';
-import { describeError, publishExclusive, type FsOps } from '../link-audit/snapshot-store';
+import type { FsOps } from '../link-audit/snapshot-store';
 import {
-  ATOMIC_UNAVAILABLE_ERRNO,
-  atomicOnly,
-  splitNames,
-  dirStatus,
-  ensureDirectory,
-  fail,
-  FATAL_ERRNO,
-  isBaseTripped,
-  readSealedFile,
-  seal,
-  serialize,
-  tripBase,
-  type Location,
-  type StoreFailure,
-  type StoreResult,
-} from './files';
-import {
-  ANCHOR_FILE,
-  ANCHOR_FILE_KIND,
-  anchorFileName,
-  anchorSchema,
-  DECISION_SCHEMA_VERSION,
-  MAX_ENTRY_BYTES,
-  type AnchorFile,
-  type DecisionEntry,
-} from './types';
+  confirmReceipt,
+  prepareReceiptDirectory,
+  readReceipts,
+  receiptBody,
+  verifyReceipts,
+  writeReceipt,
+  type ReceiptProfile,
+  type ReceiptShape,
+  type ReceiptsRead,
+  type ReceiptSummary,
+} from '../link-audit-storage';
+import type { Location, StoreFailure, StoreResult } from './files';
+import { ANCHOR_FILE, ANCHOR_FILE_KIND, anchorFileName, anchorSchema, DECISION_SCHEMA_VERSION, MAX_ENTRY_BYTES, type AnchorFile, type DecisionEntry } from './types';
 
 /*
  * Âncoras: um recibo imutável por entrada de decisão, em uma pasta SEPARADA (outro local de gravação). Elas existem para
  * detectar o que a cadeia de hashes sozinha não detecta: perda do FIM do histórico (arquivo(s) apagado(s)), refazer o hash
  * do último arquivo e restaurar um backup antigo. Ver `docs/phase6-auditoria-link/onda6b-adr-ancora-externa.md`.
+ *
+ * Desde a Onda 6C (I0) a MECÂNICA do protocolo vive em `../link-audit-storage/receipts.ts`; aqui ficam apenas o perfil da 6B
+ * (nomes `aNNNN.json`, esquema, tamanho máximo e os TEXTOS das mensagens, idênticos aos de antes) e as funções com as
+ * mesmas assinaturas que o restante da 6B já usa.
  */
-export interface AnchorSummary {
-  readonly count: number;
-  readonly lastSeq: number;
-  /** Entradas de decisão ainda sem âncora (0 ou 1: janela entre gravar a decisão e gravar o recibo). */
-  readonly unanchored: number;
-}
+export type AnchorSummary = ReceiptSummary;
+export type AnchorsRead = ReceiptsRead<AnchorFile>;
 
-export interface AnchorsRead {
-  readonly anchors: readonly AnchorFile[];
-  readonly unexpectedFiles: readonly string[];
-  readonly orphanTempFiles: readonly string[];
-}
+/*
+ * Guarda de TIPO: o protocolo genérico monta o corpo do recibo com as chaves de `ReceiptShape`; o esquema da 6B precisa ter
+ * EXATAMENTE as mesmas. Se alguém acrescentar (ou tirar) um campo em `anchorSchema`, a compilação quebra aqui, em vez de o
+ * erro só aparecer em execução (o cast do módulo neutro esconderia a diferença).
+ */
+type BodyKeys = keyof Omit<ReceiptShape, 'contentSha256'>;
+type AnchorBodyKeys = keyof Omit<AnchorFile, 'contentSha256'>;
+const sameBodyKeys: [BodyKeys] extends [AnchorBodyKeys] ? ([AnchorBodyKeys] extends [BodyKeys] ? true : never) : never = true;
+void sameBodyKeys;
+
+const DECISION_ANCHORS: ReceiptProfile<AnchorFile> = {
+  schemaVersion: DECISION_SCHEMA_VERSION,
+  kind: ANCHOR_FILE_KIND,
+  prefix: 'a',
+  filePattern: ANCHOR_FILE,
+  fileName: anchorFileName,
+  maxBytes: MAX_ENTRY_BYTES,
+  schema: anchorSchema,
+  /** Tentativas imediatas de gravar o recibo (erro transitório de volume). */
+  attempts: 3,
+  messages: {
+    storeMissing: 'O armazenamento de âncoras não existe neste servidor.',
+    storeNotDirectory: 'O armazenamento de âncoras não é um diretório comum.',
+    auditNotDirectory: 'A pasta de âncoras da auditoria não é um diretório comum.',
+    listingLabel: 'listagem das âncoras',
+    directoryLabel: 'âncoras',
+    suspicious: (name) => `Arquivo suspeito na pasta de âncoras: ${name}.`,
+    gap: (expected, found) => `Lacuna na sequência de âncoras (esperado ${expected}, achado ${found}).`,
+    otherAudit: (name) => `${name} pertence a outra auditoria.`,
+    sequenceMismatch: (name, seq) => `${name}: a sequência interna (${seq}) não corresponde ao nome do arquivo.`,
+    notChained: (name) => `${name}: não está encadeada à âncora anterior.`,
+    truncated: (entries, receipts) =>
+      `O histórico de decisões tem ${entries} arquivo(s), mas há âncora(s) até a posição ${receipts}: arquivos de decisão foram removidos ou o histórico foi restaurado de uma cópia antiga.`,
+    mismatch: (seq) => `A decisão ${seq} não confere com a âncora gravada na pasta separada (arquivo reescrito ou substituído).`,
+    tooManyUnanchored: (count) => `${count} decisões estão sem âncora (o máximo tolerado é 1): âncoras removidas ou pasta de âncoras trocada.`,
+    fatalBefore: 'Erro fatal de disco anterior na pasta de âncoras: escritas interrompidas até reiniciar o servidor.',
+    invalidContract: 'A âncora montada não segue o contrato (erro interno).',
+    label: (name) => `A âncora ${name}`,
+    exists: (name) => `A âncora ${name} já existe; nada foi sobrescrito.`,
+    noAtomicLink: 'O armazenamento de âncoras não suporta link() atômico.',
+    fatalNow: (errno) => `Erro fatal de disco (${errno}) na pasta de âncoras: escritas interrompidas.`,
+    noAttempt: 'Nenhuma tentativa de gravar o recibo foi feita.',
+    notLast: (name) => `A âncora ${name} existe, mas a pasta de âncoras não termina nela.`,
+    notMatching: (name, seq) => `A âncora ${name} já existe e NÃO corresponde à decisão ${seq}.`,
+  },
+};
 
 /** Lê e verifica TODAS as âncoras da auditoria (sequência, esquema, bytes, hash, encadeamento). Pasta ausente da auditoria = nenhuma. */
-export async function readAnchors(ops: FsOps, located: Location, auditId: string): Promise<StoreResult<AnchorsRead>> {
-  const base = await dirStatus(ops, located.root);
-  if (base === 'MISSING') return fail('ANCHOR_MISSING', 'O armazenamento de âncoras não existe neste servidor.');
-  if (base !== 'EXISTS') return fail('UNSAFE_PATH', 'O armazenamento de âncoras não é um diretório comum.');
-  const audit = await dirStatus(ops, located.dir);
-  if (audit === 'MISSING') return { ok: true, value: { anchors: [], unexpectedFiles: [], orphanTempFiles: [] } };
-  if (audit !== 'EXISTS') return fail('UNSAFE_PATH', 'A pasta de âncoras da auditoria não é um diretório comum.');
-
-  let names: string[];
-  try {
-    names = await ops.readdir(located.dir);
-  } catch (error) {
-    return fail('ANCHOR_INTEGRITY', describeError('listagem das âncoras', error));
-  }
-  const { numbers, orphanTempFiles, suspicious, unexpectedFiles } = splitNames(names, ANCHOR_FILE, 'a');
-  if (suspicious.length > 0) return fail('ANCHOR_INTEGRITY', `Arquivo suspeito na pasta de âncoras: ${suspicious[0]?.slice(0, 80)}.`);
-  for (const [index, n] of numbers.entries()) {
-    if (n !== index + 1) return fail('ANCHOR_INTEGRITY', `Lacuna na sequência de âncoras (esperado ${anchorFileName(index + 1)}, achado ${anchorFileName(n)}).`);
-  }
-  const anchors: AnchorFile[] = [];
-  let previous: string | null = null;
-  for (const n of numbers) {
-    const name = anchorFileName(n);
-    const file = await readSealedFile<AnchorFile>(ops, path.join(located.dir, name), MAX_ENTRY_BYTES, anchorSchema);
-    if (!file.ok) return fail('ANCHOR_INTEGRITY', ...file.issues);
-    const anchor = file.value;
-    if (anchor.auditId !== auditId) return fail('ANCHOR_INTEGRITY', `${name} pertence a outra auditoria.`);
-    if (anchor.seq !== n) return fail('ANCHOR_INTEGRITY', `${name}: a sequência interna (${anchor.seq}) não corresponde ao nome do arquivo.`);
-    if (anchor.prevAnchorSha256 !== previous) return fail('ANCHOR_INTEGRITY', `${name}: não está encadeada à âncora anterior.`);
-    previous = anchor.contentSha256;
-    anchors.push(anchor);
-  }
-  return { ok: true, value: { anchors, unexpectedFiles, orphanTempFiles } };
+export function readAnchors(ops: FsOps, located: Location, auditId: string): Promise<StoreResult<AnchorsRead>> {
+  return readReceipts(DECISION_ANCHORS, ops, located, auditId);
 }
 
 /**
@@ -88,88 +83,27 @@ export async function readAnchors(ops: FsOps, located: Location, auditId: string
  * TRUNCADO; hash diferente na mesma posição = reescrito. No máximo UMA decisão pode estar sem âncora.
  */
 export function verifyAnchors(entries: readonly DecisionEntry[], anchors: readonly AnchorFile[]): StoreResult<AnchorSummary> {
-  if (anchors.length > entries.length) {
-    return fail('TRUNCATED', `O histórico de decisões tem ${entries.length} arquivo(s), mas há âncora(s) até a posição ${anchors.length}: arquivos de decisão foram removidos ou o histórico foi restaurado de uma cópia antiga.`);
-  }
-  for (const anchor of anchors) {
-    const entry = entries[anchor.seq - 1];
-    if (!entry || entry.contentSha256 !== anchor.headSha256) {
-      return fail('ANCHOR_MISMATCH', `A decisão ${anchor.seq} não confere com a âncora gravada na pasta separada (arquivo reescrito ou substituído).`);
-    }
-  }
-  const unanchored = entries.length - anchors.length;
-  if (unanchored > 1) return fail('ANCHOR_INTEGRITY', `${unanchored} decisões estão sem âncora (o máximo tolerado é 1): âncoras removidas ou pasta de âncoras trocada.`);
-  return { ok: true, value: { count: anchors.length, lastSeq: anchors.length, unanchored } };
+  return verifyReceipts(DECISION_ANCHORS, entries, anchors);
 }
 
 export function anchorBody(entry: DecisionEntry, previousAnchor: AnchorFile | undefined, anchoredAt: string): Omit<AnchorFile, 'contentSha256'> {
-  return {
-    schemaVersion: DECISION_SCHEMA_VERSION,
-    kind: ANCHOR_FILE_KIND,
-    auditId: entry.auditId,
-    seq: entry.seq,
-    headSha256: entry.contentSha256,
-    anchoredAt,
-    prevAnchorSha256: previousAnchor?.contentSha256 ?? null,
-  };
+  return receiptBody(DECISION_ANCHORS, entry, previousAnchor, anchoredAt);
 }
 
-export async function prepareAnchorDirectory(ops: FsOps, located: Location): Promise<StoreFailure | null> {
-  const base = await dirStatus(ops, located.root);
-  if (base === 'MISSING') return fail('ANCHOR_MISSING', 'O armazenamento de âncoras não existe neste servidor.');
-  if (base !== 'EXISTS') return fail('UNSAFE_PATH', 'O armazenamento de âncoras não é um diretório comum.');
-  return ensureDirectory(ops, located.dir, 'âncoras');
+export function prepareAnchorDirectory(ops: FsOps, located: Location): Promise<StoreFailure | null> {
+  return prepareReceiptDirectory(DECISION_ANCHORS, ops, located);
 }
 
 /** Grava UMA âncora (só de forma atômica). Nunca sobrescreve: EEXIST ⇒ CONFLICT (o chamador relê). */
-export async function writeAnchor(ops: FsOps, located: Location, anchor: Omit<AnchorFile, 'contentSha256'>): Promise<StoreResult<AnchorFile>> {
-  if (isBaseTripped(located.root)) return fail('STORAGE_FATAL', 'Erro fatal de disco anterior na pasta de âncoras: escritas interrompidas até reiniciar o servidor.');
-  const sealed = seal(anchor) as AnchorFile;
-  const checked = anchorSchema.safeParse(sealed);
-  if (!checked.success) return fail('INTERNAL', 'A âncora montada não segue o contrato (erro interno).');
-  const name = anchorFileName(anchor.seq);
-  const published = await publishExclusive(atomicOnly(ops), {
-    dir: located.dir,
-    finalPath: path.join(located.dir, name),
-    tempPath: path.join(located.dir, `.tmp-${name}-${randomBytes(8).toString('hex')}`),
-    data: serialize(sealed),
-    label: `A âncora ${name}`,
-  });
-  if (published.ok) return { ok: true, value: checked.data };
-  if (published.code === 'CONFLICT') return fail('CONFLICT', `A âncora ${name} já existe; nada foi sobrescrito.`);
-  if (published.errno === ATOMIC_UNAVAILABLE_ERRNO) return fail('ATOMIC_WRITE_UNAVAILABLE', 'O armazenamento de âncoras não suporta link() atômico.');
-  if (published.errno && FATAL_ERRNO.has(published.errno)) {
-    tripBase(located.root);
-    return fail('STORAGE_FATAL', `Erro fatal de disco (${published.errno}) na pasta de âncoras: escritas interrompidas.`);
-  }
-  return fail('ANCHOR_WRITE_FAILED', ...published.issues);
+export function writeAnchor(ops: FsOps, located: Location, anchor: Omit<AnchorFile, 'contentSha256'>): Promise<StoreResult<AnchorFile>> {
+  return writeReceipt(DECISION_ANCHORS, ops, located, anchor);
 }
-
-/** Tentativas imediatas de gravar o recibo (erro transitório de volume). Erros fatais e falta de `link()` atômico não se repetem. */
-const ANCHOR_ATTEMPTS = 3;
 
 /**
  * ÚNICO ponto em que uma decisão deixa de ser PENDENTE e passa a ser CONFIRMADA: o recibo dela está durável na pasta separada.
  * `EEXIST` não é erro: outro processo (ou uma tentativa anterior que falhou depois do `link`) já gravou o recibo — só vale se
  * ele corresponde EXATAMENTE a esta entrada (mesmo número, mesmo hash, encadeado); qualquer diferença é adulteração.
  */
-export async function confirmAnchor(ops: FsOps, located: Location, entry: DecisionEntry, previous: AnchorFile | undefined, anchoredAt: string): Promise<StoreResult<AnchorFile>> {
-  let last: StoreFailure = fail('INTERNAL', 'Nenhuma tentativa de gravar o recibo foi feita.');
-  for (let attempt = 0; attempt < ANCHOR_ATTEMPTS; attempt++) {
-    const written = await writeAnchor(ops, located, anchorBody(entry, previous, anchoredAt));
-    if (written.ok) return written;
-    if (written.code === 'CONFLICT') return adoptExistingAnchor(ops, located, entry);
-    if (written.code === 'STORAGE_FATAL' || written.code === 'ATOMIC_WRITE_UNAVAILABLE') return written;
-    last = written;
-  }
-  return last;
-}
-
-async function adoptExistingAnchor(ops: FsOps, located: Location, entry: DecisionEntry): Promise<StoreResult<AnchorFile>> {
-  const read = await readAnchors(ops, located, entry.auditId);
-  if (!read.ok) return read;
-  const found = read.value.anchors[entry.seq - 1];
-  if (read.value.anchors.length !== entry.seq || !found) return fail('ANCHOR_INTEGRITY', `A âncora ${anchorFileName(entry.seq)} existe, mas a pasta de âncoras não termina nela.`);
-  if (found.headSha256 !== entry.contentSha256) return fail('ANCHOR_MISMATCH', `A âncora ${anchorFileName(entry.seq)} já existe e NÃO corresponde à decisão ${entry.seq}.`);
-  return { ok: true, value: found };
+export function confirmAnchor(ops: FsOps, located: Location, entry: DecisionEntry, previous: AnchorFile | undefined, anchoredAt: string): Promise<StoreResult<AnchorFile>> {
+  return confirmReceipt(DECISION_ANCHORS, ops, located, entry, previous, anchoredAt);
 }

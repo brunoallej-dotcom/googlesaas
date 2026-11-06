@@ -1,9 +1,9 @@
 import path from 'node:path';
-import { sha256Hex } from '../link-audit/canonical';
 import { HASH_DISCLAIMER } from '../link-audit/snapshot';
 import { nodeFsOps, errorCode, type FsOps } from '../link-audit/snapshot-store';
 import { sanitizeForOutput } from '../link-audit/url-redaction';
 import { AUDIT_ID_PATTERN } from './types';
+import { readLegacyAudit } from './legacy';
 import { assertAllowedBase, listAuditFiles, locate, readCapture, readReport, verifyAudit, type AuditState } from './store';
 
 /*
@@ -117,8 +117,6 @@ export interface EvidenceReaderOptions {
   readonly maxAudits?: number;
 }
 
-const LEGACY_FILES = ['serper-body.json', 'serper-status.json', 'serper-attempts.json', 'summary.json', 'run-stdout.txt', 'run-stderr.txt'] as const;
-const MAX_LEGACY_BYTES = 6 * 1024 * 1024;
 const rec = (value: unknown): Record<string, unknown> => (value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {});
 const str = (value: unknown): string | null => (typeof value === 'string' ? value : null);
 const num = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) ? value : null);
@@ -178,66 +176,8 @@ export function createEvidenceReader(options: EvidenceReaderOptions) {
     }
   }
 
-  /** Legado: pasta plana (MANIFEST.json + SHA256SUMS + report*.json). Somente leitura. */
-  async function readLegacy(dir: string): Promise<{ integrity: IntegrityInfo; reports: Array<{ file: string; revision: number; superseded: boolean; report: Record<string, unknown> | null }>; body: Record<string, unknown> | null; status: Record<string, unknown> | null; attempts: Record<string, unknown> | null }> {
-    const issues: string[] = [];
-    let checked = 0;
-    const text = async (name: string): Promise<string | null> => {
-      try {
-        return await ops.readFile(path.join(dir, name), MAX_LEGACY_BYTES);
-      } catch {
-        return null;
-      }
-    };
-    const sums = await text('SHA256SUMS');
-    if (!sums) issues.push('SHA256SUMS ausente.');
-    else {
-      const listed = new Set<string>();
-      // Sem linhas repetidas e com teto: um SHA256SUMS hostil não pode forçar leituras sem fim.
-      for (const line of [...new Set(sums.split('\n').filter(Boolean))].slice(0, 50)) {
-        const m = /^([0-9a-f]{64}) {2}([A-Za-z0-9._-]+)$/.exec(line);
-        if (!m) {
-          issues.push('SHA256SUMS malformado.');
-          continue;
-        }
-        const name = m[2] as string;
-        const content = (LEGACY_FILES as readonly string[]).includes(name) ? await text(name) : null;
-        if (content === null) issues.push(`Arquivo listado ausente ou inesperado: ${name}.`);
-        else if (sha256Hex(content) !== m[1]) issues.push(`SHA-256 divergente: ${name}.`);
-        else checked += 1;
-        listed.add(name);
-      }
-      for (const name of LEGACY_FILES) if (!listed.has(name)) issues.push(`Arquivo esperado fora da lista de hashes: ${name}.`);
-    }
-    const reports: Array<{ file: string; revision: number; superseded: boolean; report: Record<string, unknown> | null }> = [];
-    for (const [file, sumFile, revision, superseded] of [
-      ['report.v1-superseded.json', 'report.v1-superseded.json.sha256', 1, true],
-      ['report.json', 'report.json.sha256', 2, false],
-    ] as const) {
-      const content = await text(file);
-      if (content === null) continue;
-      const declared = /^([0-9a-f]{64})/m.exec((await text(sumFile)) ?? '')?.[1];
-      if (!declared) issues.push(`${file} não tem hash declarado (${sumFile} ausente ou inválido): a integridade do relatório não pode ser confirmada.`);
-      else if (sha256Hex(content) !== declared) issues.push(`${file} não confere com o hash declarado.`);
-      else checked += 1;
-      let parsed: Record<string, unknown> | null = null;
-      try {
-        parsed = rec(JSON.parse(content));
-      } catch {
-        issues.push(`${file} não é JSON válido.`);
-      }
-      reports.push({ file, revision, superseded, report: parsed });
-    }
-    const json = async (name: string): Promise<Record<string, unknown> | null> => {
-      const t = await text(name);
-      try {
-        return t ? rec(JSON.parse(t)) : null;
-      } catch {
-        return null;
-      }
-    };
-    return { integrity: integrity(issues.length > 0 ? 'MISMATCH' : checked > 0 ? 'OK' : 'INCOMPLETE', checked, issues), reports, body: await json('serper-body.json'), status: await json('serper-status.json'), attempts: await json('serper-attempts.json') };
-  }
+  /** Legado: delega a `legacy.ts` (a mesma verificação é usada pelo leitor de pontuação). */
+  const readLegacy = (dir: string): ReturnType<typeof readLegacyAudit> => readLegacyAudit(ops, dir);
 
   function summarize(auditId: string, layout: AuditLayout, state: ViewState, report: Record<string, unknown> | null, counts: { captures: number; revisions: number }, info: IntegrityInfo): AuditSummary {
     // Conteúdo de arquivo que não confere nunca é exibido: só o estado e a integridade.

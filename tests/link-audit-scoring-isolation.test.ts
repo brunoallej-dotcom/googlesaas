@@ -66,7 +66,14 @@ test('independência: nada de Juiz, prospecção, banco, filas, PDF, Serper, col
 const DECISIONS_DIR = path.join(ROOT, 'src', 'lib', 'link-audit-decisions') + path.sep;
 const DECISIONS_ALLOWED = new Set([path.join(SCORING_DIR, 'input'), path.join(SCORING_DIR, 'versions')]);
 
-test('o motor que calcula ainda não está conectado: fora dele só o módulo de decisões usa o CONTRATO (input, versions); nem o barrel o importa', () => {
+/**
+ * Onda 6C (I2): o mapeador consome o CONTRATO de entrada (input, types, versions), a régua como DADOS (ruler: pesos e limites,
+ * sem cálculo) e a aritmética de datas pura (dates). Nunca o que CALCULA: engine, aggregate, avaliadores, confiança, publicação.
+ */
+const SCORING_RUNS_DIR = path.join(ROOT, 'src', 'lib', 'link-audit-scoring-runs') + path.sep;
+const SCORING_RUNS_ALLOWED = new Set([path.join(SCORING_DIR, 'input'), path.join(SCORING_DIR, 'versions'), path.join(SCORING_DIR, 'types'), path.join(SCORING_DIR, 'ruler'), path.join(SCORING_DIR, 'dates')]);
+
+test('o motor que calcula ainda não está conectado: fora dele só decisões e o mapeador usam o CONTRATO (input, versions, types, ruler, dates); nem o barrel o importa', () => {
   const barrel = fs.readFileSync(path.join(ROOT, 'src', 'lib', 'link-audit', 'index.ts'), 'utf8');
   assert.ok(!/scoring/.test(barrel), 'o barrel de link-audit não exporta o motor');
   const roots = ['src', 'scripts'].map((dir) => path.join(ROOT, dir));
@@ -76,6 +83,12 @@ test('o motor que calcula ainda não está conectado: fora dele só o módulo de
       const resolved = specifier.startsWith('@/') ? path.join(ROOT, 'src', specifier.slice(2)) : specifier.startsWith('.') ? path.resolve(path.dirname(file), specifier) : null;
       if (file.startsWith(DECISIONS_DIR) && resolved !== null && (resolved === SCORING_DIR || resolved.startsWith(SCORING_DIR + path.sep))) {
         assert.ok(DECISIONS_ALLOWED.has(resolved), `${path.relative(ROOT, file)} importa "${specifier}": o módulo de decisões só pode usar o contrato (input, versions)`);
+        continue;
+      }
+      if (file.startsWith(SCORING_RUNS_DIR) && resolved !== null && (resolved === SCORING_DIR || resolved.startsWith(SCORING_DIR + path.sep))) {
+        // Onda 6C (I3/I4): SÓ o serviço de prévia (`preview.ts`) executa o motor e SÓ a verificação dos resultados (`results-verify.ts`) o reexecuta para conferi-los; ambos pelo índice (`scoring/index`)
+        if (['preview.ts', 'results-verify.ts'].includes(path.basename(file)) && resolved === path.join(SCORING_DIR, 'index')) continue;
+        assert.ok(SCORING_RUNS_ALLOWED.has(resolved), `${path.relative(ROOT, file)} importa "${specifier}": o mapeador só pode usar o contrato, a régua como dados e as datas`);
         continue;
       }
       assert.ok(resolved === null || !(resolved === SCORING_DIR || resolved.startsWith(SCORING_DIR + path.sep)), `${path.relative(ROOT, file)} importa o motor de pontuação`);

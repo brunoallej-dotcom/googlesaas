@@ -175,7 +175,9 @@ test('detalhe: tudo é texto (HTML e instruções em dados externos não são in
   assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt; Padaria/);
   assert.match(text(html), /Integridade comprometida/);
   assert.match(text(html), /SHA-256 divergente: x\./);
-  assert.ok(!/href="javascript:/i.test(html) && !/<a /.test(html), 'nenhum link clicável é gerado a partir dos dados');
+  // Onda 6C (I5): o ÚNICO link é o interno fixo para a página da auditoria (id restrito a [a-z0-9_-]); nada vem dos dados externos
+  const anchors = [...html.matchAll(/<a [^>]*>/g)].map((match) => match[0]);
+  assert.ok(!/href="javascript:/i.test(html) && anchors.every((anchor) => /^<a href="\/auditoria-por-link\/[a-z0-9_-]+"/.test(anchor)), 'nenhum link clicável é gerado a partir dos dados');
 });
 
 test('responsividade: grades colapsam no celular, colunas largas quebram texto e nada força rolagem horizontal', () => {

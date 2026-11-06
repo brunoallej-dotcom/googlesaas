@@ -4,6 +4,8 @@ import { SystemStatus } from './system-status';
 interface DashboardHeaderProps {
   readonly sectionLabel: string;
   readonly onOpenMobileMenu: () => void;
+  /** Estado do menu móvel (para `aria-expanded`). */
+  readonly mobileMenuOpen?: boolean;
   readonly onLogout?: () => void;
   /** Esconde o indicador de saúde (que consulta Redis/Supabase), p. ex. em telas que não precisam dele. */
   readonly hideSystemStatus?: boolean;
@@ -12,6 +14,7 @@ interface DashboardHeaderProps {
 export function DashboardHeader({
   sectionLabel,
   onOpenMobileMenu,
+  mobileMenuOpen = false,
   onLogout,
   hideSystemStatus = false,
 }: DashboardHeaderProps): React.JSX.Element {
@@ -23,7 +26,8 @@ export function DashboardHeader({
           onClick={onOpenMobileMenu}
           aria-label="Abrir menu"
           aria-controls="gmn-sidebar"
-          className="mt-1 rounded-lg border border-white/[0.08] bg-gmn-card p-2 text-gmn-muted hover:text-gmn-text lg:hidden"
+          aria-expanded={mobileMenuOpen}
+          className="mt-1 inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-white/[0.08] bg-gmn-card text-gmn-muted hover:text-gmn-text focus:outline-none focus-visible:ring-2 focus-visible:ring-gmn-accent/70 lg:hidden"
         >
           <Menu className="h-5 w-5" aria-hidden="true" />
         </button>
@@ -48,7 +52,7 @@ export function DashboardHeader({
           <button
             type="button"
             onClick={onLogout}
-            className="inline-flex items-center gap-1.5 rounded-full border border-white/[0.08] bg-gmn-card px-3 py-1.5 text-xs text-gmn-muted transition-colors hover:text-gmn-text"
+            className="inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-full border border-white/[0.08] bg-gmn-card px-4 text-xs text-gmn-muted transition-colors hover:text-gmn-text focus:outline-none focus-visible:ring-2 focus-visible:ring-gmn-accent/70 md:min-h-8 md:px-3"
           >
             <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
             Sair

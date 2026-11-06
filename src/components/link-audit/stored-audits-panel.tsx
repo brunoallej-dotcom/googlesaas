@@ -4,7 +4,10 @@ import { useCallback, useEffect, useReducer, useRef } from 'react';
 import { Archive, FileSearch, LoaderCircle, RefreshCw, TriangleAlert } from 'lucide-react';
 import { Panel } from '@/components/ui/panel';
 import { requestAuditDetail, requestAuditList, type DetailSelection } from './evidence-api-client';
-import { evidenceReducer, filterAudits, initialEvidenceState } from './evidence-state';
+import type { AuditListItemDto } from '@/lib/link-audit-evidence';
+import { syncAuditIdInUrl } from './audit-url';
+import { evidenceReducer, filterAudits, initialEvidenceState, planFromLocation, type AuditRequestIssue } from './evidence-state';
+import { RequestedAuditNotice } from './requested-audit-notice';
 import { StoredAuditDetail } from './stored-audit-detail';
 import { StoredAuditList } from './stored-audit-list';
 
@@ -22,22 +25,17 @@ export function StoredAuditsPanel({ onUnauthorized }: StoredAuditsPanelProps): R
   const [state, dispatch] = useReducer(evidenceReducer, initialEvidenceState);
   const detailRequests = useRef(0);
   const controllers = useRef<{ list: AbortController | null; detail: AbortController | null }>({ list: null, detail: null });
-  const userPicked = useRef(false);
+  /** Depois da escolha: `heading` = escolha do operador (foco no título do detalhe); `card` = volta pelo endereço (foco no cartão). */
+  const afterSelect = useRef<'heading' | 'card' | null>(null);
+  /** O operador dispensou o pedido do endereço: um `popstate` posterior não deve voltar a escolher a primeira empresa por ele. */
+  const dismissed = useRef(false);
+  // Lista carregada e o que a tela mostra, para o tratamento do endereço (sem reiniciar efeitos a cada renderização).
+  const loadedItems = useRef<readonly AuditListItemDto[] | null>(null);
+  const shown = useRef<{ selectedId: string | null; issue: AuditRequestIssue | null }>({ selectedId: null, issue: null });
+  shown.current = { selectedId: state.selectedId, issue: state.requestIssue };
   // Referência estável: a função do pai muda a cada renderização e não pode reiniciar as consultas.
   const unauthorized = useRef(onUnauthorized);
   unauthorized.current = onUnauthorized;
-
-  const loadList = useCallback(async (): Promise<void> => {
-    controllers.current.list?.abort();
-    const controller = new AbortController();
-    controllers.current.list = controller;
-    dispatch({ type: 'LIST_START' });
-    const outcome = await requestAuditList(controller.signal);
-    if (controller.signal.aborted) return;
-    if (outcome.kind === 'unauthorized') return unauthorized.current();
-    if (outcome.kind === 'ok') return dispatch({ type: 'LIST_SUCCESS', items: outcome.value.audits, total: outcome.value.total });
-    dispatch({ type: 'LIST_FAILURE', message: outcome.message, unavailable: outcome.kind === 'unavailable' });
-  }, []);
 
   const select = useCallback(
     async (auditId: string, selection: DetailSelection = {}): Promise<void> => {
@@ -56,6 +54,51 @@ export function StoredAuditsPanel({ onUnauthorized }: StoredAuditsPanelProps): R
     [],
   );
 
+  /**
+   * Aplica o endereço (`?auditId=`) à lista carregada. Um pedido que não se atende (fora da lista, formato inválido) mostra o
+   * impedimento e NÃO escolhe outra empresa; sem pedido, vale a primeira (comportamento da 5B).
+   */
+  const applyLocation = useCallback(
+    (items: readonly AuditListItemDto[]): void => {
+      const plan = planFromLocation(items, window.location.search, shown.current);
+      if (plan.do === 'select') {
+        if (!plan.fromUrl && dismissed.current) return; // sem pedido e o operador dispensou: ele escolhe
+        dismissed.current = false;
+        // volta pelo endereço: leva o foco ao cartão escolhido, sem roubar o de quem digita
+        afterSelect.current = plan.fromUrl ? 'card' : null;
+        shown.current = { selectedId: plan.auditId, issue: null }; // vale já: o próximo evento não pode ver o estado antigo
+        void select(plan.auditId);
+      } else if (plan.do === 'issue') {
+        dismissed.current = false;
+        afterSelect.current = null;
+        shown.current = { selectedId: null, issue: plan.issue };
+        controllers.current.detail?.abort(); // uma consulta em andamento de outra empresa não pode aparecer
+        detailRequests.current += 1;
+        dispatch({ type: 'REQUEST_ISSUE', issue: plan.issue, request: detailRequests.current });
+      }
+    },
+    [select],
+  );
+
+  const loadList = useCallback(async (): Promise<void> => {
+    controllers.current.list?.abort();
+    const controller = new AbortController();
+    controllers.current.list = controller;
+    loadedItems.current = null;
+    dismissed.current = false;
+    dispatch({ type: 'LIST_START' });
+    const outcome = await requestAuditList(controller.signal);
+    if (controller.signal.aborted) return;
+    if (outcome.kind === 'unauthorized') return unauthorized.current();
+    if (outcome.kind === 'ok') {
+      loadedItems.current = outcome.value.audits;
+      dispatch({ type: 'LIST_SUCCESS', items: outcome.value.audits, total: outcome.value.total });
+      applyLocation(outcome.value.audits);
+      return;
+    }
+    dispatch({ type: 'LIST_FAILURE', message: outcome.message, unavailable: outcome.kind === 'unavailable' });
+  }, [applyLocation]);
+
   useEffect(() => {
     void loadList();
     const current = controllers.current;
@@ -65,22 +108,32 @@ export function StoredAuditsPanel({ onUnauthorized }: StoredAuditsPanelProps): R
     };
   }, [loadList]);
 
-  // Com auditorias carregadas e nada escolhido, mostra a primeira (a lista é pequena e ordenada).
+  // Voltar/avançar no histórico: a exibição acompanha o endereço (nunca fica uma empresa diferente da que o endereço pede).
   useEffect(() => {
-    if (state.list.phase === 'ready' && state.list.items.length > 0 && state.selectedId === null) {
-      void select((state.list.items[0] as (typeof state.list.items)[number]).auditId);
-    }
-  }, [state.list, state.selectedId, select]);
+    const onPopState = (): void => {
+      if (loadedItems.current) applyLocation(loadedItems.current);
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, [applyLocation]);
 
-  // Depois de uma escolha do operador, leva o foco ao título do detalhe (acessibilidade e celular).
+  // Depois de uma escolha, leva o foco: ao título do detalhe (escolha do operador) ou ao cartão (volta pelo endereço).
   const readyId = state.detail.data?.auditId ?? null;
   useEffect(() => {
-    if (userPicked.current && readyId) {
-      userPicked.current = false;
+    if (!afterSelect.current || !readyId) return;
+    const target = afterSelect.current;
+    afterSelect.current = null;
+    const smooth = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+    if (target === 'heading') {
       const heading = document.getElementById('detalhe-auditoria-titulo');
       heading?.focus({ preventScroll: true });
-      heading?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      heading?.scrollIntoView({ behavior: smooth, block: 'start' });
+      return;
     }
+    const card = document.querySelector<HTMLElement>('#auditorias-armazenadas li > button[aria-current="true"]');
+    const idle = !document.activeElement || document.activeElement === document.body;
+    if (idle) card?.focus({ preventScroll: true }); // quem já está digitando no filtro mantém o foco
+    card?.scrollIntoView({ behavior: smooth, block: 'nearest' });
   }, [readyId, state.detail.phase]);
 
   const visible = filterAudits(state.list.items, state.query);
@@ -93,6 +146,21 @@ export function StoredAuditsPanel({ onUnauthorized }: StoredAuditsPanelProps): R
       title="Auditorias armazenadas"
       subtitle="Evidências já coletadas e preservadas. Somente leitura: nenhuma consulta ao Google, ao Serper ou ao site das empresas é feita por esta tela."
     >
+      {listReady && state.requestIssue && (
+        <RequestedAuditNotice
+          issue={state.requestIssue}
+          canChoose={state.list.total > 0}
+          onDismiss={() => {
+            dismissed.current = true;
+            syncAuditIdInUrl(null);
+            dispatch({ type: 'REQUEST_DISMISSED' });
+            // o aviso some: o foco continua dentro da área (no filtro; sem lista, no título da área)
+            const title = document.getElementById('auditorias-armazenadas-title');
+            if (!document.getElementById('filtro-auditorias') && title) title.setAttribute('tabindex', '-1');
+            (document.getElementById('filtro-auditorias') ?? title)?.focus();
+          }}
+        />
+      )}
       <div className={listReady && state.list.total > 0 ? 'grid gap-5 xl:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]' : ''}>
         <div className="min-w-0">
           <StoredAuditList
@@ -104,7 +172,9 @@ export function StoredAuditsPanel({ onUnauthorized }: StoredAuditsPanelProps): R
             selectedId={state.selectedId}
             onQueryChange={(query) => dispatch({ type: 'QUERY_CHANGED', query })}
             onSelect={(auditId) => {
-              userPicked.current = true;
+              afterSelect.current = 'heading';
+              dismissed.current = false;
+              syncAuditIdInUrl(auditId); // o endereço passa a ser o da empresa exibida (atualizar/voltar não restauram outra)
               void select(auditId);
             }}
             onRetry={() => void loadList()}
@@ -139,7 +209,7 @@ export function StoredAuditsPanel({ onUnauthorized }: StoredAuditsPanelProps): R
                   <button
                     type="button"
                     onClick={() => void select(state.selectedId as string, state.selection)}
-                    className="mt-3 inline-flex h-9 items-center gap-2 rounded-lg border border-white/[0.1] px-3 text-sm text-gmn-text transition-colors hover:border-white/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-gmn-accent/60"
+                    className="mt-3 inline-flex h-9 items-center gap-2 rounded-lg border border-white/[0.1] px-3 text-sm text-gmn-text transition-colors hover:border-white/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-gmn-accent/70"
                   >
                     <RefreshCw className="h-4 w-4" aria-hidden="true" />
                     Tentar novamente
@@ -147,13 +217,13 @@ export function StoredAuditsPanel({ onUnauthorized }: StoredAuditsPanelProps): R
                 )}
               </div>
             )}
-            {state.detail.data && (state.detail.phase === 'ready' || state.detail.phase === 'loading') && (
+            {state.detail.data && state.detail.data.auditId === state.selectedId && (state.detail.phase === 'ready' || state.detail.phase === 'loading') && (
               <StoredAuditDetail
                 detail={state.detail.data}
                 loading={state.detail.phase === 'loading'}
                 onSelectRevision={(capture, revision) => {
-                  userPicked.current = false;
-                  void select(state.detail.data?.auditId ?? '', { ...(capture !== null ? { capture } : {}), revision });
+                  afterSelect.current = null;
+                  void select(state.selectedId ?? '', { ...(capture !== null ? { capture } : {}), revision });
                 }}
               />
             )}

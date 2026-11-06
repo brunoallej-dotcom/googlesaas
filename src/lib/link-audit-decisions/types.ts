@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { originProofSchema } from '../link-audit-origin';
 import { operatorRecordSchema, type OperatorRecord } from '../link-audit/scoring/input';
 
 /*
@@ -75,6 +76,8 @@ const common = {
   seq: z.number().int().min(1).max(MAX_SEQ),
   recordedAt: iso,
   recordedBy: email,
+  /** PROVA DE ORIGEM (HMAC do servidor, chave fora das pastas): presente nas entradas gravadas depois da remediação do MAJOR-1; ausente nas anteriores (se ficarem pendentes não podem ser concluídas). */
+  origin: originProofSchema.optional(),
   prevSha256: hex64.nullable(),
   contentSha256: hex64,
 };
@@ -112,6 +115,8 @@ export type DecisionDraft = DistributiveOmit<DecisionEntry, 'seq' | 'prevSha256'
 export const headSchema = z.object({ seq: captureNumber, sha256: hex64 }).strict();
 export type ExpectedHead = z.infer<typeof headSchema>;
 export const createBodySchema = z.object({ record: clientRecordSchema, supersedes: decisionIdSchema.optional(), expectedHead: headSchema.nullable() }).strict();
+/** Ações sobre o livro de cabeças (corpo estrito). As administrativas existem no contrato mas são recusadas: não há papel administrativo. */
+export const ledgerActionBodySchema = z.object({ action: z.enum(['ENROLL', 'RECOVER', 'ADOPT', 'RESTORE_ACK', 'QUARANTINE_ACK']) }).strict();
 export const revokeBodySchema = z.object({ revokes: decisionIdSchema, reason, expectedHead: headSchema.nullable() }).strict();
 export type CreateBody = z.infer<typeof createBodySchema>;
 export type RevokeBody = z.infer<typeof revokeBodySchema>;

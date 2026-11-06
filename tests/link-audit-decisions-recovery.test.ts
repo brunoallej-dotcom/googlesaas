@@ -1,3 +1,5 @@
+import { LEDGER_NOT_REQUIRED } from '../src/lib/link-audit-decisions/ledger-port';
+import { WITNESS_NOT_REQUIRED } from '../src/lib/link-audit-decisions/witness';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -8,7 +10,8 @@ import { nodeFsOps, type FsOps } from '../src/lib/link-audit/snapshot-store';
 import { errno, faulty } from './helpers/link-audit-evidence-fixtures';
 import { seal, serialize } from '../src/lib/link-audit-decisions/store';
 import { DECISION_FILE_KIND, DECISION_SCHEMA_VERSION } from '../src/lib/link-audit-decisions/types';
-import { ANA, BIA, anchorPath, clock, entryPath, hashTree, must, rec, registerCleanup, tmpDir, world, writeAlternatingChain, type World } from './helpers/link-audit-decisions-fixtures';
+import { ANA, BIA, anchorPath, clock, entryPath, hashTree, must, rec, registerCleanup, signedSeal, tmpDir, world, writeAlternatingChain, type World } from './helpers/link-audit-decisions-fixtures';
+import { TEST_ORIGIN } from './helpers/link-audit-origin-fixtures';
 
 registerCleanup();
 
@@ -18,7 +21,7 @@ registerCleanup();
  * devolvida como sucesso e pode ser perdida sem que nenhuma promessa tenha sido feita. Reenviar o MESMO pedido a conclui.
  */
 
-const serviceWith = (w: World, ops: FsOps): DecisionService => createDecisionService({ baseDir: w.decisionsDir, anchorDir: w.anchorDir, evidence: w.reader, evidenceBaseDir: w.evidenceDir, fs: ops });
+const serviceWith = (w: World, ops: FsOps): DecisionService => createDecisionService({ ledger: LEDGER_NOT_REQUIRED, knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: w.decisionsDir, anchorDir: w.anchorDir, evidence: w.reader, evidenceBaseDir: w.evidenceDir, fs: ops });
 
 /** Disco em que a ÂNCORA número `seq` não consegue ser gravada (em qualquer etapa que se escolha). */
 function anchorFailure(w: World, seq: number, mode: 'temp-enospc' | 'link-eperm' | 'link-eio' | 'link-eacces'): FsOps {
@@ -204,8 +207,19 @@ test('QUEDA em cada etapa da REVOGAÇÃO: a decisão não "ressuscita" nem some 
     const response = await serviceWith(w, crashAfter(k).ops).revoke(ANA, w.auditId, body, clock());
     reachedSuccess = response.ok;
     const view = await must(w.raw.list(ANA, w.auditId));
-    // enquanto não há recibo, op-0003 segue VIGENTE (a revogação pendente não vale); com o recibo, está revogada
-    assert.equal(view.decisions.some((d) => d.decisionId === 'op-0003'), view.pending !== null || !fs.existsSync(anchorPath(w, 5)), `k=${k}`);
+    // a decisão NUNCA é projetada como vigente com certeza indevida: sem nada publicado segue vigente; com a revogação PENDENTE fica EM DÚVIDA
+    // (fora de `decisions` e de `operatorRecords`); com o recibo está revogada
+    const published = fs.existsSync(entryPath(w, 5));
+    const vigente = view.decisions.some((d) => d.decisionId === 'op-0003');
+    if (view.pending !== null) {
+      assert.equal(vigente, false, `k=${k}: pendente ⇒ a decisão em dúvida não é vigente`);
+      assert.deepEqual(view.ambiguousDecisionIds, ['op-0003'], `k=${k}`);
+      assert.equal(view.operatorRecords.some((r) => r.id === 'op-0003'), false, `k=${k}: e não alimenta o motor`);
+    } else if (published) {
+      assert.equal(vigente, false, `k=${k}: revogação confirmada`);
+    } else {
+      assert.equal(vigente, true, `k=${k}: nada foi publicado: a decisão segue vigente`);
+    }
     const retried = await must(w.raw.revoke(ANA, w.auditId, body, clock()));
     assert.deepEqual([retried.revoked.status, retried.head.seq, retried.effectiveCount], ['REVOKED', 5, 1], `k=${k}`);
     assert.equal((await must(w.raw.list(ANA, w.auditId))).history.length, 5, `k=${k}: exatamente uma revogação`);
@@ -299,8 +313,10 @@ test('RECIBOS removidos: a última sozinha vira PENDENTE (não vale, não é int
   remove(anchorPath(w, 4));
   const pending = await must(w.raw.list(ANA, w.auditId));
   assert.deepEqual([pending.head?.seq, pending.pending?.seq, pending.history.length, pending.anchors], [3, 4, 3, { count: 3, lastSeq: 3, unanchored: 1 }]);
-  // a revogação d0004 (que revogava op-0002) NÃO vale enquanto não houver recibo: op-0002 aparece vigente, e isso é MOSTRADO como pendência
-  assert.deepEqual(pending.decisions.map((d) => d.decisionId), ['op-0001', 'op-0002', 'op-0003']);
+  // a revogação d0004 (que revogava op-0002) NÃO vale enquanto não houver recibo, mas op-0002 NÃO volta a ser vigente: fica EM DÚVIDA, fora do motor
+  assert.deepEqual(pending.decisions.map((d) => d.decisionId), ['op-0001', 'op-0003']);
+  assert.deepEqual(pending.ambiguousDecisionIds, ['op-0002']);
+  assert.deepEqual(pending.operatorRecords.map((r) => r.id), ['op-0001', 'op-0003']);
   assert.equal(pending.pending?.action, 'REVOKE');
   for (const dropped of [[3, 4], [2, 3, 4], [1, 2, 3, 4], [2]]) {
     ({ w } = await confirmedFour());
@@ -349,9 +365,16 @@ test('ENTRADA FORJADA na cauda (quem só escreve na pasta de decisões): é PEND
     await w.raw.create(BIA, w.auditId, { record: rec.naModel(), expectedHead: heads[3] }, clock()), // outro operador, mesmo conteúdo-base
     await w.raw.revoke(ANA, w.auditId, { revokes: 'op-0001', reason: REASON, expectedHead: heads[3] }, clock()),
   ]) {
-    assert.ok(!attempt.ok && attempt.code === 'PENDING_UNCONFIRMED' && attempt.pending?.recordedBy === 'ana@empresa.com');
+    // a pendente é NÃO comprovada: o arquivo cita ANA, mas o servidor não afirma isso (autor e conteúdo ficam ocultos)
+    assert.ok(!attempt.ok && attempt.code === 'PENDING_UNCONFIRMED' && attempt.pending?.recordedBy === null && attempt.pending?.origin === 'UNPROVEN' && attempt.pending?.isMine === false && attempt.pending?.record === null);
   }
+  // O ATAQUE ORIGINAL (RV-04): a própria ANA reenvia EXATAMENTE a operação do arquivo forjado, montada a partir do que o servidor mostra
+  const forgedOperation = (forged as unknown as { record: Record<string, unknown> }).record;
+  const replayByAuthor = await w.raw.create(ANA, w.auditId, { record: forgedOperation as never, expectedHead: heads[3] }, clock());
+  assert.ok(!replayByAuthor.ok && replayByAuthor.code === 'PENDING_ORIGIN_UNPROVEN' && replayByAuthor.pending?.origin === 'UNPROVEN', JSON.stringify(replayByAuthor).slice(0, 200));
   assert.deepEqual(hashTree(w.anchorDir), anchorsBefore, 'nenhum recibo foi gravado para a entrada forjada');
+  const after = await must(w.raw.list(ANA, w.auditId));
+  assert.deepEqual([after.head, after.pending?.seq, after.finalizable, after.operatorRecords.some((r) => r.id === 'op-0005')], [heads[3], 5, false, false], 'a forjada continua pendente: não vale e continua bloqueando (nunca vira ACTIVE)');
 });
 
 /* ===================================================================== C. idempotência */
@@ -523,13 +546,15 @@ test('M1 — leitura que cruza com uma escrita CONCORRENTE não acusa adulteraç
   assert.ok(!real.ok && real.code === 'DECISIONS_TRUNCATED');
 });
 
-test('M2 — recibo da REVOGAÇÃO removido: a decisão revogada aparece vigente, mas finalizable:false e pending acusam; nunca silenciosamente', async () => {
+test('M2 — recibo da REVOGAÇÃO removido: a decisão revogada NÃO volta a ser vigente (fica em dúvida); finalizable:false e pending acusam; nunca silenciosamente', async () => {
   const { w } = await confirmedFour(); // d0004 revoga op-0002
   const ok = await must(w.raw.list(ANA, w.auditId));
   assert.deepEqual([ok.finalizable, ok.pending, ok.decisions.map((d) => d.decisionId)], [true, null, ['op-0001', 'op-0003']]);
   remove(anchorPath(w, 4));
   const view = await must(w.raw.list(ANA, w.auditId));
-  assert.deepEqual([view.finalizable, view.pending?.action, view.pending?.revokes, view.decisions.map((d) => d.decisionId)], [false, 'REVOKE', 'op-0002', ['op-0001', 'op-0002', 'op-0003']]);
+  assert.deepEqual([view.finalizable, view.pending?.action, view.pending?.revokes, view.decisions.map((d) => d.decisionId)], [false, 'REVOKE', 'op-0002', ['op-0001', 'op-0003']]);
+  assert.deepEqual(view.ambiguousDecisionIds, ['op-0002']);
+  assert.deepEqual(view.allDecisions.map((d) => [d.decisionId, d.status]).filter(([id]) => id === 'op-0002'), [['op-0002', 'AMBIGUOUS']]);
   // e nenhum pedido alheio grava por cima nem conclui o recibo
   const blocked = await w.raw.create(ANA, w.auditId, { record: rec.naModel(), expectedHead: view.head }, clock());
   assert.ok(!blocked.ok && blocked.code === 'PENDING_UNCONFIRMED');
@@ -538,7 +563,7 @@ test('M2 — recibo da REVOGAÇÃO removido: a decisão revogada aparece vigente
 test('M3 — pendente FORJADA não é concluída pelo reenvio se a data é futura, cita captura desconhecida ou viola o contrato da 6A; continua pendente e sem recibo', async () => {
   const forge = async (w: World, over: Record<string, unknown>, record: Record<string, unknown>) => {
     const last = JSON.parse(fs.readFileSync(entryPath(w, 4), 'utf8')) as { contentSha256: string; recordedAt: string };
-    const entry = seal({
+    const entry = signedSeal({ // ASSINADA: o que se testa aqui são as checagens INTERNAS (defesa em profundidade); a origem tem os seus próprios testes
       schemaVersion: DECISION_SCHEMA_VERSION,
       kind: DECISION_FILE_KIND,
       auditId: w.auditId,
@@ -594,7 +619,7 @@ test('LIMITE — pendente na última posição (9999): o reenvio ainda a conclui
       return [{ capture: 1, collectedAt: '2026-10-22T12:54:48.079Z', reportRevisions: [{ revision: 1 }] }];
     },
   };
-  const svc = createDecisionService({ baseDir: decisionsDir, anchorDir, evidence });
+  const svc = createDecisionService({ ledger: LEDGER_NOT_REQUIRED, knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: decisionsDir, anchorDir, evidence });
   const view = await must(svc.list(ANA, AUDIT));
   assert.deepEqual([view.head?.seq, view.pending?.seq, view.finalizable], [9998, 9999, false]);
   const other = await svc.create(ANA, AUDIT, { record: rec.c3(), expectedHead: view.head }, clock());
@@ -625,9 +650,9 @@ test('N1 — uma captura NOVA (ainda sem relatório) que chega depois da gravaç
     },
   });
   const body = { record: rec.c2(), expectedHead: null };
-  const first = await createDecisionService({ baseDir: decisionsDir, anchorDir, evidence: lookup(false), fs: failingAnchors }).create(ANA, AUDIT, body, clock());
+  const first = await createDecisionService({ ledger: LEDGER_NOT_REQUIRED, knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: decisionsDir, anchorDir, evidence: lookup(false), fs: failingAnchors }).create(ANA, AUDIT, body, clock());
   assert.ok(!first.ok && first.code === 'ANCHOR_PENDING' && first.pending?.seq === 1);
-  const later = createDecisionService({ baseDir: decisionsDir, anchorDir, evidence: lookup(true) }); // agora existe a captura 2, sem relatório
+  const later = createDecisionService({ ledger: LEDGER_NOT_REQUIRED, knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: decisionsDir, anchorDir, evidence: lookup(true) }); // agora existe a captura 2, sem relatório
   const resent = await must(later.create(ANA, AUDIT, body, clock()));
   assert.deepEqual([resent.replayed, resent.head.seq, resent.decision.basis.capture], [true, 1, 1]); // a base da decisão continua sendo a da gravação original
 });
@@ -635,7 +660,7 @@ test('N1 — uma captura NOVA (ainda sem relatório) que chega depois da gravaç
 test('M3 — REVOGAÇÃO forjada com data futura também não é concluída pelo reenvio', async () => {
   const { w, heads } = await confirmedFour();
   const last = JSON.parse(fs.readFileSync(entryPath(w, 4), 'utf8')) as { contentSha256: string };
-  const forged = seal({
+  const forged = signedSeal({ // ASSINADA (ver M3): testa a checagem interna de data futura
     schemaVersion: DECISION_SCHEMA_VERSION,
     kind: DECISION_FILE_KIND,
     auditId: w.auditId,

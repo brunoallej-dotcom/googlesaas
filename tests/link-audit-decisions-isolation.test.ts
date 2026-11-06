@@ -22,25 +22,26 @@ const libFiles = walk(LIB);
 const routeFiles = walk(ROUTES);
 
 test('o módulo tem exatamente os arquivos esperados (qualquer arquivo novo exige revisão deliberada)', () => {
-  assert.deepEqual(libFiles.map((f) => path.relative(LIB, f)).sort(), ['anchor-store.ts', 'contract.ts', 'evidence-refs.ts', 'files.ts', 'index.ts', 'project.ts', 'service.ts', 'store.ts', 'types.ts']);
-  assert.deepEqual(routeFiles.map((f) => path.relative(ROUTES, f).split(path.sep).join('/')).sort(), ['[auditId]/revocations/route.ts', '[auditId]/route.ts', 'shared.ts']);
+  assert.deepEqual(libFiles.map((f) => path.relative(LIB, f)).sort(), ['anchor-store.ts', 'contract.ts', 'evidence-refs.ts', 'files.ts', 'index.ts', 'ledger-port.ts', 'project.ts', 'service.ts', 'store.ts', 'types.ts', 'witness.ts']);
+  assert.deepEqual(routeFiles.map((f) => path.relative(ROUTES, f).split(path.sep).join('/')).sort(), ['[auditId]/ledger/route.ts', '[auditId]/revocations/route.ts', '[auditId]/route.ts', 'ledger-wiring.ts', 'shared.ts']);
 });
 
 test('imports: só zod, módulos do próprio módulo e uma lista fechada de arquivos do motor/armazenamento (nunca o motor que calcula)', () => {
   const allowedExternal: Readonly<Record<string, readonly string[]>> = {
+    // Onda 6C (I0): as primitivas e o protocolo de recibos passaram para `link-audit-storage`; `files.ts` e `anchor-store.ts`
+    // não importam mais nenhum módulo do Node (restrição MAIS estreita que a anterior).
     'store.ts': ['node:crypto', 'node:path'],
-    'anchor-store.ts': ['node:crypto', 'node:path'],
-    'files.ts': ['node:path'],
     'service.ts': ['node:path'],
   };
   const allowedProject: Readonly<Record<string, readonly string[]>> = {
-    'types.ts': ['../link-audit/scoring/input'],
+    // MAJOR-1: a prova de ORIGEM (HMAC, chave fora das pastas) é o único módulo novo que as decisões consomem (types: esquema da etiqueta; store: assina e exige a prova para concluir pendente; service: julga a origem para o DTO)
+    'types.ts': ['../link-audit-origin', '../link-audit/scoring/input'],
     'project.ts': ['../link-audit/scoring/input'],
     'contract.ts': ['../link-audit/scoring/input', '../link-audit/scoring/versions'],
-    'store.ts': ['../link-audit/canonical', '../link-audit/snapshot-store'],
-    'files.ts': ['../link-audit/canonical', '../link-audit/snapshot-store'],
-    'anchor-store.ts': ['../link-audit/snapshot-store'],
-    'service.ts': ['../link-audit/scoring/input', '../link-audit/snapshot-store'],
+    'store.ts': ['../link-audit-origin', '../link-audit/canonical', '../link-audit/snapshot-store'],
+    'files.ts': ['../link-audit-storage'],
+    'anchor-store.ts': ['../link-audit/snapshot-store', '../link-audit-storage'],
+    'service.ts': ['../link-audit-origin', '../link-audit/scoring/input', '../link-audit/snapshot-store'],
   };
   for (const file of libFiles) {
     const name = path.basename(file);
@@ -85,16 +86,22 @@ test('o módulo não usa rede, ambiente, relógio, aleatoriedade, console, avali
 });
 
 test('só grava pelo mecanismo único (publishExclusive); não existe API de alteração ou exclusão e nenhum arquivo é apagado ou renomeado', () => {
-  for (const name of ['store.ts', 'anchor-store.ts']) assert.ok(/publishExclusive\(/.test(strip(fs.readFileSync(path.join(LIB, name), 'utf8'))), `${name} grava pelo mecanismo único`);
+  // Onda 6C (I0): a gravação dos recibos migrou para o módulo neutro; o invariante continua o mesmo e agora cobre os dois lugares.
+  const STORAGE = path.join(ROOT, 'src', 'lib', 'link-audit-storage');
+  const writers = [path.join(LIB, 'store.ts'), path.join(STORAGE, 'receipts.ts')];
+  for (const file of writers) assert.ok(/publishExclusive\(/.test(strip(fs.readFileSync(file, 'utf8'))), `${rel(file)} grava pelo mecanismo único`);
   // e SOMENTE de forma atômica: o caminho alternativo (sem link) de publishExclusive é recusado nos dois armazenamentos
-  for (const name of ['store.ts', 'anchor-store.ts']) assert.ok(/atomicOnly\(/.test(strip(fs.readFileSync(path.join(LIB, name), 'utf8'))), `${name} deve usar atomicOnly`);
+  for (const file of writers) assert.ok(/atomicOnly\(/.test(strip(fs.readFileSync(file, 'utf8'))), `${rel(file)} deve usar atomicOnly`);
+  // a 6B não tem mais caminho próprio de gravação de recibo: delega ao protocolo neutro
+  const anchors = strip(fs.readFileSync(path.join(LIB, 'anchor-store.ts'), 'utf8'));
+  assert.ok(/writeReceipt\(/.test(anchors) && /confirmReceipt\(/.test(anchors) && !/publishExclusive|writeFile|\.link\(/.test(anchors), 'anchor-store.ts delega a gravação ao módulo neutro');
   for (const file of libFiles) {
     const code = strip(fs.readFileSync(file, 'utf8'));
     assert.ok(!/writeFile|appendFile|createWriteStream|\.rename\(|\.unlink\(|\.rm\(|\.rmdir\(|\.truncate\(|\.chmod\(|\.copyFile\(/.test(code), `${rel(file)} altera/apaga arquivos diretamente`);
     assert.ok(!/export\s+(?:async\s+)?function\s+(?:delete|remove|update|edit|overwrite|replace|purge|clear(?!StorageFatal))\w*/i.test(code), `${rel(file)} exporta operação destrutiva`);
   }
   const service = fs.readFileSync(path.join(LIB, 'service.ts'), 'utf8');
-  assert.deepEqual([...service.matchAll(/^\s{4}async (\w+)\(/gm)].map((m) => m[1]), ['list', 'create', 'revoke']);
+  assert.deepEqual([...service.matchAll(/^\s{4}async (\w+)\(/gm)].map((m) => m[1]), ['list', 'create', 'revoke', 'ledgerAction']);
 });
 
 test('rotas: sem rede, sem disco, sem outra variável de ambiente além das duas pastas, sem exportar PUT/PATCH/DELETE', () => {
@@ -103,24 +110,36 @@ test('rotas: sem rede, sem disco, sem outra variável de ambiente além das duas
     assert.ok(!/\bfetch\s*\(|node:(?:http|https|http2|dns|net|tls|dgram|child_process|fs)\b|fsPromises|XMLHttpRequest|WebSocket/.test(code), `${rel(file)} usa rede ou disco`);
     assert.ok(!/export\s+(?:async\s+)?function\s+(?:PUT|PATCH|DELETE|OPTIONS|HEAD)\b/.test(code), `${rel(file)} exporta método de alteração/exclusão`);
     const vars = [...code.matchAll(/process\.env\.([A-Z0-9_]+)/g)].map((m) => m[1]);
-    for (const name of vars) assert.ok(['GMN_LINK_AUDIT_DECISIONS_DIR', 'GMN_LINK_AUDIT_DECISIONS_ANCHOR_DIR', 'GMN_LINK_AUDIT_EVIDENCE_DIR'].includes(name as string), `${rel(file)} lê ${name}`);
+    for (const name of vars) assert.ok(['GMN_LINK_AUDIT_DECISIONS_DIR', 'GMN_LINK_AUDIT_DECISIONS_ANCHOR_DIR', 'GMN_LINK_AUDIT_EVIDENCE_DIR', 'GMN_LINK_AUDIT_RESULTS_DIR', 'GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR', 'GMN_LINK_AUDIT_EVIDENCE_SEALS_DIR', 'GMN_LINK_AUDIT_DECISIONS_LEDGER_DIR'].includes(name as string), `${rel(file)} lê ${name}`);
     assert.ok(!/process\.env(?!\.)/.test(code), `${rel(file)} lê o ambiente inteiro`);
     for (const specifier of imports(fs.readFileSync(file, 'utf8'))) {
-      const ok = specifier.startsWith('.') || specifier === 'next/server' || specifier === 'node:path' || /^@\/lib\/(?:auth\/require-operator|link-audit-decisions|link-audit-evidence|rate-limit)$/.test(specifier);
+      const ok = specifier.startsWith('.') || specifier === 'next/server' || specifier === 'node:path' || /^@\/lib\/(?:auth\/require-operator|link-audit-decisions|link-audit-evidence|link-audit-ledger|link-audit-origin|link-audit-scoring-runs|rate-limit)$/.test(specifier);
       assert.ok(ok, `${rel(file)} importa "${specifier}"`);
     }
   }
   const verbs = routeFiles.flatMap((file) => [...strip(fs.readFileSync(file, 'utf8')).matchAll(/export\s+async\s+function\s+(GET|POST)\b/g)].map((m) => `${path.basename(path.dirname(file))}:${m[1]}`)).sort();
-  assert.deepEqual(verbs, ['[auditId]:GET', '[auditId]:POST', 'revocations:POST']);
+  assert.deepEqual(verbs, ['[auditId]:GET', '[auditId]:POST', 'ledger:POST', 'revocations:POST']);
 });
 
 test('o navegador, as páginas, os componentes, o Worker e os comandos NÃO importam as decisões (somente as rotas de servidor)', () => {
   const decisionsLib = LIB;
   const decisionsRoutes = ROUTES;
+  // Onda 6C (I3): a prévia da pontuação (serviço + rota) consome as decisões CONFIRMADAS, e só pelo índice público
+  const scoringRoutes = path.join(ROOT, 'src', 'app', 'api', 'link-audit', 'scoring') + path.sep;
+  const scoringService = path.join(ROOT, 'src', 'lib', 'link-audit-scoring-runs', 'preview.ts');
   for (const file of [...walk(path.join(ROOT, 'src')), ...walk(path.join(ROOT, 'scripts'))]) {
     if (file.startsWith(decisionsLib + path.sep) || file.startsWith(decisionsRoutes + path.sep)) continue;
+    if (file.startsWith(scoringRoutes) || file === scoringService) {
+      for (const specifier of imports(fs.readFileSync(file, 'utf8'))) {
+        const resolved = specifier.startsWith('@/') ? path.join(ROOT, 'src', specifier.slice(2)) : specifier.startsWith('.') ? path.resolve(path.dirname(file), specifier) : null;
+        if (resolved !== null && (resolved === decisionsLib || resolved.startsWith(decisionsLib + path.sep))) assert.equal(resolved, decisionsLib, `${rel(file)} importa "${specifier}": só o índice público das decisões é permitido`);
+      }
+      continue;
+    }
     for (const specifier of imports(fs.readFileSync(file, 'utf8'))) {
       const resolved = specifier.startsWith('@/') ? path.join(ROOT, 'src', specifier.slice(2)) : specifier.startsWith('.') ? path.resolve(path.dirname(file), specifier) : null;
+      // O livro de cabeças (módulo vizinho) implementa a PORTA da 6B: pode importar SÓ `ledger-port` (tipos e valores compartilhados, sem dependências)
+      if (file.startsWith(path.join(ROOT, 'src', 'lib', 'link-audit-ledger') + path.sep) && resolved === path.join(decisionsLib, 'ledger-port')) continue;
       const hits = resolved !== null && (resolved === decisionsLib || resolved.startsWith(decisionsLib + path.sep) || resolved.startsWith(decisionsRoutes));
       assert.ok(!hits, `${rel(file)} importa as decisões ("${specifier}")`);
     }

@@ -107,5 +107,5 @@ export const LIMITS_NOTICE = [
   'Nenhuma consulta ao Google ou a outro serviço foi feita: a análise do link é local e só olha o texto do endereço.',
   'Nada é salvo. A confirmação vale apenas nesta tela e some ao recarregar a página.',
   'A gravação de snapshots pela interface está desligada até a estratégia de gravação segura em /mnt/d ser validada.',
-  'Coleta de dados, pontuação, PDF e IA ainda não existem nesta etapa.',
+  'Esta tela não coleta, não pontua, não gera PDF nem usa IA. A pontuação, as decisões humanas e o registro de resultados ficam na auditoria Lumos de cada empresa armazenada (botão “Abrir auditoria Lumos”).',
 ] as const;

@@ -3,6 +3,9 @@ import { NextResponse } from 'next/server';
 import { isErrorResponse, requireOperator } from '@/lib/auth/require-operator';
 import { AUDIT_ID_PATTERN, createDecisionService, HTTP_STATUS, PUBLIC_MESSAGE, type DecisionService, type ServiceFailure } from '@/lib/link-audit-decisions';
 import { createEvidenceReader, EvidenceAccessError, type EvidenceActor } from '@/lib/link-audit-evidence';
+import { ledgerDirOf, ledgerForRoutes } from './ledger-wiring';
+import { originConfigFromEnv } from '@/lib/link-audit-origin';
+import { createResultsKnownHeads } from '@/lib/link-audit-scoring-runs';
 import { SlidingWindowLimiter } from '@/lib/rate-limit';
 
 /*
@@ -12,6 +15,8 @@ import { SlidingWindowLimiter } from '@/lib/rate-limit';
  *  - as três raízes (evidências, decisões e ÂNCORAS) vêm SÓ da configuração do servidor e precisam ser pastas separadas;
  *  - toda escrita exige o `expectedHead` (a visão do operador) e só é confirmada depois do recibo na pasta de âncoras
  *    (sem recibo: 503 ANCHOR_PENDING, nunca 2xx; reenviar o mesmo pedido é idempotente);
+ *  - ESCRITAS exigem a chave de comprovação de origem (variável de ambiente do servidor, fora das pastas de dados): sem ela, 503 e nada
+ *    é gravado nem concluído (uma pendente só é concluída se o servidor comprovar que ele mesmo a gravou);
  *  - corpo limitado (413), tipo exato application/json (415), limite de requisições por operador (429);
  *  - nenhuma resposta traz caminho do disco, credencial ou mensagem interna; respostas privadas e sem cache.
  */
@@ -88,12 +93,22 @@ export async function withDecisions(request: Request, mode: 'read' | 'write', ha
   const evidenceDir = configuredDir(process.env.GMN_LINK_AUDIT_EVIDENCE_DIR);
   if (!evidenceDir) return reply({ error: 'O armazenamento de evidências não está configurado neste servidor.', code: 'EVIDENCE_NOT_CONFIGURED' }, 503);
 
+  // Chave de ORIGEM (nunca em log, resposta ou pasta de dados). Leitura sem chave funciona (a origem das pendentes fica "não verificável"); escrita não.
+  const originConfig = originConfigFromEnv(undefined, () => new Date());
+  if (mode === 'write' && !originConfig.ok) return reply({ error: PUBLIC_MESSAGE.ORIGIN_KEY_NOT_CONFIGURED, code: 'ORIGIN_KEY_NOT_CONFIGURED' }, HTTP_STATUS.ORIGIN_KEY_NOT_CONFIGURED);
+
   const actor: EvidenceActor = { email: access.operator };
   const reader = createEvidenceReader({ baseDir: evidenceDir, authorize: (candidate) => candidate.email === access.operator && candidate.email.length > 0 });
   try {
     const storage = await reader.storageStatus(actor);
     if (storage !== 'READY') return reply({ error: 'O armazenamento de evidências não está acessível ao servidor.', code: 'EVIDENCE_STORAGE_UNAVAILABLE' }, 503);
-    const service = createDecisionService({ baseDir: decisionsDir, anchorDir, evidence: reader, evidenceBaseDir: evidenceDir });
+    // TESTEMUNHA do histórico: as cabeças já confirmadas em resultados selados (OUTRAS pastas). OBRIGATÓRIA: sem as DUAS pastas de resultados configuradas o fornecedor
+    // responde `NOT_CONFIGURED` e a 6B trata o histórico como NÃO RESOLVIDO (falha fechada: nenhuma decisão vigente, nenhuma escrita). Nunca "sem inconsistência".
+    const resultsDir = configuredDir(process.env.GMN_LINK_AUDIT_RESULTS_DIR);
+    const resultsAnchorDir = configuredDir(process.env.GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR);
+    const knownHeads = resultsDir && resultsAnchorDir ? createResultsKnownHeads({ baseDir: resultsDir, anchorDir: resultsAnchorDir, otherDirs: [decisionsDir, anchorDir, evidenceDir, ledgerDirOf()], ...(originConfig.ok ? { origin: originConfig.authenticator } : {}) }) : async () => ({ ok: false as const, reason: 'NOT_CONFIGURED' as const });
+    const ledger = ledgerForRoutes([decisionsDir, anchorDir, evidenceDir, resultsDir, resultsAnchorDir]);
+    const service = createDecisionService({ baseDir: decisionsDir, anchorDir, evidence: reader, evidenceBaseDir: evidenceDir, ...(originConfig.ok ? { origin: originConfig.authenticator } : {}), knownHeads, ledger });
     return await handler({ service, actor });
   } catch (error) {
     if (error instanceof EvidenceAccessError) return reply({ error: 'Acesso negado.', code: 'FORBIDDEN' }, 403);

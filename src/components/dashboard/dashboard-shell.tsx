@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { DashboardHeader } from './dashboard-header';
 import { NAV_ITEMS, Sidebar } from './sidebar';
 
@@ -52,6 +52,15 @@ export function DashboardShell({
     });
   }, []);
 
+  // Foco do menu móvel: ao abrir, vai ao "Fechar menu"; ao fechar, volta ao botão que o abriu (o menu fechado fica invisível, então o
+  // foco não pode ficar nele). Sem armadilha de foco: Esc fecha e o fundo escuro também.
+  const menuWasOpen = useRef(false);
+  useEffect(() => {
+    if (mobileOpen) document.querySelector<HTMLElement>('#gmn-sidebar [aria-label="Fechar menu"]')?.focus();
+    else if (menuWasOpen.current) document.querySelector<HTMLElement>('button[aria-label="Abrir menu"]')?.focus(); // o "Recolher menu" da barra também usa aria-controls: não serve de alvo
+    menuWasOpen.current = mobileOpen;
+  }, [mobileOpen]);
+
   useEffect(() => {
     if (!mobileOpen) return;
     const onKeyDown = (e: KeyboardEvent): void => {
@@ -98,10 +107,12 @@ export function DashboardShell({
           <DashboardHeader
             sectionLabel={sectionLabel ?? SECTION_LABEL[activeSectionId] ?? 'Visão Geral'}
             onOpenMobileMenu={() => setMobileOpen(true)}
+            mobileMenuOpen={mobileOpen}
             {...(onLogout ? { onLogout } : {})}
             {...(hideSystemStatus ? { hideSystemStatus } : {})}
           />
-          {children}
+          {/* marco principal da página (WCAG 1.3.1/2.4.1): sem ele, leitores de tela não têm como pular menu e cabeçalho */}
+          <main className="space-y-5">{children}</main>
         </div>
       </div>
     </div>

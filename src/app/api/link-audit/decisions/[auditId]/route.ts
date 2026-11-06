@@ -13,7 +13,7 @@ export async function GET(request: Request, context: { params: Promise<{ auditId
   const url = new URL(request.url);
   return withDecisions(request, 'read', async ({ service, actor }) => {
     if (!isAuditId(auditId) || [...url.searchParams].length > 0) return invalidParams();
-    const result = await service.list(actor, auditId);
+    const result = await service.list(actor, auditId, serverClock);
     return result.ok ? reply(result.value) : failureResponse(result);
   });
 }

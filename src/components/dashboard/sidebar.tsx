@@ -77,7 +77,7 @@ export function Sidebar({
         id="gmn-sidebar"
         aria-label="Navegação principal"
         className={`fixed inset-y-0 left-0 z-40 flex w-56 flex-col border-r border-white/[0.06] bg-gmn-sidebar transition-transform lg:sticky lg:top-0 lg:h-screen lg:translate-x-0 lg:transition-[width] ${
-          mobileOpen ? 'translate-x-0' : '-translate-x-full'
+          mobileOpen ? 'translate-x-0' : '-translate-x-full invisible lg:visible' // fechado no celular: fora da tabulação e dos leitores de tela
         } ${collapsed ? 'lg:w-[76px]' : 'lg:w-56'}`}
       >
         <div className="flex items-center justify-between gap-2 px-5 pb-6 pt-6">
@@ -95,39 +95,44 @@ export function Sidebar({
             type="button"
             onClick={onCloseMobile}
             aria-label="Fechar menu"
-            className="rounded-md p-1.5 text-gmn-muted hover:bg-gmn-surface hover:text-gmn-text lg:hidden"
+            className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-gmn-muted hover:bg-gmn-surface hover:text-gmn-text focus:outline-none focus-visible:ring-2 focus-visible:ring-gmn-accent/70 lg:hidden"
           >
             <X className="h-5 w-5" aria-hidden="true" />
           </button>
         </div>
 
-        <nav className="flex-1 overflow-y-auto px-3">
+        <nav aria-label="Menu principal" className="flex-1 overflow-y-auto px-3">
           <ul className="space-y-1.5">
             {NAV_ITEMS.map((item) => {
               const Icon = item.icon;
               const base =
-                'flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors';
+                'flex min-h-11 items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors';
               if (item.href) {
                 const routeActive = item.href === activeRoute;
+                const linkClass = `${base} ${
+                  routeActive
+                    ? 'bg-gmn-primary/[0.18] text-white'
+                    : 'text-gmn-muted hover:bg-gmn-surface hover:text-gmn-text'
+                }`;
+                const inner = (
+                  <>
+                    <Icon className={`h-5 w-5 shrink-0 ${routeActive ? 'text-gmn-accent' : ''}`} aria-hidden="true" />
+                    <span className={`truncate ${labelClass}`}>{item.label}</span>
+                  </>
+                );
+                // O item da PÁGINA ATUAL é um link de documento (<a>), não do roteador do Next: ele reinicia a tela já coerente com o endereço.
+                // Pelo roteador, o endereço perderia o `?auditId=` sem que a tela mudasse (e o F5 abriria outra empresa).
                 return (
                   <li key={item.id}>
-                    <Link
-                      href={item.href}
-                      onClick={onCloseMobile}
-                      aria-current={routeActive ? 'page' : undefined}
-                      title={collapsed ? item.label : undefined}
-                      className={`${base} ${
-                        routeActive
-                          ? 'bg-gmn-primary/[0.18] text-white'
-                          : 'text-gmn-muted hover:bg-gmn-surface hover:text-gmn-text'
-                      }`}
-                    >
-                      <Icon
-                        className={`h-5 w-5 shrink-0 ${routeActive ? 'text-gmn-accent' : ''}`}
-                        aria-hidden="true"
-                      />
-                      <span className={`truncate ${labelClass}`}>{item.label}</span>
-                    </Link>
+                    {routeActive ? (
+                      <a href={item.href} onClick={onCloseMobile} aria-current="page" title={collapsed ? item.label : undefined} className={linkClass}>
+                        {inner}
+                      </a>
+                    ) : (
+                      <Link href={item.href} onClick={onCloseMobile} title={collapsed ? item.label : undefined} className={linkClass}>
+                        {inner}
+                      </Link>
+                    )}
                   </li>
                 );
               }

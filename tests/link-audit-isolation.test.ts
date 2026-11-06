@@ -211,10 +211,31 @@ const EVIDENCE_DIR = 'src/lib/link-audit-evidence/';
  */
 const DECISIONS_DIR = 'src/lib/link-audit-decisions/';
 const DECISIONS_TARGETS: ReadonlySet<string> = new Set(['canonical.ts', 'snapshot-store.ts', 'scoring/input.ts', 'scoring/versions.ts']);
+/**
+ * Onda 6C (I0): módulo NEUTRO de armazenamento (servidor). Consome SÓ o selo canônico e o mecanismo único de gravação; nunca o
+ * motor, o coletor nem os esquemas. Quem o consome é verificado em `link-audit-storage-isolation.test.ts`.
+ */
+const STORAGE_DIR = 'src/lib/link-audit-storage/';
+const STORAGE_TARGETS: ReadonlySet<string> = new Set(['canonical.ts', 'snapshot-store.ts']);
+/** Remediação do MAJOR-1: o módulo de PROVA DE ORIGEM (HMAC) consome SÓ o selo canônico (serialização estável do corpo assinado); conferido em `link-audit-origin-isolation.test.ts`. */
+const ORIGIN_DIR = 'src/lib/link-audit-origin/';
+const LEDGER_DIR = 'src/lib/link-audit-ledger/';
+const ORIGIN_TARGETS: ReadonlySet<string> = new Set(['canonical.ts']);
+/**
+ * Onda 6C (I2): mapeador determinístico (servidor). Consome SÓ o selo canônico, as constantes de metodologia (tipo) e o CONTRATO
+ * do motor (entrada, tipos, régua como dados, datas puras e versões). NUNCA o motor que calcula (engine, agregação, avaliadores).
+ * Os imports são conferidos arquivo a arquivo em `link-audit-scoring-runs-isolation.test.ts`.
+ */
+const SCORING_RUNS_DIR = 'src/lib/link-audit-scoring-runs/';
+const SCORING_RUNS_TARGETS: ReadonlySet<string> = new Set(['canonical.ts', 'methodology.ts', 'scoring/dates.ts', 'scoring/index.ts', 'scoring/input.ts', 'scoring/ruler.ts', 'scoring/types.ts', 'scoring/versions.ts']);
+/** Onda 6C (I4): SÓ o armazenamento dos resultados (`results-store.ts`) usa o mecanismo único de gravação (`snapshot-store`: trava e publicação exclusiva). */
+const SCORING_RUNS_STORE_TARGETS: ReadonlyMap<string, ReadonlySet<string>> = new Map([['src/lib/link-audit-scoring-runs/results-store.ts', new Set(['snapshot-store.ts'])]]);
+/** Onda 6C (I3): a rota da prévia (servidor). Só ela e o serviço de prévia consomem o índice do motor; cada arquivo é conferido em `link-audit-scoring-runs-isolation.test.ts`. */
+const SCORING_ROUTES_DIR = 'src/app/api/link-audit/scoring/';
 const CLIENT_DIRS = ['src/components/link-audit/', 'src/app/auditoria-por-link/'];
 /** Único valor (não só tipo) que o navegador pode importar: constantes puras, sem nenhum import. */
 const CLIENT_VALUE_IMPORTS: ReadonlySet<string> = new Set(['methodology']);
-const CLIENT_EXTERNAL_PACKAGES: ReadonlySet<string> = new Set(['react', 'react/jsx-runtime', 'next/link', 'lucide-react']);
+const CLIENT_EXTERNAL_PACKAGES: ReadonlySet<string> = new Set(['react', 'react/jsx-runtime', 'next/link', 'next/navigation', 'lucide-react']); // next/navigation: notFound() da rota da auditoria (I5)
 
 interface ImportStatement {
   readonly specifier: string;
@@ -248,13 +269,30 @@ test('isolamento reverso: só os consumidores declarados importam o módulo, e s
     const allowedRoute = ROUTE_CONSUMERS[name];
     const isRuntime = name.startsWith(RUNTIME_DIR) || name.startsWith(EVIDENCE_DIR) || name === RUNTIME_CLI || name === EVIDENCE_CLI;
     const isDecisions = name.startsWith(DECISIONS_DIR);
+    const isStorage = name.startsWith(STORAGE_DIR);
+    const isOrigin = name.startsWith(ORIGIN_DIR);
+    const isLedger = name.startsWith(LEDGER_DIR);
+    const isScoringRuns = name.startsWith(SCORING_RUNS_DIR);
     for (const statement of importStatements(fs.readFileSync(file, 'utf8'))) {
       const target = targetsModule(file, statement.specifier);
       if (target === null) continue;
       consumersSeen.add(name);
-      if (isDecisions) {
+      if (isScoringRuns) {
+        const withExtension = target.endsWith('.ts') ? target : `${target}.ts`;
+        assert.ok(SCORING_RUNS_TARGETS.has(withExtension) || SCORING_RUNS_STORE_TARGETS.get(name)?.has(withExtension) === true, `${name} importa "${statement.specifier}", fora da lista fechada do mapeador (contrato do motor, nunca o motor que calcula)`);
+      } else if (isDecisions) {
         const withExtension = target.endsWith('.ts') ? target : `${target}.ts`;
         assert.ok(DECISIONS_TARGETS.has(withExtension), `${name} importa "${statement.specifier}", fora da lista fechada do módulo de decisões`);
+      } else if (isLedger) {
+        // livro de cabeças: só as primitivas de gravação/leitura atômica já testadas (FsOps, publishExclusive); nunca o restante do módulo
+        const withExtension = target.endsWith('.ts') ? target : `${target}.ts`;
+        assert.ok(withExtension === 'snapshot-store.ts', `${name} importa "${statement.specifier}", fora da lista fechada do livro de cabeças`);
+      } else if (isOrigin) {
+        const withExtension = target.endsWith('.ts') ? target : `${target}.ts`;
+        assert.ok(ORIGIN_TARGETS.has(withExtension), `${name} importa "${statement.specifier}", fora da lista fechada do módulo de prova de origem`);
+      } else if (isStorage) {
+        const withExtension = target.endsWith('.ts') ? target : `${target}.ts`;
+        assert.ok(STORAGE_TARGETS.has(withExtension), `${name} importa "${statement.specifier}", fora da lista fechada do módulo neutro de armazenamento`);
       } else if (isRuntime) {
         continue;
       } else if (allowedRoute) {
@@ -283,7 +321,8 @@ test('Onda 3: nada do navegador importa Node, url-safety, armazenamento ou hash;
     }
     const code = stripComments(source);
     assert.ok(!/localStorage|sessionStorage|indexedDB|document\.cookie/.test(code), `${rel(file)} usa armazenamento do navegador`);
-    if (!rel(file).endsWith('api-client.ts')) assert.ok(!/\bfetch\s*\(/.test(code.replace(/fetch\('\/api\/auth\/logout'[^)]*\)/g, '')), `${rel(file)} chama fetch fora do cliente de API`);
+    // Onda 6C (I5): o cliente HTTP da página da auditoria (mesma origem) é o único outro arquivo autorizado a chamar fetch
+    if (!rel(file).endsWith('api-client.ts') && rel(file) !== 'src/components/link-audit/audit-page/api.ts') assert.ok(!/\bfetch\s*\(/.test(code.replace(/fetch\('\/api\/auth\/logout'[^)]*\)/g, '')), `${rel(file)} chama fetch fora do cliente de API`);
   }
 });
 
@@ -425,6 +464,26 @@ test('Onda 5A/5B: só o runtime, os comandos e as rotas de leitura importam o se
     name.startsWith('src/lib/link-audit-evidence/') || name.startsWith(RUNTIME_DIR) || name === RUNTIME_CLI || name === EVIDENCE_CLI || name.startsWith(EVIDENCE_ROUTES_DIR) || name.startsWith(DECISIONS_ROUTES_DIR);
   for (const file of [...walk(path.join(ROOT, 'src')), ...walk(path.join(ROOT, 'scripts'))]) {
     const name = rel(file);
+    if (name.startsWith(SCORING_RUNS_DIR)) {
+      // Onda 6C (I2): o mapeador só importa TIPOS da base de pontuação (apagados na compilação); nunca o leitor nem o armazenamento
+      for (const statement of importStatements(fs.readFileSync(file, 'utf8'))) {
+        const resolved = resolveImport(file, statement.specifier);
+        if (resolved === null || !(resolved === evidenceRoot || resolved.startsWith(evidenceRoot + path.sep))) continue;
+        // exceção deliberada (R2-MINOR-1): o serviço de prévia usa a POLÍTICA de proveniência das evidências (a fronteira com o motor); mais ninguém do módulo
+        if (name.endsWith('/preview.ts') && resolved === path.join(evidenceRoot, 'provenance')) continue;
+        assert.ok(statement.typeOnly && resolved === path.join(evidenceRoot, 'scoring-basis'), `${name} importa "${statement.specifier}": só tipos de scoring-basis são permitidos`);
+      }
+      continue;
+    }
+    if (name.startsWith(SCORING_ROUTES_DIR)) {
+      // Onda 6C (I3): a rota da prévia usa o índice público e o leitor de pontuação (único lugar que o monta)
+      for (const statement of importStatements(fs.readFileSync(file, 'utf8'))) {
+        const resolved = resolveImport(file, statement.specifier);
+        if (resolved === null || !(resolved === evidenceRoot || resolved.startsWith(evidenceRoot + path.sep))) continue;
+        assert.ok(resolved === evidenceRoot || resolved === path.join(evidenceRoot, 'scoring-basis') || resolved === path.join(evidenceRoot, 'provenance'), `${name} importa "${statement.specifier}": só o índice público, o leitor de pontuação e a política de proveniência são permitidos`);
+      }
+      continue;
+    }
     if (allowedImporters(name)) continue;
     for (const statement of importStatements(fs.readFileSync(file, 'utf8'))) {
       const resolved = resolveImport(file, statement.specifier);

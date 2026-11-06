@@ -1,0 +1,158 @@
+# Onda 6C — checklist de prontidão para PRODUÇÃO (I7)
+
+> **Status: SOMENTE CHECKLIST. NADA deste documento foi executado ou aplicado.** `stack.yml`, `Dockerfile` e `docker-entrypoint.sh` **não foram alterados**; nada foi feito na VPS, no Redis, no Supabase ou no Serper; nenhuma imagem foi construída; nenhuma migration foi escrita ou executada. Cada item abaixo é uma ação **futura**, que exige autorização específica do responsável, em etapa de implantação própria (sugestão: "H3"), com **leitura primeiro** e uma alteração por vez. Estende, sem substituir, `deploy/hostinger/PLANO-DE-VOLUME-DE-DECISOES.md` (6B), `GUIA-DE-IMPLANTACAO.md`, `PLANO-DE-ROLLBACK.md`, `PLANO-DE-BACKUP-E-RESTAURACAO.md`, `VERIFICACAO-POS-DEPLOY.md` e `CHECKLIST-DE-SEGURANCA.md`.
+
+## Pendências declaradas — NÃO omitir de nenhum parecer de prontidão
+- **FINALIZAÇÃO FECHADA POR DESENHO (decisão do responsável, 01/11/2026):** enquanto não existir **prova independente de que as evidências vieram da coleta** (manifesto assinado, ADR 6C-03), **toda finalização e toda conclusão de pendente respondem `NOT_FINALIZABLE`**. Hoje **não existe produtor** do manifesto: o plano (P1) aguarda aprovação. A prévia, as decisões e a consulta de resultados continuam funcionando.
+- **Chave de ORIGEM é um segredo NOVO e OBRIGATÓRIO para gravar** (`GMN_LINK_AUDIT_ORIGIN_KEY`, formato estrito `<id>:<64 hex>`); sem ela as escritas respondem 503. Primeira implantação **já com esta versão** (arquivos com `origin` não são lidos pela versão anterior).
+- **Revisão adversarial independente:** a 1ª **BLOQUEOU** (commit `b1c7412`); a 2ª deu **APROVADO COM RESSALVAS** (`onda6c-revisao-adversarial-2.md`); uma 3ª, focada nas alterações de 01/11/2026, está registrada no relatório de remediação. **A Onda 6C NÃO está encerrada.**
+- **MINOR-2** (recibo removido × gravação interrompida): ambiguidade estrutural **aceita pelo responsável**, desde que falhe de forma segura **e nunca permita a reativação indevida**; isso está demonstrado **com a pendente no lugar ou com testemunha**, **não** na janela sem testemunha (item BLOQUEADOR acima).
+- **BLOQUEADOR PARA PRODUÇÃO — janela sem testemunha (R3-MINOR-2, **mantido** após a correção do R4-MINOR-1/INFO-1):** a testemunha só cobre o que um resultado selado já registrou: **a janela abre na REVOGAÇÃO/SUBSTITUIÇÃO e só fecha no PRÓXIMO resultado selado** — perdendo o recibo dela e movendo o arquivo (dois arquivos, em duas pastas) a decisão revogada volta a valer **sem que o sistema detecte**, mesmo com o resultado anterior e o recibo dele intactos (5ª revisão; a tela declara `unwitnessedAffecting > 0` antes do ataque). Caso extremo: todos os vestígios removidos (`UNWITNESSED`). Travado em teste: "LIMITE DECLARADO" (duas formas) em `link-audit-decisions-witness-rotation`. Enquanto não houver o **livro de cabeças independente** (**especificação** em `onda6c-especificacao-livro-de-cabecas.md`, **nada implementado**), a regra de procedimento (6B §15 item 3: **nunca mover pendente de revogação/substituição — de QUALQUER origem, inclusive chave revogada** — e **nunca mover resultado pendente sem fonte independente**; **finalize logo depois de revogar/substituir** — o próximo resultado selado fecha a janela — **assim que a finalização estiver habilitada: hoje ela está FECHADA POR DESENHO até existir o produtor da prova de coleta, então este conselho ainda não é executável em produção**) é o único controle.
+- **R4-MINOR-1 e INFO-1 (corrigidos em 01/11/2026, sem commit):** a **rotação de chave** não faz mais o sistema esquecer uma testemunha (resultado pendente de origem não comprovada vira **indício** e, se contradiz o histórico, o estado é `UNTRUSTED`), e a **ausência de qualquer dependência da testemunha** (`NOT_CONFIGURED`, `UNAVAILABLE`, `UNTRUSTED`) **falha fechada** (nenhuma decisão vigente, nenhuma escrita, nada finalizável). Ver ADR 6C-02 §4.5.
+- **LIVRO DE CABEÇAS (implementado localmente em 02/11/2026, SEM commit; especificação §16; decisões Q1–Q7):** fecha a janela sem testemunha **somente para auditorias INSCRITAS e `PROTECTED`** (a revogação/substituição passa a ter `INTENT`/`CONFIRMED` no livro, e perder o recibo ou mover o arquivo vira `HISTORY_REGRESSED`/`RECEIPT_REMOVED`, **sem depender de resultado selado**). **Não** vale para auditoria legada (histórico anterior ao livro): ela fica `LEGACY_READ_ONLY` (modo restrito, nenhuma decisão vigente) até uma adoção administrativa que **não existe**. A janela do item acima **permanece aberta para o legado e enquanto o livro estiver `NOT_REQUIRED`** (só testes da 6B isolada).
+- **BLOQUEADOR PARA PRODUÇÃO — GUARDA EXTERNA IMUTÁVEL (Q6):** o livro **não** detecta o **rollback coordenado** de todos os volumes (decisões, recibos **e** livro a um mesmo instante anterior), nem a escrita simultânea em ≥ 2 pastas **incluindo o livro**. Só uma testemunha imutável em **domínio de falha separado da VPS** (objeto com retenção/WORM, ou serviço de terceiro) o detecta. **Não existe provedor, não há integração e nada foi contratado**: existe apenas a porta `ExternalGuardPort` e um adaptador **sintético de teste**. Enquanto não houver guarda operante o estado é `externalGuard: NOT_CONFIGURED` e **nenhum parecer pode afirmar proteção contra rollback coordenado** (travado em teste: `link-audit-ledger-guard`, "LIMITE DECLARADO").
+- **Operações administrativas BLOQUEADAS (Q5, interpretação mais restritiva CONFIRMADA pelo responsável em 03/11/2026):** `RESTORE_ACK`, `QUARANTINE_ACK` e a **adoção de histórico não vazio** exigem autorização administrativa explícita, auditável e com dupla aprovação, e respondem 403 `ADMIN_APPROVAL_UNAVAILABLE`: o sistema não tem papel administrativo verificável nem dupla aprovação (só `GMN_OPERATOR_EMAILS`) e nada foi simulado. A **inscrição de auditoria comprovadamente vazia** continua e só vale com a ausência de histórico realmente verificável (decisões, recibos, resultados, guarda e livro legíveis e vazios). **BLOQUEADOR DE PRODUÇÃO: a operação administrativa real** (um incidente de chave ou de rotação congela TODAS as auditorias protegidas sem ela — R6-13). Procedimento futuro especificado em §16.8. **Consequência operacional:** uma auditoria que cair em `HISTORY_UNRESOLVED` (ou nascer legada) **não tem caminho de reabertura pela aplicação**; a recuperação é humana, fora do sistema, preservando a evidência.
+- **Chave do livro (segredo NOVO e OBRIGATÓRIO para gravar):** `GMN_LINK_AUDIT_LEDGER_KEY` (`<id>:<64 hex>`, **diferente** da de origem em id **e** material; a configuração é recusada se coincidirem) e a pasta `GMN_LINK_AUDIT_DECISIONS_LEDGER_DIR` (volume sugerido `gmn-link-audit-ledger`, **backup próprio**, em disco diferente dos dados e dos recibos). **Sem as duas nenhuma decisão é gravada (503 `LEDGER_NOT_CONFIGURED`).** `stack.yml`, `Dockerfile` e `docker-entrypoint.sh` **não foram alterados**; a entrega por `docker secret`/`*_FILE` exigirá acrescentar o nome à lista fixa do entrypoint (futuro). **Rotação: ver runbook §7 (CHECKPOINT antes do vencimento da chave aposentada).**
+- **Rollback e réplicas (R6-09):** depois do primeiro `ENROLL` **não se volta à imagem anterior ao livro** (ela lê e escreve a pasta de decisões sem o livro e a auditoria passa a `UNLEDGERED_ENTRY`), **nem se admite réplica antiga** sobrepondo-se à nova; atualizar com `stop-first`. O plano de rollback precisa tratar isto antes de qualquer implantação.
+- **Durabilidade (R6-07):** com o livro, a falha do `fsync` de diretório da entrada, do recibo e dos registros do livro **interrompe as escritas** (sem sucesso, sem presunção); nos resultados, recibos de resultados e evidências o `fsync` de diretório segue melhor-esforço (**P-4, sem aceite**). O **ensaio de queda de energia** do sistema de arquivos escolhido é pré-requisito de homologação; sistema de arquivos que não suporta `fsync` de diretório (erros `EINVAL`/`ENOTSUP`) **não grava** — é a limitação registrada.
+- **Contrato da guarda externa REAL (R6-10):** `head: null` só é aceitável com o livro em `ledgerSeq ≤ 1`; o atraso precisa ter limite; o resultado de `publishGuard` após `CONFIRMED`/`ABORTED` precisa ser tratado; distinguir "nunca publicou" de "esqueceu". O adaptador sintético NÃO satisfaz isto.
+- **Resultados novos carregam `ledgerHead` (formato v2):** o v1 segue legível. Um resultado que cita uma posição que o livro não tem, ou um livro removido que um resultado cita, é `HISTORY_UNRESOLVED`. **Primeira implantação já com esta versão** (um servidor anterior não entende o v2).
+- **P-1 a P-4**: análise individual em `onda6c-riscos-p1-p4.md` (nenhuma é considerada aceita; o resumo está na §12.1).
+- **Produtor P1 (atestação offline):** direção aprovada, **contrato** em `onda6c-contrato-p1-atestacao.md`, **nada implementado**; decisões abertas: titular/suplente da custódia, dispositivo, política do legado real.
+- **Pendência de segurança FORA da 6C — `src/lib/pdf/serve.ts` com FIFO** (§12): corrigir **antes** de expor o download de PDF.
+- **CSP em Report-Only**, com `'unsafe-inline'` (não bloqueia nada hoje).
+- **Limitadores de requisição em memória** (por processo; zeram ao reiniciar).
+- **Cinco volumes graváveis** (decisões, recibos das decisões, resultados, recibos dos resultados e **o livro de cabeças**) **mais o volume de manifestos**, **backup independente** de cada um (ainda não definido nem ensaiado).
+- **Recuperação de pendências** (sem alerta externo) e **monitoramento** de integridade e de armazenamento (inexistente).
+- **Testes de rollback** (não executados).
+- **Acessibilidade sem leitor de tela real** (e sem outros navegadores/dispositivo físico).
+- **Cobertura do Lumos sem a D5:** toda auditoria real sai INCONCLUSIVA (teto 17% < mínimo 40%).
+- Correção de contraste do dashboard (token `primary-strong`, `muted/60`, anéis de foco) **aprovada, ainda não implementada** (commit específico de acessibilidade).
+
+## 0. Pré-condições (bloqueiam tudo o que vem depois)
+- [ ] O responsável **autorizou por escrito** a etapa de implantação e o escopo (qual VPS, qual tag, quem opera, janela).
+- [ ] O commit de homologação da 6C (I6), o checkpoint do I7 **e a revisão adversarial independente (hoje pendente)** foram **aprovados** pelo responsável; a tag de imagem a publicar aponta para um commit conhecido (`git rev-parse` registrado).
+- [ ] A versão atual em produção é conhecida e a **imagem anterior está guardada** para rollback (tag e digest anotados).
+- [ ] D5 (coleta que eleva a cobertura) **não** é pré-requisito: sem ela toda auditoria real sai INCONCLUSIVA (teto de 17% < 40%). Isso é o comportamento correto e deve estar **explícito para a equipe** antes do uso (ver §9).
+
+## 1. Volumes separados — decisões, resultados e seus recibos
+A 6C grava **três** conjuntos de dados novos, todos **imutáveis por convenção** (arquivos `0444`, cadeia de hashes) e **insubstituíveis** (decisões humanas com autoria; resultados selados). Cinco pastas distintas no total, **nenhuma dentro de outra**, nenhuma em `public/`, `src/`, `.next/` ou `node_modules/`; o código recusa a configuração que viole isso (a finalização responde 503).
+
+| Papel | Variável (no serviço **web**) | Montagem | Observação |
+|---|---|---|---|
+| Evidências | `GMN_LINK_AUDIT_EVIDENCE_DIR=/data/evidence` | **`read_only: true`** (já existe) | não mudar |
+| Decisões | `GMN_LINK_AUDIT_DECISIONS_DIR=/data/decisions` | leitura e escrita, só no web | 6B |
+| Recibos das decisões | `GMN_LINK_AUDIT_DECISIONS_ANCHOR_DIR=/data/decision-anchors` | leitura e escrita, só no web, **outro disco/volume** | 6B |
+| **Resultados** | `GMN_LINK_AUDIT_RESULTS_DIR=/data/results` | leitura e escrita, só no web | **6C (novo)** |
+| **Recibos dos resultados** | `GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR=/data/result-anchors` | leitura e escrita, só no web, **outro disco/volume, backup próprio** | **6C (novo)** |
+| **Livro de cabeças** | `GMN_LINK_AUDIT_DECISIONS_LEDGER_DIR=/data/decisions-ledger` (volume `gmn-link-audit-ledger`) | leitura e escrita, só no web, **outro disco/volume, backup próprio**; **nunca** dentro de outra pasta | **6C (novo; só local, nada aplicado)** |
+
+- [ ] **As rotas de DECISÕES agora também leem as pastas de resultados** (`GMN_LINK_AUDIT_RESULTS_DIR` e `…_ANCHOR_DIR`) para obter a testemunha do histórico: no `stack.yml` futuro, o serviço web precisa dos mesmos volumes de resultados em leitura nas rotas de decisões (já os tem para as de resultados). Sem eles — ou com caminho relativo, iguais, sobrepostas às de decisões/recibos/evidências, inexistentes ou ilegíveis — a testemunha fica `NOT_CONFIGURED`/`UNAVAILABLE` e o sistema **FALHA FECHADO** (INFO-1 corrigido): **nenhuma decisão é vigente, nenhuma escrita de decisão é aceita (`409 DECISIONS_HISTORY_UNRESOLVED`), a prévia não é finalizável e a tela diz o motivo**; só a consulta informativa continua. **Consequência operacional: sem as duas pastas de resultados as DECISÕES não podem ser gravadas** — configure-as **antes** de liberar decisões. Uma auditoria nova com as pastas corretas e sem resultados fica `UNWITNESSED` (normal; a tela declara o que não cobre).
+- [ ] **Quinta pasta (somente LEITURA para o web): manifestos de coleta** (`GMN_LINK_AUDIT_EVIDENCE_SEALS_DIR`), separada da de evidências e fora de qualquer outra; escrita só por quem atesta (fora da VPS). Backup próprio.
+- [ ] As 5 pastas graváveis (as 4 acima **mais o livro**) existem **no host** antes da implantação, com `uid:gid 10001:10001` e modo `0700` (`stat -c '%u:%g %a'` conferido); **o Worker não monta nenhuma delas**.
+- [ ] Os dois volumes de **recibos** ficam em **disco/volume diferente** dos dados que ancoram (senão "mesmo disco não é backup independente": a perda do disco leva dados e prova juntos).
+- [ ] Sem os volumes de resultados o sistema **falha fechado**: a prévia continua funcionando e a finalização responde 503 `RESULTS_NOT_CONFIGURED` / `RESULT_ANCHOR_NOT_CONFIGURED`. Publicar o código sem os volumes é seguro, apenas inoperante (coberto pelo teste de API `tests/link-audit-scoring-results-api.test.ts`, caso "sem pasta de resultados"; **não** foi exercitado em produção).
+- [ ] Sem `GMN_LINK_AUDIT_DECISIONS_*`/`EVIDENCE_DIR` a própria prévia responde 503 (`DECISIONS_NOT_CONFIGURED`, `ANCHOR_NOT_CONFIGURED`, `EVIDENCE_NOT_CONFIGURED`).
+
+## 2. Configuração de ambiente
+- [ ] `GMN_OPERATOR_EMAILS` lista **somente** quem pode operar a auditoria (decide/finaliza). O e-mail do operador é gravado em cada decisão e em cada resultado (`finalizedBy`): é identidade de auditoria, **não** metadado descartável.
+- [ ] O segredo que assina a sessão já existe em produção. **CORREÇÃO (remediação do MAJOR-1):** a 6C passa a exigir **um segredo novo**, a **chave de origem** `GMN_LINK_AUDIT_ORIGIN_KEY` = `<id>:<64 hex minúsculos de um CSPRNG>` (ver `onda6c-runbook-chaves.md` §1; **não** é senha nem base64), **só no ambiente do serviço web** (não no Worker, não em arquivo de dados, não na imagem, não no repositório, não em log). Conferir que não aparece em `docker inspect` compartilhado nem em saída de erro. Sem ela, as escritas (decisão, revogação, finalização) respondem 503 `ORIGIN_KEY_NOT_CONFIGURED` e nada é gravado; as leituras continuam.
+- [ ] **Rotação** distinta para os dois casos (runbook §2 planejada, com validade da chave antiga; §3 comprometimento, com id revogado e material removido). **Não** existe mais a variável `…_PREVIOUS`.
+- [ ] **Backup do segredo** em cofre separado dos dados: perdê-lo torna **inconcluíveis** as pendências em andamento (o histórico confirmado segue legível). A rotação segue o runbook (`onda6c-runbook-chaves.md` §2 planejada, §3 comprometimento); **`…_PREVIOUS` não existe mais** e é ignorada.
+- [ ] `stack.yml` e `docker-entrypoint.sh` (futuro, **NÃO alterados aqui**): a produção entrega segredos como `docker secret` lidos por uma **lista fixa** no entrypoint; a chave de origem exige acrescentar o secret e o nome à lista (ver `deploy/hostinger/PROVA-DE-ORIGEM-E-DE-COLETA.md`).
+- [ ] **Prova de coleta:** `GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS` (só chaves **públicas**, `<id>:<32 bytes base64url>`) e `GMN_LINK_AUDIT_EVIDENCE_SEALS_DIR` (pasta **separada** da de evidências, somente leitura para o web). Sem as duas, a finalização fica fechada. A **privada** fica **fora da VPS**.
+- [ ] Nenhum arquivo `.env*` entra na imagem nem na árvore de build (o `run-isolated.sh` já recusa a árvore com `.env*`).
+- [ ] Nenhuma porta nova publicada; nenhuma chamada externa nova: a 6C **não usa** Serper, Google nem Supabase para pontuar (o motor roda localmente sobre evidências já preservadas).
+
+## 3. Permissões
+- [ ] Contêiner web não-root (uid 10001), `read_only: true` na raiz, `cap_drop: ALL` inalterados; só os binds graváveis acima.
+- [ ] Modo `0700` nas pastas; os arquivos gravados pelo código saem `0444` (conferir por amostragem após o primeiro teste sintético).
+- [ ] Ninguém além do uid 10001 (e do administrador, de forma consciente) escreve nessas pastas: **root pode alterar arquivos**; a cadeia de hashes e os recibos **detectam** (409 na leitura), não impedem. Alteração **coordenada** de dados e recibos só é detectada se o `head` de cada auditoria foi guardado fora (ver §4).
+
+## 4. Backup e restauração (cada pasta com backup próprio e independente)
+- [ ] Incluir **as quatro pastas graváveis** no `PLANO-DE-BACKUP-E-RESTAURACAO.md`, **cada uma com destino independente**, fora do disco da VPS, com `sha256sum` por arquivo, sem `--delete` e sem sobrescrever.
+- [ ] Guardar junto, após cada resultado, o `head` (`seq` + `sha256`) de cada auditoria devolvido pela API de resultados e de decisões: é a única referência que detecta o **retrocesso coordenado** de dados + recibos.
+- [ ] Restaurar **sempre os pares do mesmo instante** (decisões + recibos; resultados + recibos), em pasta nova, conferir lendo pela API (histórico que não confere devolve 409 e nenhum dado) e só então trocar o volume. **Nunca** apagar arquivos para "destravar" uma auditoria.
+- [ ] Ensaiar a restauração em ambiente de teste **antes** de confiar no backup.
+
+## 5. Recuperação de pendências
+Duas falhas parciais **por desenho** são recuperáveis, nunca perdem dado e nunca aparecem como confirmadas. **Condição nova (MAJOR-1): só se conclui uma pendência cuja ORIGEM o servidor comprova** (etiqueta HMAC; `origin: PROVEN`), pelo autor autenticado e com confirmação explícita na tela. Pendência **sem origem comprovada** (anterior à proteção, forjada, adulterada, de outra chave, ou servidor sem chave) **não é concluída por ninguém** (409 `PENDING_ORIGIN_UNPROVEN` / `RESULT_PENDING_ORIGIN_UNPROVEN`); segue **bloqueando** a auditoria até a quarentena (`onda6b-decisoes-humanas.md` §15).
+- **Decisão sem recibo** (`ANCHOR_PENDING`): a decisão ainda **não vale**; o autor **(com origem comprovada)** reenvia o **mesmo pedido** e conclui. Enquanto pendente, a auditoria não aceita novas decisões nem finalização.
+- **Resultado sem recibo** (`RESULT_ANCHOR_PENDING`): o registro fica "gravado e NÃO confirmado" e **não conta** como resultado; o autor usa "Concluir a confirmação". Verificado no roteiro: sem recibo, o detalhe responde 409 e a lista mostra o registro como pendente.
+- [ ] Alertar também por **recusa de origem** (`*_ORIGIN_UNPROVEN`), 409 de integridade e FIFO/arquivo especial na pasta; hoje não há log estruturado nem alerta.
+- [ ] **Guarda externa do `head`** (`seq` + `sha256` por auditoria, fora dos volumes) para distinguir recibo removido de gravação interrompida (MINOR-2) e detectar retrocesso coordenado.
+- [ ] Alertar quando houver pendência com mais de N minutos (sugestão: 15) — hoje isso só é visível na tela; **monitoramento externo ainda não existe** (ver §6).
+- [ ] Procedimento de quarentena (`onda6b-decisoes-humanas.md` §15) revisado pela equipe de operação.
+
+## 6. Monitoramento
+- [ ] **Espaço em disco** das quatro pastas e dos volumes de recibos (alerta em 80%). `ENOSPC`/`EIO`/`EROFS` bloqueiam escritas (após `EIO`/`EROFS` só reiniciar o serviço libera).
+- [ ] **Taxa de respostas 5xx e 409** nas rotas `/api/link-audit/**` (409 em leitura = integridade quebrada: **incidente**, não ruído).
+- [ ] **429** (limitadores por operador: prévia 20/min, leituras de evidências e de resultados 30/min, decisões 30/min leitura e 20/min escrita, finalização 6/min). O limitador é **em memória**: reiniciar o serviço o zera; com mais de uma réplica cada processo tem o seu.
+- [ ] Logs sem corpo de requisição, sem justificativa de decisão e sem e-mail além do necessário; revisar o que o Next registra em erro 500.
+- [ ] Um alerta de **volume de recibos inacessível** (o sintoma é `ANCHOR_PENDING` em série).
+
+## 7. Compatibilidade com Docker Swarm
+- [ ] Uma réplica do web hoje (`replicas: 1`). Com mais de uma, a gravação continua segura entre processos **desde que** o volume seja **um único diretório local compartilhado com semântica POSIX** (`link()` exclusivo + `fsync`). **Não usar NFS/SMB** sem validar `link()` e `fsync` num teste dedicado.
+- [ ] Binds de host (`type: bind`) com o caminho **fixado a um nó** (restrição de placement) ou armazenamento compartilhado validado; um bind sem placement pode subir noutro nó **vazio** e a auditoria "perder" o histórico (a leitura acusaria o fim ausente apenas se o recibo estivesse noutro volume íntegro).
+- [ ] `update_config` com `order: stop-first` para o web (evita dois processos gravando durante a troca) ou aceitar a convivência por conta do `link()` exclusivo; decidir e registrar.
+- [ ] O Worker **não** monta os volumes novos e **não** importa os módulos de decisões/resultados (isolamento já coberto por testes estáticos).
+
+## 8. Atualização e rollback
+- [ ] Atualização: `GUIA-DE-IMPLANTACAO.md` (começa por `scale ...=0` do Worker; `docker stack rm` só com autorização separada). Implantar **primeiro com os volumes e sem usar**, validar o 503/200 esperado, só então liberar o uso.
+- [ ] Rollback: voltar a **imagem anterior** (tag guardada). Os arquivos já gravados **permanecem**; a versão anterior simplesmente não os lê (as rotas novas somem). **Atenção (remediação do MAJOR-1):** arquivos gravados **com** `origin` **não são aceitos** por uma imagem da 6B/6C **anterior à prova de origem** (esquema estrito). Como nada da 6B/6C está em produção, a primeira implantação deve ser com esta versão; um rollback **para antes dela** só é válido se ainda não houver dados gravados — e **reabre** o risco de evidências forjadas (a versão anterior não tinha o bloqueio de proveniência). **Nunca** apagar `decisions/`, `results/` ou recibos no rollback.
+- [ ] Antes de qualquer migração futura do formato (`MAPPER_VERSION`, régua), planejar leitura de **ambos** os formatos; hoje o código recusa o que não reconhece (fecha em falha).
+- [ ] **Não** alterar a régua D3B nem o diretório `scoring/` sem nova rodada de aprovação (o diretório é idêntico à tag `v1.0.1`).
+
+## 9. Riscos conhecidos que a operação precisa saber
+- **Toda auditoria real sai INCONCLUSIVA** enquanto D5 não existir: cobertura 11% (automático) e **teto de 17%** com UTM comprovado + decisão humana, **abaixo do mínimo de 40%**. A tela mostra "Auditoria inconclusiva — evidências insuficientes para gerar o índice Lumos" e **não** mostra índice. A equipe não deve interpretar isso como defeito, nem prometer nota ao cliente.
+- **Resultado PONTUADO só existe com fixture rica** (testes); em produção, até D5, ele não ocorre.
+- **Leitor de arquivos e limitações legadas:** a leitura **não segue links simbólicos** (`lstat`) e recusa arquivos acima de 2 MiB (`snapshot-store.ts`); coletas antigas (layout legado, `legacy: true`) são lidas com salvaguardas e exibidas como tal. Arquivos criados fora do código (cópia manual, `rsync` sem preservar modo) são recusados ou marcados; **nunca** copiar arquivos manualmente para dentro das pastas.
+- **Imutabilidade é por convenção**, não por assinatura (ver §3).
+- **Limitadores em memória** (ver §6) e **sessão** por cookie assinado: expirar no meio da tela leva ao login sem perder o que já foi gravado.
+- **Acessibilidade:** não foi testada com leitor de tela real (NVDA/JAWS/VoiceOver), em outros navegadores nem em dispositivo físico (ver o relatório do I7). Não declarar conformidade WCAG completa.
+
+## 10. Plano de teste ANTES de mudar a versão em produção
+Tudo em **ambiente isolado primeiro**, depois, com autorização, numa **auditoria sintética criada para isso** (nunca sobre dados reais de cliente):
+1. [ ] Suíte completa, `tsc` e build offline limpos no commit candidato (`scripts/run-isolated.sh …`).
+2. [ ] Roteiros de navegador `scripts/browser/run.sh all` aprovados (I5, I6, I7) sobre **o mesmo commit** da imagem.
+3. [ ] Revisão independente de segurança/integridade sem BLOCKER aberto.
+4. [ ] Em **staging** (cópia isolada da pilha, sem dados reais, sem Serper): subir com os 4 volumes novos, rodar o fluxo ponta a ponta do I7 por uma pessoa da operação, **forçar** `ANCHOR_PENDING` (volume de recibos somente leitura) e recuperar, **forçar** `ENOSPC` e observar o alerta, **restaurar** um backup e ler.
+5. [ ] Ensaio de **rollback** em staging (imagem anterior sobre os mesmos volumes, sem apagar nada).
+6. [ ] Só então: janela de produção; **1)** volumes e variáveis, **2)** imagem nova com o Worker em 0, **3)** `VERIFICACAO-POS-DEPLOY.md` + itens de §1 (503/200), **4)** teste de escrita **apenas** numa auditoria sintética combinada, **5)** liberar o uso.
+7. [ ] Pós-implantação (24 h): acompanhar §6; conferir que não há pendências nem 409.
+
+## 11. O que este documento NÃO decide
+Escolha de disco/destino dos recibos e dos backups, janela de manutenção, política de retenção e quem recebe os alertas são **decisões do responsável**; D5 e a Onda 7 (PDF) seguem **não autorizadas**.
+
+## 12. Pendências de segurança consolidadas (rodada de 01/11/2026) — classificação por item
+
+> A análise completa de P-1 a P-4 (descrição original, consequência, fronteira de confiança, impede homologação/produção, mitigação mínima e teste) está em `onda6c-riscos-p1-p4.md`. A tabela abaixo é o resumo anterior.
+
+Nenhum item abaixo é considerado aceito automaticamente; a coluna "Impede…" é a **recomendação** do implementador, a decisão é do responsável.
+
+### 12.1 P-1 a P-4 da 1ª revisão (definições exatas em `onda6c-revisao-adversarial-seguranca.md` §P-1…P-4)
+
+| Item | Impacto | Evidência | Por que não foi corrigido | Impede encerrar a 6C? | Impede produção? |
+|---|---|---|---|---|---|
+| **P-1** vínculo do juízo C2 à captura no instante da **gravação** (não da exibição) | Um juízo humano pode valer para uma categoria que o operador não viu, se uma coleta nova chegar entre abrir a tela e enviar. Afeta C2 (juízo humano); limitado a quem opera a coleta | Leitura de código (`service.ts` calcula `basis` no POST); **não reproduzido** (a coleta só ocorre por CLI) | Exige **mudar o contrato do corpo da 6B** (enviar a fonte exibida) e a interface: decisão do responsável | **Não** | **Recomendada antes** de qualquer rotina em que a coleta rode concorrente com decisões; senão, aceitar formalmente |
+| **P-2** evidência fixada alterada aparece só como `stale` | O operador pode achar que o resultado está só "desatualizado" quando a evidência foi **trocada/removida** | **Confirmada** pelo revisor 2 (RV2-F2) | É indicador novo no contrato de listagem + interface + testes + roteiro; não bloqueia a **gravação** (a finalização já recusa `EVIDENCE_HASH_CHANGED` e, agora, coleta não autêntica) | **Não** | **Recomendada** junto da fase 4 do ADR 6C-03 (ou antes do 1º resultado de produção) |
+| **P-3** custo de verificação a frio (síncrono) | Bloqueio do laço de eventos em consultas com cache frio e centenas de resultados (~3,4 s a 500 registros, estimativa do implementador) | **Não reproduzido** | Exige medir com volume real e redesenhar (fatiar/assíncrono); o limite por auditoria e o limitador por operador contêm o risco | **Não** | **Não**; revisar com volumes reais e monitoramento |
+| **P-4** `fsync` de diretório *best-effort* | Após queda de energia, pode faltar a entrada de diretório de um arquivo cujo recibo persistiu ⇒ falso `TRUNCATED` (**fail-closed**, restaura-se do backup) | Leitura de código; sem teste de queda real | Tornar o erro fatal quebra sistemas de arquivos sem esse suporte; depende da **decisão sobre o sistema de arquivos** de produção | **Não** | **Documentar** o requisito (disco local ext4/xfs, sem NFS/SMB) e **ensaiar** queda em homologação; ver também `syncDirectory` sem `O_NONBLOCK` (R2-INFO-6, janela estreita) |
+
+### 12.2 Fora da 6C — leitura de PDF com FIFO
+- **Onde:** `src/lib/pdf/serve.ts` (`resolvePdfDownload`, `fs.readFile`).
+- **Gravidade:** **MÉDIA-BAIXA** — só **disponibilidade** (paralisa o pool de I/O do processo web); **não** alcançável pela interface; exige escrita nas pastas de PDF (bind de escrita também montado pelo **Worker**) ou acesso ao host.
+- **Decisão:** **não corrigida** (não misturar com o módulo PDF); **corrigir antes de qualquer publicação que exponha o download de PDF** (inclui a Onda 7), reutilizando o leitor endurecido e testando em processo filho.
+
+### 12.3 Outras observações da 2ª revisão
+- **R2-INFO-1** NFC×NFD não detectado em registro confirmado: sem impacto prático conhecido; registrado.
+- **R2-INFO-4** (interface): a chave do painel passou a ser o hash da entrada; a pendência não comprovada deixou de exibir alvo/data do arquivo; `attachmentSha256` fora dos campos conferidos permanece registrado.
+- **R2-MINOR-3** verificação não bloqueante da origem dos **confirmados** e exigência de `PROVEN` na Onda 7: **recomendadas**, não implementadas.
+
+- **CAPACIDADE DO LIVRO (R7-01 e D3, atualizado em 05/11/2026):** 4000 registros por auditoria, **fixo e sem compactação**: a vista anuncia PISOS do pior caso (com 1 reemissão de recibo após cada operação): ≥ 1210 decisões novas e ≥ 1311 entradas no total (não as 9999 da 6B); sem remoção de recibos o escritor admite 1814 decisões / 1965 entradas. As 100 revogações reservadas (307 registros: 3 por revogação) valem mesmo sob a reemissão por operação. Auditoria `EXHAUSTED` **precisa de intervenção** e a reabertura/segmentação por época exige o papel administrativo que **não existe** — **pré-requisito de produção** para auditorias de histórico muito longo (spec §16.12). Monitorar `ledger.capacity.level`.
+- **Rotação da chave do livro:** NÃO há botão; rodar `POST …/decisions/{auditId}/ledger {"action":"RECOVER"}` em cada auditoria e conferir `keyCoverage.covered` antes de remover a chave antiga (runbook §7).
+- **Relógio:** `INTENT` gravada com relógio adiantado vence por observação monotônica de 120 s (R7-09); mesmo assim manter NTP.
+- **Custo de leitura:** com ~3990 registros, `list`/`revoke` levam da ordem de **3 s** (medido em WSL, sob carga) por ler ~8 mil arquivos; limitado pelo teto de 4000, mas relevante para o plano de capacidade do volume.
+- **Volume do livro (M2):** precisa ser sistema de arquivos Linux com `fsync` de diretório (ext4/xfs/volume Docker); **não** drvfs/NTFS (`/mnt/d`): toda gravação responderia `DECISIONS_DURABILITY_UNKNOWN`. A raiz do livro é sincronizada em TODA publicação (≈ 2,5 % de custo). Ensaio de queda de energia continua pré-requisito.
+- **Alarme operacional:** `ledger.reason = DURABILITY_UNKNOWN` significa falha de fsync/EIO/EROFS no volume do livro neste processo — reiniciar só depois de investigar o disco; entre o reinício e a primeira gravação/`RECOVER` a leitura não prova durabilidade (janela declarada, spec §16.13.1).
+- **Reemissão de recibo:** no máximo 1 registro por entrada confirmada (spec §16.12.1); falhas repetidas de gravação de recibos não esgotam mais a reserva.

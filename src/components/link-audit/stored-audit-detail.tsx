@@ -88,7 +88,7 @@ function EvidenceItem({ item, verified, sharedLimitation }: { readonly item: Evi
     <li className={`rounded-lg border p-3 ${verified ? 'border-gmn-success/25 bg-gmn-success/[0.05]' : 'border-dashed border-white/15 bg-white/[0.02]'}`}>
       <div className="flex flex-wrap items-start justify-between gap-2">
         <p className="min-w-0 text-sm font-medium text-gmn-text">{evidenceLabel(item.id, item.attribute)}</p>
-        <StatusBadge tone={verified ? 'success' : 'neutral'} label={verified ? 'Verificada' : 'Não verificada'} icon={verified ? ShieldCheck : ShieldQuestion} dashed={!verified} />
+        <StatusBadge tone={verified ? 'success' : 'neutral'} label={verified ? 'Verificada no relatório' : 'Não verificada'} icon={verified ? ShieldCheck : ShieldQuestion} dashed={!verified} />
       </div>
       {verified ? <p className="mt-1 break-words text-sm text-gmn-text">{item.claim}</p> : <p className="mt-1 break-words text-xs text-gmn-muted">{item.limitation ?? 'Sem motivo registrado.'}</p>}
       <p className="mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-gmn-muted">
@@ -140,6 +140,12 @@ export function StoredAuditDetail({ detail, loading, onSelectRevision }: StoredA
           <Row label="Situação">{STATE_LABELS[detail.state] ?? detail.state}</Row>
           <Row label="Metodologia">{detail.methodologyVersion ?? 'versão não registrada nesta coleta'}</Row>
         </dl>
+        <a
+          href={`/auditoria-por-link/${encodeURIComponent(detail.auditId)}`}
+          className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-lg bg-[#1D68DB] px-4 text-sm font-semibold text-white transition-colors hover:bg-[#1A5FCF] focus:outline-none focus-visible:ring-2 focus-visible:ring-gmn-accent focus-visible:ring-offset-2 focus-visible:ring-offset-gmn-bg"
+        >
+          Abrir auditoria Lumos
+        </a>
       </header>
 
       <div role="note" className="rounded-xl border border-gmn-accent/30 bg-gmn-accent/[0.06] p-4">
@@ -257,6 +263,7 @@ export function StoredAuditDetail({ detail, loading, onSelectRevision }: StoredA
 
       <div className="grid gap-4 xl:grid-cols-2">
         <Card icon={ShieldCheck} title={`Evidências verificadas (${detail.evidences.verified.length})`}>
+          <p className="mb-2 text-[11px]" data-testid="verified-meaning">“Verificada no relatório” = o campo foi conferido contra os dados do provedor guardados nesta coleta. Isto <strong>não</strong> comprova quem fez a coleta: a origem (autenticidade) não é avaliada nesta tela.</p>
           {sharedLimitation && <p className="mb-2 text-[11px]">Em todas as evidências verificadas: {sharedLimitation}</p>}
           {detail.evidences.verified.length > 0 ? (
             <ul className="space-y-2">
@@ -366,7 +373,7 @@ export function StoredAuditDetail({ detail, loading, onSelectRevision }: StoredA
                             disabled={loading}
                             aria-current={current ? 'true' : undefined}
                             onClick={() => onSelectRevision(version.capture, revision.revision)}
-                            className={`rounded-md border px-2.5 py-1 text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-gmn-accent/60 disabled:opacity-60 ${
+                            className={`rounded-md border px-2.5 py-1 text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-gmn-accent/70 disabled:opacity-60 ${
                               current ? 'border-gmn-accent/60 bg-gmn-accent/10 text-gmn-text' : 'border-white/[0.1] text-gmn-muted hover:border-white/25 hover:text-gmn-text'
                             }`}
                           >
@@ -399,6 +406,7 @@ export function StoredAuditDetail({ detail, loading, onSelectRevision }: StoredA
             ))}
           </ul>
         )}
+        <p className="mt-2 text-[11px]" data-testid="integrity-vs-origin"><strong>Integridade local (SHA-256):</strong> {detail.integrity.status === 'OK' ? 'verificada' : 'NÃO verificada'}. <strong>Origem da coleta (autenticidade):</strong> não avaliada nesta tela; ela é mostrada na página da auditoria (Lumos) e decide se o resultado pode ser finalizado. SHA-256 prova que o arquivo não mudou depois de selado, não quem o coletou.</p>
         <p className="mt-2 text-[11px]">{detail.integrity.note}</p>
         <p className="mt-1 text-[11px]">Os arquivos ficam no mesmo disco do servidor: isto não é um backup independente.</p>
       </Card>
