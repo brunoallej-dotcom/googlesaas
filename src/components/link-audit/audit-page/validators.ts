@@ -1,4 +1,4 @@
-import type { DecisionDto, DecisionsList, FinalizeSuccess, Head, PendingDecision, PendingRun, PreviewPayload, ResultsList, RunDetailResponse, RunSummary } from './types';
+import type { DecisionDto, DecisionsList, FinalizeSuccess, Head, PendingDecision, PendingRun, PreviewPayload, ResultsList, RunDetailResponse, RunSummary, LedgerActionResult } from './types';
 
 /*
  * Validação ESTRUTURAL das respostas (I5/I6). Falha FECHADA: qualquer campo aninhado fora do formato, enum desconhecido, identidade de
@@ -70,7 +70,7 @@ export function isPreviewPayload(value: unknown, auditId?: string): value is Pre
   const prov = evidence.provenance;
   if (!(prov === null || (isObj(prov) && Array.isArray(prov.missingRefs) && prov.missingRefs.length <= 5 && (prov.missingRefs as unknown[]).every((r) => str(r) && /^[a-z-]+:c\d{4}(-r\d{4})?$/.test(r)) && ((prov.status === 'AUTHENTICATED' && prov.reason === null && prov.missingRefs.length === 0) || (prov.status === 'UNAUTHENTICATED' && oneOf(prov.reason, PROVENANCE_REASONS) && (prov.reason === 'EVIDENCE_MISSING') === (prov.missingRefs.length > 0)))))) return false;
   if (!refSourceOk(evidence.referenceDateSource) || !refSourceOk(evidence.profileSource) || !arr(evidence.bases, baseOk)) return false;
-  if (!isObj(decisions) || !headN(decisions.head) || !int(decisions.count) || !pendingSummaryOk(decisions.pending) || !bool(decisions.finalizable) || !witnessOk(decisions.witness) || !strs(decisions.applied) || !arr(decisions.held, (h) => isObj(h) && str(h.decisionId) && str(h.code))) return false;
+  if (!isObj(decisions) || !headN(decisions.head) || !int(decisions.count) || !pendingSummaryOk(decisions.pending) || !bool(decisions.finalizable) || !witnessOk(decisions.witness) || !previewLedgerOk(decisions.ledger) || !strs(decisions.applied) || !arr(decisions.held, (h) => isObj(h) && str(h.decisionId) && str(h.code))) return false;
   if (!arr(value.decisionOptions, (o) => isObj(o) && str(o.type) && str(o.subcriterionId) && strN(o.code) && bool(o.available) && strN(o.reasonCode))) return false;
   if (!arr(value.criteria, criterionOk) || !arr(value.blockers, blockerOk) || !arr(value.missing, (m) => isObj(m) && str(m.family) && str(m.label) && num(m.potentialHalfPoints))) return false;
   const outcome = value.outcomePreview;
@@ -84,7 +84,7 @@ export function isPreviewPayload(value: unknown, auditId?: string): value is Pre
   if (finalization.allowed) {
     // "pode finalizar" só vale se TUDO que o contrato garante junto estiver presente e coerente
     const blocking = (value.blockers as Array<{ severity: string }>).some((b) => b.severity === 'BLOCKING');
-    if (value.state !== 'CALCULADO_FINALIZAVEL' || outcome === null || finalization.expectedInputSha256 === null || blocking || (decisions as Rec).pending !== null || (decisions as Rec).finalizable !== true || unresolved((decisions as Rec).witness) || ((decisions as Rec).held as unknown[]).length > 0 || (evidence.integrity as Rec).status !== 'OK' || ((evidence.provenance as Rec | null)?.status !== 'AUTHENTICATED')) return false; // finalizável exige coleta AUTÊNTICA
+    if (value.state !== 'CALCULADO_FINALIZAVEL' || outcome === null || finalization.expectedInputSha256 === null || blocking || (decisions as Rec).pending !== null || (decisions as Rec).finalizable !== true || unresolved((decisions as Rec).witness) || ledgerBlocks((decisions as Rec).ledger) || ((decisions as Rec).ledger as Rec).operationOpen === true || ((decisions as Rec).held as unknown[]).length > 0 || (evidence.integrity as Rec).status !== 'OK' || ((evidence.provenance as Rec | null)?.status !== 'AUTHENTICATED')) return false; // finalizável exige coleta AUTÊNTICA
     if (!sameHead(finalization.expectedHead as Head | null, (decisions as Rec).head as Head | null)) return false;
   }
   return true;
@@ -104,6 +104,36 @@ const witnessOk = (w: unknown): boolean =>
   (w.status !== 'UNWITNESSED' || (w.knownHeads === 0 && w.coveredSeq === null)) &&
   (w.status !== 'CONSISTENT' || (w.knownHeads as number) >= 1);
 const unresolved = (w: unknown): boolean => isObj(w) && ['HISTORY_REGRESSED', 'HISTORY_DIVERGES', 'UNTRUSTED', 'UNAVAILABLE', 'NOT_CONFIGURED'].includes(w.status as string);
+const LEDGER_STATES = ['NOT_REQUIRED', 'LEGACY_READ_ONLY', 'ENROLLMENT_PENDING', 'PROTECTED', 'HISTORY_UNRESOLVED'] as const;
+const GUARD_STATUSES = ['NOT_CONFIGURED', 'CONSISTENT', 'BEHIND', 'MISMATCH', 'UNAVAILABLE'] as const;
+const ledgerHeadOk = (h: unknown): boolean => h === null || (isObj(h) && int(h.ledgerSeq) && (h.ledgerSeq as number) >= 1 && isHex64(h.sha256));
+/** Estado do livro (decisões). Coerência: só PROTECTED tem cabeça; `HISTORY_UNRESOLVED` exige razão; os demais estados não têm operação aberta. */
+/** Capacidade: números inteiros coerentes entre si (usado + restante = máximo; nível coerente com o que cabe). Ausente é válido (livro sem registros / não exigido). */
+const capacityOk = (c: unknown): boolean =>
+  c === undefined ||
+  (isObj(c) &&
+    int(c.maxRecords) && int(c.usedRecords) && int(c.remainingRecords) && int(c.decisionsAvailable) && int(c.revocationsAvailable) &&
+    (c.usedRecords as number) <= (c.maxRecords as number) && (c.remainingRecords as number) === Math.max(0, (c.maxRecords as number) - (c.usedRecords as number)) &&
+    oneOf(c.level, ['OK', 'REVOKE_ONLY', 'EXHAUSTED'] as const) &&
+    (c.level === 'OK' ? (c.decisionsAvailable as number) > 0 : c.level === 'REVOKE_ONLY' ? c.decisionsAvailable === 0 && (c.revocationsAvailable as number) > 0 : c.decisionsAvailable === 0 && c.revocationsAvailable === 0));
+const keyCoverageOk = (c: unknown): boolean => c === undefined || (isObj(c) && str(c.keyId) && /^[a-z0-9][a-z0-9-]{3,31}$/.test(c.keyId) && bool(c.covered) && int(c.otherKeyRecords));
+const ledgerOk = (l: unknown): boolean => {
+  if (!isObj(l) || !oneOf(l.state, LEDGER_STATES) || !(l.reason === null || (str(l.reason) && /^[A-Z_]{3,40}$/.test(l.reason))) || !ledgerHeadOk(l.head) || !int(l.confirmedDecisions) || !oneOf(l.externalGuard, GUARD_STATUSES)) return false;
+  if (!bool(l.recoverable) || !bool(l.receiptReissuable)) return false;
+  if (!capacityOk(l.capacity) || !keyCoverageOk(l.keyCoverage)) return false;
+  const open = l.openOperation;
+  if (!(open === null || (isObj(open) && str(open.opId) && /^[0-9a-f]{32}$/.test(open.opId) && int(open.decisionSeq) && ['A', 'B', 'C'].includes(open.phase as string) && int(open.ageMs) && bool(open.stale)))) return false;
+  if (l.state === 'HISTORY_UNRESOLVED' && l.reason === null) return false;
+  if (l.state === 'NOT_REQUIRED' && (l.head !== null || open !== null || l.confirmedDecisions !== 0)) return false;
+  if ((l.state === 'ENROLLMENT_PENDING' || l.state === 'LEGACY_READ_ONLY') && (open !== null || l.head !== null)) return false;
+  if (l.state === 'PROTECTED' && (l.reason !== null || l.head === null || l.receiptReissuable !== false)) return false;
+  return true;
+};
+export const isLedgerActionPayload = (value: unknown): value is LedgerActionResult => isObj(value) && oneOf(value.action, ['ENROLL', 'RECOVER'] as const) && ledgerOk(value.ledger);
+const ledgerBlocks = (l: unknown): boolean => isObj(l) && l.state !== 'PROTECTED' && l.state !== 'NOT_REQUIRED';
+/** O que a PRÉVIA informa do livro (sem operação detalhada). */
+const previewLedgerOk = (l: unknown): boolean =>
+  isObj(l) && oneOf(l.state, LEDGER_STATES) && (l.reason === null || (str(l.reason) && /^[A-Z_]{3,40}$/.test(l.reason))) && ledgerHeadOk(l.head) && int(l.confirmedDecisions) && bool(l.operationOpen) && oneOf(l.externalGuard, GUARD_STATUSES) && !(l.state === 'HISTORY_UNRESOLVED' && l.reason === null);
 const ORIGINS = ['PROVEN', 'UNPROVEN', 'UNVERIFIABLE'] as const;
 const ORIGIN_DETAILS = ['MISSING', 'INVALID', 'KEY_MISMATCH', 'KEY_REVOKED', 'KEY_EXPIRED', 'NO_KEY'] as const;
 /**
@@ -142,10 +172,13 @@ export function isDecisionsPayload(value: unknown, auditId?: string): value is D
   const doubtful = (value.allDecisions as DecisionDto[]).filter((d) => d.status === 'AMBIGUOUS').map((d) => d.decisionId).sort();
   const declared = [...(value.ambiguousDecisionIds as string[])].sort();
   if (doubtful.length !== declared.length || doubtful.some((id, index) => id !== declared[index])) return false;
-  if (declared.length > 0 && value.pending === null && !unresolved(value.witness)) return false;
+  if (declared.length > 0 && value.pending === null && !unresolved(value.witness) && !ledgerBlocks(value.ledger)) return false;
   if ((value.decisions as DecisionDto[]).some((d) => declared.includes(d.decisionId))) return false;
   // TESTEMUNHA: integridade NÃO resolvida ⇒ ZERO decisões vigentes, nada ACTIVE em lugar nenhum, nada finalizável; "recibo perdido" exige pendente
-  if (!witnessOk(value.witness)) return false;
+  if (!witnessOk(value.witness) || !ledgerOk(value.ledger)) return false;
+  // LIVRO: fora de PROTECTED (a inscrever, legada ou não resolvida) o modo é restrito — mesma regra da testemunha; operação aberta no livro ⇒ não finalizável
+  if (ledgerBlocks(value.ledger) && (value.finalizable !== false || (value.decisions as DecisionDto[]).length > 0 || (Array.isArray(value.operatorRecords) && value.operatorRecords.length > 0) || (value.allDecisions as DecisionDto[]).some((d) => d.status === 'ACTIVE'))) return false;
+  if ((value.ledger as Rec).openOperation !== null && value.finalizable !== false) return false;
   if (unresolved(value.witness) && (value.finalizable !== false || (value.decisions as DecisionDto[]).length > 0 || (value.allDecisions as DecisionDto[]).some((d) => d.status === 'ACTIVE'))) return false;
   if ((value.witness as Rec).status === 'RECEIPT_LOST_WITNESSED' && value.pending === null) return false;
   // uma operação pendente que revoga/substitui X nunca deixa X vigente (R3-INFO-2)

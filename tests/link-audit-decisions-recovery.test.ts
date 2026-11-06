@@ -1,3 +1,4 @@
+import { LEDGER_NOT_REQUIRED } from '../src/lib/link-audit-decisions/ledger-port';
 import { WITNESS_NOT_REQUIRED } from '../src/lib/link-audit-decisions/witness';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -20,7 +21,7 @@ registerCleanup();
  * devolvida como sucesso e pode ser perdida sem que nenhuma promessa tenha sido feita. Reenviar o MESMO pedido a conclui.
  */
 
-const serviceWith = (w: World, ops: FsOps): DecisionService => createDecisionService({ knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: w.decisionsDir, anchorDir: w.anchorDir, evidence: w.reader, evidenceBaseDir: w.evidenceDir, fs: ops });
+const serviceWith = (w: World, ops: FsOps): DecisionService => createDecisionService({ ledger: LEDGER_NOT_REQUIRED, knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: w.decisionsDir, anchorDir: w.anchorDir, evidence: w.reader, evidenceBaseDir: w.evidenceDir, fs: ops });
 
 /** Disco em que a ÂNCORA número `seq` não consegue ser gravada (em qualquer etapa que se escolha). */
 function anchorFailure(w: World, seq: number, mode: 'temp-enospc' | 'link-eperm' | 'link-eio' | 'link-eacces'): FsOps {
@@ -618,7 +619,7 @@ test('LIMITE — pendente na última posição (9999): o reenvio ainda a conclui
       return [{ capture: 1, collectedAt: '2026-10-22T12:54:48.079Z', reportRevisions: [{ revision: 1 }] }];
     },
   };
-  const svc = createDecisionService({ knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: decisionsDir, anchorDir, evidence });
+  const svc = createDecisionService({ ledger: LEDGER_NOT_REQUIRED, knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: decisionsDir, anchorDir, evidence });
   const view = await must(svc.list(ANA, AUDIT));
   assert.deepEqual([view.head?.seq, view.pending?.seq, view.finalizable], [9998, 9999, false]);
   const other = await svc.create(ANA, AUDIT, { record: rec.c3(), expectedHead: view.head }, clock());
@@ -649,9 +650,9 @@ test('N1 — uma captura NOVA (ainda sem relatório) que chega depois da gravaç
     },
   });
   const body = { record: rec.c2(), expectedHead: null };
-  const first = await createDecisionService({ knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: decisionsDir, anchorDir, evidence: lookup(false), fs: failingAnchors }).create(ANA, AUDIT, body, clock());
+  const first = await createDecisionService({ ledger: LEDGER_NOT_REQUIRED, knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: decisionsDir, anchorDir, evidence: lookup(false), fs: failingAnchors }).create(ANA, AUDIT, body, clock());
   assert.ok(!first.ok && first.code === 'ANCHOR_PENDING' && first.pending?.seq === 1);
-  const later = createDecisionService({ knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: decisionsDir, anchorDir, evidence: lookup(true) }); // agora existe a captura 2, sem relatório
+  const later = createDecisionService({ ledger: LEDGER_NOT_REQUIRED, knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: decisionsDir, anchorDir, evidence: lookup(true) }); // agora existe a captura 2, sem relatório
   const resent = await must(later.create(ANA, AUDIT, body, clock()));
   assert.deepEqual([resent.replayed, resent.head.seq, resent.decision.basis.capture], [true, 1, 1]); // a base da decisão continua sendo a da gravação original
 });

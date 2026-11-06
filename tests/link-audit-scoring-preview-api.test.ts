@@ -1,3 +1,5 @@
+import { applyLedgerEnv, routeWorld } from './helpers/link-audit-ledger-fixtures';
+import { LEDGER_NOT_REQUIRED } from '../src/lib/link-audit-decisions/ledger-port';
 import { proveEvidenceForRoutes } from './helpers/link-audit-evidence-provenance-fixtures';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -8,7 +10,7 @@ import * as routeModule from '../src/app/api/link-audit/scoring/[auditId]/route'
 import { GET as previewRoute } from '../src/app/api/link-audit/scoring/[auditId]/route';
 import { createSessionToken, SESSION_COOKIE } from '../src/lib/auth/session';
 import { middleware } from '../src/middleware';
-import { anchorPath, hashTree, must, rec, registerCleanup, world, type World } from './helpers/link-audit-decisions-fixtures';
+import { anchorPath, hashTree, must, rec, registerCleanup, type World } from './helpers/link-audit-decisions-fixtures';
 import { clock } from './helpers/link-audit-decisions-fixtures';
 import { bodyText, writeFull } from './helpers/link-audit-evidence-fixtures';
 import { OTHER_ORIGIN_KEY, TEST_ORIGIN, TEST_ORIGIN_KEY } from './helpers/link-audit-origin-fixtures';
@@ -29,7 +31,7 @@ const cookie = async (email: string): Promise<string> => `${SESSION_COOKIE}=${aw
 /** Pastas da TESTEMUNHA (resultados e recibos dos resultados): obrigatórias; sem elas o histórico é NÃO RESOLVIDO (falha fechada). */
 let witnessDirs = resultsEnv();
 
-function setEnv(w: Pick<World, 'evidenceDir' | 'decisionsDir' | 'anchorDir'> | null, over: { decisions?: string | undefined; evidence?: string | undefined; anchors?: string | undefined; results?: string | undefined; resultAnchors?: string | undefined } = {}): void {
+function setEnv(w: (Pick<World, 'evidenceDir' | 'decisionsDir' | 'anchorDir'> & { readonly ledgerDir?: string }) | null, over: { decisions?: string | undefined; evidence?: string | undefined; anchors?: string | undefined; results?: string | undefined; resultAnchors?: string | undefined } = {}): void {
   env.SUPABASE_SERVICE_ROLE_KEY = SECRET;
   env.GMN_OPERATOR_EMAILS = operatorList();
   delete env.GMN_AUTH_DISABLED;
@@ -43,6 +45,7 @@ function setEnv(w: Pick<World, 'evidenceDir' | 'decisionsDir' | 'anchorDir'> | n
   set('GMN_LINK_AUDIT_DECISIONS_ANCHOR_DIR', 'anchors' in over ? over.anchors : w?.anchorDir);
   set('GMN_LINK_AUDIT_RESULTS_DIR', 'results' in over ? over.results : witnessDirs.base);
   set('GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR', 'resultAnchors' in over ? over.resultAnchors : witnessDirs.anchors);
+  applyLedgerEnv(env, w?.ledgerDir ? { ledgerDir: w.ledgerDir } : null);
 }
 
 const req = (url: string, init: { cookie?: string | null; method?: string; headers?: Record<string, string> } = {}): Request => {
@@ -54,8 +57,8 @@ const ctx = (auditId: string) => ({ params: Promise.resolve({ auditId }) });
 const url = (auditId: string, query = ''): string => `/api/link-audit/scoring/${auditId}${query}`;
 const json = async (r: Response): Promise<Record<string, any>> => (await r.json()) as Record<string, any>;
 
-async function setup(over: Parameters<typeof world>[0] = {}): Promise<{ w: World; ana: string; auditId: string }> {
-  const w = await world(over);
+async function setup(over: { seed?: boolean } = {}): Promise<{ w: World; ana: string; auditId: string }> {
+  const w = await routeWorld(over);
   await proveEvidenceForRoutes(env, w);
   witnessDirs = resultsEnv();
   setEnv(w);
@@ -161,7 +164,8 @@ test('decisão pendente: 200 com estado DECISAO_PENDENTE, bloqueio ligado ao op-
   fs.rmSync(anchorPath(w, 1), { force: true });
   const body = await json(await previewRoute(req(url(auditId), { cookie: ana }), ctx(auditId)));
   assert.equal(body.state, 'DECISAO_PENDENTE');
-  assert.deepEqual(body.blockers.map((b: any) => [b.code, b.severity, b.decisionIds]), [['DECISION_PENDING', 'BLOCKING', ['op-0001']]]);
+  // com o LIVRO: o recibo removido de decisão que o livro já confirmou é NÃO resolvido (RECEIPT_REMOVED) E a pendência continua apontando a decisão afetada
+  assert.deepEqual(body.blockers.map((b: any) => [b.code, b.severity, b.reasonCode, b.decisionIds]), [['DECISIONS_HISTORY_UNRESOLVED', 'BLOCKING', 'RECEIPT_REMOVED', []], ['DECISION_PENDING', 'BLOCKING', null, ['op-0001']]]);
   assert.equal(body.finalization.allowed, false);
   assert.equal(body.decisions.finalizable, false);
 });
@@ -207,6 +211,7 @@ test('limite de requisições por operador: a 21ª em um minuto é 429 com Retry
 test('resposta sem dados sensíveis (corpo bruto, URL com segredos, caminhos do disco, autor, justificativas), com UTM comprovado', async () => {
   const { w, ana, auditId } = await setup({ seed: false });
   await writeFull(w.evidenceDir, { auditId, body: bodyText({ website: 'https://www.padaria-exemplo.example/loja/SEGREDO8;jsessionid=SEGREDO9?utm_source=ORIGEM-S&utm_medium=MEIO-M&sid=SEGREDO12#frag-SEGREDO' }) });
+  await must(w.service.ledgerAction({ email: 'ana@empresa.com' }, auditId, { action: 'ENROLL' }, clock()));
   await must(w.service.create({ email: 'ana@empresa.com' }, auditId, { record: rec.c2() }, clock()));
   const text = JSON.stringify(await json(await previewRoute(req(url(auditId), { cookie: ana }), ctx(auditId))));
   for (const leak of ['SEGREDO', 'ORIGEM-S', 'MEIO-M', 'jsessionid', 'frag-', 'loja/', 'SENTINELA', 'ana@empresa.com', 'Conferido no painel', w.evidenceDir, w.decisionsDir, w.anchorDir, '/tmp/', '/mnt/', 'operatorEmail', 'rawSha256', 'token=']) {
@@ -279,7 +284,7 @@ test('FIAÇÃO da rota da prévia: a chave de origem configurada chega ao proved
   const author = { email: 'ana@empresa.com' };
   await must(w.service.create(author, auditId, { record: rec.c2() }, clock()));
   await must(w.service.revoke(author, auditId, { revokes: 'op-0001', reason: 'Revogada porque o juízo estava errado e foi refeito.' }, clock()));
-  const decisions = createDecisionService({ knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: w.decisionsDir, anchorDir: w.anchorDir, evidence: w.reader, evidenceBaseDir: w.evidenceDir });
+  const decisions = createDecisionService({ ledger: LEDGER_NOT_REQUIRED, knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: w.decisionsDir, anchorDir: w.anchorDir, evidence: w.reader, evidenceBaseDir: w.evidenceDir });
   const preview = previewOver({ evidenceDir: w.evidenceDir, raw: decisions });
   const evaluated = await preview.evaluate(author, auditId);
   assert.ok(evaluated.ok);

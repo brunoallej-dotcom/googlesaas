@@ -1,3 +1,4 @@
+import { LEDGER_NOT_REQUIRED } from '../../src/lib/link-audit-decisions/ledger-port';
 import { WITNESS_NOT_REQUIRED } from '../../src/lib/link-audit-decisions/witness';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -85,9 +86,11 @@ export function withAutoHead(raw: DecisionService): DecisionService {
     }
   };
   return {
-    list: (actor, auditId) => raw.list(actor, auditId),
+    list: (actor, auditId, now) => raw.list(actor, auditId, now),
     create: async (actor, auditId, body, now) => raw.create(actor, auditId, await fill(actor, auditId, body), now),
     revoke: async (actor, auditId, body, now) => raw.revoke(actor, auditId, await fill(actor, auditId, body), now),
+    ledgerAction: (actor, auditId, body, now) => raw.ledgerAction(actor, auditId, body, now),
+    durabilityBarrier: (actor, auditId, expected, now) => raw.durabilityBarrier(actor, auditId, expected, now),
   };
 }
 
@@ -99,7 +102,7 @@ export async function world(options: { fs?: FsOps; auditId?: string; seed?: bool
   const auditId = options.auditId ?? AUDIT;
   if (options.seed !== false) await writeFull(evidenceDir, { auditId });
   const reader = createEvidenceReader({ baseDir: evidenceDir, authorize: () => true });
-  const raw = createDecisionService({ knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: decisionsDir, anchorDir, evidence: reader, evidenceBaseDir: evidenceDir, ...(options.fs ? { fs: options.fs } : {}) });
+  const raw = createDecisionService({ ledger: LEDGER_NOT_REQUIRED, knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: decisionsDir, anchorDir, evidence: reader, evidenceBaseDir: evidenceDir, ...(options.fs ? { fs: options.fs } : {}) });
   return { evidenceDir, decisionsDir, anchorDir, auditId, reader, raw, service: withAutoHead(raw) };
 }
 

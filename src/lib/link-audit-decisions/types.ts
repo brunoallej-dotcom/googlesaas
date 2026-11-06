@@ -115,6 +115,8 @@ export type DecisionDraft = DistributiveOmit<DecisionEntry, 'seq' | 'prevSha256'
 export const headSchema = z.object({ seq: captureNumber, sha256: hex64 }).strict();
 export type ExpectedHead = z.infer<typeof headSchema>;
 export const createBodySchema = z.object({ record: clientRecordSchema, supersedes: decisionIdSchema.optional(), expectedHead: headSchema.nullable() }).strict();
+/** Ações sobre o livro de cabeças (corpo estrito). As administrativas existem no contrato mas são recusadas: não há papel administrativo. */
+export const ledgerActionBodySchema = z.object({ action: z.enum(['ENROLL', 'RECOVER', 'ADOPT', 'RESTORE_ACK', 'QUARANTINE_ACK']) }).strict();
 export const revokeBodySchema = z.object({ revokes: decisionIdSchema, reason, expectedHead: headSchema.nullable() }).strict();
 export type CreateBody = z.infer<typeof createBodySchema>;
 export type RevokeBody = z.infer<typeof revokeBodySchema>;

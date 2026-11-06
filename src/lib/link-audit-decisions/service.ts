@@ -7,9 +7,10 @@ import { judgeOrigin, originStatusOf, type OriginAuthenticator, type OriginStatu
 import type { AnchorSummary } from './anchor-store';
 import { checkOperatorRecordsContract } from './contract';
 import { availableRefs, captureRef, parseEvidenceRef, referencedEvidence, reportRef, type VersionLike } from './evidence-refs';
-import { assertBase, type StoreErrorCode, type StoreFailure } from './files';
+import { assertBase, DURABILITY_UNPROVEN_MESSAGE, type StoreErrorCode, type StoreFailure } from './files';
 import { canSupersede, effectiveScoringRecords, slotConflicts, toScoringRecord, type DecisionView, type LogState } from './project';
-import { appendEntry, assertDecisionBase, findReplay, readLog, type OperationSpec, type PendingFailure } from './store';
+import { appendEntry, assertDecisionBase, findReplay, readLog, syncDecisionDirectories, type OperationSpec, type PendingFailure, ledgerSnapshotOf } from './store';
+import { isLedgerBlocking, LEDGER_NOT_REQUIRED, NOT_REQUIRED_VIEW, type LedgerRefusal, type LedgerSource, type LedgerView, type ResultsEvidence } from './ledger-port';
 import { evaluateKnownHeads, isUnresolved, WITNESS_NOT_REQUIRED, type KnownHeadsRead, type WitnessSource, type WitnessVerdict } from './witness';
 import {
   AUDIT_ID_PATTERN,
@@ -19,6 +20,7 @@ import {
   decisionIdFor,
   EMAIL_PATTERN,
   INTEGRITY_NOTE,
+  ledgerActionBodySchema,
   MAX_EFFECTIVE_RECORDS,
   MAX_SEQ,
   RESERVED_FOR_REVOCATIONS,
@@ -65,7 +67,17 @@ export type ServiceErrorCode =
   | 'PENDING_ORIGIN_UNPROVEN'
   | 'DECISIONS_HISTORY_UNRESOLVED'
   | 'ORIGIN_KEY_NOT_CONFIGURED'
+  | 'LEDGER_ENROLLMENT_REQUIRED'
+  | 'LEDGER_LEGACY_READ_ONLY'
+  | 'LEDGER_NOT_CONFIGURED'
+  | 'LEDGER_OPERATION_IN_PROGRESS'
+  | 'LEDGER_UNAVAILABLE'
+  | 'LEDGER_CAPACITY_EXHAUSTED'
+  | 'LEDGER_GUARD_UNAVAILABLE'
+  | 'ADMIN_APPROVAL_UNAVAILABLE'
+  | 'LEDGER_ACTION_INVALID'
   | 'DECISIONS_STORAGE_UNAVAILABLE'
+  | 'DECISIONS_DURABILITY_UNKNOWN'
   | 'ANCHOR_STORAGE_UNAVAILABLE'
   | 'DECISIONS_MISCONFIGURED'
   | 'INTERNAL_ERROR';
@@ -97,7 +109,17 @@ export const HTTP_STATUS: Readonly<Record<ServiceErrorCode, number>> = Object.fr
   PENDING_ORIGIN_UNPROVEN: 409,
   DECISIONS_HISTORY_UNRESOLVED: 409,
   ORIGIN_KEY_NOT_CONFIGURED: 503,
+  LEDGER_ENROLLMENT_REQUIRED: 409,
+  LEDGER_LEGACY_READ_ONLY: 409,
+  LEDGER_NOT_CONFIGURED: 503,
+  LEDGER_OPERATION_IN_PROGRESS: 409,
+  LEDGER_UNAVAILABLE: 503,
+  LEDGER_CAPACITY_EXHAUSTED: 409,
+  LEDGER_GUARD_UNAVAILABLE: 503,
+  ADMIN_APPROVAL_UNAVAILABLE: 403,
+  LEDGER_ACTION_INVALID: 400,
   DECISIONS_STORAGE_UNAVAILABLE: 503,
+  DECISIONS_DURABILITY_UNKNOWN: 503,
   ANCHOR_STORAGE_UNAVAILABLE: 503,
   DECISIONS_MISCONFIGURED: 503,
   INTERNAL_ERROR: 500,
@@ -130,7 +152,17 @@ export const PUBLIC_MESSAGE: Readonly<Record<ServiceErrorCode, string>> = Object
   PENDING_ORIGIN_UNPROVEN: 'A origem desta decisão pendente NÃO pôde ser comprovada pelo servidor (arquivo adulterado, forjado, anterior à proteção ou de outra chave). Ela NÃO pode ser concluída por esta tela e nada foi gravado; siga o procedimento de quarentena.',
   DECISIONS_HISTORY_UNRESOLVED: 'A integridade do histórico de decisões NÃO está resolvida: a testemunha independente (resultados já selados) não confere com o histórico de hoje, ou não pôde ser lida. Nenhuma decisão é considerada vigente e nada foi gravado. Não apague nem mova arquivos; avise a operação.',
   ORIGIN_KEY_NOT_CONFIGURED: 'A chave de comprovação de origem das decisões não está configurada (ou é fraca) neste servidor; nenhuma decisão é gravada ou concluída.',
+  LEDGER_ENROLLMENT_REQUIRED: 'Esta auditoria ainda não está inscrita no livro de cabeças: inscreva-a (auditoria vazia) antes da primeira decisão. Nada foi gravado.',
+  LEDGER_LEGACY_READ_ONLY: 'Esta auditoria tem histórico e o livro de cabeças dela está ausente (nunca inscrita ou removido: sem fonte independente não há como distinguir); está em modo restrito (somente consulta): novas decisões exigem a adoção administrativa, que ainda não existe. Nada foi gravado.',
+  LEDGER_NOT_CONFIGURED: 'O livro de cabeças não está configurado neste servidor (pasta e chave exclusivas): nenhuma decisão é gravada.',
+  LEDGER_OPERATION_IN_PROGRESS: 'Há uma operação de outro processo em andamento nesta auditoria; tente novamente em instantes. Nada foi gravado.',
+  LEDGER_UNAVAILABLE: 'O livro de cabeças não pôde ser gravado. Se a decisão já tinha sido publicada, reenvie o MESMO pedido para concluir (é seguro repetir).',
+  LEDGER_CAPACITY_EXHAUSTED: 'A capacidade do livro desta auditoria não comporta esta operação (as reservas de revogação e de manutenção são protegidas). Nada foi gravado.',
+  LEDGER_GUARD_UNAVAILABLE: 'A guarda externa do livro não está disponível: nenhuma decisão nova é gravada até ela voltar.',
+  ADMIN_APPROVAL_UNAVAILABLE: 'Esta operação exige aprovação administrativa (identidade administrativa verificável e dupla aprovação), que ainda não existe neste sistema. Nada foi gravado.',
+  LEDGER_ACTION_INVALID: 'Ação inválida para o livro de cabeças neste estado.',
   DECISIONS_STORAGE_UNAVAILABLE: 'O armazenamento de decisões não está disponível neste servidor.',
+  DECISIONS_DURABILITY_UNKNOWN: DURABILITY_UNPROVEN_MESSAGE,
   ANCHOR_STORAGE_UNAVAILABLE: 'O armazenamento de âncoras não está disponível neste servidor; nenhuma decisão foi gravada.',
   DECISIONS_MISCONFIGURED: 'O armazenamento de decisões ou de âncoras está configurado de forma insegura.',
   INTERNAL_ERROR: 'Não foi possível concluir a operação.',
@@ -153,6 +185,7 @@ export interface ServiceFailure {
 export type ServiceResult<T> = { readonly ok: true; readonly value: T } | ServiceFailure;
 
 const failure = (code: ServiceErrorCode, ...issues: string[]): ServiceFailure => ({ ok: false, code, issues });
+const EPOCH_ISO = '1970-01-01T00:00:00.000Z';
 
 const STORE_TO_SERVICE: Readonly<Record<StoreErrorCode, ServiceErrorCode>> = Object.freeze({
   INVALID_ID: 'INVALID_PARAMS',
@@ -178,7 +211,7 @@ const STORE_TO_SERVICE: Readonly<Record<StoreErrorCode, ServiceErrorCode>> = Obj
 });
 
 /** Detalhes de integridade ajudam o operador; detalhes de disco/caminho nunca saem. */
-const DETAILED: ReadonlySet<ServiceErrorCode> = new Set(['DECISIONS_HISTORY_UNRESOLVED', 'DECISIONS_INTEGRITY', 'DECISIONS_TRUNCATED', 'ANCHOR_MISMATCH', 'ANCHOR_INTEGRITY', 'INVALID_PARAMS']);
+const DETAILED: ReadonlySet<ServiceErrorCode> = new Set(['DECISIONS_DURABILITY_UNKNOWN', 'LEDGER_ENROLLMENT_REQUIRED', 'LEDGER_LEGACY_READ_ONLY', 'LEDGER_NOT_CONFIGURED', 'LEDGER_CAPACITY_EXHAUSTED', 'LEDGER_UNAVAILABLE', 'LEDGER_GUARD_UNAVAILABLE', 'LEDGER_OPERATION_IN_PROGRESS', 'ADMIN_APPROVAL_UNAVAILABLE', 'LEDGER_ACTION_INVALID', 'DECISIONS_HISTORY_UNRESOLVED', 'DECISIONS_INTEGRITY', 'DECISIONS_TRUNCATED', 'ANCHOR_MISMATCH', 'ANCHOR_INTEGRITY', 'INVALID_PARAMS']);
 
 /** Quem está olhando e com que autenticador: a origem de uma pendente só é afirmada quando o SERVIDOR a comprova. */
 interface Viewer {
@@ -194,6 +227,8 @@ const fromPending = (error: Pick<PendingFailure, 'code' | 'state' | 'pending'>, 
 });
 
 function fromStore(error: StoreFailure): ServiceFailure {
+  // R7-04: durabilidade DESCONHECIDA é um resultado próprio (nem sucesso, nem "pendente recuperável", nem "armazenamento indisponível")
+  if (error.issues.includes(DURABILITY_UNPROVEN_MESSAGE)) return failure('DECISIONS_DURABILITY_UNKNOWN', DURABILITY_UNPROVEN_MESSAGE);
   const code = STORE_TO_SERVICE[error.code];
   return failure(code, ...(DETAILED.has(code) ? error.issues : []));
 }
@@ -234,6 +269,17 @@ export interface DecisionServiceOptions {
    * `WITNESS_NOT_REQUIRED` existe só para testes da 6B isolada; nada em `src/` além do serviço e do módulo da testemunha pode referenciá-lo.
    */
   readonly knownHeads: WitnessSource;
+  /**
+   * LIVRO DE CABEÇAS (contrato §16): registro independente, autenticado e encadeado de `INTENT → CONFIRMED` de cada escrita. OBRIGATÓRIO: omitir é erro de
+   * compilação. Auditoria que não está PROTEGIDA pelo livro (legada, a inscrever ou com histórico não resolvido) não grava e não projeta decisão vigente.
+   * `LEDGER_NOT_REQUIRED` existe só para testes da 6B isolada; nada em `src/` além do serviço e da porta pode referenciá-lo.
+   */
+  readonly ledger: LedgerSource;
+}
+
+export interface LedgerActionPayload {
+  readonly action: 'ENROLL' | 'RECOVER';
+  readonly ledger: LedgerView;
 }
 
 export interface DecisionDto {
@@ -314,6 +360,11 @@ export interface ListPayload {
    * ficam VAZIOS, toda decisão antes vigente aparece `AMBIGUOUS` e `finalizable` é `false`. `RECEIPT_LOST_WITNESSED` = a pendente já estava confirmada.
    */
   readonly witness: WitnessVerdict;
+  /**
+   * LIVRO DE CABEÇAS: `PROTECTED` = livro íntegro e consistente; `ENROLLMENT_PENDING` / `LEGACY_READ_ONLY` / `HISTORY_UNRESOLVED` = modo restrito (nenhuma decisão
+   * vigente, nada finalizável, nenhuma escrita comum). Nunca "sem livro = sem problema": a razão vem em `ledger.reason`.
+   */
+  readonly ledger: LedgerView;
   /** Somente as vigentes (sem as `AMBIGUOUS`). */
   readonly decisions: readonly DecisionDto[];
   /** Identificadores das decisões em dúvida por causa da operação pendente (só ids; vazio sem pendente). Nenhum conteúdo privado. */
@@ -432,6 +483,7 @@ const allRefs = (views: readonly Pick<DecisionView, 'record'>[], extra: ClientRe
 const ISO_MS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const ISO_ANY = /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/;
 export type Clock = string | (() => string);
+const sameHeadOf = (a: Head | null, b: Head | null): boolean => (a === null || b === null ? a === b : a.seq === b.seq && a.sha256 === b.sha256);
 const clockOf = (now: Clock): (() => string) => (typeof now === 'function' ? now : () => now);
 
 function zodIssues(error: { issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey>; message: string }> }): string[] {
@@ -491,9 +543,16 @@ function pendingProblem(state: LogState, pending: DecisionEntry, nowIso: string,
 }
 
 /** Falha de `appendEntry`: recusa de domínio, entrada pendente (sem recibo) ou erro de armazenamento. Nunca vira sucesso. */
+/** Recusa do livro ⇒ falha pública (código, motivo estruturado e frases seguras; nenhum caminho nem etiqueta). */
+function fromRefusal(refusal: LedgerRefusal): ServiceFailure {
+  if (refusal.issues.includes(DURABILITY_UNPROVEN_MESSAGE)) return failure('DECISIONS_DURABILITY_UNKNOWN', DURABILITY_UNPROVEN_MESSAGE);
+  return failure(refusal.code, ...refusal.issues);
+}
+
 function failedAppend(appended: Exclude<Awaited<ReturnType<typeof appendEntry<ServiceFailure>>>, { ok: true }>, viewer: Viewer): ServiceFailure {
   if ('pending' in appended) return fromPending(appended, viewer);
   if (appended.code === 'REJECTED') return appended.failure;
+  if (appended.code === 'LEDGER_REFUSED') return fromRefusal(appended.refusal);
   return fromStore(appended);
 }
 
@@ -567,7 +626,19 @@ export function createDecisionService(options: DecisionServiceOptions) {
       const hints = read.unverifiedHeads ?? [];
       if (!Array.isArray(hints) || read.heads.length + hints.length > MAX_KNOWN_HEADS) return { ok: false, reason: 'UNTRUSTED' };
       if (!read.heads.every(HEAD_OK) || !hints.every(HEAD_OK)) return { ok: false, reason: 'UNTRUSTED' };
-      return { ok: true, heads: read.heads.map((head) => ({ seq: head.seq, sha256: head.sha256 })), unverifiedHeads: hints.map((head) => ({ seq: head.seq, sha256: head.sha256 })) };
+      const ledgerOk = (head: { ledgerSeq?: unknown; sha256?: unknown } | null | undefined): head is { ledgerSeq: number; sha256: string } =>
+        Number.isInteger(head?.ledgerSeq) && (head?.ledgerSeq as number) >= 1 && typeof head?.sha256 === 'string' && /^[0-9a-f]{64}$/.test(head.sha256);
+      const cited = read.ledgerHeads ?? [];
+      const citedHints = read.unverifiedLedgerHeads ?? [];
+      if (!Array.isArray(cited) || !Array.isArray(citedHints) || cited.length + citedHints.length > MAX_KNOWN_HEADS || !cited.every(ledgerOk) || !citedHints.every(ledgerOk)) return { ok: false, reason: 'UNTRUSTED' };
+      return {
+        ok: true,
+        heads: read.heads.map((head) => ({ seq: head.seq, sha256: head.sha256 })),
+        unverifiedHeads: hints.map((head) => ({ seq: head.seq, sha256: head.sha256 })),
+        hasResults: read.hasResults ?? (read.heads.length > 0 || hints.length > 0),
+        ledgerHeads: cited.map((head) => ({ ledgerSeq: head.ledgerSeq, sha256: head.sha256 })),
+        unverifiedLedgerHeads: citedHints.map((head) => ({ ledgerSeq: head.ledgerSeq, sha256: head.sha256 })),
+      };
     } catch {
       return { ok: false, reason: 'STORAGE_UNAVAILABLE' };
     }
@@ -578,6 +649,71 @@ export function createDecisionService(options: DecisionServiceOptions) {
     contentSha256: entry.contentSha256,
     affectsPrior: entry.action === 'REVOKE' || (entry.action === 'RECORD' && entry.supersedes !== null),
   });
+
+  /** O que os resultados dizem ao livro. `null` (testemunha dispensada nos testes da 6B isolada) = sem resultados; falha da leitura NUNCA vira "sem resultados". */
+  const resultsEvidenceOf = (heads: KnownHeadsRead | null): ResultsEvidence =>
+    heads === null
+      ? { ok: true, hasResults: false, ledgerHeads: [], unverifiedLedgerHeads: [] }
+      : !heads.ok
+        ? { ok: false }
+        : { ok: true, hasResults: heads.hasResults ?? false, ledgerHeads: heads.ledgerHeads ?? [], unverifiedLedgerHeads: heads.unverifiedLedgerHeads ?? [] };
+  const ledgerPort = options.ledger === LEDGER_NOT_REQUIRED ? null : options.ledger;
+  /** Estados do livro que podem ser só uma corrida entre as leituras (livro lido antes das decisões): a consulta relê UMA vez antes de acusar. */
+  const TRANSIENT_LEDGER = new Set(['UNLEDGERED_ENTRY', 'UNLEDGERED_PENDING', 'LEDGER_BEHIND']);
+
+  /**
+   * Testemunha que a GRAVAÇÃO relê a cada tentativa (R7-05/R7-06): `state.heads` é sempre a leitura mais recente e o `build` da 6B usa a MESMA; o livro recebe a leitura dos
+   * resultados, a classe da operação (reserva de capacidade) e o veredito da testemunha das decisões. Sem livro devolve `null`.
+   */
+  const writeWitness = (auditId: string, operator: string, intended: 'RECORD' | 'REVOKE' | 'NONE', initial: KnownHeadsRead | null) => {
+    const state = { heads: initial };
+    return {
+      state,
+      ledger: ledgerPort
+        ? {
+            port: ledgerPort,
+            actor: operator,
+            intended,
+            readResults: async (): Promise<ResultsEvidence> => {
+              state.heads = await readKnownHeads(auditId);
+              return resultsEvidenceOf(state.heads);
+            },
+            decisionsWitness: (entries: readonly DecisionEntry[], pending: DecisionEntry | null): string | null => {
+              const verdict = evaluateKnownHeads(entries.map(chained), pending ? chained(pending) : null, state.heads);
+              return isUnresolved(verdict.status) ? verdict.status : null;
+            },
+          }
+        : null,
+    };
+  };
+
+  /**
+   * ORDEM DE LEITURA CONSISTENTE (R7-05): resultados (testemunha) → guarda → livro → decisões com recibos. Cada fonte só cresce e CITA as anteriores (o resultado cita o livro e as
+   * decisões; a guarda é publicada depois do livro; o livro registra antes de as decisões serem confirmadas), então ler primeiro a fonte citada pela seguinte nunca produz um
+   * desacordo FALSO por corrida; só a última fronteira (livro × decisões) pode parecer atrasada, e essa já é relida.
+   */
+  async function takeSnapshot(auditId: string) {
+    const heads = await readKnownHeads(auditId);
+    const session = ledgerPort ? await ledgerPort.begin(auditId) : null;
+    const log = await readLog(options.baseDir, auditId, storeOptions);
+    return { session, log, heads };
+  }
+  type Taken = Awaited<ReturnType<typeof takeSnapshot>>;
+  async function ledgerViewOf(taken: Taken, auditId: string, nowIso: string): Promise<LedgerView> {
+    if (!ledgerPort || !taken.log.ok) return NOT_REQUIRED_VIEW;
+    const { state, pending } = taken.log.value;
+    return ledgerPort.view({
+      session: taken.session,
+      auditId,
+      snapshot: ledgerSnapshotOf(state.entries, pending),
+      results: resultsEvidenceOf(taken.heads),
+      entryOriginProven: (seq) => {
+        const entry = (pending ? [...state.entries, pending] : state.entries)[seq - 1];
+        return entry !== undefined && judgeOrigin(options.origin, 'DECISION', entry) === 'PROVEN';
+      },
+      nowIso,
+    });
+  }
 
   function basisOf(versions: readonly VersionLike[]): DecisionBasis {
     const withCapture = versions.filter((version): version is VersionLike & { capture: number } => version.capture !== null);
@@ -592,20 +728,31 @@ export function createDecisionService(options: DecisionServiceOptions) {
     };
   }
 
-  return {
+  const api = {
     /** Decisões vigentes, histórico completo, âncoras e a projeção para o motor. Nada é devolvido se a verificação falhar. */
-    async list(actor: EvidenceActorLike, auditId: string): Promise<ServiceResult<ListPayload>> {
+    async list(actor: EvidenceActorLike, auditId: string, now?: Clock): Promise<ServiceResult<ListPayload>> {
       if (!validAuditId(auditId)) return failure('INVALID_PARAMS', 'auditId inválido.');
       const config = await checkConfiguration();
       if (config) return config;
       const integrity = await options.evidence.getIntegrity(actor, auditId);
       if (!integrity) return failure('AUDIT_NOT_FOUND');
-      const read = await readLog(options.baseDir, auditId, storeOptions);
+      // Sem relógio (testes e chamadas informativas) a idade de uma operação aberta é desconhecida: nunca "vencida".
+      const nowIso = now ? clockOf(now)() : EPOCH_ISO;
+      // O livro é lido ANTES das decisões (uma escrita concorrente só pode deixar as decisões à frente do livro). Uma suspeita de corrida relê UMA vez.
+      let taken = await takeSnapshot(auditId);
+      let ledgerView = await ledgerViewOf(taken, auditId, nowIso);
+      if (ledgerView.state === 'HISTORY_UNRESOLVED' && ledgerView.reason !== null && TRANSIENT_LEDGER.has(ledgerView.reason)) {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        taken = await takeSnapshot(auditId);
+        ledgerView = await ledgerViewOf(taken, auditId, nowIso);
+      }
+      const read = taken.log;
       if (!read.ok) return fromStore(read);
       const { state, pending, checkedFiles, anchors, unexpectedFiles, orphanTempFiles } = read.value;
       // TESTEMUNHA: sem integridade resolvida nenhuma decisão é projetada como vigente (falha fechada); senão, só as afetadas por operação pendente ficam em dúvida
-      const witness = evaluateKnownHeads(state.entries.map(chained), pending ? chained(pending) : null, await readKnownHeads(auditId));
-      const unresolved = isUnresolved(witness.status);
+      const witness = evaluateKnownHeads(state.entries.map(chained), pending ? chained(pending) : null, taken.heads);
+      // LIVRO: auditoria que não está PROTEGIDA (a inscrever, legada, ou com histórico não resolvido) é consultável em modo restrito, sem decisão vigente
+      const unresolved = isUnresolved(witness.status) || isLedgerBlocking(ledgerView.state);
       const ambiguous: ReadonlySet<string> = unresolved ? new Set(state.effective.map((view) => view.decisionId)) : ambiguousTargets(state, pending);
       const settled = state.effective.filter((view) => !ambiguous.has(view.decisionId));
       return {
@@ -614,14 +761,21 @@ export function createDecisionService(options: DecisionServiceOptions) {
           auditId,
           head: currentHead(state),
           pending: pending ? toPending(pending, { operator: operatorOf(actor), origin: options.origin }) : null,
-          finalizable: pending === null && !unresolved,
+          finalizable: pending === null && !unresolved && ledgerView.openOperation === null,
           witness,
+          ledger: ledgerView,
           decisions: settled.map((view) => toDto(view)),
           ambiguousDecisionIds: [...ambiguous],
           history: state.entries.map(toHistory),
           allDecisions: state.decisions.map((view) => toDto(view, ambiguous.has(view.decisionId))),
           operatorRecords: effectiveScoringRecords({ effective: settled }),
-          limits: { maxEffectiveRecords: MAX_EFFECTIVE_RECORDS, maxEntries: MAX_SEQ, reservedForRevocations: RESERVED_FOR_REVOCATIONS },
+          // R7-01: com o livro, nunca se anuncia mais do que ele CONSEGUE executar (a capacidade vem da mesma função que impõe o limite): as revogações reservadas e o total de entradas
+          // possíveis (cada entrada = uma operação de 2 registros + pontos de verificação; o livro de 4000 registros comporta bem menos entradas do que `MAX_SEQ`)
+          limits: {
+            maxEffectiveRecords: MAX_EFFECTIVE_RECORDS,
+            maxEntries: ledgerView.capacity ? Math.min(MAX_SEQ, state.entries.length + ledgerView.capacity.revocationsAvailable) : MAX_SEQ,
+            reservedForRevocations: ledgerView.capacity ? Math.min(RESERVED_FOR_REVOCATIONS, ledgerView.capacity.revocationsAvailable) : RESERVED_FOR_REVOCATIONS,
+          },
           anchors,
           integrity: { status: 'OK', algorithm: 'SHA-256', checkedFiles, ignoredFiles: unexpectedFiles.length + orphanTempFiles.length, note: INTEGRITY_NOTE },
         },
@@ -662,13 +816,13 @@ export function createDecisionService(options: DecisionServiceOptions) {
       const basis = basisOf(versions);
 
       const wanted: OperationSpec = { action: 'RECORD', record, supersedes: supersedes ?? null };
-      const heads = await readKnownHeads(auditId);
+      const w = writeWitness(auditId, operator, 'RECORD', await readKnownHeads(auditId));
       const appended = await appendEntry<ServiceFailure>(
         options.baseDir,
         auditId,
         ({ state, pending, entries, seq, recordedAt }) => {
           // Integridade do histórico NÃO resolvida (testemunha): nem escrita nova nem a conclusão de pendente (falha fechada)
-          const witness = evaluateKnownHeads(state.entries.map(chained), pending ? chained(pending) : null, heads);
+          const witness = evaluateKnownHeads(state.entries.map(chained), pending ? chained(pending) : null, w.state.heads);
           if (isUnresolved(witness.status)) return { ok: false, failure: { ...failure('DECISIONS_HISTORY_UNRESOLVED', `testemunha: ${witness.status}`), head: currentHead(state) } };
           // Reenvio do MESMO pedido (resposta perdida, recibo que falhou): idempotente, antes de qualquer outra regra.
           const again = findReplay(entries, expectedHead, operator, wanted);
@@ -728,7 +882,7 @@ export function createDecisionService(options: DecisionServiceOptions) {
           };
           return { ok: true, draft };
         },
-        { ...storeOptions, now: clock },
+        { ...storeOptions, now: clock, ...(w.ledger ? { ledger: w.ledger } : {}) },
       );
       if (!appended.ok) return failedAppend(appended, viewer);
       const entry = appended.entry;
@@ -759,12 +913,12 @@ export function createDecisionService(options: DecisionServiceOptions) {
 
       const { revokes, reason, expectedHead } = parsed.value;
       const wanted: OperationSpec = { action: 'REVOKE', revokes, reason };
-      const heads = await readKnownHeads(auditId);
+      const w = writeWitness(auditId, operator, 'REVOKE', await readKnownHeads(auditId));
       const appended = await appendEntry<ServiceFailure>(
         options.baseDir,
         auditId,
         ({ state, pending, entries, recordedAt }) => {
-          const witness = evaluateKnownHeads(state.entries.map(chained), pending ? chained(pending) : null, heads);
+          const witness = evaluateKnownHeads(state.entries.map(chained), pending ? chained(pending) : null, w.state.heads);
           if (isUnresolved(witness.status)) return { ok: false, failure: { ...failure('DECISIONS_HISTORY_UNRESOLVED', `testemunha: ${witness.status}`), head: currentHead(state) } };
           const again = findReplay(entries, expectedHead, operator, wanted);
           if (again !== null) {
@@ -791,7 +945,7 @@ export function createDecisionService(options: DecisionServiceOptions) {
           };
           return { ok: true, draft };
         },
-        { ...storeOptions, now: clock },
+        { ...storeOptions, now: clock, ...(w.ledger ? { ledger: w.ledger } : {}) },
       );
       if (!appended.ok) return failedAppend(appended, viewer);
       const revoked = appended.state.decisions.find((decision) => decision.decisionId === revokes);
@@ -809,7 +963,83 @@ export function createDecisionService(options: DecisionServiceOptions) {
         },
       };
     },
-  };
+
+    /**
+     * Ações sobre o livro de uma auditoria. `ENROLL`: inscreve uma auditoria VAZIA (explícito, nunca implícito). `RECOVER`: aplica a recuperação verificável
+     * (idempotente). `ADOPT` / `RESTORE_ACK` / `QUARANTINE_ACK` CONCEDEM CONFIANÇA e exigem aprovação administrativa (identidade administrativa
+     * verificável e dupla aprovação), que ainda NÃO existe: são recusadas (`ADMIN_APPROVAL_UNAVAILABLE`), nunca simuladas.
+     */
+    async ledgerAction(actor: EvidenceActorLike, auditId: string, body: unknown, now: Clock): Promise<ServiceResult<LedgerActionPayload>> {
+      if (!validAuditId(auditId)) return failure('INVALID_PARAMS', 'auditId inválido.');
+      const clock = clockOf(now);
+      if (!ISO_MS.test(clock())) return failure('INTERNAL_ERROR');
+      const config = await checkConfiguration();
+      if (config) return config;
+      const parsed = parseBody(ledgerActionBodySchema, body);
+      if (!parsed.ok) return parsed;
+      const operator = operatorOf(actor);
+      if (operator === null) return failure('OPERATOR_IDENTITY_INVALID');
+      const integrity = await options.evidence.getIntegrity(actor, auditId);
+      if (!integrity) return failure('AUDIT_NOT_FOUND');
+      if (parsed.value.action === 'ADOPT' || parsed.value.action === 'RESTORE_ACK' || parsed.value.action === 'QUARANTINE_ACK') {
+        return failure('ADMIN_APPROVAL_UNAVAILABLE', `ação: ${parsed.value.action}`);
+      }
+      if (!ledgerPort) return failure('LEDGER_ACTION_INVALID', 'Este serviço não usa o livro de cabeças.');
+      if (parsed.value.action === 'ENROLL') {
+        const taken = await takeSnapshot(auditId);
+        if (!taken.log.ok) return fromStore(taken.log);
+        const { state, pending } = taken.log.value;
+        const enrolled = await ledgerPort.enroll({ auditId, actor: operator, snapshot: ledgerSnapshotOf(state.entries, pending), results: resultsEvidenceOf(taken.heads), nowIso: clock() });
+        return enrolled.ok ? { ok: true, value: { action: 'ENROLL', ledger: enrolled.view } } : fromRefusal(enrolled.refusal);
+      }
+      // RECOVER: roda a preparação do livro dentro da MESMA coordenação das escritas (recuperação verificável: aborta operação vencida, conclui o CONFIRMED que faltou) e não grava decisão.
+      const noop = failure('LEDGER_ACTION_INVALID', 'recuperação sem decisão');
+      const w = writeWitness(auditId, operator, 'NONE', await readKnownHeads(auditId));
+      const appended = await appendEntry<ServiceFailure>(options.baseDir, auditId, () => ({ ok: false, failure: noop }), { ...storeOptions, now: clock, ledger: w.ledger as NonNullable<typeof w.ledger> });
+      if (!appended.ok && !(appended.code === 'REJECTED' && appended.failure === noop)) return failedAppend(appended, { operator, origin: options.origin });
+      const taken = await takeSnapshot(auditId);
+      return { ok: true, value: { action: 'RECOVER', ledger: await ledgerViewOf(taken, auditId, clock()) } };
+    },  };
+
+  /** Cabeças que a finalização conferiu e vai citar. Ausente = só prova a durabilidade e que o livro está PROTEGIDO (conclusão de resultado pendente). */
+  interface BarrierExpectation {
+    readonly decisionsHead?: Head | null;
+    readonly ledgerHead?: { readonly ledgerSeq: number; readonly sha256: string } | null;
+  }
+  type BarrierOutcome = { readonly ok: true } | { readonly ok: false; readonly code: 'INPUT_CHANGED' | 'DURABILITY_UNKNOWN'; readonly issues: readonly string[] };
+  /**
+   * BARREIRA DE DURABILIDADE antes de selar (ou concluir) um resultado que cita `ledgerHead`. Sem janela entre a verificação e o selamento: (1) lê a vista (livro + decisões) e exige PROTEGIDO, sem operação
+   * aberta, sem pendente e com EXATAMENTE as cabeças que a finalização avaliou; (2) sincroniza o livro (pasta da auditoria e raiz), as decisões, os recibos e os diretórios-pai — DEPOIS de ter lido as
+   * cabeças, então nada que a vista leu fica sem sincronizar; (3) lê de novo e exige as MESMAS cabeças e o livro ainda PROTEGIDO (nenhuma gravação concorrente mudou o estado nem travou a base). Qualquer
+   * dúvida ⇒ falha fechada (`INPUT_CHANGED` se o estado mudou; `DURABILITY_UNKNOWN` se a durabilidade não foi comprovada). Uma gravação que chegue DEPOIS da releitura não altera o que o resultado cita (o
+   * livro só cresce e o que foi citado já está sincronizado).
+   */
+  async function durabilityBarrier(actor: EvidenceActorLike, auditId: string, expected: BarrierExpectation, now?: Clock): Promise<BarrierOutcome> {
+    const unsettled = (payload: ListPayload): BarrierOutcome | null => {
+      if (payload.ledger.reason === 'DURABILITY_UNKNOWN') return { ok: false, code: 'DURABILITY_UNKNOWN', issues: [DURABILITY_UNPROVEN_MESSAGE] };
+      if (payload.ledger.state !== 'PROTECTED' || payload.ledger.openOperation !== null || payload.pending !== null || !payload.finalizable) return { ok: false, code: 'INPUT_CHANGED', issues: ['O livro ou as decisões não estão em estado finalizável.'] };
+      if (expected.decisionsHead !== undefined && !sameHeadOf(payload.head, expected.decisionsHead)) return { ok: false, code: 'INPUT_CHANGED', issues: ['O histórico de decisões mudou desde a avaliação.'] };
+      if (expected.ledgerHead !== undefined && (expected.ledgerHead === null || payload.ledger.head?.ledgerSeq !== expected.ledgerHead.ledgerSeq || payload.ledger.head?.sha256 !== expected.ledgerHead.sha256)) {
+        return { ok: false, code: 'INPUT_CHANGED', issues: ['A cabeça do livro mudou desde a avaliação.'] };
+      }
+      return null;
+    };
+    const durabilityFailure = (issues: readonly string[]): BarrierOutcome => ({ ok: false, code: 'DURABILITY_UNKNOWN', issues });
+    if (!ledgerPort) return durabilityFailure(['Sem livro configurado não há como comprovar a durabilidade que o resultado cita.']);
+    const first = await api.list(actor, auditId, now);
+    if (!first.ok) return first.code === 'DECISIONS_DURABILITY_UNKNOWN' ? durabilityFailure(first.issues) : { ok: false, code: 'INPUT_CHANGED', issues: first.issues };
+    const firstVerdict = unsettled(first.value);
+    if (firstVerdict) return firstVerdict;
+    const ledgerSynced = await ledgerPort.sync(auditId);
+    if (!ledgerSynced.ok) return durabilityFailure([DURABILITY_UNPROVEN_MESSAGE]);
+    const directories = await syncDecisionDirectories(options.baseDir, auditId, storeOptions);
+    if (directories) return durabilityFailure([DURABILITY_UNPROVEN_MESSAGE]);
+    const second = await api.list(actor, auditId, now);
+    if (!second.ok) return second.code === 'DECISIONS_DURABILITY_UNKNOWN' ? durabilityFailure(second.issues) : { ok: false, code: 'INPUT_CHANGED', issues: second.issues };
+    return unsettled(second.value) ?? { ok: true };
+  }
+
+  return { ...api, durabilityBarrier };
 }
 
 export type DecisionService = ReturnType<typeof createDecisionService>;

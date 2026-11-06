@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { isErrorResponse, requireOperator } from '@/lib/auth/require-operator';
 import { AUDIT_ID_PATTERN, createDecisionService, HTTP_STATUS, PUBLIC_MESSAGE, type DecisionService, type ServiceFailure } from '@/lib/link-audit-decisions';
 import { createEvidenceReader, EvidenceAccessError, type EvidenceActor } from '@/lib/link-audit-evidence';
+import { ledgerDirOf, ledgerForRoutes } from './ledger-wiring';
 import { originConfigFromEnv } from '@/lib/link-audit-origin';
 import { createResultsKnownHeads } from '@/lib/link-audit-scoring-runs';
 import { SlidingWindowLimiter } from '@/lib/rate-limit';
@@ -105,8 +106,9 @@ export async function withDecisions(request: Request, mode: 'read' | 'write', ha
     // responde `NOT_CONFIGURED` e a 6B trata o histórico como NÃO RESOLVIDO (falha fechada: nenhuma decisão vigente, nenhuma escrita). Nunca "sem inconsistência".
     const resultsDir = configuredDir(process.env.GMN_LINK_AUDIT_RESULTS_DIR);
     const resultsAnchorDir = configuredDir(process.env.GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR);
-    const knownHeads = resultsDir && resultsAnchorDir ? createResultsKnownHeads({ baseDir: resultsDir, anchorDir: resultsAnchorDir, otherDirs: [decisionsDir, anchorDir, evidenceDir], ...(originConfig.ok ? { origin: originConfig.authenticator } : {}) }) : async () => ({ ok: false as const, reason: 'NOT_CONFIGURED' as const });
-    const service = createDecisionService({ baseDir: decisionsDir, anchorDir, evidence: reader, evidenceBaseDir: evidenceDir, ...(originConfig.ok ? { origin: originConfig.authenticator } : {}), knownHeads });
+    const knownHeads = resultsDir && resultsAnchorDir ? createResultsKnownHeads({ baseDir: resultsDir, anchorDir: resultsAnchorDir, otherDirs: [decisionsDir, anchorDir, evidenceDir, ledgerDirOf()], ...(originConfig.ok ? { origin: originConfig.authenticator } : {}) }) : async () => ({ ok: false as const, reason: 'NOT_CONFIGURED' as const });
+    const ledger = ledgerForRoutes([decisionsDir, anchorDir, evidenceDir, resultsDir, resultsAnchorDir]);
+    const service = createDecisionService({ baseDir: decisionsDir, anchorDir, evidence: reader, evidenceBaseDir: evidenceDir, ...(originConfig.ok ? { origin: originConfig.authenticator } : {}), knownHeads, ledger });
     return await handler({ service, actor });
   } catch (error) {
     if (error instanceof EvidenceAccessError) return reply({ error: 'Acesso negado.', code: 'FORBIDDEN' }, 403);

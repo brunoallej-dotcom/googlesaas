@@ -661,3 +661,19 @@ test('verificado só se o registro confirmado corresponde ao PEDIDO enviado e o 
   await flow.confirmFinalize(wrongDetail.ctx);
   assert.equal((wrongDetail.state().finalize as { verified: boolean }).verified, false, 'detalhe com hash diferente do confirmado');
 });
+
+test('livro: inscrever/recuperar chamam a API certa, recarregam decisões e prévia, e a recusa administrativa vira aviso (nunca sucesso)', async () => {
+  const api = new FakeApi();
+  const h = harness(api);
+  await flow.runLedgerAction(h.ctx, 'ENROLL');
+  assert.deepEqual(api.calls.filter((call) => call.name === 'ledger').map((call) => call.args), [['ENROLL']]);
+  assert.ok(api.count('decisions') >= 1 && api.count('preview') >= 1, 'recarrega o que mudou');
+  assert.equal(h.state().notice?.tone, 'success');
+  api.ledgerQueue = [fail('ADMIN_APPROVAL_UNAVAILABLE', 403)];
+  await flow.runLedgerAction(h.ctx, 'ENROLL');
+  assert.equal(h.state().notice?.tone, 'warning', 'recusa administrativa é aviso');
+  api.ledgerQueue = [fail('LEDGER_UNAVAILABLE', 503)];
+  await flow.runLedgerAction(h.ctx, 'RECOVER');
+  assert.equal(h.state().notice?.tone, 'danger');
+  assert.deepEqual(api.calls.filter((call) => call.name === 'ledger').map((call) => call.args), [['ENROLL'], ['ENROLL'], ['RECOVER']]);
+});

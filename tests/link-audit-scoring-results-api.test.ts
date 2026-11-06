@@ -1,3 +1,4 @@
+import { applyLedgerEnv, routeWorld } from './helpers/link-audit-ledger-fixtures';
 import { buildReportFromCapture } from '../src/lib/link-audit/collector/capture-report';
 import { writeCapture, writeReport } from '../src/lib/link-audit-evidence/store';
 import { identityFor, inputFor, LINK, T_NOW } from './helpers/link-audit-collect-fixtures';
@@ -18,7 +19,7 @@ import { GET as previewRoute } from '../src/app/api/link-audit/scoring/[auditId]
 import { createSessionToken, SESSION_COOKIE } from '../src/lib/auth/session';
 import { seal, serialize } from '../src/lib/link-audit-storage';
 import { middleware } from '../src/middleware';
-import { hashTree, registerCleanup, tmpDir, world, type World } from './helpers/link-audit-decisions-fixtures';
+import { hashTree, registerCleanup, tmpDir, type World } from './helpers/link-audit-decisions-fixtures';
 import { TEST_ORIGIN_KEY } from './helpers/link-audit-origin-fixtures';
 
 /*
@@ -42,7 +43,7 @@ interface Over {
   readonly results?: string | undefined;
   readonly resultAnchors?: string | undefined;
 }
-function setEnv(w: Pick<World, 'evidenceDir' | 'decisionsDir' | 'anchorDir'>, dirs: Dirs | null, over: Over = {}): void {
+function setEnv(w: Pick<World, 'evidenceDir' | 'decisionsDir' | 'anchorDir'> & { readonly ledgerDir?: string }, dirs: Dirs | null, over: Over = {}): void {
   env.SUPABASE_SERVICE_ROLE_KEY = SECRET;
   env.GMN_OPERATOR_EMAILS = operatorList();
   delete env.GMN_AUTH_DISABLED;
@@ -56,6 +57,7 @@ function setEnv(w: Pick<World, 'evidenceDir' | 'decisionsDir' | 'anchorDir'>, di
   set('GMN_LINK_AUDIT_DECISIONS_ANCHOR_DIR', w.anchorDir);
   set('GMN_LINK_AUDIT_RESULTS_DIR', 'results' in over ? over.results : dirs?.results);
   set('GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR', 'resultAnchors' in over ? over.resultAnchors : dirs?.resultAnchors);
+  applyLedgerEnv(env, w.ledgerDir ? { ledgerDir: w.ledgerDir } : null);
 }
 
 interface Init {
@@ -87,7 +89,7 @@ interface Ctx {
   readonly auditId: string;
 }
 async function setup(): Promise<Ctx> {
-  const w = await world();
+  const w = await routeWorld();
   await proveEvidenceForRoutes(env, w);
   const dirs = { results: tmpDir('lad-api-rs-'), resultAnchors: tmpDir('lad-api-ra-') };
   setEnv(w, dirs);

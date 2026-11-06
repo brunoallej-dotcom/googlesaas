@@ -119,6 +119,8 @@ async function createHarness(options) {
   const secret = crypto.randomBytes(24).toString('hex');
   /** Chave de ORIGEM (comprovação de pendências), aleatória por execução: vai ao seed e ao servidor por ambiente; nunca é fixa nem gravada. */
   const originKey = `ok-run-${crypto.randomBytes(4).toString('hex')}:${crypto.randomBytes(32).toString('hex')}`; // formato estrito de produção: <id>:<64 hex>
+  /** Chave do LIVRO DE CABEÇAS (Q3): exclusiva, DISTINTA da de origem, aleatória por execução; vai ao seed e ao servidor por ambiente; nunca é fixa nem gravada. */
+  const ledgerKey = `lk-run-${crypto.randomBytes(4).toString('hex')}:${crypto.randomBytes(32).toString('hex')}`;
   /**
    * PROVA DE COLETA (autenticidade das evidências): o par Ed25519 é desta execução. A semente recebe a PRIVADA (faz o papel de quem atesta a coleta);
    * o servidor recebe só a PÚBLICA e a pasta de manifestos. Sem isso o servidor, por desenho, não finaliza nada.
@@ -157,7 +159,7 @@ async function createHarness(options) {
   const seedOutput = execFileSync(process.execPath, ['--require', path.join(PROJECT, 'tests/register-typescript.cjs'), path.join(PROJECT, seed), root, OPERATOR_EMAIL, ...seedArgs], {
     cwd: PROJECT,
     encoding: 'utf8',
-    env: { PATH: process.env.PATH, HOME: process.env.HOME, GMN_SEED_SECRET: secret, GMN_LINK_AUDIT_ORIGIN_KEY: originKey, GMN_SEED_EVIDENCE_SIGNING_KEY: evidenceSigningKey, GMN_SEED_EVIDENCE_KEY_ID: evidenceKeyId }, // segredos por ambiente, não pelo argv (visível em /proc)
+    env: { PATH: process.env.PATH, HOME: process.env.HOME, GMN_SEED_SECRET: secret, GMN_LINK_AUDIT_ORIGIN_KEY: originKey, GMN_LINK_AUDIT_LEDGER_KEY: ledgerKey, GMN_SEED_EVIDENCE_SIGNING_KEY: evidenceSigningKey, GMN_SEED_EVIDENCE_KEY_ID: evidenceKeyId }, // segredos por ambiente, não pelo argv (visível em /proc)
   });
   const line = (tag) => (seedOutput.split('\n').find((l) => l.startsWith(`${tag} `)) || '').slice(tag.length + 1);
   const IDS = JSON.parse(line('IDS') || '{}');
@@ -176,6 +178,8 @@ async function createHarness(options) {
     HOSTNAME: '127.0.0.1',
     SUPABASE_SERVICE_ROLE_KEY: secret,
     GMN_LINK_AUDIT_ORIGIN_KEY: originKey,
+    GMN_LINK_AUDIT_LEDGER_KEY: ledgerKey,
+    GMN_LINK_AUDIT_DECISIONS_LEDGER_DIR: path.join(root, 'ledger'),
     GMN_OPERATOR_EMAILS: `${OPERATOR_EMAIL},${OTHER_OPERATOR_EMAIL}`,
     GMN_LINK_AUDIT_EVIDENCE_DIR: path.join(root, 'evidence'),
     GMN_LINK_AUDIT_EVIDENCE_SEALS_DIR: path.join(root, 'seals'),
@@ -291,6 +295,11 @@ async function createHarness(options) {
     chromeVersion: version.Browser,
     /** Identificador PÚBLICO da chave de origem do servidor (nunca o material). */
     originKeyId: originKey.split(':')[0],
+    /** Identificador PÚBLICO da chave do livro (nunca o material) e uma chave de livro NOVA (CSPRNG, formato de produção) para a rotação. */
+    ledgerKeyId: ledgerKey.split(':')[0],
+    freshLedgerKey: () => `lk-rot-${crypto.randomBytes(4).toString('hex')}:${crypto.randomBytes(32).toString('hex')}`,
+    /** A chave ATUAL do livro do servidor (para o roteiro compô-la numa rotação com `RETIRED_KEYS`); nunca é impressa. */
+    currentLedgerKey: () => ledgerKey,
     /** Chave de origem NOVA, gerada na hora com CSPRNG (formato de produção); nunca fixa no código. */
     freshOriginKey: () => `ok-rot-${crypto.randomBytes(4).toString('hex')}:${crypto.randomBytes(32).toString('hex')}`,
     /** Altera o ambiente do servidor local (`undefined` remove a variável); vale a partir do próximo `restartServer()`. */

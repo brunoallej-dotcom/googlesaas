@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { ledgerDirOf, ledgerForRoutes } from '../decisions/ledger-wiring';
 import { NextResponse } from 'next/server';
 import { isErrorResponse, requireOperator } from '@/lib/auth/require-operator';
 import { AUDIT_ID_PATTERN, createDecisionService } from '@/lib/link-audit-decisions';
@@ -92,11 +93,11 @@ async function prepare(request: Request, limiter: SlidingWindowLimiter): Promise
   const prepareOrigin = originConfigFromEnv(undefined, () => new Date());
   const resultsDir = configuredDir(process.env.GMN_LINK_AUDIT_RESULTS_DIR);
   const resultsAnchorDir = configuredDir(process.env.GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR);
-  const knownHeads = resultsDir && resultsAnchorDir ? createResultsKnownHeads({ baseDir: resultsDir, anchorDir: resultsAnchorDir, otherDirs: [decisionsDir, anchorDir, evidenceDir], ...(prepareOrigin.ok ? { origin: prepareOrigin.authenticator } : {}) }) : async () => ({ ok: false as const, reason: 'NOT_CONFIGURED' as const }); // sem as pastas de resultados: NÃO RESOLVIDO (falha fechada), nunca "sem inconsistência"
+  const knownHeads = resultsDir && resultsAnchorDir ? createResultsKnownHeads({ baseDir: resultsDir, anchorDir: resultsAnchorDir, otherDirs: [decisionsDir, anchorDir, evidenceDir, ledgerDirOf()], ...(prepareOrigin.ok ? { origin: prepareOrigin.authenticator } : {}) }) : async () => ({ ok: false as const, reason: 'NOT_CONFIGURED' as const }); // sem as pastas de resultados: NÃO RESOLVIDO (falha fechada), nunca "sem inconsistência"
   const preview = createScoringPreviewService({
     basisReader,
     evidenceProvenance,
-    decisions: createDecisionService({ baseDir: decisionsDir, anchorDir, evidence: reader, evidenceBaseDir: evidenceDir, knownHeads }), // só LEITURA das decisões: sem escrita não há o que assinar; com a TESTEMUNHA dos resultados selados
+    decisions: createDecisionService({ baseDir: decisionsDir, anchorDir, evidence: reader, evidenceBaseDir: evidenceDir, knownHeads, ledger: ledgerForRoutes([decisionsDir, anchorDir, evidenceDir, resultsDir, resultsAnchorDir]) }), // só LEITURA das decisões: sem escrita não há o que assinar; com a TESTEMUNHA dos resultados selados
     clock: serverClock,
   });
   return { actor, preview, basisReader, dirs: { evidence: evidenceDir, decisions: decisionsDir, anchors: anchorDir } };

@@ -43,6 +43,10 @@ export type KnownHeadsRead =
       readonly heads: readonly KnownHead[];
       /** INDÍCIOS (pendentes de origem NÃO comprovada): nunca são testemunhas; só denunciam histórico que o de hoje não tem. */
       readonly unverifiedHeads?: readonly KnownHead[];
+      /** Evidência para o LIVRO DE CABEÇAS: existe algum resultado (com ou sem `ledgerHead`) e as posições do livro que os resultados citam. */
+      readonly hasResults?: boolean;
+      readonly ledgerHeads?: ReadonlyArray<{ readonly ledgerSeq: number; readonly sha256: string }>;
+      readonly unverifiedLedgerHeads?: ReadonlyArray<{ readonly ledgerSeq: number; readonly sha256: string }>;
     }
   | { readonly ok: false; readonly reason: KnownHeadsFailure };
 export type KnownHeadsProvider = (auditId: string) => Promise<KnownHeadsRead>;

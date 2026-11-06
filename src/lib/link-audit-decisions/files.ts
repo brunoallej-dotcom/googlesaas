@@ -15,18 +15,22 @@ export {
   ATOMIC_UNAVAILABLE_ERRNO,
   clearStorageFatal,
   dirStatus,
+  DURABILITY_UNPROVEN_MESSAGE,
   ensureDirectory,
   fail,
   FATAL_ERRNO,
   hashOk,
   isBaseTripped,
   isStorageFatal,
+  mapOrdered,
+  READ_CONCURRENCY,
   readSealedFile,
   scrubPaths,
   seal,
   serialize,
   splitNames,
   tripBase,
+  watchDurability,
 } from '../link-audit-storage';
 export type { DirStatus, Location, StoreErrorCode, StoreFailure, StoreOptions, StoreResult } from '../link-audit-storage';
 

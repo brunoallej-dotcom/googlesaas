@@ -15,6 +15,8 @@ import { ENGINE_AUDIT_ID, STORE_AUDIT_ID } from './audit-id-alias';
  * Nenhum valor de pontuação é fornecido pelo cliente: tudo vem do motor.
  */
 export const RUN_SCHEMA_VERSION = 1 as const;
+/** Formato com `ledgerHead` (livro de cabeças, Q4): só resultados NOVOS gravados em auditoria PROTEGIDA. O v1 continua legível e inalterado. */
+export const RUN_SCHEMA_VERSION_LEDGER = 2 as const;
 export const RUN_FILE_KIND = 'LINK_AUDIT_SCORE_RUN' as const;
 export const RUN_ANCHOR_KIND = 'LINK_AUDIT_SCORE_RUN_ANCHOR' as const;
 /** Até 500 versões por auditoria (spec §15). */
@@ -50,7 +52,7 @@ const source = z.object({ ref, observedAt: isoAny, contentSha256: hex64, bodySha
 
 export const scoreRunSchema = z
   .object({
-    schemaVersion: z.literal(RUN_SCHEMA_VERSION),
+    schemaVersion: z.union([z.literal(RUN_SCHEMA_VERSION), z.literal(RUN_SCHEMA_VERSION_LEDGER)]),
     kind: z.literal(RUN_FILE_KIND),
     auditId,
     seq,
@@ -107,10 +109,16 @@ export const scoreRunSchema = z
     resultSha256: hex64,
     /** PROVA DE ORIGEM (HMAC do servidor, chave fora das pastas): presente nos resultados gravados depois da remediação do MAJOR-1; ausente nos anteriores (não podem ser concluídos se ficarem pendentes). */
     origin: originProofSchema.optional(),
+    /** Cabeça do LIVRO no instante da finalização (v2): a leitura confere que a posição citada existe no livro com o mesmo hash. */
+    ledgerHead: z.object({ ledgerSeq: z.number().int().min(1).max(4000), sha256: hex64 }).strict().optional(),
     prevSha256: hex64.nullable(),
     contentSha256: hex64,
   })
-  .strict();
+  .strict()
+  .superRefine((run, ctx) => {
+    if (run.schemaVersion === RUN_SCHEMA_VERSION && run.ledgerHead !== undefined) ctx.addIssue({ code: 'custom', message: 'o formato v1 não carrega ledgerHead' });
+    if (run.schemaVersion === RUN_SCHEMA_VERSION_LEDGER && run.ledgerHead === undefined) ctx.addIssue({ code: 'custom', message: 'o formato v2 exige ledgerHead' });
+  });
 export type ScoreRun = z.infer<typeof scoreRunSchema>;
 export type ScoreRunDraft = Omit<ScoreRun, 'seq' | 'prevSha256' | 'contentSha256'>;
 

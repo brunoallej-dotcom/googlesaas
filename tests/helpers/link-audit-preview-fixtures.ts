@@ -50,6 +50,7 @@ export function fakeList(auditId: string, records: readonly OperatorRecord[], ov
     decisions,
     ambiguousDecisionIds: [],
     witness: { status: 'NOT_REQUIRED', knownHeads: 0, coveredSeq: null, unwitnessedAffecting: 0 },
+    ledger: { state: 'NOT_REQUIRED', reason: null, head: null, confirmedDecisions: 0, openOperation: null, recoverable: false, receiptReissuable: false, externalGuard: 'NOT_CONFIGURED' },
     history: [],
     allDecisions: decisions,
     operatorRecords: records,

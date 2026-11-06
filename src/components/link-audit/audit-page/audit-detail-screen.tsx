@@ -6,6 +6,7 @@ import { DashboardShell } from '@/components/dashboard/dashboard-shell';
 import { CompanyPanel } from './company-panel';
 import * as flow from './controller';
 import { CriteriaMatrix } from './criteria-matrix';
+import { isBlockingLedger } from './types';
 import { DecisionsPanel } from './decisions-panel';
 import { FinalizationPanel } from './finalization-panel';
 import { ResultPanel } from './result-panel';
@@ -65,7 +66,10 @@ export function AuditDetailScreen({ auditId }: { readonly auditId: string }): Re
     if (editing) waiting.current = null;
     wasEditing.current = editing;
   }, [editing]);
-  const canWrite = decisions.phase === 'ready' && !busy && state.form.phase !== 'submitting' && state.revoke.phase !== 'submitting';
+  // só se escreve em auditoria PROTEGIDA pelo livro (ou sem livro, na 6B isolada); nos demais estados a tela é de consulta
+  const ledgerOpen = decisions.data !== null && !isBlockingLedger(decisions.data.ledger.state);
+  const canAct = decisions.phase === 'ready' && !busy && state.form.phase !== 'submitting' && state.revoke.phase !== 'submitting';
+  const canWrite = canAct && ledgerOpen;
   useEffect(() => {
     if (!waiting.current) return;
     if (decisions.phase === 'error' || decisions.phase === 'unavailable' || decisions.phase === 'integrity' || decisions.phase === 'denied') waiting.current = null; // a recarga falhou: não fica esperando para sempre
@@ -147,6 +151,7 @@ export function AuditDetailScreen({ auditId }: { readonly auditId: string }): Re
                   form={state.form}
                   revoke={state.revoke}
                   canWrite={canWrite}
+                  canLedger={canAct}
                   onOpenForm={(key) => { rememberOpener(); flow.openForm(ctx, key); }}
                   onCloseForm={() => ctx.dispatch({ type: 'FORM_CLOSE' })}
                   onFormField={(patch) => ctx.dispatch({ type: 'FORM_FIELD', patch })}
@@ -158,6 +163,7 @@ export function AuditDetailScreen({ auditId }: { readonly auditId: string }): Re
                   onSubmitRevoke={() => void flow.submitRevoke(ctx)}
                   onResendRevoke={() => void flow.resendRevoke(ctx)}
                   onResendListed={() => void flow.resendListedPending(ctx)}
+                  onLedgerAction={(action) => void flow.runLedgerAction(ctx, action)}
                 />
               )}
             </Section>

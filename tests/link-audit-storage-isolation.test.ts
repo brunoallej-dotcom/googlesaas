@@ -33,7 +33,7 @@ const rel = (file: string): string => path.relative(ROOT, file).split(path.sep).
 const libFiles = walk(LIB);
 
 /** Consumidores autorizados do módulo neutro. Acrescentar um exige revisão deliberada deste teste. */
-const CONSUMERS: readonly string[] = ['src/lib/link-audit-decisions/', 'src/lib/link-audit-scoring-runs/results-store.ts', 'src/lib/link-audit-scoring-runs/results-types.ts']; // Onda 6C (I4): os resultados reutilizam o protocolo de arquivos e recibos
+const CONSUMERS: readonly string[] = ['src/lib/link-audit-decisions/', 'src/lib/link-audit-ledger/', 'src/lib/link-audit-scoring-runs/results-store.ts', 'src/lib/link-audit-scoring-runs/results-types.ts']; // Onda 6C (I4): os resultados reutilizam o protocolo de arquivos e recibos
 
 test('o módulo tem exatamente os arquivos esperados (qualquer arquivo novo exige revisão deliberada)', () => {
   assert.deepEqual(libFiles.map((f) => path.relative(LIB, f)).sort(), ['files.ts', 'index.ts', 'receipts.ts']);

@@ -22,8 +22,8 @@ const libFiles = walk(LIB);
 const routeFiles = walk(ROUTES);
 
 test('o módulo tem exatamente os arquivos esperados (qualquer arquivo novo exige revisão deliberada)', () => {
-  assert.deepEqual(libFiles.map((f) => path.relative(LIB, f)).sort(), ['anchor-store.ts', 'contract.ts', 'evidence-refs.ts', 'files.ts', 'index.ts', 'project.ts', 'service.ts', 'store.ts', 'types.ts', 'witness.ts']);
-  assert.deepEqual(routeFiles.map((f) => path.relative(ROUTES, f).split(path.sep).join('/')).sort(), ['[auditId]/revocations/route.ts', '[auditId]/route.ts', 'shared.ts']);
+  assert.deepEqual(libFiles.map((f) => path.relative(LIB, f)).sort(), ['anchor-store.ts', 'contract.ts', 'evidence-refs.ts', 'files.ts', 'index.ts', 'ledger-port.ts', 'project.ts', 'service.ts', 'store.ts', 'types.ts', 'witness.ts']);
+  assert.deepEqual(routeFiles.map((f) => path.relative(ROUTES, f).split(path.sep).join('/')).sort(), ['[auditId]/ledger/route.ts', '[auditId]/revocations/route.ts', '[auditId]/route.ts', 'ledger-wiring.ts', 'shared.ts']);
 });
 
 test('imports: só zod, módulos do próprio módulo e uma lista fechada de arquivos do motor/armazenamento (nunca o motor que calcula)', () => {
@@ -101,7 +101,7 @@ test('só grava pelo mecanismo único (publishExclusive); não existe API de alt
     assert.ok(!/export\s+(?:async\s+)?function\s+(?:delete|remove|update|edit|overwrite|replace|purge|clear(?!StorageFatal))\w*/i.test(code), `${rel(file)} exporta operação destrutiva`);
   }
   const service = fs.readFileSync(path.join(LIB, 'service.ts'), 'utf8');
-  assert.deepEqual([...service.matchAll(/^\s{4}async (\w+)\(/gm)].map((m) => m[1]), ['list', 'create', 'revoke']);
+  assert.deepEqual([...service.matchAll(/^\s{4}async (\w+)\(/gm)].map((m) => m[1]), ['list', 'create', 'revoke', 'ledgerAction']);
 });
 
 test('rotas: sem rede, sem disco, sem outra variável de ambiente além das duas pastas, sem exportar PUT/PATCH/DELETE', () => {
@@ -110,15 +110,15 @@ test('rotas: sem rede, sem disco, sem outra variável de ambiente além das duas
     assert.ok(!/\bfetch\s*\(|node:(?:http|https|http2|dns|net|tls|dgram|child_process|fs)\b|fsPromises|XMLHttpRequest|WebSocket/.test(code), `${rel(file)} usa rede ou disco`);
     assert.ok(!/export\s+(?:async\s+)?function\s+(?:PUT|PATCH|DELETE|OPTIONS|HEAD)\b/.test(code), `${rel(file)} exporta método de alteração/exclusão`);
     const vars = [...code.matchAll(/process\.env\.([A-Z0-9_]+)/g)].map((m) => m[1]);
-    for (const name of vars) assert.ok(['GMN_LINK_AUDIT_DECISIONS_DIR', 'GMN_LINK_AUDIT_DECISIONS_ANCHOR_DIR', 'GMN_LINK_AUDIT_EVIDENCE_DIR', 'GMN_LINK_AUDIT_RESULTS_DIR', 'GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR'].includes(name as string), `${rel(file)} lê ${name}`);
+    for (const name of vars) assert.ok(['GMN_LINK_AUDIT_DECISIONS_DIR', 'GMN_LINK_AUDIT_DECISIONS_ANCHOR_DIR', 'GMN_LINK_AUDIT_EVIDENCE_DIR', 'GMN_LINK_AUDIT_RESULTS_DIR', 'GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR', 'GMN_LINK_AUDIT_EVIDENCE_SEALS_DIR', 'GMN_LINK_AUDIT_DECISIONS_LEDGER_DIR'].includes(name as string), `${rel(file)} lê ${name}`);
     assert.ok(!/process\.env(?!\.)/.test(code), `${rel(file)} lê o ambiente inteiro`);
     for (const specifier of imports(fs.readFileSync(file, 'utf8'))) {
-      const ok = specifier.startsWith('.') || specifier === 'next/server' || specifier === 'node:path' || /^@\/lib\/(?:auth\/require-operator|link-audit-decisions|link-audit-evidence|link-audit-origin|link-audit-scoring-runs|rate-limit)$/.test(specifier);
+      const ok = specifier.startsWith('.') || specifier === 'next/server' || specifier === 'node:path' || /^@\/lib\/(?:auth\/require-operator|link-audit-decisions|link-audit-evidence|link-audit-ledger|link-audit-origin|link-audit-scoring-runs|rate-limit)$/.test(specifier);
       assert.ok(ok, `${rel(file)} importa "${specifier}"`);
     }
   }
   const verbs = routeFiles.flatMap((file) => [...strip(fs.readFileSync(file, 'utf8')).matchAll(/export\s+async\s+function\s+(GET|POST)\b/g)].map((m) => `${path.basename(path.dirname(file))}:${m[1]}`)).sort();
-  assert.deepEqual(verbs, ['[auditId]:GET', '[auditId]:POST', 'revocations:POST']);
+  assert.deepEqual(verbs, ['[auditId]:GET', '[auditId]:POST', 'ledger:POST', 'revocations:POST']);
 });
 
 test('o navegador, as páginas, os componentes, o Worker e os comandos NÃO importam as decisões (somente as rotas de servidor)', () => {
@@ -138,6 +138,8 @@ test('o navegador, as páginas, os componentes, o Worker e os comandos NÃO impo
     }
     for (const specifier of imports(fs.readFileSync(file, 'utf8'))) {
       const resolved = specifier.startsWith('@/') ? path.join(ROOT, 'src', specifier.slice(2)) : specifier.startsWith('.') ? path.resolve(path.dirname(file), specifier) : null;
+      // O livro de cabeças (módulo vizinho) implementa a PORTA da 6B: pode importar SÓ `ledger-port` (tipos e valores compartilhados, sem dependências)
+      if (file.startsWith(path.join(ROOT, 'src', 'lib', 'link-audit-ledger') + path.sep) && resolved === path.join(decisionsLib, 'ledger-port')) continue;
       const hits = resolved !== null && (resolved === decisionsLib || resolved.startsWith(decisionsLib + path.sep) || resolved.startsWith(decisionsRoutes));
       assert.ok(!hits, `${rel(file)} importa as decisões ("${specifier}")`);
     }

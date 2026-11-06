@@ -1,3 +1,4 @@
+import { LEDGER_NOT_REQUIRED } from '../src/lib/link-audit-decisions/ledger-port';
 import { WITNESS_NOT_REQUIRED } from '../src/lib/link-audit-decisions/witness';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -29,7 +30,7 @@ registerCleanup();
 
 const key = (pending: PendingDto | null | undefined): string => JSON.stringify([pending?.origin, pending?.originDetail, pending?.isMine, pending?.record === null, pending?.recordedBy]);
 const svcOf = (w: World, origin?: OriginAuthenticator, fsOps?: FsOps) =>
-  createDecisionService({ knownHeads: WITNESS_NOT_REQUIRED, baseDir: w.decisionsDir, anchorDir: w.anchorDir, evidence: w.reader, evidenceBaseDir: w.evidenceDir, ...(origin ? { origin } : {}), ...(fsOps ? { fs: fsOps } : {}) });
+  createDecisionService({ ledger: LEDGER_NOT_REQUIRED, knownHeads: WITNESS_NOT_REQUIRED, baseDir: w.decisionsDir, anchorDir: w.anchorDir, evidence: w.reader, evidenceBaseDir: w.evidenceDir, ...(origin ? { origin } : {}), ...(fsOps ? { fs: fsOps } : {}) });
 /** Disco cheio SÓ na pasta de recibos: a decisão/resultado é publicado e fica PENDENTE (gravação legítima interrompida). */
 const receiptsFail = (anchorDir: string): FsOps =>
   faulty({

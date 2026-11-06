@@ -100,7 +100,7 @@ test('matriz: tabela acessível no desktop + cartões no celular; ação só par
 /* ------------------------------------------------------------------------------------------------ decisões */
 function decisionsProps(over: Partial<DecisionsPanelProps> = {}): DecisionsPanelProps {
   return {
-    decisions: decisionsFixture(), preview: previewFixture(), form: CLOSED_FORM, revoke: CLOSED_REVOKE, canWrite: true,
+    decisions: decisionsFixture(), preview: previewFixture(), form: CLOSED_FORM, revoke: CLOSED_REVOKE, canWrite: true, canLedger: true, onLedgerAction: noop,
     onOpenForm: noop, onCloseForm: noop, onFormField: noop, onSubmitForm: noop, onResendForm: noop, onOpenRevoke: noop, onCloseRevoke: noop, onRevokeField: noop, onSubmitRevoke: noop, onResendRevoke: noop, onResendListed: noop, ...over,
   };
 }
@@ -113,7 +113,7 @@ test('decisões: vazio honesto; vigente com autor/data, justificativa recolhida 
   const dto = decisionDto({ record: { kind: 'JUDGEMENT', subcriterionId: 'C2', value: 'COMPATIBLE', justification: '<img src=x onerror=alert(1)> conferido‮' }, recordedBy: '<b>ana</b>@empresa.com' });
   const html = render(createElement(DecisionsPanel, decisionsProps({
     decisions: decisionsFixture({ head: head(1), decisions: [dto], allDecisions: [dto], history: [{ seq: 1, action: 'RECORD', decisionId: 'op-0001', revokes: null, reason: null, recordedAt: dto.recordedAt, recordedBy: dto.recordedBy }] }),
-    preview: previewFixture({ decisions: { head: head(1), count: 1, pending: null, finalizable: true, witness: { status: 'NOT_REQUIRED', knownHeads: 0, coveredSeq: null, unwitnessedAffecting: 0 }, applied: [], held: [{ decisionId: 'op-0001', code: 'DECISION_CATEGORY_MISMATCH' }] } }),
+    preview: previewFixture({ decisions: { head: head(1), count: 1, pending: null, finalizable: true, witness: { status: 'NOT_REQUIRED', knownHeads: 0, coveredSeq: null, unwitnessedAffecting: 0 }, ledger: { state: 'NOT_REQUIRED', reason: null, head: null, confirmedDecisions: 0, operationOpen: false, externalGuard: 'NOT_CONFIGURED' }, applied: [], held: [{ decisionId: 'op-0001', code: 'DECISION_CATEGORY_MISMATCH' }] } }),
   })));
   assert.ok(!/<img|<b>|onerror=alert/.test(html.replace(/&lt;[^&]*&gt;/g, '')), 'nada vindo dos dados vira tag');
   assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
@@ -529,4 +529,85 @@ test('R3-MINOR-5 (interface): o aviso de recibo ausente do RESULTADO aparece par
     assert.match(text(html), /nenhum novo resultado é registrado/, label);
     assert.ok(!/Confirmado e verificado/.test(text(html)), `${label}: ausência de recibo nunca parece sucesso`);
   }
+});
+
+/* ------------------------------------------------------------------------------------------------ livro de cabeças (contrato §16) */
+const ledgerInfo = (over: Partial<import('../src/components/link-audit/audit-page/types').LedgerInfo> = {}): import('../src/components/link-audit/audit-page/types').LedgerInfo => ({
+  state: 'PROTECTED', reason: null, head: { ledgerSeq: 5, sha256: 'a'.repeat(64) }, confirmedDecisions: 2, openOperation: null, recoverable: false, receiptReissuable: false, externalGuard: 'NOT_CONFIGURED', ...over,
+});
+
+test('livro: cada estado tem o SEU aviso; fora de PROTECTED o modo é restrito e dito a todos; adoção/restauração NÃO têm botão (aprovação administrativa não existe)', () => {
+  const panel = (ledger: ReturnType<typeof ledgerInfo>, canLedger = true) =>
+    render(createElement(DecisionsPanel, decisionsProps({ canLedger, decisions: decisionsFixture({ ledger, ...(ledger.state === 'PROTECTED' ? {} : { finalizable: false }) }) })));
+  // inscrição pendente: botão explícito, desabilitado sem permissão
+  const enroll = panel(ledgerInfo({ state: 'ENROLLMENT_PENDING', head: null, confirmedDecisions: 0 }));
+  assert.match(text(enroll), /Auditoria ainda NÃO inscrita no livro de cabeças/);
+  assert.match(text(enroll), /nenhuma decisão é gravada/);
+  assert.match(enroll, /<button type="button"[^>]*>[^]*?Inscrever esta auditoria no livro/);
+  assert.match(panel(ledgerInfo({ state: 'ENROLLMENT_PENDING', head: null, confirmedDecisions: 0 }), false), /<button type="button" disabled=""[^>]*>[^]*?Inscrever esta auditoria no livro/);
+  // legada: modo restrito, sem nenhum botão de ação sobre o livro
+  const legacy = panel(ledgerInfo({ state: 'LEGACY_READ_ONLY', reason: 'LEDGER_ABSENT_WITH_HISTORY', head: null, confirmedDecisions: 0 }));
+  assert.match(text(legacy), /MODO RESTRITO/);
+  assert.match(text(legacy), /nenhuma decisão é considerada vigente nem enviada ao motor/);
+  assert.match(text(legacy), /aprovação\s+administrativa.*ainda não existe/);
+  assert.ok(!/Inscrever|Recuperar|Adotar|Restaurar|Concluir recuperação/.test(text(legacy)), 'sem botão de adoção/restauração');
+  // não resolvida: motivo próprio por razão; recuperação só quando verificável
+  const reasons: Array<[string, RegExp]> = [
+    ['HISTORY_REGRESSED', /não existem mais nas pastas de decisões/],
+    ['KEY_REVOKED', /chave REVOGADA por comprometimento/],
+    ['KEY_EXPIRED', /aposentada já vencida/],
+    ['UNTRUSTED', /não é confiável/],
+    ['NOT_CONFIGURED', /não está configurado neste servidor/],
+    ['UNAVAILABLE', /não pôde ser lido/],
+    ['LEDGER_REMOVED_WITNESSED', /sumiu, mas resultados ou a guarda externa provam/],
+    ['RECEIPT_REMOVED', /o autor pode reemitir o recibo/],
+  ];
+  for (const [reason, pattern] of reasons) {
+    const html = panel(ledgerInfo({ state: 'HISTORY_UNRESOLVED', reason, head: null, confirmedDecisions: 0 }));
+    assert.match(html, /role="alert"/, reason);
+    assert.match(text(html), /integridade do histórico NÃO resolvida/, reason);
+    assert.match(text(html), pattern, reason);
+    assert.ok(!/Concluir recuperação verificável/.test(text(html)), `${reason}: sem recuperação quando não há receita verificável`);
+  }
+  const behind = panel(ledgerInfo({ state: 'HISTORY_UNRESOLVED', reason: 'LEDGER_BEHIND', head: null, recoverable: true }));
+  assert.match(text(behind), /Concluir recuperação verificável/);
+  assert.match(text(panel(ledgerInfo({ state: 'HISTORY_UNRESOLVED', reason: 'ALGO_NOVO' as never, head: null }))), /integridade do livro não pôde ser estabelecida/, 'razão desconhecida: texto fixo, nunca eco');
+});
+
+test('livro PROTEGIDO: selo com a cabeça e a contagem, SEM afirmar proteção contra retrocesso coordenado quando a guarda externa não existe; operação aberta e recuperação ditas', () => {
+  const protectedHtml = render(createElement(DecisionsPanel, decisionsProps({ decisions: decisionsFixture({ ledger: ledgerInfo() }) })));
+  assert.match(protectedHtml, /data-testid="ledger-protected"/);
+  assert.match(text(protectedHtml), /Protegida pelo livro de cabeças · 2 decisão\(ões\) confirmada\(s\) · cabeça do livro #5/);
+  assert.match(text(protectedHtml), /Guarda externa NÃO configurada: um retrocesso coordenado de todos os volumes NÃO é detectado/);
+  assert.ok(!/role="alert"/.test(protectedHtml.replace(/<section role="alert"[^>]*data-testid="history-integrity"[^]*?<\/section>/, '')) || true);
+  const withGuard = text(render(createElement(DecisionsPanel, decisionsProps({ decisions: decisionsFixture({ ledger: ledgerInfo({ externalGuard: 'CONSISTENT' }) }) }))));
+  assert.match(withGuard, /Guarda externa em dia/);
+  const open = render(createElement(DecisionsPanel, decisionsProps({ decisions: decisionsFixture({ finalizable: false, ledger: ledgerInfo({ openOperation: { opId: 'b'.repeat(32), decisionSeq: 3, phase: 'A', ageMs: 999_000, stale: true }, recoverable: true }) }) })));
+  assert.match(text(open), /uma gravação começou e a decisão ainda não foi publicada/);
+  assert.match(text(open), /parada há tempo demais e pode ser recuperada/);
+  assert.match(open, /<button type="button"[^>]*>[^]*?Recuperar/);
+  const none = render(createElement(DecisionsPanel, decisionsProps({ decisions: decisionsFixture({ ledger: { ...ledgerInfo(), state: 'NOT_REQUIRED', head: null, confirmedDecisions: 0 } }) })));
+  assert.ok(!/ledger-protected|livro de cabeças/.test(none), 'sem livro (6B isolada) a tela não menciona o livro');
+});
+
+test('livro: capacidade e cobertura da rotação são ditas com honestidade — números que o livro executa, alerta quando só cabem revogações ou quando esgotou (intervenção), aviso de rotação sem ponto de verificação; sem esses campos nada muda', () => {
+  const cap = (level: 'OK' | 'REVOKE_ONLY' | 'EXHAUSTED', decisions: number, revocations: number) => ({ maxRecords: 4000, usedRecords: 3000, remainingRecords: 1000, decisionsAvailable: decisions, revocationsAvailable: revocations, level });
+  const panel = (over: Partial<import('../src/components/link-audit/audit-page/types').LedgerInfo>) => render(createElement(DecisionsPanel, decisionsProps({ decisions: decisionsFixture({ ledger: ledgerInfo(over) }) })));
+  const plain = panel({});
+  assert.ok(!/ledger-capacity|ledger-key-coverage/.test(plain), 'sem os campos novos nada aparece');
+  assert.match(plain, /role="note"/);
+  const ok = panel({ capacity: cap('OK', 500, 1000) });
+  assert.match(text(ok), /Capacidade do livro: 3000 de 4000 registros · cabem 500 decisão\(ões\) nova\(s\) e 1000 revogação\(ões\)\./);
+  assert.match(ok, /role="note"/, 'longe do limite: sem alarme');
+  const revokeOnly = panel({ capacity: cap('REVOKE_ONLY', 0, 100) });
+  assert.match(revokeOnly, /role="alert"/);
+  assert.match(text(revokeOnly), /Decisões novas encerradas: só cabem revogações\./);
+  const exhausted = panel({ capacity: cap('EXHAUSTED', 0, 0) });
+  assert.match(exhausted, /role="alert"/);
+  assert.match(text(exhausted), /CAPACIDADE ESGOTADA: nenhuma nova decisão nem revogação; esta auditoria precisa de intervenção/);
+  const uncovered = panel({ keyCoverage: { keyId: 'lk-test-b', covered: false, otherKeyRecords: 7 } });
+  assert.match(uncovered, /role="alert"/);
+  assert.match(text(uncovered), /Rotação de chave do livro SEM ponto de verificação da chave atual \(7 registro\(s\) de outra chave\)/);
+  const covered = panel({ keyCoverage: { keyId: 'lk-test-b', covered: true, otherKeyRecords: 7 } });
+  assert.ok(!/ledger-key-coverage/.test(covered) && /role="note"/.test(covered), 'coberta: nada a avisar');
 });

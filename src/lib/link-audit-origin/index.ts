@@ -43,7 +43,15 @@ export const ORIGIN_REVOKED_IDS_ENV = 'GMN_LINK_AUDIT_ORIGIN_REVOKED_KEY_IDS';
 /** Tamanho do material: 32 bytes (256 bits) de um CSPRNG, escritos em 64 hexadecimais minúsculos. */
 export const ORIGIN_KEY_BYTES = 32;
 
-export type OriginDomain = 'DECISION' | 'RUN';
+export type OriginDomain = 'DECISION' | 'RUN' | 'LEDGER';
+
+/**
+ * FINALIDADE da chave. `origin`: assina decisões e resultados (domínios DECISION/RUN). `ledger`: assina SÓ o livro de cabeças (domínio LEDGER), com
+ * chave, rótulo e sal de derivação PRÓPRIOS (Q3, 01/11/2026): a chave de origem não autentica o livro e vice-versa. A derivação de `origin` é a de sempre
+ * (nenhuma etiqueta existente muda).
+ */
+export type KeyPurpose = 'origin' | 'ledger';
+const PURPOSE_DOMAINS: Readonly<Record<KeyPurpose, readonly OriginDomain[]>> = { origin: ['DECISION', 'RUN'], ledger: ['LEDGER'] };
 
 /** Rótulo público da chave. Não deriva do segredo. */
 export const KEY_ID_PATTERN = /^[a-z0-9][a-z0-9-]{3,31}$/;
@@ -65,13 +73,14 @@ export type OriginVerdict = 'PROVEN' | 'MISSING' | 'INVALID' | 'KEY_MISMATCH' | 
 export interface OriginAuthenticator {
   /** Identificador PÚBLICO da chave que assina (nunca derivado do segredo). */
   readonly keyId: string;
+  /** Finalidade da chave: `origin` (decisões e resultados) ou `ledger` (só o livro de cabeças). */
+  readonly purpose: KeyPurpose;
   /** Etiqueta para o corpo (SEM `origin` e SEM `contentSha256`). */
   sign(domain: OriginDomain, body: object): OriginProof;
   /** Confere a etiqueta de uma entrada completa (com `origin` e `contentSha256`). Nunca lança. */
   verify(domain: OriginDomain, entry: object): Exclude<OriginVerdict, 'NO_KEY'>;
 }
 
-const LABEL = 'gmn.link-audit.origin.v1';
 
 /**
  * Filtro de SANIDADE (não prova entropia): recusa material nulo/repetitivo, em sequência ou com poucos bytes distintos. Um CSPRNG de 32
@@ -97,8 +106,8 @@ interface Material {
   readonly until: number | null;
 }
 
-function derive(id: string, hex: string, until: number | null): Material {
-  const derived = Buffer.from(hkdfSync('sha256', Buffer.from(hex, 'hex'), Buffer.from('gmn.link-audit.origin.salt'), LABEL, 32));
+function derive(id: string, hex: string, until: number | null, purpose: KeyPurpose): Material {
+  const derived = Buffer.from(hkdfSync('sha256', Buffer.from(hex, 'hex'), Buffer.from(`gmn.link-audit.${purpose}.salt`), `gmn.link-audit.${purpose}.v1`, 32));
   return { id, derived, until };
 }
 
@@ -138,6 +147,8 @@ export interface OriginKeyring {
   readonly revokedIds?: readonly string[];
   /** Relógio de QUEM CHAMA (o módulo é puro e não lê o relógio): obrigatório quando há chave aposentada, pois só ele decide a validade. */
   readonly now?: () => Date;
+  /** Finalidade da chave (padrão `origin`). */
+  readonly purpose?: KeyPurpose;
 }
 
 /** Lança `Error` (sem nunca incluir material) se a configuração for fraca, malformada ou contraditória. */
@@ -146,8 +157,9 @@ export function createOriginAuthenticator(keyring: string | OriginKeyring): Orig
   const current = splitKey(ring.current, false);
   if (!current) throw new Error('chave de origem atual malformada ou fraca');
   const now = ring.now;
+  const purpose: KeyPurpose = ring.purpose ?? 'origin';
   if ((ring.retired ?? []).length > 0 && !now) throw new Error('chave aposentada exige o relógio de quem chama');
-  const known = new Map<string, Material>([[current.id, derive(current.id, current.hex, null)]]);
+  const known = new Map<string, Material>([[current.id, derive(current.id, current.hex, null, purpose)]]);
   const seenMaterial = new Set<string>([current.hex]);
   for (const spec of ring.retired ?? []) {
     const parts = splitKey(spec, true);
@@ -158,7 +170,7 @@ export function createOriginAuthenticator(keyring: string | OriginKeyring): Orig
     const until = dayOfString(parts.day as string);
     const today = now ? dayNumber(now()) : Number.NaN;
     if (!Number.isFinite(today) || until > today + MAX_RETIRED_DAYS) throw new Error('validade da chave aposentada acima do teto');
-    known.set(parts.id, derive(parts.id, parts.hex, until));
+    known.set(parts.id, derive(parts.id, parts.hex, until, purpose));
   }
   const revoked = new Set<string>();
   for (const id of ring.revokedIds ?? []) {
@@ -169,10 +181,13 @@ export function createOriginAuthenticator(keyring: string | OriginKeyring): Orig
   const signer = known.get(current.id) as Material;
   return {
     keyId: current.id,
+    purpose,
     sign(domain, body) {
+      if (!PURPOSE_DOMAINS[purpose].includes(domain)) throw new Error('domínio não permitido para esta chave');
       return { v: ORIGIN_VERSION, kid: signer.id, tag: tagOf(signer, domain, body) };
     },
     verify(domain, entry) {
+      if (!PURPOSE_DOMAINS[purpose].includes(domain)) return 'INVALID';
       const { origin, contentSha256, ...body } = entry as { origin?: unknown; contentSha256?: unknown };
       void contentSha256;
       if (origin === undefined) return 'MISSING';
@@ -202,24 +217,46 @@ const list = (raw: string | undefined): string[] | null => {
   return items.some((item) => item === '' || item !== item.trim()) ? null : items; // sem espaço nem item vazio: representação estrita
 };
 
+export interface KeyringEnvNames {
+  readonly key: string;
+  readonly retired: string;
+  readonly revoked: string;
+}
+export type KeyringConfig =
+  | { readonly ok: true; readonly authenticator: OriginAuthenticator }
+  | { readonly ok: false; readonly code: 'NOT_CONFIGURED' | 'WEAK' | 'INVALID' };
+
+/** Material hexadecimal de uma especificação `<id>:<hex>[:<dia>]` (ou `null` se malformada): serve para conferir que duas famílias de chaves NÃO compartilham material. */
+export const keyMaterialOf = (spec: string, withDay: boolean): { readonly id: string; readonly hex: string } | null => {
+  const parts = splitKey(spec, withDay);
+  return parts ? { id: parts.id, hex: parts.hex } : null;
+};
+
+/** Lê um chaveiro do ambiente do SERVIDOR (nomes, finalidade e ambiente informados por quem chama: o módulo não lê o ambiente). Nenhum código revela material. */
+export function keyringConfigFromEnv(names: KeyringEnvNames, purpose: KeyPurpose, env: Readonly<Record<string, string | undefined>>, now?: () => Date): KeyringConfig {
+  const raw = env[names.key];
+  if (raw === undefined || raw === '') return { ok: false, code: 'NOT_CONFIGURED' };
+  if (!splitKey(raw, false)) return { ok: false, code: 'WEAK' };
+  const retired = list(env[names.retired]);
+  const revokedIds = list(env[names.revoked]);
+  if (retired === null || revokedIds === null) return { ok: false, code: 'INVALID' };
+  if (retired.some((spec) => !splitKey(spec, true))) return { ok: false, code: 'WEAK' };
+  try {
+    return { ok: true, authenticator: createOriginAuthenticator({ current: raw, retired, revokedIds, purpose, ...(now ? { now } : {}) }) };
+  } catch {
+    return { ok: false, code: 'INVALID' };
+  }
+}
+
 /**
- * Lê as chaves do ambiente do SERVIDOR. Sem chave ⇒ `ORIGIN_KEY_NOT_CONFIGURED`; chave atual ou aposentada malformada/fraca ⇒ `ORIGIN_KEY_WEAK`;
+ * Lê as chaves de ORIGEM do ambiente do SERVIDOR. Sem chave ⇒ `ORIGIN_KEY_NOT_CONFIGURED`; chave atual ou aposentada malformada/fraca ⇒ `ORIGIN_KEY_WEAK`;
  * configuração contraditória (id repetido, revogada ainda configurada, validade inválida) ⇒ `ORIGIN_CONFIG_INVALID`. Em qualquer `ok:false` as
  * escritas respondem 503 e nada é gravado. Nenhum código revela material.
  */
 export function originConfigFromEnv(env: Readonly<Record<string, string | undefined>> = process.env, now?: () => Date): OriginConfig {
-  const raw = env[ORIGIN_KEY_ENV];
-  if (raw === undefined || raw === '') return { ok: false, code: 'ORIGIN_KEY_NOT_CONFIGURED' };
-  if (!splitKey(raw, false)) return { ok: false, code: 'ORIGIN_KEY_WEAK' };
-  const retired = list(env[ORIGIN_RETIRED_KEYS_ENV]);
-  const revokedIds = list(env[ORIGIN_REVOKED_IDS_ENV]);
-  if (retired === null || revokedIds === null) return { ok: false, code: 'ORIGIN_CONFIG_INVALID' };
-  if (retired.some((spec) => !splitKey(spec, true))) return { ok: false, code: 'ORIGIN_KEY_WEAK' };
-  try {
-    return { ok: true, authenticator: createOriginAuthenticator({ current: raw, retired, revokedIds, ...(now ? { now } : {}) }) };
-  } catch {
-    return { ok: false, code: 'ORIGIN_CONFIG_INVALID' };
-  }
+  const config = keyringConfigFromEnv({ key: ORIGIN_KEY_ENV, retired: ORIGIN_RETIRED_KEYS_ENV, revoked: ORIGIN_REVOKED_IDS_ENV }, 'origin', env, now);
+  if (config.ok) return config;
+  return { ok: false, code: config.code === 'NOT_CONFIGURED' ? 'ORIGIN_KEY_NOT_CONFIGURED' : config.code === 'WEAK' ? 'ORIGIN_KEY_WEAK' : 'ORIGIN_CONFIG_INVALID' };
 }
 
 /** Veredito para uma entrada, com o caso "este servidor não tem autenticador". */

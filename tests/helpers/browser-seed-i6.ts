@@ -3,11 +3,9 @@
  * resultados, que as regras de isolamento só permitem a rotas de servidor e a testes (scripts/ não pode importá-los). Grava SÓ no diretório temporário recebido; não lê .env*, não acessa
  * Redis/Supabase/Serper e a sessão é assinada pelo segredo ALEATÓRIO desta execução (recebido pela variável de ambiente GMN_SEED_SECRET, nunca versionado).
  */
-import { WITNESS_NOT_REQUIRED } from '../../src/lib/link-audit-decisions/witness';
 import fs from 'node:fs';
 import path from 'node:path';
-import { createDecisionService } from '../../src/lib/link-audit-decisions';
-import { createEvidenceReader } from '../../src/lib/link-audit-evidence';
+import { browserSeedServices } from './browser-seed-ledger';
 import { createSessionToken, SESSION_COOKIE } from '../../src/lib/auth/session';
 import { createOriginAuthenticator } from '../../src/lib/link-audit-origin';
 import { seal, serialize } from '../../src/lib/link-audit-storage';
@@ -28,19 +26,30 @@ import { bodyOf, buildEvaluation, FakeEvaluator, makeService } from './link-audi
   const flags = (flag ?? '').split(',');
   const withScored = flags.includes('with-scored');
   const withForged = flags.includes('with-forged');
+  const withLedgerStates = flags.includes('with-ledger'); // `unenrolled` = auditoria vazia AINDA NÃO inscrita no livro; `legacy` = histórico anterior ao livro (modo restrito)
   const originKey = process.env.GMN_LINK_AUDIT_ORIGIN_KEY ?? '';
   if (originKey.length < 40) throw new Error('GMN_LINK_AUDIT_ORIGIN_KEY ausente'); // a MESMA chave do servidor: só assim as pendências legítimas são comprovadas
   const origin = createOriginAuthenticator(originKey);
   const d = (name: string): string => path.join(root, name);
-  for (const dir of ['evidence', 'decisions', 'anchors', 'results', 'resanchors', 'other']) fs.mkdirSync(d(dir), { recursive: true });
+  for (const dir of ['evidence', 'decisions', 'anchors', 'results', 'resanchors', 'other', 'ledger']) fs.mkdirSync(d(dir), { recursive: true });
   const SCORED_ID = 'auditoria-vis-scor1';
-  const IDS = { main: 'auditoria-vis-main1', pdec: 'auditoria-vis-pdec1', pres: 'auditoria-vis-pres1', integ: 'auditoria-vis-integ', hist: 'auditoria-vis-hist1', ...(withScored ? { scored: SCORED_ID } : {}), ...(withForged ? { forgedDec: 'auditoria-vis-fdec1', forgedRun: 'auditoria-vis-frun1', unsealed: 'auditoria-vis-nseal', revoked: 'auditoria-vis-rev01' } : {}) };
+  const IDS = { main: 'auditoria-vis-main1', pdec: 'auditoria-vis-pdec1', pres: 'auditoria-vis-pres1', integ: 'auditoria-vis-integ', hist: 'auditoria-vis-hist1', ...(withScored ? { scored: SCORED_ID } : {}), ...(withForged ? { forgedDec: 'auditoria-vis-fdec1', forgedRun: 'auditoria-vis-frun1', unsealed: 'auditoria-vis-nseal', revoked: 'auditoria-vis-rev01' } : {}), ...(withLedgerStates ? { unenrolled: 'auditoria-vis-enrl1', legacy: 'auditoria-vis-lgcy1' } : {}) };
   for (const id of Object.values(IDS)) await writeFull(d('evidence'), { auditId: id });
   // atestação da coleta (papel de quem tem a chave): TODAS as auditorias com evidência íntegra, exceto `unsealed` (coleta SEM prova, de propósito) e `integ` (adulterada abaixo)
   await sealAuditsForBrowserSeed(root, Object.entries(IDS).filter(([key]) => key !== 'unsealed' && key !== 'integ').map(([, id]) => id));
-  const reader = createEvidenceReader({ baseDir: d('evidence'), authorize: () => true });
-  const decisions = (fsOps?: Parameters<typeof createDecisionService>[0]['fs']) => createDecisionService({ knownHeads: WITNESS_NOT_REQUIRED, origin, baseDir: d('decisions'), anchorDir: d('anchors'), evidence: reader, evidenceBaseDir: d('evidence'), ...(fsOps ? { fs: fsOps } : {}) });
+  const { decisions, legacyDecisions } = browserSeedServices(root, origin); // serviços REAIS, com o livro de cabeças (mesma configuração do servidor)
   const actor = { email };
+  // LIVRO: cada auditoria nasce INSCRITA (inscrição explícita, como o operador faz), exceto as duas de estado de propósito: `unenrolled` (ainda por inscrever)
+  // e `legacy` (histórico gravado antes do livro, sem inscrição: modo restrito, só consulta)
+  for (const id of Object.values(IDS)) {
+    if (id === (IDS as Record<string, string>).unenrolled || id === (IDS as Record<string, string>).legacy) continue;
+    const enrolled = await decisions().ledgerAction(actor, id, { action: 'ENROLL' }, clock);
+    if (!enrolled.ok) throw new Error(`semente: inscrição ${id} ${enrolled.code}`);
+  }
+  if (withLedgerStates) {
+    const old = await legacyDecisions().create(actor, (IDS as Record<string, string>).legacy as string, { record: rec.c2(), expectedHead: null }, clock);
+    if (!old.ok) throw new Error('semente: histórico legado ' + old.code);
+  }
   const onlyFailing = (prefix: string) => faulty({ async writeExclusive(target, data, mode) { if (target.startsWith(prefix)) throw errno('ENOSPC'); return nodeFsOps.writeExclusive(target, data, mode); } });
 
   // B: decisão PENDENTE (recibo da decisão não gravado)

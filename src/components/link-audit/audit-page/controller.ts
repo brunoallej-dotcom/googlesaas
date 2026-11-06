@@ -361,6 +361,22 @@ const sendRevoke = (ctx: Ctx, request: DecisionRequest): Promise<void> =>
     onError: (message) => ctx.dispatch({ type: 'REVOKE_SET', patch: { phase: 'error', message } }),
   });
 
+/**
+ * Ações sobre o LIVRO de cabeças: inscrever (auditoria vazia) e recuperar (verificável). A adoção e a restauração NÃO existem na tela: exigem aprovação administrativa
+ * (identidade verificável e dupla aprovação) que o sistema ainda não tem. Depois de qualquer resposta a tela recarrega decisões e prévia (nunca confia no que mudou).
+ */
+export async function runLedgerAction(ctx: Ctx, action: 'ENROLL' | 'RECOVER'): Promise<void> {
+  const state = ctx.getState();
+  ctx.dispatch({ type: 'NOTICE', notice: { tone: 'info', text: action === 'ENROLL' ? 'Inscrevendo a auditoria no livro de cabeças…' : 'Aplicando a recuperação verificável do livro…' } });
+  const out = await ctx.api.ledger(state.auditId, action);
+  if (out.kind === 'ok') {
+    ctx.dispatch({ type: 'NOTICE', notice: { tone: 'success', text: action === 'ENROLL' ? 'Auditoria inscrita no livro de cabeças.' : 'Recuperação do livro concluída (apenas o que era verificável).' } });
+  } else {
+    ctx.dispatch({ type: 'NOTICE', notice: { tone: out.kind === 'failure' && out.code === 'ADMIN_APPROVAL_UNAVAILABLE' ? 'warning' : 'danger', text: describeFailure(out) } });
+  }
+  await Promise.all([loadSection(ctx, 'decisions'), loadSection(ctx, 'preview')]);
+}
+
 /** Decisão pendente que veio do histórico (recarregou a página): reenvia o pedido original reconstruído do que a API expõe. */
 export async function resendListedPending(ctx: Ctx): Promise<void> {
   const list = ctx.getState().decisions.data;

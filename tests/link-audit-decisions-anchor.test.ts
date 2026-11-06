@@ -1,3 +1,4 @@
+import { LEDGER_NOT_REQUIRED } from '../src/lib/link-audit-decisions/ledger-port';
 import { WITNESS_NOT_REQUIRED } from '../src/lib/link-audit-decisions/witness';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -70,20 +71,20 @@ test('B1 — último arquivo re-selado: ANCHOR_MISMATCH; âncora reescrita: ANCH
 test('B1 — pasta de âncoras ausente/indisponível: nenhuma decisão é gravada (503) e a leitura também falha fechada', async () => {
   const w = await world();
   await must(w.service.create(ANA, w.auditId, { record: rec.c2() }, clock()));
-  const lost = createDecisionService({ knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: w.decisionsDir, anchorDir: path.join(tmpDir('lad-x-'), 'sumiu'), evidence: w.reader, evidenceBaseDir: w.evidenceDir });
+  const lost = createDecisionService({ ledger: LEDGER_NOT_REQUIRED, knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: w.decisionsDir, anchorDir: path.join(tmpDir('lad-x-'), 'sumiu'), evidence: w.reader, evidenceBaseDir: w.evidenceDir });
   for (const result of [await lost.list(ANA, w.auditId), await lost.create(ANA, w.auditId, { record: rec.c3(), expectedHead: null }, clock())]) {
     assert.ok(!result.ok && result.code === 'ANCHOR_STORAGE_UNAVAILABLE');
   }
   assert.equal(fs.readdirSync(path.join(w.decisionsDir, w.auditId)).length, 1);
   // anchor volume trocado por um VAZIO (mas existente): 1 decisão sem âncora é uma PENDENTE (não vale e ninguém a "legitima"); 2 ou mais é falha
-  const empty = createDecisionService({ knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: w.decisionsDir, anchorDir: tmpDir('lad-vazio-'), evidence: w.reader, evidenceBaseDir: w.evidenceDir });
+  const empty = createDecisionService({ ledger: LEDGER_NOT_REQUIRED, knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: w.decisionsDir, anchorDir: tmpDir('lad-vazio-'), evidence: w.reader, evidenceBaseDir: w.evidenceDir });
   const head = (await must(w.raw.list(ANA, w.auditId))).head;
   const shown = await must(empty.list(ANA, w.auditId));
   assert.deepEqual([shown.head, shown.pending?.seq, shown.operatorRecords.length, shown.anchors], [null, 1, 0, { count: 0, lastSeq: 0, unanchored: 1 }]);
   const refused = await empty.create(ANA, w.auditId, { record: rec.c3(), expectedHead: head }, clock());
   assert.ok(!refused.ok && refused.code === 'PENDING_UNCONFIRMED' && refused.pending?.seq === 1);
   assert.equal(fs.readdirSync(path.join(w.decisionsDir, w.auditId)).length, 1);
-  const swapped = createDecisionService({ knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: w.decisionsDir, anchorDir: tmpDir('lad-vazio2-'), evidence: w.reader, evidenceBaseDir: w.evidenceDir });
+  const swapped = createDecisionService({ ledger: LEDGER_NOT_REQUIRED, knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: w.decisionsDir, anchorDir: tmpDir('lad-vazio2-'), evidence: w.reader, evidenceBaseDir: w.evidenceDir });
   await must(w.service.create(ANA, w.auditId, { record: rec.c3() }, clock())); // com o volume certo a auditoria continua normal
   const bad = await swapped.list(ANA, w.auditId); // 2 decisões e nenhuma âncora
   assert.ok(!bad.ok && bad.code === 'ANCHOR_INTEGRITY');
@@ -98,7 +99,7 @@ test('janela de queda no serviço: se o recibo falhar depois da decisão, a resp
     },
   });
   const w = await world({ fs: failing });
-  const svc = createDecisionService({ knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: w.decisionsDir, anchorDir: anchorRoot, evidence: w.reader, evidenceBaseDir: w.evidenceDir, fs: failing });
+  const svc = createDecisionService({ ledger: LEDGER_NOT_REQUIRED, knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: w.decisionsDir, anchorDir: anchorRoot, evidence: w.reader, evidenceBaseDir: w.evidenceDir, fs: failing });
   const raw = withAutoHead(svc);
   const first = await must(raw.create(ANA, w.auditId, { record: rec.c2() }, clock()));
   assert.deepEqual([first.anchored, first.replayed], [true, false]);
@@ -108,7 +109,7 @@ test('janela de queda no serviço: se o recibo falhar depois da decisão, a resp
   assert.deepEqual([second.head, second.pending?.seq, second.pending?.confirmed, second.pending?.action], [first.head, 2, false, 'RECORD']);
   const listed = await must(raw.list(ANA, w.auditId));
   assert.deepEqual([listed.history.length, listed.head, listed.pending?.seq, listed.anchors.unanchored, listed.decisions.map((d) => d.decisionId), listed.operatorRecords.map((r) => r.id)], [1, first.head, 2, 1, ['op-0001'], ['op-0001']]);
-  const healthy = createDecisionService({ knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: w.decisionsDir, anchorDir: anchorRoot, evidence: w.reader, evidenceBaseDir: w.evidenceDir });
+  const healthy = createDecisionService({ ledger: LEDGER_NOT_REQUIRED, knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: w.decisionsDir, anchorDir: anchorRoot, evidence: w.reader, evidenceBaseDir: w.evidenceDir });
   const other = await healthy.create(BIA, w.auditId, { record: rec.p3(), expectedHead: first.head }, clock()); // outro operador: NÃO a conclui
   assert.ok(!other.ok && other.code === 'PENDING_UNCONFIRMED');
   const different = await healthy.create(ANA, w.auditId, { record: rec.p3(), expectedHead: first.head }, clock()); // o autor com OUTRO pedido: também não
@@ -263,7 +264,7 @@ test('S5 — as últimas 100 entradas são reservadas a REVOGAÇÕES: criar é r
   const anchorDir = tmpDir('lad-res-a-');
   const AUDIT = 'auditoria-reserva-01';
   writeAlternatingChain(decisionsDir, anchorDir, AUDIT, 9899); // a última (ímpar) é uma criação vigente: op-9899
-  const raw = createDecisionService({ knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: decisionsDir, anchorDir, evidence: fakeEvidence() });
+  const raw = createDecisionService({ ledger: LEDGER_NOT_REQUIRED, knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: decisionsDir, anchorDir, evidence: fakeEvidence() });
   const listed = await must(raw.list(ANA, AUDIT));
   assert.deepEqual([listed.history.length, listed.decisions.map((d) => d.decisionId)], [9899, ['op-9899']]);
   const create = await raw.create(ANA, AUDIT, { record: rec.c3(), expectedHead: listed.head }, clock());
@@ -275,7 +276,7 @@ test('S5 — as últimas 100 entradas são reservadas a REVOGAÇÕES: criar é r
 
 test('S6 — collectedAt inválido ou longo (layout legado) não derruba a criação nem vira "histórico adulterado": basis.collectedAt fica null', async () => {
   for (const weird of ['x'.repeat(120), 'ontem à tarde', '2026-10-22 12:54:48']) {
-    const svc = withAutoHead(createDecisionService({ knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: tmpDir('lad-s6-d-'), anchorDir: tmpDir('lad-s6-a-'), evidence: fakeEvidence(weird) }));
+    const svc = withAutoHead(createDecisionService({ ledger: LEDGER_NOT_REQUIRED, knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: tmpDir('lad-s6-d-'), anchorDir: tmpDir('lad-s6-a-'), evidence: fakeEvidence(weird) }));
     const made = await must(svc.create(ANA, 'auditoria-legado-01', { record: rec.c2() }, clock()));
     assert.equal(made.decision.basis.collectedAt, null, weird.slice(0, 20));
     assert.equal(made.decision.basis.capture, 1);
@@ -326,7 +327,7 @@ test('S8 — a validação cruzada da 6A NÃO lê origem/status/captura das evid
 
 test('S9 — histórico v1 gravado em arquivos (fixture de ouro) continua legível: se a 6A apertar o esquema, este teste acusa a migração necessária', async () => {
   assert.ok(fs.existsSync(path.join(GOLDEN, 'decisions', GOLDEN_AUDIT, 'd0001.json')), 'fixture ausente');
-  const svc = createDecisionService({ knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: path.join(GOLDEN, 'decisions'), anchorDir: path.join(GOLDEN, 'anchors'), evidence: fakeEvidence() });
+  const svc = createDecisionService({ ledger: LEDGER_NOT_REQUIRED, knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: path.join(GOLDEN, 'decisions'), anchorDir: path.join(GOLDEN, 'anchors'), evidence: fakeEvidence() });
   const listed = await must(svc.list(ANA, GOLDEN_AUDIT));
   assert.deepEqual(listed.history.map((h) => [h.seq, h.action]), [[1, 'RECORD'], [2, 'RECORD'], [3, 'RECORD'], [4, 'REVOKE'], [5, 'RECORD']]);
   assert.deepEqual(listed.allDecisions.map((d) => [d.decisionId, d.status]), [['op-0001', 'SUPERSEDED'], ['op-0002', 'REVOKED'], ['op-0003', 'ACTIVE'], ['op-0005', 'ACTIVE']]);
@@ -339,7 +340,7 @@ test('S9 — histórico v1 gravado em arquivos (fixture de ouro) continua legív
     fs.mkdirSync(to);
     for (const name of fs.readdirSync(from)) fs.copyFileSync(path.join(from, name), path.join(to, name));
   }
-  const extended = createDecisionService({ knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: copy.d, anchorDir: copy.a, evidence: fakeEvidence() });
+  const extended = createDecisionService({ ledger: LEDGER_NOT_REQUIRED, knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: copy.d, anchorDir: copy.a, evidence: fakeEvidence() });
   const next = await must(extended.create(ANA, GOLDEN_AUDIT, { record: rec.c3(), expectedHead: listed.head }, clock()));
   assert.deepEqual([next.decision.decisionId, next.anchored, next.anchors.count], ['op-0006', true, 6]);
 });

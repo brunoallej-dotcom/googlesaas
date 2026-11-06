@@ -1,3 +1,4 @@
+import { applyLedgerEnv, routeWorld } from './helpers/link-audit-ledger-fixtures';
 import { proveEvidenceForRoutes } from './helpers/link-audit-evidence-provenance-fixtures';
 import assert from 'node:assert/strict';
 import test, { afterEach } from 'node:test';
@@ -13,7 +14,7 @@ import * as flow from '../src/components/link-audit/audit-page/controller';
 import { initialPageState, pageReducer } from '../src/components/link-audit/audit-page/state';
 import { deriveRegistry } from '../src/components/link-audit/audit-page/status';
 import { createSessionToken, SESSION_COOKIE } from '../src/lib/auth/session';
-import { registerCleanup, tmpDir, world, rec, must, clock } from './helpers/link-audit-decisions-fixtures';
+import { registerCleanup, tmpDir, rec, must, clock } from './helpers/link-audit-decisions-fixtures';
 import { TEST_ORIGIN_KEY } from './helpers/link-audit-origin-fixtures';
 
 /*
@@ -31,7 +32,7 @@ let seq = 0;
 const operators = Array.from({ length: 200 }, (_, i) => `ui${i}@empresa.com`);
 
 async function setup() {
-  const w = await world();
+  const w = await routeWorld();
   await proveEvidenceForRoutes(env, w);
   const results = tmpDir('lad-ui-rs-');
   const anchors = tmpDir('lad-ui-ra-');
@@ -44,6 +45,7 @@ async function setup() {
   env.GMN_LINK_AUDIT_DECISIONS_ANCHOR_DIR = w.anchorDir;
   env.GMN_LINK_AUDIT_RESULTS_DIR = results;
   env.GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR = anchors;
+  applyLedgerEnv(env, w);
   const email = operators[seq++ % operators.length] as string;
   const cookie = `${SESSION_COOKIE}=${await createSessionToken(email, SECRET)}`;
   return { w, email, cookie };

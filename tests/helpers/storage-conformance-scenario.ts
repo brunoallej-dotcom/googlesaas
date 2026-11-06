@@ -1,3 +1,4 @@
+import { LEDGER_NOT_REQUIRED } from '../../src/lib/link-audit-decisions/ledger-port';
 import { WITNESS_NOT_REQUIRED } from '../../src/lib/link-audit-decisions/witness';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -78,7 +79,7 @@ export async function runConformanceScenario(): Promise<ConformanceReport> {
   const anchorDir = tmpDir('cf-a-');
   let tick = 0;
   const clock = (): string => new Date(Date.UTC(2026, 9, 21, 12, 0, tick++)).toISOString();
-  const service = (ops?: FsOps) => createDecisionService({ knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: decisionsDir, anchorDir, evidence, ...(ops ? { fs: ops } : {}) });
+  const service = (ops?: FsOps) => createDecisionService({ ledger: LEDGER_NOT_REQUIRED, knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: decisionsDir, anchorDir, evidence, ...(ops ? { fs: ops } : {}) });
   const healthy = service();
   const steps: Array<{ step: string; result: unknown }> = [];
   const note = (step: string, result: unknown): void => void steps.push({ step, result });

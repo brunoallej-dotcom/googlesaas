@@ -114,18 +114,80 @@ export function atomicOnly(ops: FsOps): FsOps {
 }
 
 export const ATOMIC_UNAVAILABLE_ERRNO = 'ELINKUNAVAILABLE';
+
+/** Leituras de arquivos de um histórico em paralelo LIMITADO (R7-10: o custo era 100% sequencial). */
+export const READ_CONCURRENCY = 32;
+/**
+ * Aplica `task` a cada item com concorrência limitada e devolve os resultados NA ORDEM dos itens. Só para LEITURAS (sem efeito colateral): quem consome percorre os resultados
+ * em ordem e para no primeiro que falha, então o veredito é o mesmo da leitura sequencial.
+ */
+export async function mapOrdered<T, R>(items: readonly T[], concurrency: number, task: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const index = next;
+      next += 1;
+      if (index >= items.length) return;
+      results[index] = await task(items[index] as T, index);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+  return results;
+}
+
+/**
+ * DURABILIDADE OBSERVADA (R6-07). `publishExclusive` trata o `fsync` do DIRETÓRIO como melhor esforço (comportamento histórico da 6B, risco P-4): a falha é engolida e a
+ * gravação é dada como feita. Com o livro de cabeças a ordem de durabilidade ENTRE pastas faz parte do protocolo (INTENT → entrada → recibo → CONFIRMED), então quem usa o
+ * livro embrulha o `FsOps` aqui, olha `failure()` depois de cada publicação e NÃO devolve sucesso (e trava a base) quando o diretório não ficou comprovadamente durável.
+ */
+export function watchDurability(ops: FsOps): { readonly ops: FsOps; readonly failure: () => string | null } {
+  let failure: string | null = null;
+  return {
+    ops: {
+      ...ops,
+      async syncDirectory(dir) {
+        try {
+          await ops.syncDirectory(dir);
+        } catch (error) {
+          failure = errorCode(error) || 'UNKNOWN';
+          throw error;
+        }
+      },
+    },
+    failure: () => failure,
+  };
+}
+/** Três resultados distintos (R7-04): DURÁVEL (sucesso), RECUPERÁVEL E PENDENTE (`ANCHOR_PENDING`, reenvio conclui) e DURABILIDADE DESCONHECIDA (esta mensagem; NUNCA sucesso). */
+export const DURABILITY_UNPROVEN_MESSAGE = 'DURABILIDADE DESCONHECIDA: o armazenamento não comprovou a gravação (falha no fsync do diretório). Isto NÃO é sucesso: as escritas ficam interrompidas até o servidor reiniciar; depois, reenvie o MESMO pedido — ele só conclui depois de sincronizar de novo as pastas.';
 export const FATAL_ERRNO = new Set(['EIO', 'EROFS']);
 
 /* ------------------------------------------------------------------ bloqueio após erro fatal de disco */
 
 const trippedBases = new Set<string>();
-export const tripBase = (root: string): void => void trippedBases.add(root);
+/**
+ * Durabilidade PROVADA neste processo (chave = raiz + auditoria): um fsync de diretório bem-sucedido DEPOIS de o registro existir. Um reinício NÃO é comprovação: o processo novo começa sem nenhuma
+ * prova e cada auditoria precisa ser provada de novo (uma vez) antes de ser lida como protegida. Travar a base (`tripBase`) invalida as provas daquela raiz.
+ */
+const provenKeys = new Set<string>();
+export const markDurabilityProven = (key: string): void => void provenKeys.add(key);
+export const isDurabilityProven = (key: string): boolean => provenKeys.has(key);
+export function tripBase(root: string): void {
+  trippedBases.add(root);
+  for (const key of provenKeys) if (key.startsWith(`${root}\0`)) provenKeys.delete(key);
+}
 export const isBaseTripped = (root: string): boolean => trippedBases.has(root);
 
-/** Depois de EIO/EROFS a base fica bloqueada para escrita até o processo reiniciar (ou `clearStorageFatal`, nos testes). */
+/** Depois de EIO/EROFS a base fica bloqueada para escrita até o processo reiniciar (ou `clearStorageFatal`, nos testes — que também esquece as provas de durabilidade, como um reinício de verdade). */
 export function clearStorageFatal(baseDir?: string): void {
-  if (baseDir === undefined) trippedBases.clear();
-  else trippedBases.delete(path.resolve(baseDir));
+  if (baseDir === undefined) {
+    trippedBases.clear();
+    provenKeys.clear();
+    return;
+  }
+  const root = path.resolve(baseDir);
+  trippedBases.delete(root);
+  for (const key of provenKeys) if (key.startsWith(`${root}\0`)) provenKeys.delete(key);
 }
 export const isStorageFatal = (baseDir: string): boolean => trippedBases.has(path.resolve(baseDir));
 

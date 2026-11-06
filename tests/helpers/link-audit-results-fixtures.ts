@@ -1,3 +1,4 @@
+import { NOT_REQUIRED_VIEW } from '../../src/lib/link-audit-decisions/ledger-port';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Head } from '../../src/lib/link-audit-decisions';
@@ -132,7 +133,7 @@ export function buildEvaluation(spec: Spec = {}): Evaluation {
     layout: 'VERSIONED',
     profile: spec.website && websiteTrace ? { state: 'AVAILABLE', source, website: { state: 'DERIVED', derived: WEBSITE_URL, derivation: { rawSha256: websiteTrace.rawSha256 }, utm: { level: 'COMPLETE' } } } : { state: 'AVAILABLE', source, website: { state: 'ABSENT' } },
   };
-  const decisions = { auditId: spec.auditId ?? RES_AUDIT, head, pending: null, finalizable: true, decisions: records.map((r) => ({ decisionId: r.id })), operatorRecords: records };
+  const decisions = { auditId: spec.auditId ?? RES_AUDIT, head, pending: null, finalizable: true, ledger: NOT_REQUIRED_VIEW, decisions: records.map((r) => ({ decisionId: r.id })), operatorRecords: records };
   const payload = {
     definitive: false,
     auditId: spec.auditId ?? RES_AUDIT,
@@ -164,6 +165,9 @@ export class FakeEvaluator implements PreviewEvaluator {
   current: Evaluation | PreviewFailure;
   evaluateCalls = 0;
   fingerprintCalls = 0;
+  barrierCalls = 0;
+  /** Veredito da barreira de durabilidade (padrão: comprovada). Os avaliadores falsos não citam o livro, mas conclusões de pendentes com `ledgerHead` a chamam. */
+  barrierOutcome: Awaited<ReturnType<PreviewEvaluator['durabilityBarrier']>> = { ok: true };
   /** Chamado a cada `evaluate` (depois de contar); pode trocar `current` para simular mudança entre etapas. */
   onEvaluate: ((n: number) => void) | null = null;
   /** Chamado a cada `fingerprintNow`; pode trocar `current`. */
@@ -175,6 +179,10 @@ export class FakeEvaluator implements PreviewEvaluator {
     this.evaluateCalls++;
     this.onEvaluate?.(this.evaluateCalls);
     return 'ok' in this.current && this.current.ok === false ? (this.current as PreviewFailure) : { ok: true, value: this.current as Evaluation };
+  }
+  async durabilityBarrier(): Promise<Awaited<ReturnType<PreviewEvaluator['durabilityBarrier']>>> {
+    this.barrierCalls++;
+    return this.barrierOutcome;
   }
   async fingerprintNow(): Promise<{ readonly ok: true; readonly fingerprint: string } | PreviewFailure> {
     this.fingerprintCalls++;

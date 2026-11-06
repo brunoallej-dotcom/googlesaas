@@ -1,3 +1,5 @@
+import { applyLedgerEnv, routeWorld } from './helpers/link-audit-ledger-fixtures';
+import { LEDGER_NOT_REQUIRED } from '../src/lib/link-audit-decisions/ledger-port';
 import { WITNESS_NOT_REQUIRED } from '../src/lib/link-audit-decisions/witness';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -14,7 +16,7 @@ import { nodeFsOps } from '../src/lib/link-audit/snapshot-store';
 import { seal, serialize } from '../src/lib/link-audit-storage';
 import { DECISION_FILE_KIND, DECISION_SCHEMA_VERSION } from '../src/lib/link-audit-decisions/types';
 import { errno } from './helpers/link-audit-evidence-fixtures';
-import { entryPath, hashTree, rec, registerCleanup, tmpDir, world, type World } from './helpers/link-audit-decisions-fixtures';
+import { entryPath, hashTree, rec, registerCleanup, tmpDir, type World } from './helpers/link-audit-decisions-fixtures';
 import { OTHER_ORIGIN_KEY, TEST_ORIGIN, TEST_ORIGIN_KEY } from './helpers/link-audit-origin-fixtures';
 import { createDecisionService } from '../src/lib/link-audit-decisions';
 import { previewOver } from './helpers/link-audit-preview-fixtures';
@@ -34,7 +36,7 @@ const cookie = async (email: string): Promise<string> => `${SESSION_COOKIE}=${aw
 /** Pastas da TESTEMUNHA (resultados e recibos dos resultados): obrigatórias; sem elas o histórico é NÃO RESOLVIDO (falha fechada). */
 let witnessDirs = resultsEnv();
 
-function setEnv(w: Pick<World, 'evidenceDir' | 'decisionsDir' | 'anchorDir'> | null, over: { decisions?: string | undefined; evidence?: string | undefined; anchors?: string | undefined; results?: string | undefined; resultAnchors?: string | undefined } = {}): void {
+function setEnv(w: (Pick<World, 'evidenceDir' | 'decisionsDir' | 'anchorDir'> & { readonly ledgerDir?: string }) | null, over: { decisions?: string | undefined; evidence?: string | undefined; anchors?: string | undefined; results?: string | undefined; resultAnchors?: string | undefined } = {}): void {
   env.SUPABASE_SERVICE_ROLE_KEY = SECRET;
   env.GMN_OPERATOR_EMAILS = operatorList();
   delete env.GMN_AUTH_DISABLED;
@@ -48,6 +50,7 @@ function setEnv(w: Pick<World, 'evidenceDir' | 'decisionsDir' | 'anchorDir'> | n
   set('GMN_LINK_AUDIT_DECISIONS_ANCHOR_DIR', 'anchors' in over ? over.anchors : w?.anchorDir);
   set('GMN_LINK_AUDIT_RESULTS_DIR', 'results' in over ? over.results : witnessDirs.base);
   set('GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR', 'resultAnchors' in over ? over.resultAnchors : witnessDirs.anchors);
+  applyLedgerEnv(env, w?.ledgerDir ? { ledgerDir: w.ledgerDir } : null);
 }
 
 interface Init {
@@ -73,7 +76,7 @@ const url = (auditId: string, suffix = ''): string => `/api/link-audit/decisions
 /** O head que o "navegador" viu por último (vem das respostas); cada teste começa sem ver nada (histórico vazio). */
 let lastHead: unknown = null;
 async function setup(): Promise<{ w: World; ana: string; auditId: string }> {
-  const w = await world();
+  const w = await routeWorld();
   witnessDirs = resultsEnv();
   setEnv(w);
   lastHead = null;
@@ -466,7 +469,7 @@ test('Emenda 1 pela API: reenvio de uma REVOGAÇÃO pendente — a decisão fica
   assert.equal(fs.readdirSync(path.join(w.decisionsDir, auditId)).length, 2);
 });
 
-test('MAJOR-1 pela API: pendente FORJADA em nome do operador não é concluída (409 PENDING_ORIGIN_UNPROVEN), não expõe autor nem conteúdo e não grava recibo', async () => {
+test('MAJOR-1 pela API: pendente FORJADA em nome do operador não é concluída (recusada: sem INTENT no livro e origem não comprovada), não expõe autor nem conteúdo e não grava recibo', async () => {
   const { w, ana, auditId } = await setup();
   const versions = await w.reader.listVersions({ email: 'ana@empresa.com' }, auditId);
   const latest = versions.filter((v) => v.capture !== null).sort((a, b) => (b.capture as number) - (a.capture as number))[0]!;
@@ -483,7 +486,9 @@ test('MAJOR-1 pela API: pendente FORJADA em nome do operador não é concluída 
   const theNamedAuthor = await cookie('ana@empresa.com');
   const attempt = await post(auditId, { record }, theNamedAuthor); // `expectedHead` = o head que a leitura acima devolveu (null)
   const body = await json(attempt);
-  assert.deepEqual([attempt.status, body.code, body.pending.origin], [409, 'PENDING_ORIGIN_UNPROVEN', 'UNPROVEN']);
+  // Com o LIVRO a recusa vem ANTES e é mais forte: a pendente não tem INTENT no livro (foi publicada fora dele), logo o histórico é NÃO resolvido; a prova de origem (PENDING_ORIGIN_UNPROVEN) continua sendo a segunda barreira (testes do serviço).
+  assert.deepEqual([attempt.status, body.code], [409, 'DECISIONS_HISTORY_UNRESOLVED']);
+  assert.ok((body.issues as string[]).includes('livro: UNLEDGERED_PENDING'), JSON.stringify(body.issues));
   assert.match(attempt.headers.get('cache-control') ?? '', /no-store/);
   assert.deepEqual(hashTree(w.anchorDir), anchorsBefore, 'nenhum recibo');
   const after = await json(await get(auditId, ana));
@@ -520,7 +525,7 @@ test('R3-MINOR-2 / R3-MINOR-5 pela API: com a TESTEMUNHA (resultado selado em ou
   assert.equal((await revoke(auditId, { revokes: 'op-0001', reason: REASON }, ana)).status, 201);
   // um resultado SELADO sobre esse histórico (em outras pastas) registra o head das decisões (seq 2)
   const rEnv = resultsEnv();
-  const decisions = createDecisionService({ knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: w.decisionsDir, anchorDir: w.anchorDir, evidence: w.reader, evidenceBaseDir: w.evidenceDir });
+  const decisions = createDecisionService({ ledger: LEDGER_NOT_REQUIRED, knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: w.decisionsDir, anchorDir: w.anchorDir, evidence: w.reader, evidenceBaseDir: w.evidenceDir });
   const preview = previewOver({ evidenceDir: w.evidenceDir, raw: decisions });
   const evaluated = await preview.evaluate({ email: 'ana@empresa.com' }, auditId);
   assert.ok(evaluated.ok);
@@ -601,7 +606,7 @@ test('FIAÇÃO das rotas: a chave de origem configurada chega ao provedor da tes
   const anaCookie = await cookie(ana);
   assert.equal((await post(auditId, { record: rec.c2() }, anaCookie)).status, 201);
   assert.equal((await revoke(auditId, { revokes: 'op-0001', reason: REASON }, anaCookie)).status, 201);
-  const decisions = createDecisionService({ knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: w.decisionsDir, anchorDir: w.anchorDir, evidence: w.reader, evidenceBaseDir: w.evidenceDir });
+  const decisions = createDecisionService({ ledger: LEDGER_NOT_REQUIRED, knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: w.decisionsDir, anchorDir: w.anchorDir, evidence: w.reader, evidenceBaseDir: w.evidenceDir });
   const preview = previewOver({ evidenceDir: w.evidenceDir, raw: decisions });
   const evaluated = await preview.evaluate({ email: ana }, auditId);
   assert.ok(evaluated.ok);

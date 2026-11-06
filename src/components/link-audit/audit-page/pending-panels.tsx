@@ -1,8 +1,8 @@
 import { useId, useState } from 'react';
 import { RotateCcw, ShieldAlert, ShieldCheck, ShieldQuestion } from 'lucide-react';
 import { formatDateTime, OUTCOME_LABELS, safeText } from './labels';
-import { isUnresolvedWitness, type PendingDecision, type PendingOriginDetail, type PendingRun, type WitnessInfo, type WitnessStatus } from './types';
-import { BUTTON_PRIMARY } from './ui-bits';
+import { isBlockingLedger, isUnresolvedWitness, type LedgerInfo, type PendingDecision, type PendingOriginDetail, type PendingRun, type WitnessInfo, type WitnessStatus } from './types';
+import { BUTTON_PRIMARY, BUTTON_QUIET } from './ui-bits';
 
 /*
  * Painéis das PENDÊNCIAS (decisão ou resultado gravado e ainda SEM recibo). Regras (remediação do MAJOR-1):
@@ -184,7 +184,7 @@ export function HistoryIntegrityBanner({ status }: { readonly status: WitnessSta
 }
 
 /** Decisão (6B) gravada e ainda sem recibo. */
-export function PendingDecisionPanel({ pending, ambiguousIds, witness, onResend }: { readonly pending: PendingDecision; readonly ambiguousIds: readonly string[]; readonly witness: WitnessStatus; readonly onResend: () => void }): React.JSX.Element {
+export function PendingDecisionPanel({ pending, ambiguousIds, witness, ledger, onResend }: { readonly pending: PendingDecision; readonly ambiguousIds: readonly string[]; readonly witness: WitnessStatus; readonly ledger: LedgerInfo; readonly onResend: () => void }): React.JSX.Element {
   const [ack, setAck] = useState(false);
   const id = useId();
   const proven = pending.origin === 'PROVEN';
@@ -202,7 +202,7 @@ export function PendingDecisionPanel({ pending, ambiguousIds, witness, onResend 
         <div className="text-xs">
           <Unproven detail={pending.originDetail} what="Enquanto isso, nenhum resultado pode ser registrado e nenhuma nova decisão é gravada nesta auditoria." />
         </div>
-      ) : isUnresolvedWitness(witness) ? (
+      ) : isUnresolvedWitness(witness) || (isBlockingLedger(ledger.state) && !ledger.receiptReissuable) ? (
         <p className="mt-2 text-xs text-gmn-muted"><strong className="text-gmn-text">Não pode ser concluída por esta tela</strong> enquanto a integridade do histórico não estiver resolvida (ver o aviso acima).</p>
       ) : pending.isMine ? (
         <div className="text-xs">
@@ -228,6 +228,140 @@ export function PendingDecisionPanel({ pending, ambiguousIds, witness, onResend 
         <p className="mt-2 text-xs text-gmn-muted">
           Gravada por {safeText(pending.recordedBy, 120)} (origem comprovada pelo servidor). Somente o autor pode concluí-la. Enquanto isso, nenhum resultado pode ser registrado.
         </p>
+      )}
+    </section>
+  );
+}
+
+/* ------------------------------------------------------------------ LIVRO DE CABEÇAS (contrato §16) */
+const LEDGER_REASON: Readonly<Record<string, string>> = {
+  NOT_CONFIGURED: 'o livro de cabeças não está configurado neste servidor (pasta e chave exclusivas)',
+  UNAVAILABLE: 'o armazenamento do livro de cabeças não pôde ser lido',
+  UNTRUSTED: 'o livro de cabeças não é confiável (cadeia, etiqueta ou formato não conferem)',
+  KEY_REVOKED: 'há registros do livro assinados por uma chave REVOGADA por comprometimento: nada assinado por ela é aceito',
+  KEY_EXPIRED: 'há registros do livro assinados por chave aposentada já vencida e sem ponto de verificação que os cubra',
+  KEY_UNKNOWN: 'há registros do livro assinados por uma chave que este servidor não conhece',
+  LIMIT_REACHED: 'o livro desta auditoria atingiu o limite de registros',
+  DURABILITY_UNKNOWN: 'o armazenamento não comprovou a gravação (falha de fsync): a durabilidade do livro é DESCONHECIDA e nada é considerado protegido até reiniciar o servidor e provar de novo',
+  LEDGER_ABSENT_WITH_HISTORY: 'o livro desta auditoria está ausente e há histórico: ele pode nunca ter existido (histórico anterior ao livro) ou ter sido removido, e o sistema não consegue distinguir sem fonte independente',
+  LEDGER_REMOVED_WITNESSED: 'o livro desta auditoria sumiu, mas resultados ou a guarda externa provam que ele existiu',
+  HISTORY_REGRESSED: 'o livro confirma decisões que não existem mais nas pastas de decisões (arquivos removidos ou restaurados de cópia antiga)',
+  HISTORY_DIVERGES: 'uma decisão difere da que o livro confirmou naquela posição',
+  RECEIPT_REMOVED: 'o recibo de uma decisão que o livro já confirmou foi removido (o autor pode reemitir o recibo de mesmo conteúdo)',
+  UNLEDGERED_ENTRY: 'há decisão confirmada que o livro nunca registrou',
+  UNLEDGERED_PENDING: 'há decisão pendente que o livro nunca registrou (não foi gravada por este sistema)',
+  PUBLISHED_AFTER_ABORT: 'uma decisão foi publicada depois de a operação ter sido abortada no livro',
+  LEDGER_BEHIND: 'o livro ficou um registro atrás de uma decisão confirmada (queda entre o recibo e o livro); a recuperação é verificável',
+  BEHIND_UNVERIFIABLE: 'o livro está atrasado e a origem da decisão não pode ser comprovada',
+  RESULT_LEDGER_MISMATCH: 'um resultado selado cita uma posição do livro que não confere',
+  RESULTS_EVIDENCE_UNAVAILABLE: 'os resultados (testemunha independente do livro) não puderam ser lidos',
+  GUARD_MISMATCH: 'a guarda externa guarda uma cabeça que o livro não contém (retrocesso)',
+  GUARD_UNAVAILABLE: 'a guarda externa não pôde ser consultada',
+};
+const GUARD_TEXT: Readonly<Record<string, string>> = {
+  NOT_CONFIGURED: 'Guarda externa NÃO configurada: um retrocesso coordenado de todos os volumes NÃO é detectado.',
+  CONSISTENT: 'Guarda externa em dia.',
+  BEHIND: 'Guarda externa atrasada em relação ao livro.',
+  MISMATCH: 'Guarda externa DIVERGE do livro.',
+  UNAVAILABLE: 'Guarda externa indisponível.',
+};
+const PHASE_TEXT: Readonly<Record<'A' | 'B' | 'C', string>> = {
+  A: 'uma gravação começou e a decisão ainda não foi publicada',
+  B: 'a decisão foi publicada e ainda falta o recibo (ela ainda não vale)',
+  C: 'a decisão e o recibo existem, mas o livro ainda não registrou a confirmação',
+};
+
+/**
+ * Estado do LIVRO. Fora de PROTECTED o modo é RESTRITO e é dito a todos: consulta apenas, nenhuma decisão vigente, nada finalizável. A tela nunca afirma
+ * proteção contra retrocesso coordenado de todos os volumes (a guarda externa é requisito de produção e não existe ainda). Ações: inscrever (auditoria
+ * vazia) e recuperar (verificável); adoção/restauração exigem aprovação administrativa que não existe: a tela NÃO oferece botão para elas.
+ */
+export function LedgerPanel({ ledger, canAct, onAction }: { readonly ledger: LedgerInfo; readonly canAct: boolean; readonly onAction: (action: 'ENROLL' | 'RECOVER') => void }): React.JSX.Element | null {
+  if (ledger.state === 'NOT_REQUIRED') return null;
+  const guard = GUARD_TEXT[ledger.externalGuard] ?? '';
+  if (ledger.state === 'PROTECTED') {
+    const open = ledger.openOperation;
+    const capacity = ledger.capacity;
+    const coverage = ledger.keyCoverage;
+    const attention = (capacity !== undefined && capacity.level !== 'OK') || (coverage !== undefined && !coverage.covered);
+    return (
+      <section role={attention ? 'alert' : 'note'} className={`rounded-xl border p-3 text-xs text-gmn-muted ${attention ? 'border-amber-400/50 bg-amber-500/[0.08]' : 'border-green-400/30 bg-green-500/[0.05]'}`} data-testid="ledger-protected">
+        <p className="flex items-start gap-2">
+          <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-green-300" aria-hidden="true" />
+          <span>
+            <strong className="text-gmn-text">Protegida pelo livro de cabeças</strong> · {ledger.confirmedDecisions} decisão(ões) confirmada(s) · cabeça do livro #{ledger.head?.ledgerSeq ?? '—'}. {guard}
+          </span>
+        </p>
+        {open && (
+          <p className="mt-1" data-testid="ledger-open-operation">
+            Operação em andamento: {PHASE_TEXT[open.phase]}. Nada é finalizável enquanto isso{open.stale ? '; ela está parada há tempo demais e pode ser recuperada' : ''}.
+            {ledger.recoverable && (
+              <button type="button" disabled={!canAct} onClick={() => onAction('RECOVER')} className={`${BUTTON_QUIET} ml-2`}>
+                Recuperar
+              </button>
+            )}
+          </p>
+        )}
+        {capacity && (
+          <p className="mt-1" data-testid="ledger-capacity">
+            Capacidade do livro: {capacity.usedRecords} de {capacity.maxRecords} registros · cabem {capacity.decisionsAvailable} decisão(ões) nova(s) e {capacity.revocationsAvailable} revogação(ões).
+            {capacity.level === 'REVOKE_ONLY' && <strong className="text-gmn-text"> Decisões novas encerradas: só cabem revogações.</strong>}
+            {capacity.level === 'EXHAUSTED' && <strong className="text-gmn-text"> CAPACIDADE ESGOTADA: nenhuma nova decisão nem revogação; esta auditoria precisa de intervenção (a reabertura administrativa ainda não existe).</strong>}
+          </p>
+        )}
+        {coverage && !coverage.covered && (
+          <p className="mt-1" data-testid="ledger-key-coverage">
+            Rotação de chave do livro SEM ponto de verificação da chave atual ({coverage.otherKeyRecords} registro(s) de outra chave): antes de a chave antiga vencer, quem opera o servidor precisa executar a recuperação (RECOVER) desta auditoria.
+          </p>
+        )}
+      </section>
+    );
+  }
+  const reason = ledger.reason ? (LEDGER_REASON[ledger.reason] ?? 'a integridade do livro não pôde ser estabelecida') : null;
+  return (
+    <section role="alert" className="rounded-xl border border-amber-400/50 bg-amber-500/[0.08] p-4 text-sm" data-testid={`ledger-${ledger.state.toLowerCase()}`}>
+      {ledger.state === 'ENROLLMENT_PENDING' && (
+        <>
+          <p className="flex items-start gap-2 font-semibold text-gmn-text">
+            <ShieldQuestion className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" aria-hidden="true" />
+            <span>Auditoria ainda NÃO inscrita no livro de cabeças.</span>
+          </p>
+          <p className="mt-1 text-xs text-gmn-muted">
+            Esta auditoria está vazia (sem decisões nem resultados). A inscrição é explícita: antes dela <strong className="text-gmn-text">nenhuma decisão é gravada</strong>. {guard}
+          </p>
+          <button type="button" disabled={!canAct} onClick={() => onAction('ENROLL')} className={`${BUTTON_PRIMARY} mt-2`}>
+            Inscrever esta auditoria no livro
+          </button>
+        </>
+      )}
+      {ledger.state === 'LEGACY_READ_ONLY' && (
+        <>
+          <p className="flex items-start gap-2 font-semibold text-gmn-text">
+            <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" aria-hidden="true" />
+            <span>Auditoria em MODO RESTRITO (há histórico e o livro de cabeças desta auditoria está ausente).</span>
+          </p>
+          <p className="mt-1 text-xs text-gmn-muted">
+            Só consulta: <strong className="text-gmn-text">nenhuma decisão é considerada vigente nem enviada ao motor</strong>, nada é finalizável e novas decisões são recusadas. Nada do histórico existente ganha garantia retroativa. A adoção exige aprovação
+            administrativa (identidade verificável e dupla aprovação), que <strong className="text-gmn-text">ainda não existe</strong> neste sistema. Não apague nem mova arquivos.
+          </p>
+        </>
+      )}
+      {ledger.state === 'HISTORY_UNRESOLVED' && (
+        <>
+          <p className="flex items-start gap-2 font-semibold text-gmn-text">
+            <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-red-300" aria-hidden="true" />
+            <span>Livro de cabeças: integridade do histórico NÃO resolvida.</span>
+          </p>
+          <p className="mt-1 text-xs text-gmn-muted">
+            Motivo: {reason}. <strong className="text-gmn-text">Nenhuma decisão é considerada vigente nem enviada ao motor</strong>, novas decisões e resultados estão bloqueados. Não apague, mova nem restaure arquivos por conta própria:
+            a restauração é administrativa (ainda não existe) e preserva a evidência da inconsistência.
+          </p>
+          {ledger.recoverable && (
+            <button type="button" disabled={!canAct} onClick={() => onAction('RECOVER')} className={`${BUTTON_QUIET} mt-2`}>
+              Concluir recuperação verificável
+            </button>
+          )}
+        </>
       )}
     </section>
   );

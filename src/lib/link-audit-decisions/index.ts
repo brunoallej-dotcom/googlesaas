@@ -20,4 +20,6 @@ export type {
 } from './service';
 export { AUDIT_ID_PATTERN } from './types';
 export { evaluateKnownHeads, isUnresolved, WITNESS_NOT_REQUIRED } from './witness';
+export { isLedgerBlocking, LEDGER_NOT_REQUIRED, NOT_REQUIRED_VIEW } from './ledger-port';
+export type { DecisionRef, DecisionsSnapshot, GuardStatus, LedgerEntryInput, LedgerEnrollInput, LedgerFailureCode, LedgerHead, LedgerPort, LedgerPrepareInput, LedgerReason, LedgerRefusal, LedgerSource, LedgerState, LedgerStep, LedgerView, LedgerViewInput, OpenOperation, ResultsEvidence } from './ledger-port';
 export type { KnownHead, KnownHeadsFailure, KnownHeadsProvider, KnownHeadsRead, WitnessSource, WitnessStatus, WitnessVerdict } from './witness';

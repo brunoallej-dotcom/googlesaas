@@ -3,7 +3,7 @@ import { canonicalJson, sha256Hex } from '../link-audit/canonical';
 import { CRITERIA } from '../link-audit/methodology';
 import type { OperatorRecord, ScoringInput } from '../link-audit/scoring/input';
 import { scoreAudit, SUBCRITERIA, verifyScoreResult, type ScoreOutcome, type ScoreResult } from '../link-audit/scoring/index';
-import { AUDIT_ID_PATTERN, HTTP_STATUS, isUnresolved, PUBLIC_MESSAGE, type DecisionDto, type Head, type ListPayload, type ServiceErrorCode, type ServiceResult, type WitnessStatus } from '../link-audit-decisions';
+import { AUDIT_ID_PATTERN, HTTP_STATUS, isLedgerBlocking, isUnresolved, PUBLIC_MESSAGE, type DecisionDto, type GuardStatus, type Head, type LedgerReason, type LedgerState, type ListPayload, type ServiceErrorCode, type ServiceResult, type WitnessStatus } from '../link-audit-decisions';
 import type { ScoringBasisOutcome } from '../link-audit-evidence/scoring-basis';
 import { assembleScoringInput } from './assemble';
 import { verifyAuditIdAlias, type AuditIdAlias } from './audit-id-alias';
@@ -73,9 +73,19 @@ export type EvaluationResult = { readonly ok: true; readonly value: Evaluation }
 export interface PreviewActor {
   readonly email: string;
 }
+/** O que a finalização conferiu e vai citar (ausente = só prova a durabilidade e que o livro está protegido). */
+export interface DurabilityExpectation {
+  readonly decisionsHead?: { readonly seq: number; readonly sha256: string } | null;
+  readonly ledgerHead?: { readonly ledgerSeq: number; readonly sha256: string } | null;
+}
+export type DurabilityOutcome = { readonly ok: true } | { readonly ok: false; readonly code: 'INPUT_CHANGED' | 'DURABILITY_UNKNOWN'; readonly issues: readonly string[] };
 export interface PreviewDeps {
   readonly basisReader: { readScoringBasis(actor: PreviewActor, auditId: string): Promise<ScoringBasisOutcome> };
-  readonly decisions: { list(actor: PreviewActor, auditId: string): Promise<ServiceResult<ListPayload>> };
+  readonly decisions: {
+    list(actor: PreviewActor, auditId: string): Promise<ServiceResult<ListPayload>>;
+    /** Barreira de durabilidade do livro antes de selar um resultado que o cita. AUSENTE ⇒ a finalização que cita o livro é recusada (falha fechada). */
+    durabilityBarrier?(actor: PreviewActor, auditId: string, expected: DurabilityExpectation, now?: string | (() => string)): Promise<DurabilityOutcome>;
+  };
   /** Relógio do SERVIDOR (ISO). Só alimenta as verificações de "data futura" do mapeador; nunca entra na entrada do motor. */
   readonly clock: () => string;
   /** Somente para testes que simulam recusas do motor; o padrão é o motor real. */
@@ -150,6 +160,8 @@ export interface PreviewPayload {
     readonly finalizable: boolean;
     /** Testemunha do histórico de decisões (cabeças já confirmadas em resultados selados). Não resolvida ⇒ nada é finalizável. */
     readonly witness: { readonly status: WitnessStatus; readonly knownHeads: number; readonly coveredSeq: number | null; readonly unwitnessedAffecting: number };
+    /** Livro de cabeças: só `PROTECTED` (ou `NOT_REQUIRED` nos testes da 6B isolada) permite finalizar; a cabeça do livro vai no resultado novo (`ledgerHead`). */
+    readonly ledger: { readonly state: LedgerState; readonly reason: LedgerReason | null; readonly head: { readonly ledgerSeq: number; readonly sha256: string } | null; readonly confirmedDecisions: number; readonly operationOpen: boolean; readonly externalGuard: GuardStatus };
     readonly applied: readonly string[];
     readonly held: readonly HeldDecision[];
   };
@@ -247,8 +259,14 @@ export function createScoringPreviewService(deps: PreviewDeps) {
     const serviceBlockers: PreviewBlocker[] = [];
     // uma pendente nunca vale; se for REVOGAÇÃO, a decisão revogada continua vigente nos registros e fica marcada como "pode estar revogada"
     const witness = { status: decisions.witness.status, knownHeads: decisions.witness.knownHeads, coveredSeq: decisions.witness.coveredSeq, unwitnessedAffecting: decisions.witness.unwitnessedAffecting };
+    const ledger = { state: decisions.ledger.state, reason: decisions.ledger.reason, head: decisions.ledger.head ? { ledgerSeq: decisions.ledger.head.ledgerSeq, sha256: decisions.ledger.head.sha256 } : null, confirmedDecisions: decisions.ledger.confirmedDecisions, operationOpen: decisions.ledger.openOperation !== null, externalGuard: decisions.ledger.externalGuard };
     // integridade do histórico NÃO resolvida (retrocesso/divergência/fonte ilegível): a 6B já devolve ZERO decisões vigentes; aqui o motivo é dito e a finalização bloqueada
     if (isUnresolved(witness.status)) serviceBlockers.push(previewBlocker('DECISIONS_HISTORY_UNRESOLVED', 'BLOCKING', { reasonCode: witness.status }));
+    else if (isLedgerBlocking(ledger.state)) {
+      serviceBlockers.push(previewBlocker('DECISIONS_HISTORY_UNRESOLVED', 'BLOCKING', { reasonCode: ledger.reason ?? ledger.state }));
+      // recibo removido de decisão já confirmada pelo livro: o autor consegue concluir, então a pendência (e a decisão afetada) continua sendo dita
+      if (pending) serviceBlockers.push(previewBlocker('DECISION_PENDING', 'BLOCKING', { decisionIds: [pending.revokes ?? pending.decisionId ?? ''].filter((id) => id !== '') }));
+    }
     else if (pending) serviceBlockers.push(previewBlocker('DECISION_PENDING', 'BLOCKING', { decisionIds: [pending.revokes ?? pending.decisionId ?? ''].filter((id) => id !== '') }));
     else if (!decisions.finalizable) serviceBlockers.push(previewBlocker('DECISION_PENDING', 'BLOCKING', { reasonCode: 'FINALIZABLE_FALSE' })); // a 6B disse "não finalizar" sem apontar a pendente: nunca se ignora
 
@@ -263,7 +281,7 @@ export function createScoringPreviewService(deps: PreviewDeps) {
           state: 'SEM_EVIDENCIA',
           company: { located: false, profileState: 'NO_EVIDENCE', unavailableReason: null, identityMatchedBy: null, websiteHost: null, source: 'Serper (intermediário)' },
           evidence: { integrity: { status: s.basis.integrity.status, checkedFiles: s.basis.integrity.checkedFiles }, provenance: null, layout: null, referenceDate: null, referenceDateSource: null, profileSource: null, bases: [] },
-          decisions: { head: decisions.head, count: decisions.decisions.length, pending: pendingSummary, finalizable: decisions.finalizable, witness, applied: [], held: [] },
+          decisions: { head: decisions.head, count: decisions.decisions.length, pending: pendingSummary, finalizable: decisions.finalizable, witness, ledger, applied: [], held: [] },
           decisionOptions: [],
           criteria: buildCriteria(view, null, null),
           outcomePreview: null,
@@ -388,6 +406,7 @@ export function createScoringPreviewService(deps: PreviewDeps) {
           pending: pendingSummary,
           finalizable: decisions.finalizable,
           witness,
+          ledger,
           applied: applied.map((record) => record.id),
           held,
         },
@@ -426,6 +445,17 @@ export function createScoringPreviewService(deps: PreviewDeps) {
     async preview(actor: PreviewActor, auditId: string): Promise<PreviewResult> {
       const evaluated = await evaluate(actor, auditId);
       return evaluated.ok ? { ok: true, value: evaluated.value.payload } : evaluated;
+    },
+    /** Barreira de durabilidade antes de selar/concluir um resultado que cita o livro (falha fechada se a dependência não existir). */
+    async durabilityBarrier(actor: PreviewActor, auditId: string, expected: DurabilityExpectation): Promise<DurabilityOutcome> {
+      if (typeof auditId !== 'string' || !AUDIT_ID_PATTERN.test(auditId)) return { ok: false, code: 'DURABILITY_UNKNOWN', issues: ['auditId inválido.'] };
+      const barrier = deps.decisions.durabilityBarrier;
+      if (!barrier) return { ok: false, code: 'DURABILITY_UNKNOWN', issues: ['A barreira de durabilidade não está disponível: nada é selado citando o livro.'] };
+      try {
+        return await barrier.call(deps.decisions, actor, auditId, expected, deps.clock);
+      } catch {
+        return { ok: false, code: 'DURABILITY_UNKNOWN', issues: ['A barreira de durabilidade falhou: nada é selado.'] };
+      }
     },
     /** Impressão digital de UMA leitura nova (head, pendente, registros e base): a finalização a compara com a da avaliação antes de publicar. */
     async fingerprintNow(actor: PreviewActor, auditId: string): Promise<{ readonly ok: true; readonly fingerprint: string } | PreviewFailure> {

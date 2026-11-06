@@ -219,6 +219,7 @@ const STORAGE_DIR = 'src/lib/link-audit-storage/';
 const STORAGE_TARGETS: ReadonlySet<string> = new Set(['canonical.ts', 'snapshot-store.ts']);
 /** Remediação do MAJOR-1: o módulo de PROVA DE ORIGEM (HMAC) consome SÓ o selo canônico (serialização estável do corpo assinado); conferido em `link-audit-origin-isolation.test.ts`. */
 const ORIGIN_DIR = 'src/lib/link-audit-origin/';
+const LEDGER_DIR = 'src/lib/link-audit-ledger/';
 const ORIGIN_TARGETS: ReadonlySet<string> = new Set(['canonical.ts']);
 /**
  * Onda 6C (I2): mapeador determinístico (servidor). Consome SÓ o selo canônico, as constantes de metodologia (tipo) e o CONTRATO
@@ -270,6 +271,7 @@ test('isolamento reverso: só os consumidores declarados importam o módulo, e s
     const isDecisions = name.startsWith(DECISIONS_DIR);
     const isStorage = name.startsWith(STORAGE_DIR);
     const isOrigin = name.startsWith(ORIGIN_DIR);
+    const isLedger = name.startsWith(LEDGER_DIR);
     const isScoringRuns = name.startsWith(SCORING_RUNS_DIR);
     for (const statement of importStatements(fs.readFileSync(file, 'utf8'))) {
       const target = targetsModule(file, statement.specifier);
@@ -281,6 +283,10 @@ test('isolamento reverso: só os consumidores declarados importam o módulo, e s
       } else if (isDecisions) {
         const withExtension = target.endsWith('.ts') ? target : `${target}.ts`;
         assert.ok(DECISIONS_TARGETS.has(withExtension), `${name} importa "${statement.specifier}", fora da lista fechada do módulo de decisões`);
+      } else if (isLedger) {
+        // livro de cabeças: só as primitivas de gravação/leitura atômica já testadas (FsOps, publishExclusive); nunca o restante do módulo
+        const withExtension = target.endsWith('.ts') ? target : `${target}.ts`;
+        assert.ok(withExtension === 'snapshot-store.ts', `${name} importa "${statement.specifier}", fora da lista fechada do livro de cabeças`);
       } else if (isOrigin) {
         const withExtension = target.endsWith('.ts') ? target : `${target}.ts`;
         assert.ok(ORIGIN_TARGETS.has(withExtension), `${name} importa "${statement.specifier}", fora da lista fechada do módulo de prova de origem`);

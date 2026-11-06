@@ -101,7 +101,7 @@ export interface PreviewPayload {
     readonly profileSource: { readonly ref: string; readonly observedAt: string } | null;
     readonly bases: readonly EvidenceBase[];
   };
-  readonly decisions: { readonly head: Head | null; readonly count: number; readonly pending: PendingDecisionSummary | null; readonly finalizable: boolean; readonly witness: WitnessInfo; readonly applied: readonly string[]; readonly held: ReadonlyArray<{ readonly decisionId: string; readonly code: string }> };
+  readonly decisions: { readonly head: Head | null; readonly count: number; readonly pending: PendingDecisionSummary | null; readonly finalizable: boolean; readonly witness: WitnessInfo; readonly ledger: PreviewLedgerInfo; readonly applied: readonly string[]; readonly held: ReadonlyArray<{ readonly decisionId: string; readonly code: string }> };
   readonly decisionOptions: ReadonlyArray<{ readonly type: 'JUDGEMENT' | 'NOT_APPLICABLE'; readonly subcriterionId: string; readonly code: string | null; readonly available: boolean; readonly reasonCode: string | null }>;
   readonly criteria: readonly PreviewCriterion[];
   readonly outcomePreview: OutcomePreview | null;
@@ -140,6 +140,60 @@ export interface WitnessInfo {
   readonly unwitnessedAffecting: number;
 }
 export type WitnessStatus = 'NOT_REQUIRED' | 'UNWITNESSED' | 'CONSISTENT' | 'RECEIPT_LOST_WITNESSED' | 'HISTORY_REGRESSED' | 'HISTORY_DIVERGES' | 'UNTRUSTED' | 'UNAVAILABLE' | 'NOT_CONFIGURED';
+/** Livro de cabeças (contrato §16). Só `PROTECTED` (ou `NOT_REQUIRED` na 6B isolada) permite decisão vigente, escrita e finalização. */
+export type LedgerState = 'NOT_REQUIRED' | 'LEGACY_READ_ONLY' | 'ENROLLMENT_PENDING' | 'PROTECTED' | 'HISTORY_UNRESOLVED';
+export type LedgerGuardStatus = 'NOT_CONFIGURED' | 'CONSISTENT' | 'BEHIND' | 'MISMATCH' | 'UNAVAILABLE';
+export interface LedgerOpenOperation {
+  readonly opId: string;
+  readonly decisionSeq: number;
+  readonly phase: 'A' | 'B' | 'C';
+  readonly ageMs: number;
+  readonly stale: boolean;
+}
+export type LedgerCapacityLevel = 'OK' | 'REVOKE_ONLY' | 'EXHAUSTED';
+/** Capacidade do livro (R7-01): números que o livro realmente executa. */
+export interface LedgerCapacityInfo {
+  readonly maxRecords: number;
+  readonly usedRecords: number;
+  readonly remainingRecords: number;
+  readonly decisionsAvailable: number;
+  readonly revocationsAvailable: number;
+  readonly level: LedgerCapacityLevel;
+}
+/** Cobertura da rotação de chave do livro (R7-03). */
+export interface LedgerKeyCoverageInfo {
+  readonly keyId: string;
+  readonly covered: boolean;
+  readonly otherKeyRecords: number;
+}
+export interface LedgerInfo {
+  readonly state: LedgerState;
+  readonly reason: string | null;
+  readonly head: { readonly ledgerSeq: number; readonly sha256: string } | null;
+  readonly confirmedDecisions: number;
+  readonly openOperation: LedgerOpenOperation | null;
+  readonly recoverable: boolean;
+  readonly receiptReissuable: boolean;
+  readonly externalGuard: LedgerGuardStatus;
+  readonly capacity?: LedgerCapacityInfo;
+  readonly keyCoverage?: LedgerKeyCoverageInfo;
+}
+/** O que a prévia informa do livro. */
+export interface PreviewLedgerInfo {
+  readonly state: LedgerState;
+  readonly reason: string | null;
+  readonly head: { readonly ledgerSeq: number; readonly sha256: string } | null;
+  readonly confirmedDecisions: number;
+  readonly operationOpen: boolean;
+  readonly externalGuard: LedgerGuardStatus;
+}
+/** Resposta de `POST …/ledger`. */
+export interface LedgerActionResult {
+  readonly action: 'ENROLL' | 'RECOVER';
+  readonly ledger: LedgerInfo;
+}
+export const isBlockingLedger = (state: LedgerState): boolean => state !== 'PROTECTED' && state !== 'NOT_REQUIRED';
+
 export const UNRESOLVED_WITNESS: readonly WitnessStatus[] = ['HISTORY_REGRESSED', 'HISTORY_DIVERGES', 'UNTRUSTED', 'UNAVAILABLE', 'NOT_CONFIGURED'];
 export const isUnresolvedWitness = (status: WitnessStatus): boolean => UNRESOLVED_WITNESS.includes(status);
 
@@ -181,6 +235,8 @@ export interface DecisionsList {
   readonly decisions: readonly DecisionDto[];
   /** Testemunha do histórico (cabeças já confirmadas em resultados selados). Não resolvida ⇒ zero decisões vigentes, nada finalizável. */
   readonly witness: WitnessInfo;
+  /** Livro de cabeças: fora de PROTECTED o modo é restrito (nenhuma decisão vigente, nada finalizável, nenhuma escrita comum). */
+  readonly ledger: LedgerInfo;
   /** Ids (só ids) das decisões em dúvida por causa da operação pendente. */
   readonly ambiguousDecisionIds: readonly string[];
   readonly history: readonly HistoryEntry[];

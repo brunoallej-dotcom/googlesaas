@@ -3,7 +3,7 @@ import type { Ctx } from '../../src/components/link-audit/audit-page/controller'
 import { newTokens } from '../../src/components/link-audit/audit-page/controller';
 import type { Action, PageState } from '../../src/components/link-audit/audit-page/state';
 import { initialPageState, pageReducer } from '../../src/components/link-audit/audit-page/state';
-import type { DecisionDto, DecisionRequest, DecisionsList, FinalizeRequest, FinalizeSuccess, Head, PendingRun, PreviewPayload, ResultsList, RunDetail, RunDetailResponse, RunSummary } from '../../src/components/link-audit/audit-page/types';
+import type { DecisionDto, DecisionRequest, DecisionsList, FinalizeRequest, FinalizeSuccess, Head, LedgerActionResult, PendingRun, PreviewPayload, ResultsList, RunDetail, RunDetailResponse, RunSummary } from '../../src/components/link-audit/audit-page/types';
 
 /* Dados 100% FICTÍCIOS. Nenhuma auditoria real, nenhuma rede. */
 export const AUDIT = 'auditoria-ui-0001';
@@ -26,7 +26,7 @@ export function previewFixture(over: Partial<PreviewPayload> = {}): PreviewPaylo
       profileSource: { ref: 'capture:c0001', observedAt: '2026-10-22T12:54:48.079Z' },
       bases: [{ ref: 'capture:c0001', kind: 'CAPTURE', observedAt: '2026-10-22T12:54:48.079Z', origin: 'GOOGLE_NATIVE', contentSha256: H('1'), legacy: false, superseded: false }],
     },
-    decisions: { head: null, count: 0, pending: null, finalizable: true, witness: { status: 'NOT_REQUIRED', knownHeads: 0, coveredSeq: null, unwitnessedAffecting: 0 }, applied: [], held: [] },
+    decisions: { head: null, count: 0, pending: null, finalizable: true, witness: { status: 'NOT_REQUIRED', knownHeads: 0, coveredSeq: null, unwitnessedAffecting: 0 }, ledger: { state: 'NOT_REQUIRED', reason: null, head: null, confirmedDecisions: 0, operationOpen: false, externalGuard: 'NOT_CONFIGURED' }, applied: [], held: [] },
     decisionOptions: [
       { type: 'JUDGEMENT', subcriterionId: 'C2', code: null, available: true, reasonCode: null },
       { type: 'NOT_APPLICABLE', subcriterionId: 'S4', code: 'BUSINESS_MODEL', available: true, reasonCode: null },
@@ -73,7 +73,7 @@ export function decisionDto(over: Partial<DecisionDto> = {}): DecisionDto {
   return { decisionId: 'op-0001', seq: 1, kind: 'JUDGEMENT', record: { kind: 'JUDGEMENT', subcriterionId: 'C2', value: 'COMPATIBLE', justification: 'Conferido no painel do perfil pelo operador.' }, recordedAt: '2026-10-23T10:00:00.000Z', recordedBy: 'ana@empresa.com', supersedes: null, supersededBy: null, status: 'ACTIVE', siteDependent: false, ...over };
 }
 export function decisionsFixture(over: Partial<DecisionsList> = {}): DecisionsList {
-  return { auditId: AUDIT, head: null, pending: null, finalizable: true, decisions: [], witness: { status: 'NOT_REQUIRED', knownHeads: 0, coveredSeq: null, unwitnessedAffecting: 0 }, ambiguousDecisionIds: [], history: [], allDecisions: [], ...over };
+  return { auditId: AUDIT, head: null, pending: null, finalizable: true, decisions: [], witness: { status: 'NOT_REQUIRED', knownHeads: 0, coveredSeq: null, unwitnessedAffecting: 0 }, ledger: { state: 'NOT_REQUIRED', reason: null, head: null, confirmedDecisions: 0, openOperation: null, recoverable: false, receiptReissuable: false, externalGuard: 'NOT_CONFIGURED' }, ambiguousDecisionIds: [], history: [], allDecisions: [], ...over };
 }
 export function runSummary(over: Partial<RunSummary> = {}): RunSummary {
   return { seq: 1, finalizedAt: '2026-10-30T12:00:00.000Z', finalizedBy: 'bia@empresa.com', outcome: 'INCONCLUSIVO', level: null, reasonCode: 'COBERTURA_INSUFICIENTE', coveragePercent: 11, inputSha256: H('2'), resultSha256: H('3'), contentSha256: H('4'), decisionsHead: null, superseded: false, stale: false, decisionsChanged: false, ...over };
@@ -126,6 +126,8 @@ export class FakeApi implements AuditApi {
   resultDetail = (...a: unknown[]) => (this.log('resultDetail', ...a), this.next(this.q.detail));
   decide = (_id: string, request: DecisionRequest) => (this.log('decide', request), this.next(this.q.decide));
   finalize = (_id: string, request: FinalizeRequest) => (this.log('finalize', request), this.next(this.q.finalize));
+  ledgerQueue: Queue<LedgerActionResult> = [ok({ action: 'ENROLL', ledger: { state: 'PROTECTED', reason: null, head: { ledgerSeq: 1, sha256: H('9') }, confirmedDecisions: 0, openOperation: null, recoverable: false, receiptReissuable: false, externalGuard: 'NOT_CONFIGURED' } })];
+  ledger = (_id: string, action: 'ENROLL' | 'RECOVER') => (this.log('ledger', action), this.next(this.ledgerQueue));
 }
 
 /** Harness síncrono (mesma regra do gancho): o estado é atualizado ANTES de qualquer leitura seguinte. */

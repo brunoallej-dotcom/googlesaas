@@ -4,6 +4,7 @@
  *   A. fluxo operacional completo (14 passos) numa auditoria "pronta" e retorno à listagem;
  *   D. o operador distingue os estados do produto (pronta, decisão pendente, bloqueada, INCONCLUSIVA, PONTUADA, histórico, verificado e atual);
  *   B. integridade e segurança no nível da API (autenticação, vazamento, idempotência, concorrência, adulteração de evidência/resultado/recibo);
+ *   L. LIVRO DE CABEÇAS (decisões Q1–Q7): inscrição explícita, modo restrito, ações administrativas bloqueadas, chave ausente/rotacionada/revogada, livro removido;
  *   C. experiência: acessibilidade (verificador próprio), foco, diálogo, reflow, contraste e indicadores de foco medidos.
  * `I7_ONLY=A,B` (só desenvolvimento) roda um subconjunto; sem a variável, roda tudo, em ordem. Uso: ver scripts/browser/README.md.
  * Limites: Chromium headless apenas; sem leitor de tela, outros navegadores nem dispositivo físico (SKIPPED no resultado).
@@ -17,7 +18,7 @@ const only = (process.env.I7_ONLY || '').split(',').map((s) => s.trim()).filter(
 const want = (section) => only.length === 0 || only.includes(section);
 
 (async () => {
-  const h = await createHarness({ name: 'i7', seed: 'tests/helpers/browser-seed-i6.ts', seedArgs: ['with-scored,with-forged'], port: 3989, debugPort: 9335 });
+  const h = await createHarness({ name: 'i7', seed: 'tests/helpers/browser-seed-i6.ts', seedArgs: ['with-scored,with-forged,with-ledger'], port: 3989, debugPort: 9335 });
   const { check, waitFor, evalJs, text, has, sleep, send, BASE, IDS, root } = h;
   const go = h.go;
   const clickText = h.clickText;
@@ -76,7 +77,7 @@ const want = (section) => only.length === 0 || only.includes(section);
   if (want('A')) {
     h.log('---- A. fluxo operacional (14 passos)');
     // 1. abrir a Auditoria por Link
-    check('1. a Auditoria por Link abre e lista as 10 auditorias fictícias', !!(await go(`${BASE}/auditoria-por-link`, listReady)) && (await evalJs(`document.querySelectorAll('#auditorias-armazenadas li > a[href^="/auditoria-por-link/"]').length`)) === 10 && (await has(/10 empresas/)));
+    check('1. a Auditoria por Link abre e lista as 12 auditorias fictícias (10 de antes + a por inscrever e a legada do livro)', !!(await go(`${BASE}/auditoria-por-link`, listReady)) && (await evalJs(`document.querySelectorAll('#auditorias-armazenadas li > a[href^="/auditoria-por-link/"]').length`)) === 12 && (await has(/12 empresas/)));
     // 2. selecionar uma auditoria
     const cardBefore = await cardText(IDS.main);
     await evalJs(`document.querySelector('#auditorias-armazenadas li > a[href$="${IDS.main}"]').closest('li').querySelector('button').click()`);
@@ -335,7 +336,8 @@ const want = (section) => only.length === 0 || only.includes(section);
     check('B10. evidência adulterada DEPOIS do resultado: a prévia é recusada (409) e o resultado selado segue consultável (200)', tamperedPreview.status === 409 && !!tamperedResults && Array.isArray(tamperedResults.results) && tamperedResults.results.length === 1, `prévia=${tamperedPreview.status} resultados=${tamperedResults ? 'ok' : 'erro'} finalizar=${finalizeAfterTamper.status}`);
     dumpKeys('resultados com evidência adulterada', tamperedResults && { stale: tamperedResults.stale, n: (tamperedResults.results || []).length });
     check('B10b. com a evidência adulterada, finalizar com o corpo VÁLIDO de antes é recusado por integridade (409) e nenhum registro novo aparece', finalizeAfterTamper.status === 409 && chainOf(tamperedResults) === chainOf(resultsAfterTamper), `finalizar=${finalizeAfterTamper.status}`);
-    await go(lumos('hist'), (x) => /Erro de integridade|Resultados finalizados/.test(x));
+    // a condição verificada é o PRÓPRIO erro de integridade: "Resultados finalizados" (título da lista) aparece antes de a prévia falhar e não prova nada sobre o erro
+    await go(lumos('hist'), (x) => /Erro de integridade/.test(x));
     await openAll();
     check('B10c. na tela: erro de integridade visível e registro desabilitado; o resultado selado anterior continua listado', (await has(/Erro de integridade/)) && (await evalJs(`[...document.querySelectorAll('button')].find(b=>b.innerText.trim().startsWith('Registrar resultado'))?.disabled!==false`)));
     fs.writeFileSync(capture, original);
@@ -383,7 +385,7 @@ const want = (section) => only.length === 0 || only.includes(section);
     const attackDecision = await post(`/api/link-audit/decisions/${IDS.forgedDec}`, { record: forgedFile.record, expectedHead: null }); // a PRÓPRIA ana reenvia a operação do arquivo
     const attackDecisionBody = parse(attackDecision) || {};
     const forgedDecList = (await decisionsOf(IDS.forgedDec)) || {};
-    check('B13b. decisão FORJADA (API): a própria "ana" reenvia a operação do arquivo ⇒ 409 PENDING_ORIGIN_UNPROVEN; nenhum recibo; o arquivo intacto; continua pendente, sem decisão vigente e bloqueando', attackDecision.status === 409 && attackDecisionBody.code === 'PENDING_ORIGIN_UNPROVEN' && listing(decReceipts) === decReceiptsBefore2 && fs.readFileSync(path.join(root, 'decisions', IDS.forgedDec, 'd0001.json'), 'utf8') === decisionsFileBefore && (forgedDecList.decisions || []).length === 0 && forgedDecList.finalizable === false && (forgedDecList.pending || {}).origin === 'UNPROVEN' && (forgedDecList.pending || {}).record === null && (forgedDecList.pending || {}).recordedBy === null, `status=${attackDecision.status} ${attackDecisionBody.code}`);
+    check('B13b. decisão FORJADA (API): a própria "ana" reenvia a operação do arquivo ⇒ 409 (PENDING_ORIGIN_UNPROVEN pela 6B ou DECISIONS_HISTORY_UNRESOLVED pelo livro, que recusa ANTES por a forja não casar com a INTENT); nenhum recibo; o arquivo intacto; continua pendente, sem decisão vigente e bloqueando', attackDecision.status === 409 && ['PENDING_ORIGIN_UNPROVEN', 'DECISIONS_HISTORY_UNRESOLVED'].includes(attackDecisionBody.code) && listing(decReceipts) === decReceiptsBefore2 && fs.readFileSync(path.join(root, 'decisions', IDS.forgedDec, 'd0001.json'), 'utf8') === decisionsFileBefore && (forgedDecList.decisions || []).length === 0 && forgedDecList.finalizable === false && (forgedDecList.pending || {}).origin === 'UNPROVEN' && (forgedDecList.pending || {}).record === null && (forgedDecList.pending || {}).recordedBy === null, `status=${attackDecision.status} ${attackDecisionBody.code} livro=${((forgedDecList.ledger || {}).state)}/${((forgedDecList.ledger || {}).reason)}`);
     await go(lumos('forgedRun'), (x) => /NÃO confirmado/.test(x));
     const forgedRunPanel = await evalJs(`(()=>{const s=document.querySelector('section[aria-labelledby$="-t"]');return s?s.innerText:''})()`);
     check('B13c. resultado FORJADO (UI): origem NÃO comprovada, sem botão, sem desfecho/cobertura/autor do arquivo', /A origem NÃO foi comprovada pelo servidor/.test(forgedRunPanel) && /Não pode ser concluído por esta tela/.test(forgedRunPanel) && !/Cobertura|Inconclusivo|Pontuado|ana@empresa\.com|Foi você/.test(forgedRunPanel) && (await evalJs(`document.querySelectorAll('section[aria-labelledby$="-t"] button, section[aria-labelledby$="-t"] input').length`)) === 0, forgedRunPanel.replace(/\s+/g, ' ').slice(0, 160));
@@ -421,9 +423,11 @@ const want = (section) => only.length === 0 || only.includes(section);
     const forcedFinalize = await post(`/api/link-audit/scoring/${IDS.unsealed}/finalize`, { expectedHead: unsealedPreview ? unsealedPreview.finalization.expectedHead : null, expectedInputSha256: (unsealedPreview && unsealedPreview.finalization.expectedInputSha256) || 'a'.repeat(64) });
     const forcedBody = parse(forcedFinalize) || {};
     check('B15c. finalizar a coleta sem manifesto pela API é recusado (409 NOT_FINALIZABLE com o bloqueio de proveniência) e nada é gravado (nem resultado, nem recibo)', forcedFinalize.status === 409 && forcedBody.code === 'NOT_FINALIZABLE' && (forcedBody.blockers || []).some((b) => b.code === 'EVIDENCE_PROVENANCE_UNPROVEN') && filesIn(unsealedResults) === 0 && filesIn(unsealedReceipts) === 0, `${forcedFinalize.status} ${forcedFinalize.body.slice(0, 160)}`);
-    await go(lumos('unsealed'), (x) => /Origem da coleta/.test(x));
+    // ESTADO FINAL, não placeholder: o rótulo "Origem da coleta (autenticidade)" existe desde que a EVIDÊNCIA chega (com "—"); as insígnias e o motivo só existem quando a PRÉVIA
+    // termina de carregar. Esperar o rótulo lia a tela no meio do carregamento. A espera é pelo fim do carregamento da prévia (sucesso ou erro), nunca por tempo fixo.
+    await go(lumos('unsealed'), (x) => /Origem da coleta/.test(x) && !/Carregando (a prévia|as evidências da prévia)/.test(x) && /Integridade local verificada|Evidência incompleta|Evidência adulterada/.test(x));
     const unsealedText = await text();
-    check('B15d. na tela: a origem da coleta aparece como NÃO comprovada (distinta da integridade OK), diz que SHA-256 não mostra quem coletou e o registro fica desabilitado', /Integridade local verificada \(SHA-256\)/.test(unsealedText) && /NÃO comprovada/.test(unsealedText) && /não mostra quem o coletou/.test(unsealedText) && !(await enabledButton('Registrar resultado')));
+    check('B15d. na tela: a origem da coleta aparece como NÃO comprovada (distinta da integridade OK), diz que SHA-256 não mostra quem coletou e o registro fica desabilitado', /Integridade local verificada \(SHA-256\)/.test(unsealedText) && /NÃO comprovada/.test(unsealedText) && /não mostra quem o coletou/.test(unsealedText) && !(await enabledButton('Registrar resultado')), JSON.stringify({ integ: /Integridade local verificada \(SHA-256\)/.test(unsealedText), nao: /NÃO comprovada/.test(unsealedText), quem: /não mostra quem o coletou/.test(unsealedText), trecho: unsealedText.replace(/\s+/g, ' ').slice(0, 200) }));
     await h.shot('i7-B15-coleta-sem-prova');
 
     // B16 — R3-MINOR-2: a revogação confirmada NUNCA é reativada por recibo removido nem por quarentena da pendente (testemunha = resultado selado em outras pastas)
@@ -505,6 +509,122 @@ const want = (section) => only.length === 0 || only.includes(section);
     await h.restartServer();
     const back = await decisionsOf(IDS.main);
     check('B17i. configuração restaurada: a testemunha volta a ser lida, as mesmas decisões voltam a ser vigentes e continuam finalizáveis (nenhum estado preso)', ((back || {}).witness || {}).status !== 'NOT_CONFIGURED' && ((back || {}).decisions || []).length === effectiveBefore && (back || {}).finalizable === (mainBefore17 || {}).finalizable, JSON.stringify({ vigentes: ((back || {}).decisions || []).length, esperado: effectiveBefore, witness: (back || {}).witness, finalizable: (back || {}).finalizable }));
+  }
+
+  /* ============================================================ L. LIVRO DE CABEÇAS (Q1–Q7) ============================================================ */
+  if (want('L')) {
+    h.log('---- L. livro de cabeças: estados por auditoria, inscrição, modo restrito, administrativas bloqueadas, chaves, livro removido');
+    h.resetServerEnv();
+    await h.restartServer();
+    await go(`${BASE}/auditoria-por-link`, listReady); // as chamadas de API abaixo usam o fetch da página (cookie da sessão)
+    const ledgerDirOf = (id) => path.join(root, 'ledger', id);
+    const ledgerEvents = (id) => (fs.existsSync(ledgerDirOf(id)) ? fs.readdirSync(ledgerDirOf(id)).filter((n) => /^l\d{6}\.json$/.test(n)).sort().map((n) => JSON.parse(fs.readFileSync(path.join(ledgerDirOf(id), n), 'utf8'))) : []);
+    const dirListing = (dir) => (fs.existsSync(dir) ? fs.readdirSync(dir).sort().join() : '');
+    const judgement = { kind: 'JUDGEMENT', subcriterionId: 'C2', value: 'COMPATIBLE', justification: 'Conferido no painel do perfil pelo operador.' };
+    const unId = IDS.unenrolled;
+    const lgId = IDS.legacy;
+
+    // L1–L5 — auditoria NOVA: inscrição EXPLÍCITA (nunca implícita)
+    const un0 = (await decisionsOf(unId)) || {};
+    check('L1. auditoria nova SEM inscrição: ENROLLMENT_PENDING, nenhuma decisão vigente, não finalizável, livro ainda inexistente', (un0.ledger || {}).state === 'ENROLLMENT_PENDING' && (un0.decisions || []).length === 0 && un0.finalizable === false && !fs.existsSync(ledgerDirOf(unId)), JSON.stringify(un0.ledger));
+    const unWrite = await post(`/api/link-audit/decisions/${unId}`, { record: judgement, expectedHead: null });
+    check('L2. gravar SEM inscrever ⇒ 409 LEDGER_ENROLLMENT_REQUIRED; NADA gravado (nem decisão, nem recibo, nem livro)', unWrite.status === 409 && (parse(unWrite) || {}).code === 'LEDGER_ENROLLMENT_REQUIRED' && !fs.existsSync(path.join(root, 'decisions', unId)) && !fs.existsSync(path.join(root, 'anchors', unId)) && !fs.existsSync(ledgerDirOf(unId)), `${unWrite.status} ${(parse(unWrite) || {}).code}`);
+    await go(lumos('unenrolled'), ready);
+    await openAll();
+    check('L3. na tela: aviso de inscrição pendente, "nenhuma decisão é gravada" e o botão de inscrever HABILITADO', (await has(/Auditoria ainda NÃO inscrita no livro de cabeças/)) && (await has(/nenhuma decisão é gravada/)) && !!(await enabledButton('Inscrever esta auditoria no livro')));
+    await h.shot('i7-L3-inscricao-pendente');
+    await h.clickText('Inscrever esta auditoria no livro');
+    const protectedShown = await waitFor(() => has(/Protegida pelo livro de cabeças/), 15000);
+    const unEnrolled = (await decisionsOf(unId)) || {};
+    check('L4. depois de inscrever: PROTECTED; a tela declara que a guarda externa NÃO está configurada (nada afirma proteção contra rollback coordenado)', !!protectedShown && (unEnrolled.ledger || {}).state === 'PROTECTED' && (unEnrolled.ledger || {}).externalGuard === 'NOT_CONFIGURED' && (await has(/Guarda externa NÃO configurada/)) && !(await has(/proteção contra rollback coordenado garantida/i)), JSON.stringify(unEnrolled.ledger));
+    check('L4b. o livro tem exatamente o GENESIS (autenticado, chave do livro) — nenhuma cabeça vazia fabricada', ledgerEvents(unId).map((r) => r.event).join() === 'GENESIS' && ledgerEvents(unId)[0].origin && ledgerEvents(unId)[0].origin.kid === h.ledgerKeyId, ledgerEvents(unId).map((r) => r.event).join());
+    await h.shot('i7-L4-protegida');
+    const registered = await registerS4('Não se aplica: a empresa não vende produtos físicos, conferido no perfil público.');
+    const unAfter = (await decisionsOf(unId)) || {};
+    check('L5. depois de inscrita a decisão é gravada pela tela (confirmada) e o livro registra GENESIS → INTENT → CONFIRMED, com a cabeça das decisões', !!registered && (unAfter.decisions || []).length === 1 && ledgerEvents(unId).map((r) => r.event).join() === 'GENESIS,INTENT,CONFIRMED' && (unAfter.ledger || {}).confirmedDecisions === 1, `${ledgerEvents(unId).map((r) => r.event).join()} ${JSON.stringify(unAfter.ledger)}`);
+    const again = await post(`/api/link-audit/decisions/${unId}/ledger`, { action: 'ENROLL' });
+    check('L5b. inscrever DE NOVO uma auditoria já protegida é recusado e não grava', again.status >= 400 && ledgerEvents(unId).length === 3, `${again.status} ${(parse(again) || {}).code}`);
+
+    // L6–L10 — auditoria LEGADA (histórico anterior ao livro): modo restrito, SEM adoção automática
+    const decDirBefore = dirListing(path.join(root, 'decisions', lgId));
+    const anchDirBefore = dirListing(path.join(root, 'anchors', lgId));
+    const lg = (await decisionsOf(lgId)) || {};
+    check('L6. histórico ANTERIOR ao livro: LEGACY_READ_ONLY; ZERO decisões vigentes (mesmo havendo uma no arquivo); não finalizável; integridade NÃO resolvida', (lg.ledger || {}).state === 'LEGACY_READ_ONLY' && (lg.decisions || []).length === 0 && (lg.operatorRecords || []).length === 0 && lg.finalizable === false && !fs.existsSync(ledgerDirOf(lgId)), JSON.stringify(lg.ledger));
+    const lgWrite = await post(`/api/link-audit/decisions/${lgId}`, { record: judgement, expectedHead: lg.head });
+    check('L7. gravar na legada ⇒ 409 LEDGER_LEGACY_READ_ONLY; nada gravado; nenhum livro criado', lgWrite.status === 409 && (parse(lgWrite) || {}).code === 'LEDGER_LEGACY_READ_ONLY' && dirListing(path.join(root, 'decisions', lgId)) === decDirBefore && dirListing(path.join(root, 'anchors', lgId)) === anchDirBefore && !fs.existsSync(ledgerDirOf(lgId)), `${lgWrite.status} ${(parse(lgWrite) || {}).code}`);
+    const lgPreview = await previewOf(lgId);
+    check('L8. a prévia da legada não aplica nenhuma decisão e não permite finalizar (DECISIONS_HISTORY_UNRESOLVED)', !!lgPreview && lgPreview.finalization.allowed === false && (lgPreview.decisions.applied || []).length === 0 && lgPreview.blockers.some((b) => b.code === 'DECISIONS_HISTORY_UNRESOLVED' && b.severity === 'BLOCKING'), JSON.stringify(lgPreview && lgPreview.blockers.map((b) => [b.code, b.reasonCode])));
+    await go(lumos('legacy'), ready);
+    await openAll();
+    check('L9. na tela: MODO RESTRITO, "nenhuma decisão é considerada vigente nem enviada ao motor", SEM botão de inscrever/adotar/restaurar', (await has(/MODO RESTRITO/)) && (await has(/nenhuma decisão é considerada vigente nem enviada ao motor/)) && !(await evalJs(`[...document.querySelectorAll('button')].some(b=>/Inscrever|Adotar|Restaurar|Recuperar/.test(b.innerText))`)));
+    await h.shot('i7-L9-legada-modo-restrito');
+    const adminResults = [];
+    for (const action of ['ADOPT', 'RESTORE_ACK', 'QUARANTINE_ACK']) {
+      const r = await post(`/api/link-audit/decisions/${lgId}/ledger`, { action });
+      adminResults.push(`${action}:${r.status}:${(parse(r) || {}).code}`);
+    }
+    const enrollLegacy = await post(`/api/link-audit/decisions/${lgId}/ledger`, { action: 'ENROLL' });
+    check('L10. ADOPT, RESTORE_ACK e QUARANTINE_ACK ⇒ 403 ADMIN_APPROVAL_UNAVAILABLE (sem autorização fictícia); ENROLL na legada recusado; nada criado', adminResults.every((x) => /:403:ADMIN_APPROVAL_UNAVAILABLE$/.test(x)) && enrollLegacy.status >= 400 && !fs.existsSync(ledgerDirOf(lgId)) && dirListing(path.join(root, 'decisions', lgId)) === decDirBefore, `${adminResults.join(' ')} ENROLL:${enrollLegacy.status}`);
+
+    // L11–L12 — chave do livro AUSENTE: falha fechada, nada vigente, nada gravado; configuração restaurada ⇒ tudo volta
+    const mainBefore = (await decisionsOf(IDS.main)) || {};
+    const mainEffective = (mainBefore.decisions || []).length;
+    const mainListing = dirListing(path.join(root, 'decisions', IDS.main));
+    check('L11a. precondição: a auditoria principal está PROTECTED e tem decisão vigente (senão "zero vigentes" não provaria nada)', (mainBefore.ledger || {}).state === 'PROTECTED' && mainEffective > 0, JSON.stringify({ ledger: mainBefore.ledger, vigentes: mainEffective }));
+    h.setServerEnv({ GMN_LINK_AUDIT_LEDGER_KEY: undefined });
+    await h.restartServer();
+    const noKey = (await decisionsOf(IDS.main)) || {};
+    const noKeyWrite = await post(`/api/link-audit/decisions/${IDS.main}`, { record: judgement, expectedHead: noKey.head });
+    check('L11. SEM a chave do livro: HISTORY_UNRESOLVED/NOT_CONFIGURED, ZERO decisões vigentes (inclusive as que existem), não finalizável; gravar ⇒ 503 LEDGER_NOT_CONFIGURED e nada gravado', (noKey.ledger || {}).state === 'HISTORY_UNRESOLVED' && (noKey.ledger || {}).reason === 'NOT_CONFIGURED' && (noKey.decisions || []).length === 0 && noKey.finalizable === false && noKeyWrite.status === 503 && (parse(noKeyWrite) || {}).code === 'LEDGER_NOT_CONFIGURED' && dirListing(path.join(root, 'decisions', IDS.main)) === mainListing, `${JSON.stringify(noKey.ledger)} ${noKeyWrite.status}`);
+    await go(lumos('main'), ready);
+    check('L11b. na tela: "não está configurado neste servidor", nenhuma decisão enviada ao motor, sem botão de finalizar', (await has(/não está configurado neste servidor/)) && !(await enabledButton('Registrar resultado')));
+    await h.shot('i7-L11-livro-nao-configurado');
+    h.resetServerEnv();
+    await h.restartServer();
+    const mainBack = (await decisionsOf(IDS.main)) || {};
+    check('L12. configuração restaurada: PROTECTED de novo, as MESMAS decisões voltam a valer (nenhum estado preso)', (mainBack.ledger || {}).state === 'PROTECTED' && (mainBack.decisions || []).length === mainEffective, JSON.stringify(mainBack.ledger));
+
+    // L13 — LIVRO REMOVIDO com resultado que o cita: nunca vira "cabeça vazia"
+    const histId = IDS.hist;
+    const histBefore = (await decisionsOf(histId)) || {};
+    const histLedger = ledgerDirOf(histId);
+    const histAway = path.join(root, 'ledger-away');
+    fs.mkdirSync(histAway, { recursive: true });
+    check('L13a. precondição: a auditoria com resultado selado está PROTECTED e o resultado carrega a cabeça do livro (formato v2)', (histBefore.ledger || {}).state === 'PROTECTED' && JSON.parse(fs.readFileSync(path.join(root, 'results', histId, 's0001.json'), 'utf8')).schemaVersion === 2 && !!JSON.parse(fs.readFileSync(path.join(root, 'results', histId, 's0001.json'), 'utf8')).ledgerHead, JSON.stringify(histBefore.ledger));
+    fs.renameSync(histLedger, path.join(histAway, histId));
+    const histGone = (await decisionsOf(histId)) || {};
+    const histWrite = await post(`/api/link-audit/decisions/${histId}`, { record: judgement, expectedHead: histGone.head });
+    check('L13. livro REMOVIDO e citado por um resultado: HISTORY_UNRESOLVED/LEDGER_REMOVED_WITNESSED, ZERO vigentes, não finalizável, escrita recusada, livro NÃO recriado', (histGone.ledger || {}).state === 'HISTORY_UNRESOLVED' && (histGone.ledger || {}).reason === 'LEDGER_REMOVED_WITNESSED' && (histGone.decisions || []).length === 0 && histGone.finalizable === false && histWrite.status === 409 && !fs.existsSync(histLedger), `${JSON.stringify(histGone.ledger)} ${histWrite.status}`);
+    const histEnroll = await post(`/api/link-audit/decisions/${histId}/ledger`, { action: 'ENROLL' });
+    check('L13b. NÃO existe reinscrição: ENROLL recusado e o livro continua ausente', histEnroll.status >= 400 && !fs.existsSync(histLedger), `${histEnroll.status} ${(parse(histEnroll) || {}).code}`);
+    fs.renameSync(path.join(histAway, histId), histLedger); // restauração a partir do backup independente (fora do sistema)
+    const histRestored = (await decisionsOf(histId)) || {};
+    check('L13c. restaurado o livro a partir do backup: PROTECTED de novo, nada foi apagado', (histRestored.ledger || {}).state === 'PROTECTED' && (histRestored.decisions || []).length === (histBefore.decisions || []).length, JSON.stringify(histRestored.ledger));
+
+    // L14–L16 — ROTAÇÃO da chave do livro (planejada) e REVOGAÇÃO por comprometimento (id próprio; independente da chave de origem)
+    const oldLedgerKey = h.currentLedgerKey();
+    const newLedgerKey = h.freshLedgerKey();
+    const until = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+    h.setServerEnv({ GMN_LINK_AUDIT_LEDGER_KEY: newLedgerKey, GMN_LINK_AUDIT_LEDGER_RETIRED_KEYS: `${oldLedgerKey}:${until}` });
+    await h.restartServer();
+    const rotatedView = (await decisionsOf(unId)) || {};
+    const rotatedWrite = await post(`/api/link-audit/decisions/${unId}`, { record: { kind: 'NAME_EQUIVALENCE', nameA: 'Padaria Exemplo Ltda', nameB: 'Padaria Exemplo', justification: 'Mesmo estabelecimento, conferido no perfil público.' }, expectedHead: rotatedView.head });
+    const rotatedEvents = ledgerEvents(unId);
+    check('L14. ROTAÇÃO planejada: a auditoria segue PROTECTED com a chave antiga só verificando; a próxima escrita grava um CHECKPOINT assinado pela chave NOVA e depois as etapas da operação', (rotatedView.ledger || {}).state === 'PROTECTED' && rotatedWrite.status === 201 && rotatedEvents.some((r) => r.event === 'CHECKPOINT' && r.origin.kid === newLedgerKey.split(':')[0]) && rotatedEvents[rotatedEvents.length - 1].origin.kid === newLedgerKey.split(':')[0], `${rotatedWrite.status} ${rotatedEvents.map((r) => r.event + ':' + r.origin.kid.slice(0, 7)).join(' ')}`);
+    h.setServerEnv({ GMN_LINK_AUDIT_LEDGER_KEY: newLedgerKey, GMN_LINK_AUDIT_LEDGER_RETIRED_KEYS: undefined, GMN_LINK_AUDIT_LEDGER_REVOKED_KEY_IDS: oldLedgerKey.split(':')[0] });
+    await h.restartServer();
+    const revokedView = (await decisionsOf(unId)) || {};
+    const revokedWrite = await post(`/api/link-audit/decisions/${unId}`, { record: judgement, expectedHead: revokedView.head });
+    check('L15. chave COMPROMETIDA (id revogado, material removido): KEY_REVOKED mesmo com CHECKPOINT; ZERO decisões vigentes; escrita recusada; nada novo no livro', (revokedView.ledger || {}).state === 'HISTORY_UNRESOLVED' && (revokedView.ledger || {}).reason === 'KEY_REVOKED' && (revokedView.decisions || []).length === 0 && revokedWrite.status === 409 && ledgerEvents(unId).length === rotatedEvents.length, `${JSON.stringify(revokedView.ledger)} ${revokedWrite.status}`);
+    await go(lumos('unenrolled'), (x) => /integridade do histórico NÃO resolvida/i.test(x));
+    check('L15b. na tela: aviso de integridade NÃO resolvida com "chave REVOGADA por comprometimento", sem botão de recuperar nem de adotar', (await has(/chave REVOGADA por comprometimento/)) && !(await evalJs(`[...document.querySelectorAll('button')].some(b=>/Recuperar|Adotar|Restaurar|Inscrever/.test(b.innerText))`)));
+    await h.shot('i7-L15-chave-revogada');
+    h.resetServerEnv();
+    await h.restartServer();
+    const reverted = (await decisionsOf(unId)) || {};
+    check('L16. voltar à configuração ORIGINAL depois de gravar com a chave rotacionada NÃO silencia nada: os registros da chave nova são desconhecidos ⇒ HISTORY_UNRESOLVED (alto, nunca "tudo bem")', (reverted.ledger || {}).state === 'HISTORY_UNRESOLVED' && (reverted.decisions || []).length === 0, JSON.stringify(reverted.ledger));
+    const finalOriginal = (await decisionsOf(IDS.main)) || {};
+    check('L17. as demais auditorias seguem intactas na configuração original (principal PROTECTED com as mesmas decisões)', (finalOriginal.ledger || {}).state === 'PROTECTED' && (finalOriginal.decisions || []).length === mainEffective, JSON.stringify(finalOriginal.ledger));
   }
 
   /* ============================================================ C. EXPERIÊNCIA DO USUÁRIO ============================================================ */

@@ -1,3 +1,4 @@
+import { LEDGER_NOT_REQUIRED } from '../src/lib/link-audit-decisions/ledger-port';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -52,7 +53,7 @@ const STILL_PROVEN: ReadonlySet<Rotation> = new Set<Rotation>(['same-key', 'plan
 /** Serviço de decisões COMO O SERVIDOR O MONTA depois da rotação: o mesmo autenticador assina/verifica as decisões e alimenta o provedor da testemunha. */
 function afterRotation(w: World, e: ResultsEnv, rotation: Rotation, provider?: KnownHeadsProvider) {
   const origin = authenticatorFor(rotation);
-  return createDecisionService({
+  return createDecisionService({ ledger: LEDGER_NOT_REQUIRED,
     ...(origin ? { origin } : {}),
     baseDir: w.decisionsDir,
     anchorDir: w.anchorDir,
@@ -265,12 +266,24 @@ test('WITNESS_NOT_REQUIRED não existe em código de produção, e as duas compo
     }
   };
   walk(root);
+  const ledgerUsers: string[] = [];
+  const walkLedger = (dir: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walkLedger(full);
+      else if (/\.(ts|tsx)$/.test(entry.name) && fs.readFileSync(full, 'utf8').includes('LEDGER_NOT_REQUIRED')) ledgerUsers.push(path.relative(root, full).split(path.sep).join('/'));
+    }
+  };
+  walkLedger(root);
+  assert.deepEqual(ledgerUsers.sort(), ['lib/link-audit-decisions/index.ts', 'lib/link-audit-decisions/ledger-port.ts', 'lib/link-audit-decisions/service.ts'], 'LEDGER_NOT_REQUIRED só existe na porta, no serviço e no índice');
   assert.deepEqual(users.sort(), ['lib/link-audit-decisions/index.ts', 'lib/link-audit-decisions/service.ts', 'lib/link-audit-decisions/witness.ts']);
+  void 0;
   for (const file of ['app/api/link-audit/decisions/shared.ts', 'app/api/link-audit/scoring/shared.ts']) {
     const source = fs.readFileSync(path.join(root, file), 'utf8');
     assert.match(source, /createResultsKnownHeads\(/, file);
     assert.match(source, /reason: 'NOT_CONFIGURED'/, `${file}: sem as pastas, a testemunha responde NOT_CONFIGURED (falha fechada)`);
-    assert.ok(/\bknownHeads\b\s*\}\)/.test(source) && !/\.\.\.\(knownHeads/.test(source), `${file}: knownHeads sempre passado, nunca condicional`);
+    assert.ok(/\bknownHeads\b,\s*ledger\b/.test(source) && !/\.\.\.\((?:knownHeads|ledger)/.test(source), `${file}: knownHeads e ledger sempre passados, nunca condicionais`);
+    assert.match(source, /ledgerForRoutes\(/, `${file}: o livro vem da composição das rotas`);
   }
 });
 

@@ -170,6 +170,16 @@
             "note": "O hash SHA-256 detecta alteração acidental ou inconsistência; não é assinatura. A remoção ou o retrocesso do histórico é detectado pelas âncoras (pasta separada) e pelo expectedHead; quem altera as DUAS pastas ao mesmo tempo (ex.: root na VPS) não é detectado.",
             "status": "OK"
           },
+          "ledger": {
+            "confirmedDecisions": 0,
+            "externalGuard": "NOT_CONFIGURED",
+            "head": null,
+            "openOperation": null,
+            "reason": null,
+            "receiptReissuable": false,
+            "recoverable": false,
+            "state": "NOT_REQUIRED"
+          },
           "limits": {
             "maxEffectiveRecords": 200,
             "maxEntries": 9999,
@@ -704,6 +714,16 @@
             "ignoredFiles": 0,
             "note": "O hash SHA-256 detecta alteração acidental ou inconsistência; não é assinatura. A remoção ou o retrocesso do histórico é detectado pelas âncoras (pasta separada) e pelo expectedHead; quem altera as DUAS pastas ao mesmo tempo (ex.: root na VPS) não é detectado.",
             "status": "OK"
+          },
+          "ledger": {
+            "confirmedDecisions": 0,
+            "externalGuard": "NOT_CONFIGURED",
+            "head": null,
+            "openOperation": null,
+            "reason": null,
+            "receiptReissuable": false,
+            "recoverable": false,
+            "state": "NOT_REQUIRED"
           },
           "limits": {
             "maxEffectiveRecords": 200,
@@ -1340,6 +1360,16 @@
             "note": "O hash SHA-256 detecta alteração acidental ou inconsistência; não é assinatura. A remoção ou o retrocesso do histórico é detectado pelas âncoras (pasta separada) e pelo expectedHead; quem altera as DUAS pastas ao mesmo tempo (ex.: root na VPS) não é detectado.",
             "status": "OK"
           },
+          "ledger": {
+            "confirmedDecisions": 0,
+            "externalGuard": "NOT_CONFIGURED",
+            "head": null,
+            "openOperation": null,
+            "reason": null,
+            "receiptReissuable": false,
+            "recoverable": false,
+            "state": "NOT_REQUIRED"
+          },
           "limits": {
             "maxEffectiveRecords": 200,
             "maxEntries": 9999,
@@ -1829,6 +1859,16 @@
             "note": "O hash SHA-256 detecta alteração acidental ou inconsistência; não é assinatura. A remoção ou o retrocesso do histórico é detectado pelas âncoras (pasta separada) e pelo expectedHead; quem altera as DUAS pastas ao mesmo tempo (ex.: root na VPS) não é detectado.",
             "status": "OK"
           },
+          "ledger": {
+            "confirmedDecisions": 0,
+            "externalGuard": "NOT_CONFIGURED",
+            "head": null,
+            "openOperation": null,
+            "reason": null,
+            "receiptReissuable": false,
+            "recoverable": false,
+            "state": "NOT_REQUIRED"
+          },
           "limits": {
             "maxEffectiveRecords": 200,
             "maxEntries": 9999,
@@ -2257,6 +2297,16 @@
             "ignoredFiles": 0,
             "note": "O hash SHA-256 detecta alteração acidental ou inconsistência; não é assinatura. A remoção ou o retrocesso do histórico é detectado pelas âncoras (pasta separada) e pelo expectedHead; quem altera as DUAS pastas ao mesmo tempo (ex.: root na VPS) não é detectado.",
             "status": "OK"
+          },
+          "ledger": {
+            "confirmedDecisions": 0,
+            "externalGuard": "NOT_CONFIGURED",
+            "head": null,
+            "openOperation": null,
+            "reason": null,
+            "receiptReissuable": false,
+            "recoverable": false,
+            "state": "NOT_REQUIRED"
           },
           "limits": {
             "maxEffectiveRecords": 200,
@@ -2725,6 +2775,16 @@
             "note": "O hash SHA-256 detecta alteração acidental ou inconsistência; não é assinatura. A remoção ou o retrocesso do histórico é detectado pelas âncoras (pasta separada) e pelo expectedHead; quem altera as DUAS pastas ao mesmo tempo (ex.: root na VPS) não é detectado.",
             "status": "OK"
           },
+          "ledger": {
+            "confirmedDecisions": 0,
+            "externalGuard": "NOT_CONFIGURED",
+            "head": null,
+            "openOperation": null,
+            "reason": null,
+            "receiptReissuable": false,
+            "recoverable": false,
+            "state": "NOT_REQUIRED"
+          },
           "limits": {
             "maxEffectiveRecords": 200,
             "maxEntries": 9999,
@@ -3168,6 +3228,16 @@
             "ignoredFiles": 0,
             "note": "O hash SHA-256 detecta alteração acidental ou inconsistência; não é assinatura. A remoção ou o retrocesso do histórico é detectado pelas âncoras (pasta separada) e pelo expectedHead; quem altera as DUAS pastas ao mesmo tempo (ex.: root na VPS) não é detectado.",
             "status": "OK"
+          },
+          "ledger": {
+            "confirmedDecisions": 0,
+            "externalGuard": "NOT_CONFIGURED",
+            "head": null,
+            "openOperation": null,
+            "reason": null,
+            "receiptReissuable": false,
+            "recoverable": false,
+            "state": "NOT_REQUIRED"
           },
           "limits": {
             "maxEffectiveRecords": 200,

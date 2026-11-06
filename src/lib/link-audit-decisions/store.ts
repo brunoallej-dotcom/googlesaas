@@ -3,6 +3,7 @@ import path from 'node:path';
 import { canonicalJson } from '../link-audit/canonical';
 import { judgeOrigin, type OriginAuthenticator, type OriginVerdict } from '../link-audit-origin';
 import { describeError, nodeFsOps, publishExclusive, withLock, type FsOps } from '../link-audit/snapshot-store';
+import type { DecisionRef, DecisionsSnapshot, LedgerPort, LedgerRefusal, ResultsEvidence } from './ledger-port';
 import { confirmAnchor, prepareAnchorDirectory, readAnchors, verifyAnchors, type AnchorSummary } from './anchor-store';
 import {
   assertBase,
@@ -10,15 +11,19 @@ import {
   ATOMIC_UNAVAILABLE_ERRNO,
   splitNames,
   dirStatus,
+  DURABILITY_UNPROVEN_MESSAGE,
   ensureDirectory,
   fail,
   FATAL_ERRNO,
   isBaseTripped,
   locateIn,
+  mapOrdered,
+  READ_CONCURRENCY,
   readSealedFile,
   seal,
   serialize,
   tripBase,
+  watchDurability,
   type Location,
   type StoreFailure,
   type StoreOptions,
@@ -56,9 +61,43 @@ export interface WriteOptions extends ReadOptions {
    * concluída (recibo) se a etiqueta for válida. SEM ele nada é assinado e NENHUMA pendente é concluída (falha fechada).
    */
   readonly origin?: OriginAuthenticator;
+  /**
+   * LIVRO DE CABEÇAS (contrato §16): quando presente, a escrita só acontece em auditoria PROTEGIDA e segue `INTENT → entrada → recibo → CONFIRMED`,
+   * tudo na MESMA coordenação (trava em processo + `link()` exclusivo entre processos). Sem ele (testes da 6B isolada) nada muda.
+   */
+  readonly ledger?: {
+    readonly port: LedgerPort;
+    readonly actor: string;
+    /** Classe da operação, para a RESERVA de capacidade (R7-01): `RECORD` (criação/substituição), `REVOKE` ou `NONE` (manutenção, p.ex. `RECOVER`). */
+    readonly intended: 'RECORD' | 'REVOKE' | 'NONE';
+    /** Lê a testemunha dos RESULTADOS agora (R7-05/R7-06): a cada tentativa, ANTES do livro, e de novo logo antes de uma gravação de recuperação. */
+    readonly readResults: () => Promise<ResultsEvidence>;
+    /** Status da testemunha das DECISÕES (6B) se NÃO resolvida (nenhuma recuperação do livro é gravada); senão `null`. */
+    readonly decisionsWitness: (entries: readonly DecisionEntry[], pending: DecisionEntry | null) => string | null;
+  };
 }
 
 const WRITE_RETRIES = 5;
+/** Esperas por uma operação de OUTRO processo (50 ms cada ⇒ ~2 s) e releituras por suspeita de corrida entre as leituras do livro e das decisões. */
+const MAX_LEDGER_WAITS = 40;
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Descrição NEUTRA da entrada para o livro (a 6B não entrega a entrada inteira, só o que o livro precisa). */
+export function ledgerRefOf(entry: DecisionEntry): DecisionRef {
+  const revoke = entry.action === 'REVOKE';
+  return {
+    seq: entry.seq,
+    sha256: entry.contentSha256,
+    prevSha256: entry.prevSha256,
+    action: entry.action,
+    author: entry.recordedBy,
+    decisionId: revoke ? null : entry.decisionId,
+    revokes: revoke ? entry.revokes : null,
+    supersedes: revoke ? null : entry.supersedes,
+    affectsPrior: revoke || entry.supersedes !== null,
+  };
+}
+export const ledgerSnapshotOf = (confirmed: readonly DecisionEntry[], pending: DecisionEntry | null): DecisionsSnapshot => ({ confirmed: confirmed.map(ledgerRefOf), pending: pending ? ledgerRefOf(pending) : null });
 
 export const assertDecisionBase = (baseDir: unknown, projectRoot: string): StoreResult<string> => assertBase(baseDir, projectRoot, 'decisões');
 export const locateAudit = (baseDir: unknown, auditId: unknown, projectRoot: string): StoreResult<Location> => locateIn(baseDir, auditId, projectRoot, 'decisões');
@@ -110,9 +149,10 @@ async function readDecisions(ops: FsOps, located: Location, auditId: string): Pr
 
   const entries: DecisionEntry[] = [];
   let previous: string | null = null;
-  for (const n of numbers) {
+  const files = await mapOrdered(numbers, READ_CONCURRENCY, (n) => readSealedFile<DecisionEntry>(ops, path.join(located.dir, entryFileName(n)), MAX_ENTRY_BYTES, decisionEntrySchema));
+  for (const [position, n] of numbers.entries()) {
     const name = entryFileName(n);
-    const file = await readSealedFile<DecisionEntry>(ops, path.join(located.dir, name), MAX_ENTRY_BYTES, decisionEntrySchema);
+    const file = files[position] as Awaited<ReturnType<typeof readSealedFile<DecisionEntry>>>;
     if (!file.ok) return file;
     const entry = file.value;
     if (entry.auditId !== auditId) return fail('CHAIN_BROKEN', `${name} pertence a outra auditoria.`);
@@ -255,6 +295,7 @@ export type AppendResult<F> =
   | { readonly ok: true; readonly entry: DecisionEntry; readonly state: LogState; readonly anchored: true; readonly replayed: boolean; readonly anchors: AnchorSummary }
   | StoreFailure
   | PendingFailure
+  | { readonly ok: false; readonly code: 'LEDGER_REFUSED'; readonly refusal: LedgerRefusal }
   | { readonly ok: false; readonly code: 'REJECTED'; readonly failure: F };
 
 const laterOf = (a: string, b: string | undefined): string => (b !== undefined && b > a ? b : a);
@@ -278,9 +319,52 @@ export async function appendEntry<F>(baseDir: unknown, auditId: unknown, build: 
   const anchorLocated = locateAnchors(options.anchorDir, auditId, projectRoot);
   if (!anchorLocated.ok) return anchorLocated;
   const { root, dir } = located.value;
-  const atomic = atomicOnly(ops);
+  const ledger = options.ledger;
+  // R6-07: com o livro, a ordem de durabilidade entre pastas faz parte do protocolo; a falha do fsync de diretório da entrada ou do recibo NÃO pode virar sucesso.
+  const watch = ledger ? watchDurability(ops) : null;
+  const atomic = atomicOnly(watch?.ops ?? ops);
+  const durabilityUnproven = (): StoreFailure | null => {
+    if (!watch || watch.failure() === null) return null;
+    tripBase(root);
+    tripBase(anchorLocated.value.root);
+    return fail('STORAGE_FATAL', DURABILITY_UNPROVEN_MESSAGE);
+  };
+  /**
+   * R7-04: sincroniza (fsync) os diretórios dados e SÓ devolve `null` se todos ficaram comprovadamente duráveis. É o que impede uma RETOMADA (reenvio de pendente, fase C,
+   * recibo adotado) de devolver sucesso sem nunca ter sincronizado o diretório cujo fsync falhou antes. Sem o livro (6B isolada) não faz nada.
+   */
+  const syncStrict = async (dirs: readonly string[]): Promise<StoreFailure | null> => {
+    if (!watch) return null;
+    for (const target of dirs) {
+      try {
+        await watch.ops.syncDirectory(target);
+      } catch {
+        /* registrado por `watchDurability`; a decisão vem logo abaixo */
+      }
+    }
+    return durabilityUnproven();
+  };
+  /** Diretórios-PAI das pastas da auditoria: numa RETOMADA o fsync deles pode ter falhado numa criação anterior (o fsync da pasta filha não persiste o nome dela). */
+  const parentDirs = [path.dirname(dir), path.dirname(anchorLocated.value.dir)];
+  /** Pastas da auditoria (decisões e âncoras). Com o livro, só são criadas DEPOIS de o livro autorizar: uma escrita recusada não deixa rastro. */
+  const prepareDirectories = async (): Promise<StoreFailure | null> => {
+    const hadAnchors = (await dirStatus(ops, anchorLocated.value.dir)) === 'EXISTS';
+    const hadDecisions = (await dirStatus(ops, dir)) === 'EXISTS';
+    const anchorReady = await prepareAnchorDirectory(ops, anchorLocated.value);
+    if (anchorReady) return anchorReady;
+    const decisionsReady = await ensureDirectory(ops, dir, 'decisões');
+    if (decisionsReady) return decisionsReady;
+    // R7-04: o fsync da pasta da auditoria NÃO persiste o nome dela no diretório-PAI
+    // R7-04 (revisão 7, M2): SEMPRE sincroniza os pais, não só quando a pasta foi criada agora — uma criação anterior pode ter deixado o fsync do pai falho (e o processo ter reiniciado);
+    // depois do reinício a pasta já existe e nada mais diria que o NOME dela nunca foi comprovado em disco. Custo: 2 fsyncs por gravação.
+    void hadAnchors;
+    void hadDecisions;
+    return syncStrict(parentDirs);
+  };
 
   return withLock(`decisions:${dir.toLowerCase()}`, async (): Promise<AppendResult<F>> => {
+    let ledgerWaits = 0;
+    let rechecks = 0;
     for (let attempt = 0; attempt < WRITE_RETRIES; attempt++) {
       if (isBaseTripped(root) || isBaseTripped(anchorLocated.value.root)) {
         return fail('STORAGE_FATAL', 'Erro fatal de disco anterior: todas as escritas estão interrompidas até reiniciar o servidor.');
@@ -288,11 +372,15 @@ export async function appendEntry<F>(baseDir: unknown, auditId: unknown, build: 
       const base = await dirStatus(ops, root);
       if (base === 'MISSING') return fail('STORAGE_MISSING', 'O armazenamento de decisões não existe neste servidor.');
       if (base !== 'EXISTS') return fail('UNSAFE_PATH', 'O armazenamento de decisões não é um diretório comum.');
-      const anchorReady = await prepareAnchorDirectory(ops, anchorLocated.value);
-      if (anchorReady) return anchorReady;
-      const ensured = await ensureDirectory(ops, dir, 'decisões');
-      if (ensured) return ensured;
+      if (!ledger) {
+        const prepared = await prepareDirectories();
+        if (prepared) return prepared;
+      }
 
+      // ORDEM DE LEITURA CONSISTENTE (R7-05/R7-06): resultados → (guarda →) livro → decisões e recibos. Cada fonte só cresce e cita as anteriores, então ler primeiro a que é
+      // citada pela seguinte nunca produz um desacordo falso por corrida; relida A CADA tentativa (nunca fixa durante as esperas e releituras).
+      const results = ledger ? await ledger.readResults() : null;
+      const session = ledger ? await ledger.port.begin(auditId as string) : null;
       const read = await readVerified(ops, located.value, anchorLocated.value, auditId as string);
       if (!read.ok) return read;
       const { state: confirmed, pending, anchorFiles } = read.value;
@@ -301,20 +389,81 @@ export async function appendEntry<F>(baseDir: unknown, auditId: unknown, build: 
       if (pending === null && seq > MAX_SEQ) return fail('LIMIT_REACHED', `O histórico desta auditoria atingiu o limite de ${MAX_SEQ} entradas.`);
       const recordedAt = laterOf(options.now(), entries[entries.length - 1]?.recordedAt);
 
+      let pendingKind: 'OPEN_INTENT' | 'RECEIPT_REMOVED' | null = null;
+      if (ledger) {
+        const step = await ledger.port.prepare({
+          session,
+          auditId: auditId as string,
+          snapshot: ledgerSnapshotOf(confirmed.entries, pending),
+          results: results as ResultsEvidence,
+          intended: ledger.intended,
+          freshResults: ledger.readResults,
+          decisionsWitness: ledger.decisionsWitness(confirmed.entries, pending),
+          ensureDurable: async () => (await syncStrict([dir, anchorLocated.value.dir, ...parentDirs])) === null,
+          entryOriginProven: (entrySeq) => {
+            const found = entries[entrySeq - 1];
+            return found !== undefined && judgeOrigin(options.origin, 'DECISION', found) === 'PROVEN';
+          },
+          nowIso: options.now(),
+          actor: ledger.actor,
+          rechecks,
+        });
+        if (step.kind === 'REFUSED') return durabilityUnproven() ?? { ok: false, code: 'LEDGER_REFUSED', refusal: step.refusal };
+        if (step.kind === 'WAIT') {
+          if (++ledgerWaits > MAX_LEDGER_WAITS) return { ok: false, code: 'LEDGER_REFUSED', refusal: { code: 'LEDGER_OPERATION_IN_PROGRESS', reason: null, issues: ['Há uma operação de outro processo em andamento nesta auditoria; tente novamente.'], view: null } };
+          await sleep(step.ms);
+          attempt -= 1; // esperar não consome tentativa
+          continue;
+        }
+        if (step.kind === 'RETRY') {
+          if (step.transient) rechecks += 1;
+          await sleep(step.ms);
+          continue;
+        }
+        pendingKind = step.pendingKind;
+        if (pending && pendingKind === null) return fail('INTERNAL', 'Há decisão pendente que o livro não reconheceu (erro interno): nada foi gravado.');
+      }
+
       const built = build({ state: confirmed, pending, entries, seq, recordedAt });
       if (!built.ok) return { ok: false, code: 'REJECTED', failure: built.failure };
 
       if ('replayOf' in built) {
         const target = entries[built.replayOf - 1];
         if (!target) return fail('INTERNAL', 'Reenvio aponta para uma entrada que não existe (erro interno).');
-        if (target !== pending) return { ok: true, entry: target, state: confirmed, anchored: true, replayed: true, anchors: confirmedSummary(confirmed.entries.length) };
+        if (target !== pending) {
+          if (ledger) {
+            // R7-04: reenvio de entrada que o livro JÁ confirmou. "Existe" não prova "sobrevive a uma queda" (o fsync de alguma das três pastas pode ter falhado antes de um
+            // reinício): o sucesso exige sincronizar AGORA decisões, recibos e livro. Falha ⇒ durabilidade desconhecida (nunca sucesso).
+            const durable = await syncStrict([dir, anchorLocated.value.dir, ...parentDirs]);
+            if (durable) return durable;
+            const ledgerDurable = await ledger.port.sync(auditId as string);
+            if (!ledgerDurable.ok) return { ok: false, code: 'LEDGER_REFUSED', refusal: ledgerDurable.refusal };
+          }
+          return { ok: true, entry: target, state: confirmed, anchored: true, replayed: true, anchors: confirmedSummary(confirmed.entries.length) };
+        }
         // Reenvio da PENDENTE: antes de dar o RECIBO, exige a PROVA DE ORIGEM (o arquivo vive numa pasta que quem escreve nela controla
         // por inteiro: autor, conteúdo e selo são afirmações dele). Sem prova válida o recibo NÃO é dado e nada é gravado.
         const verdict = judgeOrigin(options.origin, 'DECISION', pending);
         if (verdict !== 'PROVEN') return { ok: false, code: 'ORIGIN_UNPROVEN', issues: ['A origem desta pendência não pôde ser comprovada pelo servidor; nenhum recibo foi gravado.'], pending, state: confirmed, verdict };
+        if (ledger && pendingKind === 'RECEIPT_REMOVED') {
+          // Recibo removido de entrada que o livro JÁ confirmou: a reemissão de MESMO conteúdo fica registrada no livro ANTES do recibo (a evidência não se perde).
+          const reissued = await ledger.port.reissue({ session, auditId: auditId as string, actor: ledger.actor, nowIso: options.now(), entry: ledgerRefOf(pending) });
+          if (reissued.kind === 'REFUSED') return { ok: false, code: 'LEDGER_REFUSED', refusal: reissued.refusal };
+          if (reissued.kind !== 'OK') continue;
+        }
+        // R7-04: a entrada pendente foi publicada por uma tentativa anterior (talvez com o fsync do diretório falho): ela só é dada como durável depois de sincronizada AGORA.
+        const entryDurable = await syncStrict([dir, path.dirname(dir)]);
+        if (entryDurable) return entryDurable;
         // Se falhar de novo, continua pendente (e o operador pode reenviar outra vez).
-        const concluded = await confirmAnchor(ops, anchorLocated.value, pending, anchorFiles[anchorFiles.length - 1], laterOf(options.now(), pending.recordedAt));
+        const concluded = await confirmAnchor(watch?.ops ?? ops, anchorLocated.value, pending, anchorFiles[anchorFiles.length - 1], laterOf(options.now(), pending.recordedAt));
         if (!concluded.ok) return { ok: false, code: 'ANCHOR_PENDING', issues: concluded.issues, pending, state: confirmed };
+        // o recibo (gravado agora ou ADOTADO de uma tentativa anterior) também só vale depois de a pasta de recibos ser sincronizada agora
+        const receiptDurable = await syncStrict([anchorLocated.value.dir, path.dirname(anchorLocated.value.dir)]);
+        if (receiptDurable) return receiptDurable;
+        if (ledger && pendingKind === 'OPEN_INTENT') {
+          const sealedByLedger = await ledger.port.confirmed({ session, auditId: auditId as string, actor: ledger.actor, nowIso: options.now(), entry: ledgerRefOf(pending) });
+          if (sealedByLedger.kind === 'REFUSED') return { ok: false, code: 'LEDGER_REFUSED', refusal: sealedByLedger.refusal };
+        }
         const whole = replay(entries);
         if (!whole.ok) return fail('SEMANTIC', ...whole.issues.slice(0, 10));
         return { ok: true, entry: pending, state: whole.value, anchored: true, replayed: true, anchors: confirmedSummary(entries.length) };
@@ -334,6 +483,17 @@ export async function appendEntry<F>(baseDir: unknown, auditId: unknown, build: 
       if (!next.ok) return fail('SEMANTIC', ...next.issues.slice(0, 10));
       const data = serialize(entry); // exatamente os bytes que a leitura estrita exige
       if (Buffer.byteLength(data) > MAX_ENTRY_BYTES) return fail('LIMIT_REACHED', 'A entrada ultrapassa o tamanho máximo permitido.');
+
+      if (ledger) {
+        const prepared = await prepareDirectories();
+        if (prepared) return prepared;
+        const intended = await ledger.port.intent({ session, auditId: auditId as string, actor: ledger.actor, nowIso: options.now(), entry: ledgerRefOf(checked.data) });
+        if (intended.kind === 'REFUSED') return { ok: false, code: 'LEDGER_REFUSED', refusal: intended.refusal };
+        if (intended.kind === 'RETRY' || intended.kind === 'WAIT') {
+          await sleep(intended.kind === 'RETRY' ? intended.ms : 10);
+          continue; // outro processo ocupou a posição do livro: relê e reavalia (nada foi publicado)
+        }
+      }
 
       const finalName = entryFileName(seq);
       const published = await publishExclusive(atomic, {
@@ -355,11 +515,55 @@ export async function appendEntry<F>(baseDir: unknown, auditId: unknown, build: 
         return fail('WRITE_FAILED', ...published.issues);
       }
 
+      const unprovenEntry = durabilityUnproven();
+      if (unprovenEntry) return unprovenEntry; // a entrada existe (fica pendente), mas sem durabilidade comprovada nem o recibo nem o sucesso seguem
       // A entrada já existe, mas SÓ vale depois do recibo. Se ele falhar, a entrada fica PENDENTE e nenhum sucesso é devolvido.
-      const receipt = await confirmAnchor(ops, anchorLocated.value, checked.data, anchorFiles[anchorFiles.length - 1], recordedAt);
+      const receipt = await confirmAnchor(watch?.ops ?? ops, anchorLocated.value, checked.data, anchorFiles[anchorFiles.length - 1], recordedAt);
       if (!receipt.ok) return { ok: false, code: 'ANCHOR_PENDING', issues: receipt.issues, pending: checked.data, state: confirmed };
+      const unprovenReceipt = await syncStrict([anchorLocated.value.dir]);
+      if (unprovenReceipt) return unprovenReceipt;
+      if (ledger) {
+        // PONTO DE DURABILIDADE: só depois do CONFIRMED no livro a resposta é de sucesso.
+        const sealedByLedger = await ledger.port.confirmed({ session, auditId: auditId as string, actor: ledger.actor, nowIso: options.now(), entry: ledgerRefOf(checked.data) });
+        if (sealedByLedger.kind === 'REFUSED') return { ok: false, code: 'LEDGER_REFUSED', refusal: sealedByLedger.refusal };
+      }
       return { ok: true, entry: checked.data, state: next.value, anchored: true, replayed: false, anchors: confirmedSummary(seq) };
     }
     return fail('CONFLICT', 'Outro processo gravou continuamente nesta auditoria; nada foi sobrescrito. Tente novamente.');
   });
+}
+
+/**
+ * BARREIRA de durabilidade das pastas de decisões e de recibos de UMA auditoria (e dos diretórios-pai onde vivem os nomes delas): sincroniza tudo AGORA e só devolve `null` se nenhuma sincronização
+ * falhou. Usada antes de selar um resultado que cita o livro. Falha ⇒ as duas bases travam (depois de um erro de fsync não se presume nada).
+ */
+export async function syncDecisionDirectories(baseDir: unknown, auditId: unknown, options: { readonly fs?: FsOps; readonly projectRoot?: string; readonly anchorDir?: unknown }): Promise<StoreFailure | null> {
+  const ops = options.fs ?? nodeFsOps;
+  const projectRoot = options.projectRoot ?? process.cwd();
+  const located = locateAudit(baseDir, auditId, projectRoot);
+  if (!located.ok) return located;
+  const anchorLocated = locateAnchors(options.anchorDir, auditId, projectRoot);
+  if (!anchorLocated.ok) return anchorLocated;
+  const { root, dir } = located.value;
+  if (isBaseTripped(root) || isBaseTripped(anchorLocated.value.root)) return fail('STORAGE_FATAL', DURABILITY_UNPROVEN_MESSAGE);
+  const watch = watchDurability(ops);
+  let unreadable = false;
+  for (const target of [dir, anchorLocated.value.dir, path.dirname(dir), path.dirname(anchorLocated.value.dir)]) {
+    // pasta da auditoria que ainda não existe (auditoria sem decisões) não tem o que sincronizar; qualquer outra situação diferente de "existe" é falha
+    const status = await dirStatus(ops, target);
+    if (status === 'MISSING') continue;
+    if (status !== 'EXISTS') {
+      unreadable = true;
+      continue;
+    }
+    try {
+      await watch.ops.syncDirectory(target);
+    } catch {
+      /* registrado por `watchDurability` */
+    }
+  }
+  if (watch.failure() === null && !unreadable) return null;
+  tripBase(root);
+  tripBase(anchorLocated.value.root);
+  return fail('STORAGE_FATAL', DURABILITY_UNPROVEN_MESSAGE);
 }

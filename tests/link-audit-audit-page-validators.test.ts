@@ -329,3 +329,63 @@ test('prévia: a AUTENTICIDADE da coleta é validada e finalizável exige coleta
   any(blocked).blockers = [{ code: 'EVIDENCE_PROVENANCE_UNPROVEN', severity: 'BLOCKING', message: 'A origem da coleta NÃO foi comprovada.', reasonCode: 'PROOF_NOT_CONFIGURED', decisionIds: [], subcriterionIds: [] }];
   assert.ok(isPreviewPayload(blocked, AUDIT), JSON.stringify(blocked.finalization));
 });
+
+/* ------------------------------------------------------------------------------------------------ livro de cabeças: coerência do contrato */
+test('livro: o validador exige coerência — fora de PROTECTED nada vigente/finalizável; PROTECTED sem razão e com cabeça; prévia só finaliza com livro protegido e sem operação aberta', () => {
+  const ledger = (over: Record<string, unknown> = {}) => ({ state: 'PROTECTED', reason: null, head: { ledgerSeq: 3, sha256: 'a'.repeat(64) }, confirmedDecisions: 1, openOperation: null, recoverable: false, receiptReissuable: false, externalGuard: 'NOT_CONFIGURED', ...over });
+  const withLedger = (over: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({ ...JSON.parse(JSON.stringify(decisionsFixture())), ledger: ledger(over), ...extra });
+  assert.ok(isDecisionsPayload(withLedger({}), AUDIT), 'protegida e coerente');
+  const dto = JSON.parse(JSON.stringify(decisionDto({ decisionId: 'op-0001', status: 'ACTIVE' })));
+  // não protegida ⇒ zero vigentes, nada ACTIVE, não finalizável
+  for (const state of ['ENROLLMENT_PENDING', 'LEGACY_READ_ONLY'] as const) {
+    assert.ok(isDecisionsPayload(withLedger({ state, head: null, confirmedDecisions: 0 }, { finalizable: false }), AUDIT), state);
+    assert.ok(!isDecisionsPayload(withLedger({ state, head: null, confirmedDecisions: 0 }, { finalizable: true }), AUDIT), `${state}: finalizável é incoerente`);
+    assert.ok(!isDecisionsPayload(withLedger({ state, head: null, confirmedDecisions: 0 }, { finalizable: false, decisions: [dto], allDecisions: [dto] }), AUDIT), `${state}: decisão vigente é incoerente`);
+  }
+  assert.ok(isDecisionsPayload(withLedger({ state: 'HISTORY_UNRESOLVED', reason: 'KEY_REVOKED', head: null }, { finalizable: false }), AUDIT));
+  assert.ok(!isDecisionsPayload(withLedger({ state: 'HISTORY_UNRESOLVED', reason: null, head: null }, { finalizable: false }), AUDIT), 'não resolvida exige razão');
+  assert.ok(!isDecisionsPayload(withLedger({ reason: 'KEY_REVOKED' }), AUDIT), 'protegida não tem razão de problema');
+  assert.ok(!isDecisionsPayload(withLedger({ head: null }), AUDIT), 'protegida tem cabeça');
+  assert.ok(!isDecisionsPayload(withLedger({ state: 'PROTECTED', receiptReissuable: true }), AUDIT), 'recibo reemitível não é estado protegido');
+  assert.ok(!isDecisionsPayload(withLedger({ state: 'TALVEZ' }), AUDIT), 'estado desconhecido');
+  assert.ok(!isDecisionsPayload(withLedger({ externalGuard: 'OK' }), AUDIT), 'estado da guarda desconhecido');
+  assert.ok(!isDecisionsPayload({ ...JSON.parse(JSON.stringify(decisionsFixture())) , ledger: undefined }, AUDIT), 'campo ausente');
+  assert.ok(isDecisionsPayload(withLedger({ openOperation: { opId: 'c'.repeat(32), decisionSeq: 2, phase: 'A', ageMs: 5, stale: false } }, { finalizable: false }), AUDIT));
+  assert.ok(!isDecisionsPayload(withLedger({ openOperation: { opId: 'c'.repeat(32), decisionSeq: 2, phase: 'A', ageMs: 5, stale: false } }, { finalizable: true }), AUDIT), 'operação aberta ⇒ não finalizável');
+  // prévia: "pode finalizar" só com livro protegido e sem operação aberta
+  const preview = previewFixture();
+  const finalizable = JSON.parse(JSON.stringify(preview));
+  assert.ok(isPreviewPayload(finalizable, AUDIT));
+  const protectedPreview = JSON.parse(JSON.stringify(preview));
+  protectedPreview.decisions.ledger = { state: 'PROTECTED', reason: null, head: { ledgerSeq: 3, sha256: 'a'.repeat(64) }, confirmedDecisions: 1, operationOpen: false, externalGuard: 'NOT_CONFIGURED' };
+  assert.ok(isPreviewPayload(protectedPreview, AUDIT));
+  for (const bad of [{ state: 'ENROLLMENT_PENDING', reason: null, head: null, confirmedDecisions: 0, operationOpen: false, externalGuard: 'NOT_CONFIGURED' }, { state: 'HISTORY_UNRESOLVED', reason: 'UNTRUSTED', head: null, confirmedDecisions: 0, operationOpen: false, externalGuard: 'NOT_CONFIGURED' }, { ...protectedPreview.decisions.ledger, operationOpen: true }]) {
+    const copy = JSON.parse(JSON.stringify(protectedPreview));
+    copy.decisions.ledger = bad;
+    assert.ok(!isPreviewPayload(copy, AUDIT), `prévia finalizável com livro ${JSON.stringify(bad).slice(0, 60)} é incoerente`);
+  }
+});
+
+test('livro: capacidade e cobertura são validadas por COERÊNCIA (números inteiros que fecham, nível coerente com o que cabe); resposta incoerente é recusada por inteiro', () => {
+  const base = () => JSON.parse(JSON.stringify(decisionsFixture()));
+  const ledger = (extra: Record<string, unknown>) => ({ state: 'PROTECTED', reason: null, head: { ledgerSeq: 3, sha256: 'a'.repeat(64) }, confirmedDecisions: 1, openOperation: null, recoverable: false, receiptReissuable: false, externalGuard: 'NOT_CONFIGURED', ...extra });
+  const cap = (over: Record<string, unknown>) => ({ maxRecords: 4000, usedRecords: 3000, remainingRecords: 1000, decisionsAvailable: 10, revocationsAvailable: 200, level: 'OK', ...over });
+  const accepts = (extra: Record<string, unknown>) => isDecisionsPayload({ ...base(), ledger: ledger(extra) }, AUDIT);
+  assert.ok(accepts({}), 'sem os campos novos');
+  assert.ok(accepts({ capacity: cap({}) }));
+  assert.ok(accepts({ capacity: cap({ level: 'REVOKE_ONLY', decisionsAvailable: 0, revocationsAvailable: 3 }) }));
+  assert.ok(accepts({ capacity: cap({ level: 'EXHAUSTED', decisionsAvailable: 0, revocationsAvailable: 0 }) }));
+  for (const [label, bad] of [
+    ['usado + restante ≠ máximo', cap({ remainingRecords: 999 })],
+    ['usado acima do máximo', cap({ usedRecords: 4001, remainingRecords: 0 })],
+    ['nível OK sem nenhuma decisão a caber', cap({ decisionsAvailable: 0 })],
+    ['REVOKE_ONLY ainda anunciando decisões', cap({ level: 'REVOKE_ONLY', decisionsAvailable: 2, revocationsAvailable: 3 })],
+    ['REVOKE_ONLY sem nenhuma revogação', cap({ level: 'REVOKE_ONLY', decisionsAvailable: 0, revocationsAvailable: 0 })],
+    ['EXHAUSTED anunciando revogações', cap({ level: 'EXHAUSTED', decisionsAvailable: 0, revocationsAvailable: 1 })],
+    ['nível desconhecido', cap({ level: 'QUASE' })],
+    ['número fracionário', cap({ decisionsAvailable: 1.5 })],
+    ['não é objeto', 'cabe'],
+  ] as const) assert.ok(!accepts({ capacity: bad }), `recusa: ${label}`);
+  assert.ok(accepts({ keyCoverage: { keyId: 'lk-test-b', covered: true, otherKeyRecords: 0 } }));
+  for (const bad of [{ keyId: 'Maiuscula', covered: true, otherKeyRecords: 0 }, { keyId: 'lk-test-b', covered: 'sim', otherKeyRecords: 0 }, { keyId: 'lk-test-b', covered: true, otherKeyRecords: -1 }, 'x']) assert.ok(!accepts({ keyCoverage: bad }), `recusa cobertura ${JSON.stringify(bad)}`);
+});

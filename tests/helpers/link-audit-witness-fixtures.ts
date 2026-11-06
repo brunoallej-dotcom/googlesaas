@@ -1,3 +1,4 @@
+import { LEDGER_NOT_REQUIRED } from '../../src/lib/link-audit-decisions/ledger-port';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -22,7 +23,7 @@ export async function confirmedThenRevoked(): Promise<World> {
 }
 
 export const withWitness = (w: World, e: ReturnType<typeof resultsEnv>, provider: KnownHeadsProvider | 'real' = 'real') =>
-  createDecisionService({ origin: TEST_ORIGIN, baseDir: w.decisionsDir, anchorDir: w.anchorDir, evidence: w.reader, evidenceBaseDir: w.evidenceDir, knownHeads: provider === 'real' ? createResultsKnownHeads({ baseDir: e.base, anchorDir: e.anchors, otherDirs: [w.decisionsDir, w.anchorDir, w.evidenceDir], origin: TEST_ORIGIN }) : provider });
+  createDecisionService({ ledger: LEDGER_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: w.decisionsDir, anchorDir: w.anchorDir, evidence: w.reader, evidenceBaseDir: w.evidenceDir, knownHeads: provider === 'real' ? createResultsKnownHeads({ baseDir: e.base, anchorDir: e.anchors, otherDirs: [w.decisionsDir, w.anchorDir, w.evidenceDir], origin: TEST_ORIGIN }) : provider });
 export const previewW = (w: World, decisions: ReturnType<typeof withWitness>, extra: object = {}) => previewOver({ evidenceDir: w.evidenceDir, raw: decisions }, extra);
 
 /** op-0001 criada e revogada (confirmadas) e um resultado s1 selado sobre esse histórico (head das decisões = seq 2). */

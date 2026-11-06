@@ -39,6 +39,11 @@ test('puro: sem disco, rede, log, relógio, aleatoriedade, Math.random nem chave
 test('só consumidores declarados importam o módulo de origem', () => {
   const allowed = new Set([
     'src/lib/link-audit-decisions/types.ts',
+    // Livro de cabeças (Q3): chave EXCLUSIVA, mesma mecânica de HMAC com finalidade própria
+    'src/lib/link-audit-ledger/types.ts',
+    'src/lib/link-audit-ledger/model.ts',
+    'src/lib/link-audit-ledger/config.ts',
+    'src/lib/link-audit-ledger/service.ts',
     'src/lib/link-audit-decisions/store.ts',
     'src/lib/link-audit-decisions/service.ts',
     'src/lib/link-audit-scoring-runs/results-types.ts',

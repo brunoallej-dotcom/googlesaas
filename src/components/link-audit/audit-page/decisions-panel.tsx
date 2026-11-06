@@ -2,7 +2,7 @@ import { CircleCheck, Hand, History, LoaderCircle, RotateCcw, Undo2 } from 'luci
 import { useEffect, useRef } from 'react';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { DECISION_KIND_LABELS, DECISION_STATUS_LABELS, formatDateTime, JUDGEMENT_C2_VALUES, OPTION_UNAVAILABLE_LABELS, safeText } from './labels';
-import { HistoryIntegrityBanner, PendingDecisionPanel, WitnessCoverageNote } from './pending-panels';
+import { HistoryIntegrityBanner, LedgerPanel, PendingDecisionPanel, WitnessCoverageNote } from './pending-panels';
 import type { DecisionForm, OptionKey, RevokeFlow } from './state';
 import type { DecisionDto, DecisionsList, PreviewPayload } from './types';
 import { BUTTON_PRIMARY, BUTTON_QUIET, FIELD_CLASS } from './ui-bits';
@@ -27,6 +27,8 @@ export interface DecisionsPanelProps {
   readonly form: DecisionForm;
   readonly revoke: RevokeFlow;
   readonly canWrite: boolean;
+  /** Pode agir sobre o LIVRO (inscrever/recuperar) mesmo fora de PROTECTED. */
+  readonly canLedger: boolean;
   readonly onOpenForm: (key: OptionKey) => void;
   readonly onCloseForm: () => void;
   readonly onFormField: (patch: { value?: string; justification?: string }) => void;
@@ -38,6 +40,7 @@ export interface DecisionsPanelProps {
   readonly onSubmitRevoke: () => void;
   readonly onResendRevoke: () => void;
   readonly onResendListed: () => void;
+  readonly onLedgerAction: (action: 'ENROLL' | 'RECOVER') => void;
 }
 
 export function DecisionsPanel(p: DecisionsPanelProps): React.JSX.Element {
@@ -47,9 +50,10 @@ export function DecisionsPanel(p: DecisionsPanelProps): React.JSX.Element {
   const inactive = p.decisions.allDecisions.filter((dto) => dto.status !== 'ACTIVE');
   return (
     <div className="space-y-5">
+      <LedgerPanel ledger={p.decisions.ledger} canAct={p.canLedger} onAction={p.onLedgerAction} />
       <HistoryIntegrityBanner status={p.decisions.witness.status} />
       <WitnessCoverageNote witness={p.decisions.witness} />
-      {p.decisions.pending && <PendingDecisionPanel key={p.decisions.pending.entrySha256} pending={p.decisions.pending} ambiguousIds={p.decisions.ambiguousDecisionIds} witness={p.decisions.witness.status} onResend={p.onResendListed} />}
+      {p.decisions.pending && <PendingDecisionPanel key={p.decisions.pending.entrySha256} pending={p.decisions.pending} ambiguousIds={p.decisions.ambiguousDecisionIds} witness={p.decisions.witness.status} ledger={p.decisions.ledger} onResend={p.onResendListed} />}
 
       <div>
         <h3 className="text-xs font-semibold uppercase tracking-wide text-gmn-muted">Decisões vigentes ({p.decisions.decisions.length})</h3>

@@ -1,3 +1,4 @@
+import { LEDGER_NOT_REQUIRED } from '../src/lib/link-audit-decisions/ledger-port';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
@@ -301,7 +302,7 @@ test('OMITIR a testemunha não compila e, se um chamador sem checagem de tipos o
   const r = await omitted.create(BIA, w.auditId, { record: rec.c2(), expectedHead: view.head }, clock());
   assert.ok(!r.ok && r.code === 'DECISIONS_HISTORY_UNRESOLVED');
   // a declaração de dispensa é um símbolo explícito e só existe nos testes da 6B isolada
-  const exempt = createDecisionService({ origin: TEST_ORIGIN, baseDir: w.decisionsDir, anchorDir: w.anchorDir, evidence: w.reader, evidenceBaseDir: w.evidenceDir, knownHeads: WITNESS_NOT_REQUIRED });
+  const exempt = createDecisionService({ ledger: LEDGER_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: w.decisionsDir, anchorDir: w.anchorDir, evidence: w.reader, evidenceBaseDir: w.evidenceDir, knownHeads: WITNESS_NOT_REQUIRED });
   assert.equal((await must(exempt.list(ANA, w.auditId))).witness.status, 'NOT_REQUIRED');
 });
 
@@ -376,7 +377,7 @@ test('provedor de cabeças: resultados selados ⇒ uma cabeça por resultado; se
   const heads = await createResultsKnownHeads({ otherDirs: [], baseDir: e.base, anchorDir: e.anchors })(w.auditId);
   assert.ok(heads.ok && heads.heads.length === 1 && heads.heads[0]?.seq === 2 && /^[0-9a-f]{64}$/.test(heads.heads[0]?.sha256 ?? ''), JSON.stringify(heads));
   const none = await createResultsKnownHeads({ otherDirs: [], baseDir: resultsEnv().base, anchorDir: resultsEnv().anchors })(w.auditId);
-  assert.deepEqual(none, { ok: true, heads: [], unverifiedHeads: [] });
+  assert.deepEqual(none, { ok: true, heads: [], unverifiedHeads: [], hasResults: false, ledgerHeads: [], unverifiedLedgerHeads: [] }, 'sem resultados: o livro também sabe que NÃO há resultado algum');
   const e2 = resultsEnv();
   const failing: FsOps = faulty({ async writeExclusive(target, data, mode) { if (target.startsWith(e2.anchors)) throw errno('ENOSPC'); return nodeFsOps.writeExclusive(target, data, mode); } });
   const w2 = await confirmedThenRevoked();

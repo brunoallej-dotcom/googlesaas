@@ -4,9 +4,9 @@ import { judgeOrigin, originStatusOf, type OriginAuthenticator, type OriginStatu
 import { STORE_AUDIT_ID } from './audit-id-alias';
 import type { PreviewBlocker } from './blockers';
 import { MINIMUM_COVERAGE_PERCENT } from './outcome';
-import { PREVIEW_HTTP_STATUS, PREVIEW_MESSAGE, type Evaluation, type PreviewActor, type PreviewFailure, type PreviewFailureCode } from './preview';
+import { PREVIEW_HTTP_STATUS, PREVIEW_MESSAGE, type DurabilityExpectation, type DurabilityOutcome, type Evaluation, type PreviewActor, type PreviewFailure, type PreviewFailureCode } from './preview';
 import { appendRun, assertResultsBase, nodeFsOps, probeDirectory, readRunLog, type FsOps, type RunAnchorSummary, type StoreErrorCode } from './results-store';
-import { finalizeBodySchema, INTEGRITY_NOTE, RUN_FILE_KIND, RUN_SCHEMA_VERSION, type RunHead as Head, type ScoreRun, type ScoreRunDraft } from './results-types';
+import { finalizeBodySchema, INTEGRITY_NOTE, RUN_FILE_KIND, RUN_SCHEMA_VERSION, RUN_SCHEMA_VERSION_LEDGER, type RunHead as Head, type ScoreRun, type ScoreRunDraft } from './results-types';
 import { toPublicRun, verifyRunRecord } from './results-verify';
 import { MAPPER_VERSION } from './types';
 
@@ -52,6 +52,7 @@ export type ResultsFailureCode =
   | 'RESULT_NOT_FOUND'
   | 'RESULTS_LIMIT_REACHED'
   | 'RESULT_WRITE_CONFLICT'
+  | 'RESULT_DURABILITY_UNKNOWN'
   | 'WEBSITE_DERIVATION_MISMATCH'
   | 'EVIDENCE_HASH_CHANGED';
 
@@ -75,6 +76,7 @@ export const RESULTS_HTTP_STATUS: Readonly<Record<ResultsFailureCode, number>> =
   RESULT_NOT_FOUND: 404,
   RESULTS_LIMIT_REACHED: 409,
   RESULT_WRITE_CONFLICT: 409,
+  RESULT_DURABILITY_UNKNOWN: 503,
   WEBSITE_DERIVATION_MISMATCH: 409,
   EVIDENCE_HASH_CHANGED: 409,
 });
@@ -99,6 +101,7 @@ export const RESULTS_MESSAGE: Readonly<Record<ResultsFailureCode, string>> = Obj
   RESULT_NOT_FOUND: 'Resultado não encontrado.',
   RESULTS_LIMIT_REACHED: 'Limite de resultados por auditoria atingido.',
   RESULT_WRITE_CONFLICT: 'Outro processo gravou ao mesmo tempo; nada foi sobrescrito. Tente novamente.',
+  RESULT_DURABILITY_UNKNOWN: 'A durabilidade do livro de cabeças que o resultado citaria NÃO foi comprovada (falha de fsync ou armazenamento). Nada foi gravado.',
   WEBSITE_DERIVATION_MISMATCH: 'O website derivado não confere com a evidência bruta íntegra reaberta agora. Nada foi gravado.',
   EVIDENCE_HASH_CHANGED: 'Uma evidência já usada em um resultado anterior mudou de conteúdo (mesmo número, outro hash). Nada foi gravado.',
 });
@@ -226,6 +229,8 @@ export interface BasisRecheck {
 export interface PreviewEvaluator {
   evaluate(actor: PreviewActor, auditId: string): Promise<{ readonly ok: true; readonly value: Evaluation } | PreviewFailure>;
   fingerprintNow(actor: PreviewActor, auditId: string): Promise<{ readonly ok: true; readonly fingerprint: string } | PreviewFailure>;
+  /** Barreira de durabilidade do livro, chamada DENTRO da trava de finalização, antes de montar um resultado que cita `ledgerHead` (ou de concluir um pendente). */
+  durabilityBarrier(actor: PreviewActor, auditId: string, expected: DurabilityExpectation): Promise<DurabilityOutcome>;
 }
 
 export interface ResultsDeps {
@@ -383,8 +388,10 @@ export function createScoringResultsService(deps: ResultsDeps) {
     if (!input || !result || !outcome || !mapped || !basis || !alias || !referenceDateSource || evaluation.inputSha256 === null) return null;
     const website = mapped.traceability.websiteDerivation;
     const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+    // Auditoria PROTEGIDA pelo livro ⇒ formato v2 com a cabeça do livro; sem livro (testes da 6B/6C isoladas) o formato v1 de sempre.
+    const ledgerHead = decisions.ledger.state === 'PROTECTED' && decisions.ledger.head ? { ledgerSeq: decisions.ledger.head.ledgerSeq, sha256: decisions.ledger.head.sha256 } : null;
     return {
-      schemaVersion: RUN_SCHEMA_VERSION,
+      schemaVersion: ledgerHead ? RUN_SCHEMA_VERSION_LEDGER : RUN_SCHEMA_VERSION,
       kind: RUN_FILE_KIND,
       auditId: alias.sourceAuditId,
       finalizedAt,
@@ -409,6 +416,7 @@ export function createScoringResultsService(deps: ResultsDeps) {
       result: clone(result) as unknown as Record<string, unknown>,
       inputSha256: evaluation.inputSha256,
       resultSha256: result.resultSha256,
+      ...(ledgerHead ? { ledgerHead } : {}),
     };
   }
 
@@ -459,6 +467,11 @@ export function createScoringResultsService(deps: ResultsDeps) {
               const gravado = last.decisions.head;
               const hoje = now.value.decisions.head;
               if (gravado !== null && (hoje === null || hoje.seq < gravado.seq)) return reject({ ...failure('HISTORY_REGRESSED'), head: hoje });
+              // (5) DURABILIDADE: concluir dá o recibo a um resultado que CITA o livro; o livro (e as decisões) precisam estar comprovadamente duráveis agora, e protegidos
+              if (last.ledgerHead) {
+                const barrier = await deps.preview.durabilityBarrier(actor, auditId, {});
+                if (!barrier.ok) return reject(failure(barrier.code === 'DURABILITY_UNKNOWN' ? 'RESULT_DURABILITY_UNKNOWN' : 'INPUT_CHANGED', ...barrier.issues.slice(0, 3)));
+              }
             } else if (!explains(last)) return reject(failure('RESULT_INTEGRITY')); // reenvio de um CONFIRMADO: nada é gravado, mas só se devolve o que se explica
             return { ok: true, replayOf: last.seq };
           }
@@ -495,6 +508,14 @@ export function createScoringResultsService(deps: ResultsDeps) {
           const again = await deps.preview.fingerprintNow(actor, auditId);
           if (!again.ok) return reject({ ...failure(again.code, ...again.issues) });
           if (again.fingerprint !== ev.value.fingerprint) return reject(failure('INPUT_CHANGED'));
+          // 6b. BARREIRA DE DURABILIDADE (só quando o resultado cita o livro): a cabeça citada está autenticada (livro PROTEGIDO), as escritas do livro, das decisões e dos recibos têm a durabilidade
+          // comprovada AGORA e, depois disso, a vista continua mostrando EXATAMENTE as cabeças avaliadas (nenhuma gravação concorrente mudou o estado nem travou a base entre a verificação e o selamento).
+          // Qualquer dúvida ⇒ nada é selado. O que é montado a seguir vem da MESMA avaliação que a barreira conferiu.
+          const cited = ev.value.decisions.ledger.state === 'PROTECTED' ? ev.value.decisions.ledger.head : null;
+          if (cited) {
+            const barrier = await deps.preview.durabilityBarrier(actor, auditId, { decisionsHead: ev.value.decisions.head, ledgerHead: { ledgerSeq: cited.ledgerSeq, sha256: cited.sha256 } });
+            if (!barrier.ok) return reject(failure(barrier.code === 'DURABILITY_UNKNOWN' ? 'RESULT_DURABILITY_UNKNOWN' : 'INPUT_CHANGED', ...barrier.issues.slice(0, 3)));
+          }
           // 7. montagem
           const draft = draftFrom(ev.value, operator, ctx.finalizedAt);
           if (!draft) return reject(failure('INTERNAL_ERROR'));
@@ -620,7 +641,14 @@ export type ScoringResultsService = ReturnType<typeof createScoringResultsServic
 export type KnownHeadsProvider = (
   auditId: string,
 ) => Promise<
-  | { readonly ok: true; readonly heads: ReadonlyArray<{ readonly seq: number; readonly sha256: string }>; readonly unverifiedHeads?: ReadonlyArray<{ readonly seq: number; readonly sha256: string }> }
+  | {
+      readonly ok: true;
+      readonly heads: ReadonlyArray<{ readonly seq: number; readonly sha256: string }>;
+      readonly unverifiedHeads?: ReadonlyArray<{ readonly seq: number; readonly sha256: string }>;
+      readonly hasResults?: boolean;
+      readonly ledgerHeads?: ReadonlyArray<{ readonly ledgerSeq: number; readonly sha256: string }>;
+      readonly unverifiedLedgerHeads?: ReadonlyArray<{ readonly ledgerSeq: number; readonly sha256: string }>;
+    }
   | { readonly ok: false; readonly reason: 'NOT_CONFIGURED' | 'STORAGE_UNAVAILABLE' | 'UNTRUSTED' }
 >;
 
@@ -681,10 +709,15 @@ export function createResultsKnownHeads(options: ResultsKnownHeadsOptions): Know
       const headOf = (run: ScoreRun): { seq: number; sha256: string }[] => (run.decisions.head ? [{ seq: run.decisions.head.seq, sha256: run.decisions.head.sha256 }] : []);
       const pending = read.value.pending;
       const proven = pending !== null && judgeOrigin(options.origin, 'RUN', pending) === 'PROVEN';
+      const ledgerOf = (run: ScoreRun): Array<{ ledgerSeq: number; sha256: string }> => (run.ledgerHead ? [{ ledgerSeq: run.ledgerHead.ledgerSeq, sha256: run.ledgerHead.sha256 }] : []);
       return {
         ok: true,
         heads: [...read.value.runs.flatMap(headOf), ...(pending && proven ? headOf(pending) : [])],
         unverifiedHeads: pending && !proven ? headOf(pending) : [],
+        // O LIVRO precisa saber se a auditoria já teve resultado (com ou sem `ledgerHead`) e quais posições do livro eles citam.
+        hasResults: read.value.runs.length > 0 || pending !== null,
+        ledgerHeads: [...read.value.runs.flatMap(ledgerOf), ...(pending && proven ? ledgerOf(pending) : [])],
+        unverifiedLedgerHeads: pending && !proven ? ledgerOf(pending) : [],
       };
     } catch {
       return { ok: false, reason: 'STORAGE_UNAVAILABLE' };
