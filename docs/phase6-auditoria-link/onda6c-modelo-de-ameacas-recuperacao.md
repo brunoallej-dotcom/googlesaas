@@ -100,11 +100,41 @@ A integridade (SHA-256) **não** é autenticidade. Com o manifesto assinado, que
 - **Gravidade:** **MÉDIA-BAIXA**, só **disponibilidade** (sem vazamento nem falsificação).
 - **Decisão:** **não corrigida nesta rodada** (para não misturar uma alteração ampla do módulo PDF com a remediação). **Corrigir antes de qualquer publicação que exponha o download de PDF** (inclui a Onda 7): usar o mesmo leitor endurecido (`O_NONBLOCK` + `fstat` + limite de tamanho) e testar em processo filho. Registrada no checklist de produção.
 
+## 8b. Livro de cabeças (02/11/2026; local, sem commit) — o que muda na matriz do §4 e o que NÃO muda
+
+Atacantes e fronteiras do §2 inalterados; **nova pasta** (o livro) e **nova chave** (a do livro). Para auditorias **PROTEGIDAS**:
+
+| Quem escreve onde | Ataque | Resultado com o livro |
+|---|---|---|
+| só recibos | remover o recibo de uma decisão/revogação confirmada | `RECEIPT_REMOVED` (a reemissão do MESMO recibo pelo autor é registrada antes: `RECEIPT_REISSUED`); **nada reativa** |
+| só decisões | remover/mover a entrada, truncar o final, reescrever | `HISTORY_REGRESSED` / `HISTORY_DIVERGES`; nenhuma decisão vigente, nenhuma escrita |
+| decisões + recibos (**a janela sem testemunha**) | remover o recibo e mover a entrada de uma revogação | `HISTORY_REGRESSED` **sem depender de resultado selado** (travado em `link-audit-ledger-attacks`) |
+| só livro | truncar/remover/reordenar/duplicar registros | cadeia/etiqueta/contiguidade quebradas ⇒ `UNTRUSTED`; livro removido com resultado que o cita ⇒ `LEDGER_REMOVED_WITNESSED`; **nunca** cabeça vazia |
+| livro + decisões + recibos, **sem** resultado e **sem** guarda | rollback coordenado a um instante anterior | **NÃO detectado** (limite declarado, travado em `link-audit-ledger-guard`) |
+| livro + decisões + recibos, **com** guarda externa | o mesmo | `GUARD_MISMATCH` (só com provedor real, que **não existe**) |
+| livro + resultados (4ª pasta) | refazer o livro para contradizer um resultado selado | `RESULT_LEDGER_MISMATCH` |
+| qualquer um + chave do livro | forjar registro autêntico | possível até a revogação do id (`KEY_REVOKED` retroativo); nunca com a chave de origem |
+| processo que morre (SIGKILL) em qualquer etapa | operação meio feita | fases A/B/C, recuperáveis só quando **verificáveis** e **só se nenhuma testemunha (resultado, guarda) a contradiz**; senão `HISTORY_UNRESOLVED` |
+| só livro: apagar o registro que um resultado cita (e o que veio depois) | rebaixar o livro sem mexer em decisões e recibos | `RESULT_LEDGER_MISMATCH`, **sem receita de recuperação** (R6-05); nada é gravado em canal algum |
+| chave **antiga** (aposentada) + escrita no livro, **depois** de a chave nova ter assinado | anexar INTENT/CONFIRMED/ABORTED/CHECKPOINT forjados | `UNTRUSTED` (época de chave pela ordem da cadeia, R6-06); **antes** do primeiro registro da chave nova a janela existe (declarada) |
+| `fsync` de diretório que falha (disco, sistema de arquivos sem suporte) | sucesso sem durabilidade | com o livro: sem sucesso, base travada (R6-07); sem o livro e nos resultados: P-4 |
+
+**Limites que o livro NÃO remove** (todos declarados na especificação §16.9 e no checklist): (1) rollback coordenado sem guarda externa; (2) chave do livro comprometida entre o comprometimento e a revogação; (3) histórico **anterior** à inscrição só é confiável como na inscrição — hoje só auditorias **vazias** podem ser inscritas, as legadas ficam em modo restrito até uma adoção administrativa que **não existe**; (4) dono lento (> 120 s) cuja operação foi abortada por outro ⇒ `PUBLISHED_AFTER_ABORT` (falha fechada); (5) quem escreve **só** nos resultados ou **só** no livro pode **congelar** a auditoria (disponibilidade); (6) durabilidade (P-4); (7) verdade do conteúdo humano.
+
 ## 9. Hipóteses de confiança (se falharem, o modelo deixa de valer)
 1. A chave de origem permanece só no ambiente do processo web; a privada de atestação, fora da VPS.
 2. A sessão do operador e a lista de operadores são confiáveis (Fase 5).
-3. O disco respeita `link()` exclusivo e `fsync` (sem NFS/SMB não validados).
+3. O disco respeita `link()` exclusivo e `fsync` (sem NFS/SMB não validados) — **o livro depende disso para a exclusão mútua entre processos**.
+3b. A chave do livro permanece só no ambiente do processo web, **distinta** da de origem (02/11/2026).
 4. O relógio do servidor é monotônico o bastante (cadeia; validade de chaves aposentadas).
 
 ## 10. Pendências de produção associadas
 Guarda externa do `head`; logs estruturados e alertas (conclusões de pendência, recusas por origem, 409 de integridade, incidentes de testemunha); procedimento de quarentena revisado; segredos provisionados e rotação **ensaiada**; **produtor** da prova de coleta (ADR 6C-03 §7); primeira implantação **já com esta versão**; correção do PDF antes de expor download. Ver `onda6c-checklist-producao.md`.
+
+### 8b.1 Acréscimos da revisão nº 7 (04/11/2026)
+
+- **Queima de capacidade por quem tem escrita nas pastas:** cada recibo removido de uma entrada confirmada custa 1 registro de `RECEIPT_REISSUED` (manutenção, limite 4000) e cada `INTENT` abandonada custa `ABORTED`; isso pode gastar os 8 registros de manutenção e depois a reserva de revogação. A vista continua honesta (anuncia só o que cabe) e a leitura segue; o atacante já bloquearia a auditoria plantando arquivos. **Risco residual declarado**, sem aceite para produção sem a guarda externa e a reabertura administrativa (§16.12).
+- **Relógio adiantado** deixa de ser negação de serviço persistente (§16.15); um dono lento (parado ≥ 120 s sem progresso) pode perder a corrida e gerar `PUBLISHED_AFTER_ABORT` (falha fechada, já declarado).
+- **Evidência mudando durante o `RECOVER`** (TOCTOU) não grava e preserva a pendência (§16.14).
+- **Reemissão de recibo sem limite de classe (m3 da revisão 7) — CORRIGIDO em 05/11/2026:** era reproduzível (reenvios repetidos com o recibo falhando esgotavam o livro e travavam a auditoria mesmo depois de o disco voltar); agora há no máximo 1 `RECEIPT_REISSUED` por entrada confirmada (§16.12.1). Resíduo: a contagem de remoções repetidas do mesmo recibo não fica no livro.
+- **Falha de fsync da raiz (M2):** deixa o livro `DURABILITY_UNKNOWN` até reiniciar; um atacante que consiga provocar EIO/EROFS repetidos no volume do livro congela a leitura protegida (falha fechada, disponibilidade), nunca a integridade. Janela pós-reinício declarada em §16.13.1.
