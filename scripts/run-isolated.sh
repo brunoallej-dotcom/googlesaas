@@ -42,7 +42,7 @@ echo "[isolado] rede externa e 127.0.0.1:6379 do host inalcançáveis; ambiente 
 
 EXTRA=()
 if [ "$FLAG" = "--offline-fonts" ]; then
-  MOCK="$(mktemp)"
+  MOCK="$(mktemp --suffix=.json)"
   trap 'rm -f "$MOCK"' EXIT
   cat > "$MOCK" <<'JSON'
 {"https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap":"@font-face { font-family: 'Inter'; font-style: normal; font-weight: 100 900; font-display: swap; src: url(https://fonts.gstatic.com/s/inter/mock/inter-latin.woff2) format('woff2'); unicode-range: U+0000-00FF; }"}
