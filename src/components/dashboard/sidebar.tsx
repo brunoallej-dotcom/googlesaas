@@ -142,7 +142,7 @@ export function Sidebar({
                     <span
                       aria-disabled="true"
                       title="Em breve"
-                      className={`${base} cursor-not-allowed text-gmn-muted/60`}
+                      className={`${base} cursor-not-allowed text-gmn-muted/80`}
                     >
                       <Icon className="h-5 w-5 shrink-0" aria-hidden="true" />
                       <span className={`min-w-0 flex-1 truncate ${labelClass}`}>{item.label}</span>

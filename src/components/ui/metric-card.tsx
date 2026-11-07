@@ -67,7 +67,7 @@ export function MetricCard({
         <>
           <p
             aria-hidden="true"
-            className={`mt-2.5 font-semibold leading-none text-gmn-muted/40 ${
+            className={`mt-2.5 font-semibold leading-none text-gmn-muted/80 ${
               size === 'lg' ? 'text-[32px]' : 'text-2xl'
             }`}
           >
