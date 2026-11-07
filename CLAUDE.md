@@ -15,7 +15,7 @@ Living project memory — status, waves, hard rules — is in `NOTES.md`; read i
 
 ## Stack
 
-- **Language**: TypeScript (strict) on Node `>=20.11.0`
+- **Language**: TypeScript (strict) on Node `>=22`
 - **Frontend / API**: Next.js `^15.1.6` (App Router), React `^19`, Tailwind `^3.4`, Leaflet / react-leaflet
 - **DB**: PostgreSQL via Supabase (`@supabase/supabase-js`); migrations in `supabase/migrations/`
 - **Queue / cache**: BullMQ + Redis (ioredis) — audit Worker in `src/workers/audit-worker.ts`
