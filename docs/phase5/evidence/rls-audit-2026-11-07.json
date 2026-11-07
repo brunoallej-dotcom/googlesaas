@@ -1,0 +1,1274 @@
+{
+  "8_papeis": [
+    {
+      "herda": true,
+      "login": false,
+      "papel": "anon",
+      "bypassrls": false,
+      "superuser": false
+    },
+    {
+      "herda": true,
+      "login": false,
+      "papel": "authenticated",
+      "bypassrls": false,
+      "superuser": false
+    },
+    {
+      "herda": false,
+      "login": true,
+      "papel": "authenticator",
+      "bypassrls": false,
+      "superuser": false
+    },
+    {
+      "herda": true,
+      "login": false,
+      "papel": "dashboard_user",
+      "bypassrls": false,
+      "superuser": false
+    },
+    {
+      "herda": true,
+      "login": true,
+      "papel": "postgres",
+      "bypassrls": true,
+      "superuser": false
+    },
+    {
+      "herda": true,
+      "login": false,
+      "papel": "service_role",
+      "bypassrls": true,
+      "superuser": false
+    },
+    {
+      "herda": true,
+      "login": true,
+      "papel": "supabase_admin",
+      "bypassrls": true,
+      "superuser": true
+    }
+  ],
+  "10_storage": {
+    "buckets": [
+      {
+        "id": "gmn-audit-pdfs",
+        "tipos": null,
+        "publico": false,
+        "criado_em": "2026-10-15T15:43:13.881668+00:00",
+        "limite_bytes": null
+      },
+      {
+        "id": "gmn-audit-pdfs-private",
+        "tipos": [
+          "application/pdf"
+        ],
+        "publico": false,
+        "criado_em": "2026-10-16T23:42:25.477441+00:00",
+        "limite_bytes": 20971520
+      }
+    ],
+    "objetos_por_bucket": [
+      {
+        "bucket": "gmn-audit-pdfs",
+        "objetos": 3
+      },
+      {
+        "bucket": "gmn-audit-pdfs-private",
+        "objetos": 16
+      }
+    ]
+  },
+  "2_politicas": [
+    {
+      "using": "false",
+      "papeis": [
+        "anon",
+        "authenticated"
+      ],
+      "tabela": "gmn_audits",
+      "comando": "ALL",
+      "esquema": "public",
+      "politica": "gmn_deny_all",
+      "permissiva": "RESTRICTIVE",
+      "with_check": "false"
+    },
+    {
+      "using": "false",
+      "papeis": [
+        "anon",
+        "authenticated"
+      ],
+      "tabela": "gmn_battlefield_points",
+      "comando": "ALL",
+      "esquema": "public",
+      "politica": "gmn_deny_all",
+      "permissiva": "RESTRICTIVE",
+      "with_check": "false"
+    },
+    {
+      "using": "false",
+      "papeis": [
+        "anon",
+        "authenticated"
+      ],
+      "tabela": "gmn_battlefield_rounds",
+      "comando": "ALL",
+      "esquema": "public",
+      "politica": "gmn_deny_all",
+      "permissiva": "RESTRICTIVE",
+      "with_check": "false"
+    },
+    {
+      "using": "false",
+      "papeis": [
+        "anon",
+        "authenticated"
+      ],
+      "tabela": "gmn_leads",
+      "comando": "ALL",
+      "esquema": "public",
+      "politica": "gmn_deny_all",
+      "permissiva": "RESTRICTIVE",
+      "with_check": "false"
+    },
+    {
+      "using": "false",
+      "papeis": [
+        "anon",
+        "authenticated"
+      ],
+      "tabela": "prospecting_campaigns",
+      "comando": "ALL",
+      "esquema": "public",
+      "politica": "gmn_deny_all",
+      "permissiva": "RESTRICTIVE",
+      "with_check": "false"
+    }
+  ],
+  "coletado_em": "2026-11-07T20:56:55.512628+00:00",
+  "14_extensoes": [
+    "pg_stat_statements",
+    "pgcrypto",
+    "plpgsql",
+    "supabase_vault",
+    "uuid-ossp"
+  ],
+  "15_contas_auth": 3,
+  "7_views_public": [],
+  "versao_postgres": "PostgreSQL 17.11 on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 15.2.0, 64-bit",
+  "1_rls_por_tabela": [
+    {
+      "dono": "postgres",
+      "tipo": "r",
+      "objeto": "gmn_audits",
+      "esquema": "public",
+      "rls_ativo": true,
+      "rls_forcado": false
+    },
+    {
+      "dono": "postgres",
+      "tipo": "r",
+      "objeto": "gmn_battlefield_points",
+      "esquema": "public",
+      "rls_ativo": true,
+      "rls_forcado": false
+    },
+    {
+      "dono": "postgres",
+      "tipo": "r",
+      "objeto": "gmn_battlefield_rounds",
+      "esquema": "public",
+      "rls_ativo": true,
+      "rls_forcado": false
+    },
+    {
+      "dono": "postgres",
+      "tipo": "r",
+      "objeto": "gmn_leads",
+      "esquema": "public",
+      "rls_ativo": true,
+      "rls_forcado": false
+    },
+    {
+      "dono": "postgres",
+      "tipo": "r",
+      "objeto": "prospecting_campaigns",
+      "esquema": "public",
+      "rls_ativo": true,
+      "rls_forcado": false
+    },
+    {
+      "dono": "supabase_storage_admin",
+      "tipo": "r",
+      "objeto": "bucket_lifecycle_states",
+      "esquema": "storage",
+      "rls_ativo": true,
+      "rls_forcado": false
+    },
+    {
+      "dono": "supabase_storage_admin",
+      "tipo": "r",
+      "objeto": "buckets",
+      "esquema": "storage",
+      "rls_ativo": true,
+      "rls_forcado": false
+    },
+    {
+      "dono": "supabase_storage_admin",
+      "tipo": "r",
+      "objeto": "buckets_analytics",
+      "esquema": "storage",
+      "rls_ativo": true,
+      "rls_forcado": false
+    },
+    {
+      "dono": "supabase_storage_admin",
+      "tipo": "r",
+      "objeto": "buckets_vectors",
+      "esquema": "storage",
+      "rls_ativo": true,
+      "rls_forcado": false
+    },
+    {
+      "dono": "supabase_storage_admin",
+      "tipo": "r",
+      "objeto": "lifecycle_abandoned_artifacts",
+      "esquema": "storage",
+      "rls_ativo": true,
+      "rls_forcado": false
+    },
+    {
+      "dono": "supabase_storage_admin",
+      "tipo": "r",
+      "objeto": "migrations",
+      "esquema": "storage",
+      "rls_ativo": true,
+      "rls_forcado": false
+    },
+    {
+      "dono": "supabase_storage_admin",
+      "tipo": "r",
+      "objeto": "objects",
+      "esquema": "storage",
+      "rls_ativo": true,
+      "rls_forcado": false
+    },
+    {
+      "dono": "supabase_storage_admin",
+      "tipo": "r",
+      "objeto": "s3_multipart_uploads",
+      "esquema": "storage",
+      "rls_ativo": true,
+      "rls_forcado": false
+    },
+    {
+      "dono": "supabase_storage_admin",
+      "tipo": "r",
+      "objeto": "s3_multipart_uploads_parts",
+      "esquema": "storage",
+      "rls_ativo": true,
+      "rls_forcado": false
+    },
+    {
+      "dono": "supabase_storage_admin",
+      "tipo": "r",
+      "objeto": "vector_indexes",
+      "esquema": "storage",
+      "rls_ativo": true,
+      "rls_forcado": false
+    }
+  ],
+  "5_funcoes_public": [
+    {
+      "dono": "postgres",
+      "funcao": "trigger_set_updated_at",
+      "executam": [
+        "PUBLIC",
+        "postgres",
+        "anon",
+        "authenticated",
+        "service_role"
+      ],
+      "argumentos": "",
+      "security_definer": false
+    }
+  ],
+  "usuario_da_consulta": "postgres",
+  "6_privilegios_padrao": [
+    {
+      "acl": "{postgres=rwU/supabase_admin,anon=rwU/supabase_admin,authenticated=rwU/supabase_admin,service_role=rwU/supabase_admin}",
+      "tipo": "S",
+      "criador": "supabase_admin",
+      "esquema": "public"
+    },
+    {
+      "acl": "{postgres=arwdDxtm/supabase_admin,anon=arwdDxtm/supabase_admin,authenticated=arwdDxtm/supabase_admin,service_role=arwdDxtm/supabase_admin}",
+      "tipo": "r",
+      "criador": "supabase_admin",
+      "esquema": "public"
+    },
+    {
+      "acl": "{postgres=X/supabase_admin,anon=X/supabase_admin,authenticated=X/supabase_admin,service_role=X/supabase_admin}",
+      "tipo": "f",
+      "criador": "supabase_admin",
+      "esquema": "public"
+    },
+    {
+      "acl": "{postgres=arwdDxtm/postgres,anon=arwdDxtm/postgres,authenticated=arwdDxtm/postgres,service_role=arwdDxtm/postgres}",
+      "tipo": "r",
+      "criador": "postgres",
+      "esquema": "storage"
+    },
+    {
+      "acl": "{postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}",
+      "tipo": "f",
+      "criador": "postgres",
+      "esquema": "storage"
+    },
+    {
+      "acl": "{postgres=rwU/postgres,anon=rwU/postgres,authenticated=rwU/postgres,service_role=rwU/postgres}",
+      "tipo": "S",
+      "criador": "postgres",
+      "esquema": "storage"
+    },
+    {
+      "acl": "{postgres=arwdDxtm/supabase_auth_admin,dashboard_user=arwdDxtm/supabase_auth_admin}",
+      "tipo": "r",
+      "criador": "supabase_auth_admin",
+      "esquema": "auth"
+    },
+    {
+      "acl": "{postgres=rwU/supabase_auth_admin,dashboard_user=rwU/supabase_auth_admin}",
+      "tipo": "S",
+      "criador": "supabase_auth_admin",
+      "esquema": "auth"
+    },
+    {
+      "acl": "{postgres=X/supabase_auth_admin,dashboard_user=X/supabase_auth_admin}",
+      "tipo": "f",
+      "criador": "supabase_auth_admin",
+      "esquema": "auth"
+    },
+    {
+      "acl": "{postgres=rwU/supabase_admin,anon=rwU/supabase_admin,authenticated=rwU/supabase_admin,service_role=rwU/supabase_admin}",
+      "tipo": "S",
+      "criador": "supabase_admin",
+      "esquema": "graphql_public"
+    },
+    {
+      "acl": "{postgres=arwdDxtm/supabase_admin,anon=arwdDxtm/supabase_admin,authenticated=arwdDxtm/supabase_admin,service_role=arwdDxtm/supabase_admin}",
+      "tipo": "r",
+      "criador": "supabase_admin",
+      "esquema": "graphql_public"
+    },
+    {
+      "acl": "{postgres=X/supabase_admin,anon=X/supabase_admin,authenticated=X/supabase_admin,service_role=X/supabase_admin}",
+      "tipo": "f",
+      "criador": "supabase_admin",
+      "esquema": "graphql_public"
+    },
+    {
+      "acl": "{postgres=a*r*w*d*D*x*t*m*/supabase_admin}",
+      "tipo": "r",
+      "criador": "supabase_admin",
+      "esquema": "extensions"
+    },
+    {
+      "acl": "{postgres=X*/supabase_admin}",
+      "tipo": "f",
+      "criador": "supabase_admin",
+      "esquema": "extensions"
+    },
+    {
+      "acl": "{postgres=r*w*U*/supabase_admin}",
+      "tipo": "S",
+      "criador": "supabase_admin",
+      "esquema": "extensions"
+    },
+    {
+      "acl": "{postgres=arwdDxtm/supabase_admin,anon=arwdDxtm/supabase_admin,authenticated=arwdDxtm/supabase_admin,service_role=arwdDxtm/supabase_admin}",
+      "tipo": "r",
+      "criador": "supabase_admin",
+      "esquema": "graphql"
+    },
+    {
+      "acl": "{postgres=X/supabase_admin,anon=X/supabase_admin,authenticated=X/supabase_admin,service_role=X/supabase_admin}",
+      "tipo": "f",
+      "criador": "supabase_admin",
+      "esquema": "graphql"
+    },
+    {
+      "acl": "{postgres=rwU/supabase_admin,anon=rwU/supabase_admin,authenticated=rwU/supabase_admin,service_role=rwU/supabase_admin}",
+      "tipo": "S",
+      "criador": "supabase_admin",
+      "esquema": "graphql"
+    },
+    {
+      "acl": "{postgres=rwU/supabase_admin,dashboard_user=rwU/supabase_admin}",
+      "tipo": "S",
+      "criador": "supabase_admin",
+      "esquema": "realtime"
+    },
+    {
+      "acl": "{postgres=X/supabase_admin,dashboard_user=X/supabase_admin}",
+      "tipo": "f",
+      "criador": "supabase_admin",
+      "esquema": "realtime"
+    },
+    {
+      "acl": "{postgres=a*r*wdDxtm/supabase_admin,dashboard_user=arwdDxtm/supabase_admin}",
+      "tipo": "r",
+      "criador": "supabase_admin",
+      "esquema": "realtime"
+    },
+    {
+      "acl": "{postgres=arwdDxtm/postgres,service_role=arwdDxtm/postgres}",
+      "tipo": "r",
+      "criador": "postgres",
+      "esquema": "public"
+    },
+    {
+      "acl": "{postgres=rwU/postgres,service_role=rwU/postgres}",
+      "tipo": "S",
+      "criador": "postgres",
+      "esquema": "public"
+    },
+    {
+      "acl": "{postgres=X/postgres,service_role=X/postgres}",
+      "tipo": "f",
+      "criador": "postgres",
+      "esquema": "public"
+    }
+  ],
+  "11_publicacoes_realtime": [],
+  "13_triggers_nas_tabelas": [
+    {
+      "funcao": "trigger_set_updated_at",
+      "tabela": "gmn_audits",
+      "trigger": "set_gmn_audits_updated_at",
+      "habilitado": "O"
+    },
+    {
+      "funcao": "trigger_set_updated_at",
+      "tabela": "gmn_leads",
+      "trigger": "set_gmn_leads_updated_at",
+      "habilitado": "O"
+    }
+  ],
+  "3_privilegios_de_tabela": [
+    {
+      "papel": "postgres",
+      "tabela": "gmn_audits",
+      "privilegios": [
+        "DELETE",
+        "INSERT",
+        "MAINTAIN",
+        "REFERENCES",
+        "SELECT",
+        "TRIGGER",
+        "TRUNCATE",
+        "UPDATE"
+      ]
+    },
+    {
+      "papel": "service_role",
+      "tabela": "gmn_audits",
+      "privilegios": [
+        "DELETE",
+        "INSERT",
+        "MAINTAIN",
+        "REFERENCES",
+        "SELECT",
+        "TRIGGER",
+        "TRUNCATE",
+        "UPDATE"
+      ]
+    },
+    {
+      "papel": "postgres",
+      "tabela": "gmn_battlefield_points",
+      "privilegios": [
+        "DELETE",
+        "INSERT",
+        "MAINTAIN",
+        "REFERENCES",
+        "SELECT",
+        "TRIGGER",
+        "TRUNCATE",
+        "UPDATE"
+      ]
+    },
+    {
+      "papel": "service_role",
+      "tabela": "gmn_battlefield_points",
+      "privilegios": [
+        "DELETE",
+        "INSERT",
+        "MAINTAIN",
+        "REFERENCES",
+        "SELECT",
+        "TRIGGER",
+        "TRUNCATE",
+        "UPDATE"
+      ]
+    },
+    {
+      "papel": "postgres",
+      "tabela": "gmn_battlefield_rounds",
+      "privilegios": [
+        "DELETE",
+        "INSERT",
+        "MAINTAIN",
+        "REFERENCES",
+        "SELECT",
+        "TRIGGER",
+        "TRUNCATE",
+        "UPDATE"
+      ]
+    },
+    {
+      "papel": "service_role",
+      "tabela": "gmn_battlefield_rounds",
+      "privilegios": [
+        "DELETE",
+        "INSERT",
+        "MAINTAIN",
+        "REFERENCES",
+        "SELECT",
+        "TRIGGER",
+        "TRUNCATE",
+        "UPDATE"
+      ]
+    },
+    {
+      "papel": "postgres",
+      "tabela": "gmn_leads",
+      "privilegios": [
+        "DELETE",
+        "INSERT",
+        "MAINTAIN",
+        "REFERENCES",
+        "SELECT",
+        "TRIGGER",
+        "TRUNCATE",
+        "UPDATE"
+      ]
+    },
+    {
+      "papel": "service_role",
+      "tabela": "gmn_leads",
+      "privilegios": [
+        "DELETE",
+        "INSERT",
+        "MAINTAIN",
+        "REFERENCES",
+        "SELECT",
+        "TRIGGER",
+        "TRUNCATE",
+        "UPDATE"
+      ]
+    },
+    {
+      "papel": "postgres",
+      "tabela": "prospecting_campaigns",
+      "privilegios": [
+        "DELETE",
+        "INSERT",
+        "MAINTAIN",
+        "REFERENCES",
+        "SELECT",
+        "TRIGGER",
+        "TRUNCATE",
+        "UPDATE"
+      ]
+    },
+    {
+      "papel": "service_role",
+      "tabela": "prospecting_campaigns",
+      "privilegios": [
+        "DELETE",
+        "INSERT",
+        "MAINTAIN",
+        "REFERENCES",
+        "SELECT",
+        "TRIGGER",
+        "TRUNCATE",
+        "UPDATE"
+      ]
+    }
+  ],
+  "9_pertencimento_a_papeis": [
+    {
+      "papel": "anon",
+      "membro": "authenticator"
+    },
+    {
+      "papel": "anon",
+      "membro": "postgres"
+    },
+    {
+      "papel": "anon",
+      "membro": "supabase_realtime_admin"
+    },
+    {
+      "papel": "authenticated",
+      "membro": "authenticator"
+    },
+    {
+      "papel": "authenticated",
+      "membro": "postgres"
+    },
+    {
+      "papel": "authenticated",
+      "membro": "supabase_realtime_admin"
+    },
+    {
+      "papel": "service_role",
+      "membro": "authenticator"
+    },
+    {
+      "papel": "service_role",
+      "membro": "postgres"
+    },
+    {
+      "papel": "service_role",
+      "membro": "supabase_realtime_admin"
+    }
+  ],
+  "3b_privilegios_por_coluna": [],
+  "4_privilegios_de_sequencias": [],
+  "12_privilegios_efetivos_nas_5_tabelas": [
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "gmn_audits",
+      "privilegio": "DELETE"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "gmn_audits",
+      "privilegio": "INSERT"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "gmn_audits",
+      "privilegio": "REFERENCES"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "gmn_audits",
+      "privilegio": "SELECT"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "gmn_audits",
+      "privilegio": "TRIGGER"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "gmn_audits",
+      "privilegio": "TRUNCATE"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "gmn_audits",
+      "privilegio": "UPDATE"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "gmn_audits",
+      "privilegio": "DELETE"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "gmn_audits",
+      "privilegio": "INSERT"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "gmn_audits",
+      "privilegio": "REFERENCES"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "gmn_audits",
+      "privilegio": "SELECT"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "gmn_audits",
+      "privilegio": "TRIGGER"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "gmn_audits",
+      "privilegio": "TRUNCATE"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "gmn_audits",
+      "privilegio": "UPDATE"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "gmn_audits",
+      "privilegio": "DELETE"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "gmn_audits",
+      "privilegio": "INSERT"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "gmn_audits",
+      "privilegio": "REFERENCES"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "gmn_audits",
+      "privilegio": "SELECT"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "gmn_audits",
+      "privilegio": "TRIGGER"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "gmn_audits",
+      "privilegio": "TRUNCATE"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "gmn_audits",
+      "privilegio": "UPDATE"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "gmn_battlefield_points",
+      "privilegio": "DELETE"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "gmn_battlefield_points",
+      "privilegio": "INSERT"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "gmn_battlefield_points",
+      "privilegio": "REFERENCES"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "gmn_battlefield_points",
+      "privilegio": "SELECT"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "gmn_battlefield_points",
+      "privilegio": "TRIGGER"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "gmn_battlefield_points",
+      "privilegio": "TRUNCATE"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "gmn_battlefield_points",
+      "privilegio": "UPDATE"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "gmn_battlefield_points",
+      "privilegio": "DELETE"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "gmn_battlefield_points",
+      "privilegio": "INSERT"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "gmn_battlefield_points",
+      "privilegio": "REFERENCES"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "gmn_battlefield_points",
+      "privilegio": "SELECT"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "gmn_battlefield_points",
+      "privilegio": "TRIGGER"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "gmn_battlefield_points",
+      "privilegio": "TRUNCATE"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "gmn_battlefield_points",
+      "privilegio": "UPDATE"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "gmn_battlefield_points",
+      "privilegio": "DELETE"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "gmn_battlefield_points",
+      "privilegio": "INSERT"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "gmn_battlefield_points",
+      "privilegio": "REFERENCES"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "gmn_battlefield_points",
+      "privilegio": "SELECT"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "gmn_battlefield_points",
+      "privilegio": "TRIGGER"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "gmn_battlefield_points",
+      "privilegio": "TRUNCATE"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "gmn_battlefield_points",
+      "privilegio": "UPDATE"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "gmn_battlefield_rounds",
+      "privilegio": "DELETE"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "gmn_battlefield_rounds",
+      "privilegio": "INSERT"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "gmn_battlefield_rounds",
+      "privilegio": "REFERENCES"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "gmn_battlefield_rounds",
+      "privilegio": "SELECT"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "gmn_battlefield_rounds",
+      "privilegio": "TRIGGER"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "gmn_battlefield_rounds",
+      "privilegio": "TRUNCATE"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "gmn_battlefield_rounds",
+      "privilegio": "UPDATE"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "gmn_battlefield_rounds",
+      "privilegio": "DELETE"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "gmn_battlefield_rounds",
+      "privilegio": "INSERT"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "gmn_battlefield_rounds",
+      "privilegio": "REFERENCES"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "gmn_battlefield_rounds",
+      "privilegio": "SELECT"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "gmn_battlefield_rounds",
+      "privilegio": "TRIGGER"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "gmn_battlefield_rounds",
+      "privilegio": "TRUNCATE"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "gmn_battlefield_rounds",
+      "privilegio": "UPDATE"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "gmn_battlefield_rounds",
+      "privilegio": "DELETE"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "gmn_battlefield_rounds",
+      "privilegio": "INSERT"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "gmn_battlefield_rounds",
+      "privilegio": "REFERENCES"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "gmn_battlefield_rounds",
+      "privilegio": "SELECT"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "gmn_battlefield_rounds",
+      "privilegio": "TRIGGER"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "gmn_battlefield_rounds",
+      "privilegio": "TRUNCATE"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "gmn_battlefield_rounds",
+      "privilegio": "UPDATE"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "gmn_leads",
+      "privilegio": "DELETE"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "gmn_leads",
+      "privilegio": "INSERT"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "gmn_leads",
+      "privilegio": "REFERENCES"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "gmn_leads",
+      "privilegio": "SELECT"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "gmn_leads",
+      "privilegio": "TRIGGER"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "gmn_leads",
+      "privilegio": "TRUNCATE"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "gmn_leads",
+      "privilegio": "UPDATE"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "gmn_leads",
+      "privilegio": "DELETE"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "gmn_leads",
+      "privilegio": "INSERT"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "gmn_leads",
+      "privilegio": "REFERENCES"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "gmn_leads",
+      "privilegio": "SELECT"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "gmn_leads",
+      "privilegio": "TRIGGER"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "gmn_leads",
+      "privilegio": "TRUNCATE"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "gmn_leads",
+      "privilegio": "UPDATE"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "gmn_leads",
+      "privilegio": "DELETE"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "gmn_leads",
+      "privilegio": "INSERT"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "gmn_leads",
+      "privilegio": "REFERENCES"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "gmn_leads",
+      "privilegio": "SELECT"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "gmn_leads",
+      "privilegio": "TRIGGER"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "gmn_leads",
+      "privilegio": "TRUNCATE"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "gmn_leads",
+      "privilegio": "UPDATE"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "prospecting_campaigns",
+      "privilegio": "DELETE"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "prospecting_campaigns",
+      "privilegio": "INSERT"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "prospecting_campaigns",
+      "privilegio": "REFERENCES"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "prospecting_campaigns",
+      "privilegio": "SELECT"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "prospecting_campaigns",
+      "privilegio": "TRIGGER"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "prospecting_campaigns",
+      "privilegio": "TRUNCATE"
+    },
+    {
+      "tem": false,
+      "papel": "anon",
+      "tabela": "prospecting_campaigns",
+      "privilegio": "UPDATE"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "prospecting_campaigns",
+      "privilegio": "DELETE"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "prospecting_campaigns",
+      "privilegio": "INSERT"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "prospecting_campaigns",
+      "privilegio": "REFERENCES"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "prospecting_campaigns",
+      "privilegio": "SELECT"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "prospecting_campaigns",
+      "privilegio": "TRIGGER"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "prospecting_campaigns",
+      "privilegio": "TRUNCATE"
+    },
+    {
+      "tem": false,
+      "papel": "authenticated",
+      "tabela": "prospecting_campaigns",
+      "privilegio": "UPDATE"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "prospecting_campaigns",
+      "privilegio": "DELETE"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "prospecting_campaigns",
+      "privilegio": "INSERT"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "prospecting_campaigns",
+      "privilegio": "REFERENCES"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "prospecting_campaigns",
+      "privilegio": "SELECT"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "prospecting_campaigns",
+      "privilegio": "TRIGGER"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "prospecting_campaigns",
+      "privilegio": "TRUNCATE"
+    },
+    {
+      "tem": true,
+      "papel": "service_role",
+      "tabela": "prospecting_campaigns",
+      "privilegio": "UPDATE"
+    }
+  ]
+}
