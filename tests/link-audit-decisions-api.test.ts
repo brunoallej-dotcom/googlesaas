@@ -16,7 +16,7 @@ import { nodeFsOps } from '../src/lib/link-audit/snapshot-store';
 import { seal, serialize } from '../src/lib/link-audit-storage';
 import { DECISION_FILE_KIND, DECISION_SCHEMA_VERSION } from '../src/lib/link-audit-decisions/types';
 import { errno } from './helpers/link-audit-evidence-fixtures';
-import { entryPath, hashTree, rec, registerCleanup, tmpDir, type World } from './helpers/link-audit-decisions-fixtures';
+import { entryPath, hashTree, quarantineDirOf, rec, registerCleanup, tmpDir, type World } from './helpers/link-audit-decisions-fixtures';
 import { OTHER_ORIGIN_KEY, TEST_ORIGIN, TEST_ORIGIN_KEY } from './helpers/link-audit-origin-fixtures';
 import { createDecisionService } from '../src/lib/link-audit-decisions';
 import { previewOver } from './helpers/link-audit-preview-fixtures';
@@ -545,8 +545,7 @@ test('R3-MINOR-2 / R3-MINOR-5 pela API: com a TESTEMUNHA (resultado selado em ou
     assert.equal(view.pending.record, null);
   }
   // a quarentena manual da pendente (o §15 item 3 antigo) NÃO reativa a revogada
-  const quarantineDir = path.join(w.decisionsDir, '..', `quarentena-${auditId}`);
-  fs.mkdirSync(quarantineDir, { recursive: true });
+  const quarantineDir = quarantineDirOf(w, auditId);
   fs.renameSync(path.join(w.decisionsDir, auditId, 'd0002.json'), path.join(quarantineDir, 'd0002.json'));
   const regressed = await json(await get(auditId, other));
   assert.deepEqual([regressed.witness.status, regressed.decisions, regressed.operatorRecords, regressed.finalizable], ['HISTORY_REGRESSED', [], [], false]);
@@ -613,8 +612,7 @@ test('FIAÇÃO das rotas: a chave de origem configurada chega ao provedor da tes
   assert.ok((await makeService(witnessDirs, preview).finalize({ email: ana }, auditId, { expectedHead: evaluated.value.decisions.head, expectedInputSha256: evaluated.value.inputSha256 as string })).ok);
   fs.rmSync(path.join(witnessDirs.anchors, auditId, 'a0001.json')); // o resultado vira pendente
   fs.rmSync(path.join(w.anchorDir, auditId, 'a0002.json')); // e o recibo da revogação some
-  const quarantineDir = path.join(w.decisionsDir, '..', `quarentena-fiacao-${auditId}`);
-  fs.mkdirSync(quarantineDir, { recursive: true });
+  const quarantineDir = quarantineDirOf(w, auditId, 'quarentena-fiacao');
   fs.renameSync(path.join(w.decisionsDir, auditId, 'd0002.json'), path.join(quarantineDir, 'd0002.json'));
   const other = await cookie(nextOperator());
   const configured = await json(await get(auditId, other));

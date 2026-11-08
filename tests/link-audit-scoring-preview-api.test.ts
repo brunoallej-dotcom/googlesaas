@@ -10,7 +10,7 @@ import * as routeModule from '../src/app/api/link-audit/scoring/[auditId]/route'
 import { GET as previewRoute } from '../src/app/api/link-audit/scoring/[auditId]/route';
 import { createSessionToken, SESSION_COOKIE } from '../src/lib/auth/session';
 import { middleware } from '../src/middleware';
-import { anchorPath, hashTree, must, rec, registerCleanup, type World } from './helpers/link-audit-decisions-fixtures';
+import { anchorPath, hashTree, must, quarantineDirOf, rec, registerCleanup, type World } from './helpers/link-audit-decisions-fixtures';
 import { clock } from './helpers/link-audit-decisions-fixtures';
 import { bodyText, writeFull } from './helpers/link-audit-evidence-fixtures';
 import { OTHER_ORIGIN_KEY, TEST_ORIGIN, TEST_ORIGIN_KEY } from './helpers/link-audit-origin-fixtures';
@@ -291,8 +291,7 @@ test('FIAÇÃO da rota da prévia: a chave de origem configurada chega ao proved
   assert.ok((await makeService(witnessDirs, preview).finalize(author, auditId, { expectedHead: evaluated.value.decisions.head, expectedInputSha256: evaluated.value.inputSha256 as string })).ok);
   fs.rmSync(path.join(witnessDirs.anchors, auditId, 'a0001.json'));
   fs.rmSync(anchorPath(w, 2));
-  const quarantineDir = path.join(w.decisionsDir, '..', `quarentena-fiacao-${auditId}`);
-  fs.mkdirSync(quarantineDir, { recursive: true });
+  const quarantineDir = quarantineDirOf(w, auditId, 'quarentena-fiacao');
   fs.renameSync(path.join(w.decisionsDir, auditId, 'd0002.json'), path.join(quarantineDir, 'd0002.json'));
   const read = async () => json(await previewRoute(req(url(auditId), { cookie: ana }), ctx(auditId)));
   const configured = await read();
