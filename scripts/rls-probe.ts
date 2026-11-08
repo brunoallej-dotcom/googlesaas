@@ -4,6 +4,14 @@
  *
  *   npm run rls:probe                      (anon + token forjado)
  *   npm run rls:probe -- --authenticated   (inclui o operador; a senha é pedida no terminal)
+ *   npm run rls:probe -- --read-only       (SOMENTE leituras nas 5 tabelas: seguro também para a produção;
+ *                                           ver docs/specs/g5-homologacao-funcional.md)
+ *   npm run rls:probe -- --read-only --expect-hardened   (idem, e "só o RLS barra" também reprova: critério do G5)
+ *
+ * Use SEMPRE o "--" antes das opções. Opção desconhecida, ou o npm engolindo --read-only, encerra com erro (2).
+ *
+ * ATENÇÃO: o modo completo (sem --read-only) envia escritas com filtro impossível, uma chamada de função e
+ * listagens do Storage: use-o só no laboratório ou com autorização escrita.
  */
 import { Writable } from 'node:stream';
 import readline from 'node:readline';
@@ -22,6 +30,19 @@ async function askHidden(question: string): Promise<string> {
 }
 
 async function main(): Promise<void> {
+  // Argumentos primeiro: o modo completo (que escreve) é o padrão, então opção desconhecida, erro de digitação ou o npm
+  // engolindo `--read-only` (sem o "--") NÃO podem cair nele em silêncio.
+  const { validateProbeArgs } = await import('@/lib/rls-probe-readonly');
+  const problem = validateProbeArgs(process.argv.slice(2), process.env);
+  if (problem !== null) {
+    console.error(problem);
+    process.exit(2);
+  }
+  // O modo somente leitura vem ANTES de qualquer rede, senha ou leitura de variável do probe completo.
+  if (process.argv.includes('--read-only')) {
+    const { runReadOnlyCli } = await import('@/lib/rls-probe-readonly');
+    process.exit(await runReadOnlyCli({ env: process.env, argv: process.argv.slice(2), write: (line) => console.log(line) }));
+  }
   const { runRlsProbe, summarize } = await import('@/lib/rls-probe');
   const baseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.replace(/\/$/, '');
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
