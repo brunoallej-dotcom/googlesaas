@@ -46,15 +46,19 @@ const DEFAULT_TIMEOUT_MS = 20_000;
 const NO_PRIVILEGE_CODE = '42501';
 const KNOWN_FLAGS = ['--read-only', '--authenticated', '--expect-hardened'] as const;
 
+/** Mostra um argumento rejeitado só se parecer uma opção curta e inofensiva; qualquer outra coisa (texto solto, algo longo) não é repetida. */
+const describeArg = (arg: string): string => (/^-{1,2}[A-Za-z0-9_-]{1,30}$/.test(arg) ? arg : '(argumento posicional ou inválido)');
+
 /**
- * Valida os argumentos do script ANTES de qualquer rede. O modo completo (que escreve) é o padrão, então um erro de digitação
- * ou o npm engolindo a opção (`npm run rls:probe --read-only`, sem o "--") NÃO pode cair nele em silêncio.
- * Devolve a mensagem de erro, ou `null` se estiver tudo certo.
+ * Valida os argumentos do script ANTES de qualquer rede. O modo completo (que escreve) é o padrão, então QUALQUER argumento que
+ * não seja exatamente um dos documentados (opção com um ou dois hífens, texto solto, `--` sozinho, texto vazio, `--opção=valor`)
+ * é erro de uso: nada pode cair no modo completo em silêncio. O npm engolindo a opção (`npm run rls:probe --read-only`, sem o "--")
+ * também é recusado. Devolve a mensagem de erro, ou `null` se estiver tudo certo.
  */
 export function validateProbeArgs(argv: readonly string[], env: Readonly<Record<string, string | undefined>>): string | null {
   const known: readonly string[] = KNOWN_FLAGS;
-  const unknown = argv.filter((arg) => arg.startsWith('--') && !known.includes(arg));
-  if (unknown.length > 0) return `Opção desconhecida: ${unknown.join(', ')}. Opções válidas: ${KNOWN_FLAGS.join(', ')} (--expect-hardened só com --read-only).`;
+  const unknown = argv.filter((arg) => !known.includes(arg));
+  if (unknown.length > 0) return `Argumento não reconhecido: ${unknown.map(describeArg).join(', ')}. Só são aceitos: ${KNOWN_FLAGS.join(', ')} (--expect-hardened só com --read-only).`;
   for (const flag of KNOWN_FLAGS) {
     const swallowed = env[`npm_config_${flag.slice(2).replace(/-/g, '_')}`];
     if (swallowed !== undefined && !argv.includes(flag)) return `O npm engoliu a opção ${flag}. Use: npm run rls:probe -- ${flag} (com o "--" antes).`;

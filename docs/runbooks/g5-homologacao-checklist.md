@@ -3,7 +3,7 @@
 > **Status:** preparação. Nada deste checklist foi executado. Spec: `docs/specs/g5-homologacao-funcional.md`.
 > **Situação do G5:** implementação aparente, pendente de homologação funcional. Só marcar "concluído" com as partes A e B verdes.
 > **Regra de ouro:** antes de qualquer comando, confira o **host** (`alvo (host): ...` do probe `--read-only`, ou o identificador do projeto no painel). Laboratório e produção são projetos diferentes.
-> **Sempre o `--` antes das opções:** `npm run rls:probe -- --read-only`. O script recusa (código 2) opção desconhecida e o caso do npm engolir a opção, porque o modo completo (que escreve) é o padrão.
+> **Sempre o `--` antes das opções:** `npm run rls:probe -- --read-only`. O script recusa (código 2, sem nenhuma requisição) qualquer argumento fora de `--read-only`, `--authenticated` e `--expect-hardened` (texto solto, `-r`, `--`, vazio…) e o caso do npm engolir a opção, porque o modo completo (que escreve) é o padrão. Atenção: se você esquecer o `--`, o npm engole a opção; uma opção com nome diferente das três **não** é detectável, então confira sempre a linha `modo: somente leitura` e o `alvo (host)` na saída.
 
 ## A. Laboratório (projeto Supabase descartável, organização Free, custo zero)
 

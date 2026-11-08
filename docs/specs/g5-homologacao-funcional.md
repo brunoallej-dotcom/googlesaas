@@ -43,7 +43,7 @@ O responsável pelo projeto, que executa os comandos no laboratório e, com auto
 - `--read-only` com `--authenticated` é **erro de uso** (código 2, sem nenhuma requisição).
 - **`--expect-hardened`** (só com `--read-only`; é o critério do G5): "só o RLS barra" (o papel ainda tem privilégio) passa a **reprovar** (código 1). Sem ele, é só um aviso (linha de base de um banco ainda sem a `003`).
 - **`anon` só conta como "sem privilégio" com o SQLSTATE `42501`:** um 401 ou 403 de outro tipo (JWT expirado, chave ruim) vira `UNEXPECTED`, nunca falsa garantia.
-- **Validação dos argumentos, antes de qualquer rede:** o modo completo (que escreve) é o padrão, então opção desconhecida (`--readonly`, `--help`…), `--expect-hardened` sem `--read-only` e o caso do npm engolir a opção (`npm run rls:probe --read-only`, sem o `--`, que chega ao script como `npm_config_read_only`) encerram com código 2 e **não** caem no modo completo.
+- **Validação dos argumentos, antes de qualquer rede:** o modo completo (que escreve) é o padrão, então **só são aceitos exatamente `--read-only`, `--authenticated` e `--expect-hardened`**. Qualquer outro argumento (opção com um ou dois hífens, texto solto como `readonly`, `--` sozinho, texto vazio, `--opção=valor`), `--expect-hardened` sem `--read-only` e o caso do npm engolir a opção (`npm run rls:probe --read-only`, sem o `--`, que chega ao script como `npm_config_read_only`) encerram com código 2 e **não** caem no modo completo. O argumento rejeitado só é repetido na saída se parecer uma opção curta e inofensiva.
 - **URL do projeto:** só `https://<host>` (ou loopback), sem credenciais, caminho, consulta nem fragmento; a saída nunca repete uma URL inválida. Os redirecionamentos não são seguidos (`redirect: 'error'`).
 
 ## 6. Acceptance criteria
@@ -53,7 +53,7 @@ O responsável pelo projeto, que executa os comandos no laboratório e, com auto
 - [ ] O código-fonte do módulo (sem comentários) não contém métodos de escrita, `rpc`, `storage` nem `auth`, e só importa `./rls-probe`; no script, o ramo `--read-only` vem antes de qualquer `fetch` ou pedido de senha.
 - [ ] O relatório não contém as chaves, o JWT forjado, o conteúdo de linhas vazadas nem mensagens de erro, mesmo quando o `fetch` falha com uma mensagem que as inclui.
 - [ ] Bloqueio, filtro por RLS, vazio inconclusivo e exposição produzem vereditos diferentes; 401 do `anon` sem `42501` é inesperado; `--expect-hardened` reprova "só o RLS barra".
-- [ ] Opção desconhecida, `--expect-hardened` sozinho, o npm engolindo `--read-only` e URL inválida terminam com código 2 **sem nenhuma requisição**.
+- [ ] Argumento fora dos documentados (texto solto, um hífen, `--`, vazio, misto com uma opção válida), `--expect-hardened` sozinho, o npm engolindo `--read-only` e URL inválida terminam com código 2 **sem nenhuma requisição**; provado de ponta a ponta com o script real contra um servidor local que registra tudo (e com controles positivos: sem argumentos o probe completo continua escrevendo).
 - [ ] O seed: guarda primeiro, só `INSERT ... ON CONFLICT DO NOTHING`, só as 5 tabelas, ids do laboratório, nada que se pareça com dado real, e as linhas explícitas respeitam as restrições do schema (enumerações, faixas, chaves estrangeiras, unicidade); contagens e agregados das rodadas batem com a fórmula dos pontos.
 
 ## 7. Edge cases
@@ -61,6 +61,7 @@ O responsável pelo projeto, que executa os comandos no laboratório e, com auto
 - Tabela vazia: o probe não conclui (`INCONCLUSIVE_EMPTY`, código 3); o seed existe para evitar isso no laboratório.
 - Cabeçalho `Content-Range` ausente em resposta 2xx: usa o tamanho do corpo apenas para contar, sem imprimir.
 - Falha de rede: registra status 0 e o código `NETWORK_ERROR`, sem a mensagem do erro.
+- **Limite conhecido:** uma opção que o próprio npm engole (antes do `--`) com um nome que **não** é uma das três documentadas não deixa rastro confiável no ambiente do script (o npm define 12 variáveis `npm_config_*` por padrão, e o `.npmrc` do usuário acrescenta outras), então não é detectável sem mudar o comportamento de quem usa o comando normalmente. A defesa é usar sempre `npm run rls:probe -- <opção>`; uma melhoria possível é um script do `package.json` com a opção embutida.
 - Seed rodado por engano na produção ou em banco com dados reais: aborta sem alterar nada.
 - Seed rodado duas vezes: não duplica.
 - Os testes não executam o SQL num PostgreSQL real (o ambiente não permite instalar um). A primeira execução no laboratório é o teste de integração do seed, e como é um bloco único, uma falha não deixa meio-estado.

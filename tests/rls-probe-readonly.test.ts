@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import test from 'node:test';
 import { forgedToken, TABLES } from '../src/lib/rls-probe';
@@ -189,7 +192,18 @@ test('validateProbeArgs: opção desconhecida, erro de digitação e o npm engol
   assert.equal(validateProbeArgs(['--read-only'], {}), null);
   assert.equal(validateProbeArgs(['--read-only', '--expect-hardened'], {}), null);
   assert.equal(validateProbeArgs(['--authenticated'], {}), null);
-  for (const typo of ['--readonly', '--read_only', '--ReadOnly', '--read-only=true', '--help']) assert.match(String(validateProbeArgs([typo], {})), /Opção desconhecida/, typo);
+  // Qualquer argumento fora dos documentados é erro de uso: opção com dois hífens, com um hífen, texto solto, "--" sozinho, vazio, com valor.
+  for (const bad of ['--readonly', '--read_only', '--ReadOnly', '--read-only=true', '--help', '-r', '-readonly', '-h', '-', '--', 'readonly', 'read-only', 'full', 'prod', 'true', '', ' ', ' --read-only', '--read-only ', '--READ-ONLY']) {
+    assert.match(String(validateProbeArgs([bad], {})), /Argumento não reconhecido/, JSON.stringify(bad));
+  }
+  assert.match(String(validateProbeArgs(['--read-only', 'readonly'], {})), /Argumento não reconhecido/, 'opção válida + texto solto: recusa');
+  assert.match(String(validateProbeArgs(['readonly', '--authenticated'], {})), /Argumento não reconhecido/, 'texto solto + opção válida: recusa');
+  assert.match(String(validateProbeArgs(['--read-only', '--expect-hardened', '-x'], {})), /Argumento não reconhecido/);
+  assert.equal(validateProbeArgs(['--read-only', '--read-only'], {}), null, 'repetir uma opção documentada continua válido');
+  // O argumento rejeitado só é repetido se parecer uma opção curta e inofensiva; texto solto e valores longos não são ecoados.
+  assert.match(String(validateProbeArgs(['--readonly'], {})), /--readonly/);
+  assert.doesNotMatch(String(validateProbeArgs(['SEGREDO-SENTINEL-colado-por-engano'], {})), /SEGREDO-SENTINEL/);
+  assert.doesNotMatch(String(validateProbeArgs([`--${'x'.repeat(80)}`], {})), /xxxxxxxxxx/);
   assert.match(String(validateProbeArgs([], { npm_config_read_only: 'true' })), /engoliu a opção --read-only.*-- --read-only/);
   assert.match(String(validateProbeArgs([], { npm_config_expect_hardened: 'true' })), /engoliu a opção --expect-hardened/);
   assert.equal(validateProbeArgs(['--read-only'], { npm_config_read_only: 'true' }), null, 'com o "--" correto a opção chega ao script');
@@ -319,4 +333,95 @@ test('estático: no script, o ramo --read-only vem ANTES de qualquer fetch, senh
     assert.ok(script.indexOf(later) > branch, `${later} vem depois do ramo`);
   }
   assert.match(script, /process\.exit\(await runReadOnlyCli\(/, 'o ramo termina o processo');
+});
+
+/*
+ * PONTA A PONTA: o script REAL (`scripts/rls-probe.ts`), com o `fetch` real, contra um servidor HTTP em 127.0.0.1 que registra TODA
+ * requisição. Nenhum Supabase é tocado: a URL do projeto aponta para o servidor local. Os controles positivos provam que o servidor
+ * enxergaria uma escrita; sem eles, "nenhuma requisição" nos casos ruins não significaria nada.
+ */
+interface Seen {
+  readonly method: string;
+  readonly url: string;
+}
+
+async function withLocalServer<T>(run: (baseUrl: string, seen: Seen[]) => Promise<T>): Promise<T> {
+  const seen: Seen[] = [];
+  const server = http.createServer((req, res) => {
+    seen.push({ method: req.method ?? '', url: req.url ?? '' });
+    req.resume();
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end('{}');
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    return await run(`http://127.0.0.1:${(server.address() as AddressInfo).port}`, seen);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
+function runScript(args: string[], environment: Record<string, string>): Promise<{ code: number | null; out: string }> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(process.execPath, ['--require', path.join(ROOT, 'tests', 'register-typescript.cjs'), path.join(ROOT, 'scripts', 'rls-probe.ts'), ...args], {
+      cwd: ROOT,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      // ambiente mínimo e explícito: nada do ambiente real do desenvolvedor chega ao script
+      env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', ...environment } as unknown as NodeJS.ProcessEnv,
+    });
+    let out = '';
+    proc.stdout.on('data', (chunk: Buffer) => (out += chunk.toString()));
+    proc.stderr.on('data', (chunk: Buffer) => (out += chunk.toString()));
+    const timer = setTimeout(() => proc.kill('SIGKILL'), 90_000);
+    proc.on('error', reject);
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code, out });
+    });
+  });
+}
+
+const localEnvironment = (baseUrl: string): Record<string, string> => ({ NEXT_PUBLIC_SUPABASE_URL: baseUrl, NEXT_PUBLIC_SUPABASE_ANON_KEY: ANON, SUPABASE_SERVICE_ROLE_KEY: SERVICE, SUPABASE_AUDIT_BUCKET: 'bucket-de-teste' });
+
+test('ponta a ponta: argumento fora dos documentados (posicional, um hífen, "--", vazio, misto) termina com código 2 e o servidor NÃO recebe nenhuma requisição', async () => {
+  await withLocalServer(async (baseUrl, seen) => {
+    const cases: ReadonlyArray<readonly [string, string[], Record<string, string>]> = [
+      ['texto solto "readonly"', ['readonly'], {}],
+      ['texto solto "read-only"', ['read-only'], {}],
+      ['opção com um hífen', ['-r'], {}],
+      ['opção com um hífen e nome longo', ['-readonly'], {}],
+      ['"--" sozinho', ['--'], {}],
+      ['texto vazio', [''], {}],
+      ['erro de digitação', ['--readonly'], {}],
+      ['opção válida mais texto solto', ['--read-only', 'readonly'], {}],
+      ['texto solto mais --authenticated (não pede senha)', ['full', '--authenticated'], {}],
+      ['--expect-hardened sozinho', ['--expect-hardened'], {}],
+      ['npm engoliu --read-only (sem o "--")', [], { npm_config_read_only: 'true' }],
+    ];
+    for (const [name, args, extra] of cases) {
+      const run = await runScript(args, { ...localEnvironment(baseUrl), ...extra });
+      assert.equal(run.code, 2, `${name}: saída ${String(run.code)}\n${run.out}`);
+      assert.match(run.out, /Argumento não reconhecido|--expect-hardened só existe|engoliu a opção/, name);
+      assert.deepEqual(seen, [], `${name}: o servidor recebeu requisição(ões): ${JSON.stringify(seen)}`);
+    }
+    assert.ok(!seen.some((s) => s.method !== 'GET'), 'nenhuma escrita chegou ao servidor');
+  });
+});
+
+test('ponta a ponta, controles positivos: --read-only manda só GET nas 5 tabelas; sem argumentos o probe COMPLETO continua escrevendo (a prova de que o servidor enxergaria)', async () => {
+  await withLocalServer(async (baseUrl, seen) => {
+    const readOnly = await runScript(['--read-only'], localEnvironment(baseUrl));
+    assert.ok(readOnly.code === 0 || readOnly.code === 1 || readOnly.code === 3, `saída inesperada ${String(readOnly.code)}\n${readOnly.out}`);
+    assert.equal(seen.length, 15);
+    assert.ok(seen.every((s) => s.method === 'GET' && /^\/rest\/v1\/(prospecting_campaigns|gmn_leads|gmn_audits|gmn_battlefield_rounds|gmn_battlefield_points)\?select=id&limit=1$/.test(s.url)), JSON.stringify(seen.slice(0, 3)));
+    assert.match(readOnly.out, /alvo \(host\): 127\.0\.0\.1:\d+/);
+    assert.ok(!readOnly.out.includes(ANON) && !readOnly.out.includes(SERVICE), 'o relatório não repete as chaves');
+
+    seen.length = 0;
+    const full = await runScript([], localEnvironment(baseUrl));
+    assert.ok(full.code !== null && full.code !== 2, `o probe completo sem argumentos deve rodar (saída ${String(full.code)})\n${full.out}`);
+    const methods = new Set(seen.map((s) => s.method));
+    assert.ok(methods.has('PATCH') && methods.has('DELETE') && methods.has('POST'), `o modo completo (padrão) continua escrevendo: ${[...methods].join(',')}`);
+  });
 });
