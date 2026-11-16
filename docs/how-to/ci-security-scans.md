@@ -19,7 +19,7 @@ Por que `npm audit` e não OSV-Scanner: usa o mesmo banco que já embasa `docs/p
 ### gitleaks
 1. Considere o segredo **vazado**: revogue/rotacione primeiro.
 2. Só depois remova do código. Reescrever histórico exige autorização.
-3. Falso positivo: crie (ainda não existe no repositório) ou edite `.gitleaksignore` na raiz, com o fingerprint e um comentário com o motivo, revisado em PR.
+3. Falso positivo: acrescente ao `.gitleaksignore` da raiz (crie se não existir) a impressão digital do log (`commit:arquivo:regra:linha`), com um comentário de justificativa revisado em PR. A entrada cobre só aquele commit; corrija também o texto que disparou, para o próximo commit não disparar de novo. Linhas iniciadas por `#` são comentário.
 
 ### SCA
 1. Leia a linha `::error::aviso SEM exceção` no log (pacote, versão, severidade, URL do aviso).
