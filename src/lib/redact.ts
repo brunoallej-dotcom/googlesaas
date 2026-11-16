@@ -14,7 +14,7 @@ const SENSITIVE_ENV_NAMES = [
 
 export const REDACTED = '[REDACTED]';
 
-type Replacement = string | ((match: string, ...groups: (string | undefined)[]) => string);
+type Replacement = string | ((substring: string, ...groups: string[]) => string);
 
 /*
  * Todas as expressões rodam em tempo linear (o texto de entrada pode ser hostil e longo). Nas duas que eram
@@ -59,7 +59,7 @@ export function redactSecrets(
   let out = text;
   for (const value of secretValues(env)) out = out.split(value).join(REDACTED);
   for (const [pattern, replacement] of PATTERNS) {
-    out = typeof replacement === 'string' ? out.replace(pattern, replacement) : out.replace(pattern, replacement as (substring: string, ...args: unknown[]) => string);
+    out = typeof replacement === 'string' ? out.replace(pattern, replacement) : out.replace(pattern, replacement);
   }
   return out;
 }

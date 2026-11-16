@@ -12,9 +12,9 @@ import { REDACTED, redactSecrets } from '../redact';
 const MAX_TEXT = 2048;
 
 /**
- * Teto de cada texto antes do saneamento de saída (defesa em profundidade contra entrada adversarial: o
- * relatório lido do disco aceita textos sem limite no esquema). Acima disso o texto é truncado, o trecho
- * mantido continua saneado e a marca `[truncado]` é acrescentada.
+ * Teto do tamanho de cada texto NA SAÍDA de `sanitizeForOutput`. O texto inteiro é saneado primeiro (as
+ * expressões são lineares) e só então a saída saneada é cortada aqui, com a marca `[truncado]`. Cortar antes
+ * de sanear deixaria um segredo que cruza o corte sem casar com os padrões e vazaria um pedaço dele.
  */
 export const MAX_OUTPUT_STRING_LENGTH = 4096;
 const TRUNCATION_MARK = '…[truncado]';
@@ -158,7 +158,7 @@ export function safeFailureReason(error: unknown, maxLength = 300): string {
   return redactUrlsInText(`${name}: ${message}`).slice(0, maxLength);
 }
 
-/** Um texto (já dentro do teto): link já saneado passa intacto; UM link inteiro vira a forma saneada; texto com links dentro passa pela redação de texto. */
+/** Um texto (inteiro, sem corte prévio): link já saneado passa intacto; UM link inteiro vira a forma saneada; texto com links dentro passa pela redação de texto. */
 function sanitizeText(value: string): string {
   if (isSanitizedUrl(value)) return value;
   return /^https?:\/\/\S+$/i.test(value.trim()) ? sanitizeUrl(value) : redactUrlsInText(value);
@@ -174,8 +174,8 @@ const MAX_OUTPUT_DEPTH = 16;
  */
 export function sanitizeForOutput(value: unknown, depth = 0): unknown {
   if (typeof value === 'string') {
-    if (value.length > MAX_OUTPUT_STRING_LENGTH) return `${sanitizeText(value.slice(0, MAX_OUTPUT_STRING_LENGTH))}${TRUNCATION_MARK}`;
-    return sanitizeText(value);
+    const clean = sanitizeText(value);
+    return clean.length > MAX_OUTPUT_STRING_LENGTH ? `${clean.slice(0, MAX_OUTPUT_STRING_LENGTH)}${TRUNCATION_MARK}` : clean;
   }
   if (value === null || typeof value === 'boolean') return value;
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;

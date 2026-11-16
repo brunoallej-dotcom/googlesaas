@@ -289,6 +289,34 @@ test('sanitizeForOutput: texto acima do teto é truncado com marca explícita e 
   assert.equal((sanitizeForOutput('x'.repeat(MAX_OUTPUT_STRING_LENGTH)) as string).length, MAX_OUTPUT_STRING_LENGTH, 'exatamente no teto: intacto');
 });
 
+test('sanitizeForOutput: segredo que cruza a posição do teto não vaza nenhum trecho (sanear o texto inteiro, depois cortar a saída)', () => {
+  const jwtHeader = 'eyJhbGciOiJIUzI1NiJ9';
+  const jwtPayload = 'eyJzdWIiOiJqb2FvQGV4YW1wbGUuY29tIn0';
+  const jwtSignature = 'SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV';
+  const cases: { secret: string; fragments: string[] }[] = [
+    { secret: `${jwtHeader}.${jwtPayload}.${jwtSignature}`, fragments: [jwtHeader, jwtPayload, 'SflKxw'] },
+    { secret: 'https://joao:S3nh4-Longa-99@host.example.com/', fragments: ['joao', 'S3nh4', 'senha'] },
+    { secret: 'Bearer abcdefghijklmnop1234', fragments: ['abcdefg', 'Bearer abc'] },
+    { secret: 'sk-abcdefghijklmnop1234567890', fragments: ['sk-abc', 'abcdefghij'] },
+    { secret: 'password=SEGREDO-SENHA-77', fragments: ['SEGREDO', 'SENHA'] },
+  ];
+  for (const { secret, fragments } of cases) {
+    for (const cut of [1, 3, 8, Math.floor(secret.length / 2), secret.length - 1]) {
+      const text = `${'a'.repeat(MAX_OUTPUT_STRING_LENGTH - cut - 1)} ${secret} ${'b'.repeat(50)}`;
+      const out = sanitizeForOutput(text) as string;
+      for (const fragment of fragments) assert.ok(!out.includes(fragment), `vazou "${fragment}" (corte ${cut}) em ${secret.slice(0, 12)}…`);
+      assert.ok(out.length <= MAX_OUTPUT_STRING_LENGTH + 16, `tamanho ${out.length}`);
+    }
+  }
+});
+
+test('sanitizeForOutput: a marca de truncamento só entra quando a SAÍDA saneada passa do teto', () => {
+  const longSecret = `password=${'S'.repeat(MAX_OUTPUT_STRING_LENGTH * 2)}`;
+  assert.equal(sanitizeForOutput(longSecret), 'password=[REDACTED]', 'o valor enorme encolhe ao ser redigido: sem marca');
+  const out = sanitizeForOutput(`${'a'.repeat(MAX_OUTPUT_STRING_LENGTH + 10)}`) as string;
+  assert.equal(out, `${'a'.repeat(MAX_OUTPUT_STRING_LENGTH)}…[truncado]`);
+});
+
 test('saneamento de texto é linear: entradas adversariais de 200 mil caracteres terminam rápido', { timeout: 20_000 }, () => {
   const inputs = ['a.'.repeat(100_000), 'a-'.repeat(100_000), 'a.b'.repeat(66_000), 'http://'.repeat(28_000), 'a.com/'.repeat(33_000)];
   const start = process.hrtime.bigint();
