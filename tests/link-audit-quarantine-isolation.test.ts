@@ -67,20 +67,26 @@ test('a limpeza é registrada: ao fim do processo, a quarentena e os demais dire
   const report = path.join(tmpDir('lad-quar-relatorio-'), 'caminhos.json');
   const env = { ...process.env };
   delete env.NODE_TEST_CONTEXT;
-  const code = await new Promise<number | null>((resolve, reject) => {
+  const STDERR_TAIL_CHARS = 4_000;
+  const { code, stderr } = await new Promise<{ code: number | null; stderr: string }>((resolve, reject) => {
     const proc = spawn(process.execPath, ['--require', path.join(ROOT, 'tests', 'register-typescript.cjs'), path.join(ROOT, 'tests', 'helpers', 'quarantine-cleanup-child.ts')], {
       cwd: ROOT,
-      stdio: ['ignore', 'ignore', 'ignore'],
+      stdio: ['ignore', 'ignore', 'pipe'],
       env: { ...env, QUARANTINE_REPORT: report },
+    });
+    let errText = '';
+    proc.stderr?.setEncoding('utf8');
+    proc.stderr?.on('data', (chunk: string) => {
+      errText = (errText + chunk).slice(-STDERR_TAIL_CHARS);
     });
     const timer = setTimeout(() => proc.kill('SIGKILL'), 60_000);
     proc.on('error', reject);
     proc.on('close', (exit) => {
       clearTimeout(timer);
-      resolve(exit);
+      resolve({ code: exit, stderr: errText });
     });
   });
-  assert.equal(code, 0, 'o processo filho terminou sem erro');
+  assert.equal(code, 0, `o processo filho terminou sem erro (code=${String(code)}; null = morto por tempo). stderr:\n${stderr}`);
   const paths = JSON.parse(fs.readFileSync(report, 'utf8')) as Record<'quarantine' | 'decisions' | 'anchors' | 'evidence', string>;
   assert.match(path.basename(paths.quarantine), /^lad-quarentena-/);
   for (const [name, dir] of Object.entries(paths)) {
