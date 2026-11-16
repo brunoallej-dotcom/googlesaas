@@ -131,6 +131,25 @@ export const entryPath = (w: Pick<World, 'decisionsDir' | 'auditId'>, seq: numbe
 export const anchorPath = (w: Pick<World, 'anchorDir' | 'auditId'>, seq: number, auditId = w.auditId): string => path.join(w.anchorDir, auditId, `a${String(seq).padStart(4, '0')}.json`);
 
 /**
+ * Diretório de QUARENTENA único por ambiente de teste (decisões + recibos): fora da pasta de decisões, com a limpeza já registrada
+ * (`tmpDir` + `registerCleanup`). `auditId` e `label` separam usos diferentes no mesmo ambiente, e a mesma chamada devolve sempre o mesmo diretório.
+ *
+ * ANTES: `path.join(w.decisionsDir, '..', 'quarentena-<auditId>')`. Como cada ambiente é um `mkdtemp` direto em /tmp, o `..` era o próprio /tmp e o
+ * `auditId` dos fixtures é fixo: todos os arquivos de teste que rodam em paralelo (e todas as execuções anteriores) compartilhavam o MESMO diretório e
+ * colidiam (ENOENT no rename; cadeia de decisões "não encadeada ao arquivo anterior").
+ */
+const quarantineDirs = new Map<string, string>();
+export function quarantineDirOf(w: Pick<World, 'decisionsDir'>, auditId: string, label = 'quarentena'): string {
+  const key = `${w.decisionsDir}|${label}|${auditId}`;
+  let dir = quarantineDirs.get(key);
+  if (dir === undefined) {
+    dir = tmpDir(`lad-${label}-`);
+    quarantineDirs.set(key, dir);
+  }
+  return dir;
+}
+
+/**
  * Escreve DIRETO em disco uma cadeia válida (decisões + âncoras) de `count` entradas alternando criação de C2 e revogação
  * (a última é uma criação vigente quando `count` é ímpar). Serve para testar limites sem milhares de chamadas ao serviço.
  */

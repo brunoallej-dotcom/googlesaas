@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createDecisionService, type KnownHeadsProvider } from '../../src/lib/link-audit-decisions';
 import { createResultsKnownHeads } from '../../src/lib/link-audit-scoring-runs';
-import { ANA, entryPath, clock, must, rec, world, type World } from './link-audit-decisions-fixtures';
+import { ANA, entryPath, clock, must, quarantineDirOf, rec, world, type World } from './link-audit-decisions-fixtures';
 import { TEST_ORIGIN } from './link-audit-origin-fixtures';
 import { previewOver } from './link-audit-preview-fixtures';
 import { makeService, OP_A, resultsEnv } from './link-audit-results-fixtures';
@@ -40,8 +40,7 @@ export async function sealedAfterRevocation(): Promise<{ w: World; e: ReturnType
   return { w, e, decisions };
 }
 export const quarantine = (w: World, seq: number): string => {
-  const dir = path.join(w.decisionsDir, '..', `quarentena-${w.auditId}`);
-  fs.mkdirSync(dir, { recursive: true });
+  const dir = quarantineDirOf(w, w.auditId);
   const target = path.join(dir, `d${String(seq).padStart(4, '0')}.json`);
   fs.renameSync(entryPath(w, seq), target);
   return target;
