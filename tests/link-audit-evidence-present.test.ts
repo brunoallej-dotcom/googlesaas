@@ -106,3 +106,23 @@ test('TUVAPLAST real: o que a interface exibirá (CID, HTTP 200, nota 5,0, 49 av
   assert.ok(!/bodyText|thumbnail|googleusercontent|"places"|searchParameters/.test(wire));
   assert.deepEqual(snapshot(), before, 'SHA-256 e data de modificação idênticos antes e depois');
 });
+
+test('DTO: website e requestedUrl só saem como esquema + host; caminho, credenciais, parâmetros (inclusive UTM) e fragmento nunca', () => {
+  const raw = 'https://user:pass@exemplo.com.br/convidado/abc123XYZ;jsessionid=SECRET012345?token=zz&utm_source=gbp';
+  const view = {
+    auditId: 'auditoria-teste-0001', layout: 'VERSIONED', selected: { capture: 1, revision: 1 }, state: 'COMPLETE',
+    company: { name: null, city: null, stateCode: null, originalLink: null }, collectedAt: null, methodologyVersion: null,
+    source: { provider: 'x', officialGoogleApi: false, description: null, httpStatus: null, httpAttempts: null, creditsReportedByApi: null, resultCount: null },
+    located: null, location: null, identifiers: null, identityBasis: null,
+    data: { googleMaps: { name: 'Empresa', website: raw }, site: { requestedUrl: raw, accessClass: 'OK' } },
+    evidences: { verified: [], unverified: [], other: [] }, limitations: [], divergences: [], calls: null, scoring: 'NOT_AVAILABLE_PENDING_D3',
+    integrity: { status: 'OK', algorithm: 'SHA-256', checkedFiles: 1, issues: [], note: 'n' }, versions: [],
+  } as unknown as AuditView;
+  const dto = toAuditDetailDto(view);
+  assert.equal(dto.establishment?.website, 'https://exemplo.com.br/');
+  assert.equal(dto.site?.requestedUrl, 'https://exemplo.com.br/');
+  assert.ok(!/SECRET012345|jsessionid|convidado|abc123XYZ|token|user:pass|gbp/.test(JSON.stringify(dto)));
+  const junk = toAuditDetailDto({ ...view, data: { googleMaps: { name: 'E', website: 'texto livre ?token=zz' }, site: { requestedUrl: 'javascript:alert(1)' } } } as unknown as AuditView);
+  assert.equal(junk.establishment?.website, null, 'valor que não é URL http(s) não é exibido');
+  assert.equal(junk.site?.requestedUrl, null);
+});

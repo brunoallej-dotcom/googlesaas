@@ -134,6 +134,24 @@ const arr = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 const strs = (value: unknown, max = 80): string[] => arr(value).filter((v): v is string => typeof v === 'string').slice(0, max).map((v) => v.slice(0, 600));
 
 const cut = (value: string | null, max = 200): string | null => (value === null ? null : value.slice(0, max));
+
+const MAX_DISPLAY_URL_INPUT = 2048;
+
+/**
+ * Link exibido pela API de evidências: SÓ esquema e host (`https://exemplo.com.br/`). Caminho, consulta,
+ * credenciais e fragmento podem carregar segredo (`;jsessionid=`, tokens) e nunca saem (spec 6C §19.2 item 5:
+ * URL bruta nunca exibida). O estado de UTM do website aparece na prévia da pontuação, que usa a regra
+ * `lumos-url-derive-v1`. O que não é URL http(s) com host não é exibido.
+ */
+const displayUrl = (value: unknown): string | null => {
+  if (typeof value !== 'string' || value.length === 0 || value.length > MAX_DISPLAY_URL_INPUT) return null;
+  try {
+    const url = new URL(value.trim());
+    return (url.protocol === 'http:' || url.protocol === 'https:') && url.hostname !== '' ? `${url.protocol}//${url.host}/` : null;
+  } catch {
+    return null;
+  }
+};
 const integrityDto = (info: IntegrityInfo): IntegrityDto => ({ status: info.status, algorithm: info.algorithm, checkedFiles: info.checkedFiles, issues: info.issues.slice(0, 20).map((issue) => issue.slice(0, 300)), note: info.note.slice(0, 600) });
 
 export function toListItem(summary: AuditSummary): AuditListItemDto {
@@ -171,7 +189,7 @@ function establishmentOf(value: unknown): EstablishmentDto | null {
     name: str(g.name),
     address: str(g.address),
     phone: str(g.phone, 60),
-    website: str(g.website, 2048),
+    website: displayUrl(g.website),
     category: str(g.category, 200),
     secondaryCategories: strs(g.secondaryCategories, 10),
     rating: num(g.rating),
@@ -187,7 +205,7 @@ function establishmentOf(value: unknown): EstablishmentDto | null {
 function siteOf(value: unknown): SiteObservationDto | null {
   const s = rec(value);
   if (Object.keys(s).length === 0) return null;
-  return { requestedUrl: str(s.requestedUrl, 2048), accessClass: str(s.accessClass, 60), accessNote: str(s.accessNote, 800), httpRequests: num(s.httpRequests), checkedAt: str(s.checkedAt, 40) };
+  return { requestedUrl: displayUrl(s.requestedUrl), accessClass: str(s.accessClass, 60), accessNote: str(s.accessNote, 800), httpRequests: num(s.httpRequests), checkedAt: str(s.checkedAt, 40) };
 }
 
 function triple(value: unknown): { cid: string | null; featureId: string | null; placeId: string | null } {

@@ -36,3 +36,6 @@ Leitura relê e confere os arquivos a cada requisição (I/O; mitigado por limit
 ## Intermitência investigada
 Um teste antigo de snapshot (`identificadores e caminhos perigosos…`) falhou uma vez porque listava o `/tmp` inteiro antes e depois: processos do sistema e testes em paralelo criam e removem entradas ali. O pai da base passou a ser um diretório privado do teste (mesma asserção: nada é criado fora da base). Depois disso, 3 rodadas completas seguidas: 772/772 sem falhas.
 
+
+## Emenda (16/11/2026) — links exibidos só como esquema + host
+Revisão adversarial independente (16/11/2026): `GET /api/link-audit/evidence/{auditId}` devolvia o CAMINHO do website do perfil e do endereço consultado no site (`establishment.website`, `site.requestedUrl`), que pode carregar segredo (ex.: `;jsessionid=`), em desacordo com o critério da Onda 6C (§19.2 item 5: URL bruta nunca exibida). **Contrato novo:** os dois campos trazem só `esquema://host[:porta]/` (sem caminho, consulta, credenciais nem fragmento) ou `null` quando o valor não é URL http(s) com host. O estado de UTM do website continua na prévia da pontuação (regra `lumos-url-derive-v1`). Compatibilidade: a tela e a API são publicadas juntas (mesmo app Next); nenhum dado gravado muda. Teste: `tests/link-audit-evidence-present.test.ts`.
