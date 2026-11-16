@@ -9,7 +9,8 @@ import { ParseResultPanel } from '../src/components/link-audit/parse-result-pane
 import { confirmIdentity, identityFromParse } from '../src/lib/link-audit/audit';
 import { validateEvidence } from '../src/lib/link-audit/evidence';
 import { parseGoogleMapsLink } from '../src/lib/link-audit/maps-link';
-import { isSanitizedUrl, redactUrlsInText, safeFailureReason, sanitizeUrl } from '../src/lib/link-audit/url-redaction';
+import { isSanitizedUrl, MAX_OUTPUT_STRING_LENGTH, redactFreeText, redactUrlsInText, safeFailureReason, sanitizeForOutput, sanitizeUrl } from '../src/lib/link-audit/url-redaction';
+import { redactSecrets } from '../src/lib/redact';
 import { createSessionToken, SESSION_COOKIE } from '../src/lib/auth/session';
 
 /* Identificadores, tokens e chaves FICTÍCIOS. */
@@ -273,4 +274,80 @@ test('esquemas que não são http(s) não ecoam conteúdo; texto com consulta se
 test('isSanitizedUrl rejeita URLs com segredos reconhecíveis no caminho', () => {
   assert.equal(isSanitizedUrl('https://www.padaria-exemplo.example/token=SEGREDO-TOKEN-9'), false);
   assert.equal(isSanitizedUrl('https://www.padaria-exemplo.example/pagina'), true);
+});
+
+/* Revisão adversarial (16/11/2026): negação de serviço por regex quadrática no saneamento de saída. */
+
+test('sanitizeForOutput: texto acima do teto é truncado com marca explícita e o trecho mantido continua saneado', () => {
+  const secret = 'password=SEGREDO-SENHA-77';
+  const text = `${secret} ${'a'.repeat(MAX_OUTPUT_STRING_LENGTH)} cauda-descartada`;
+  const out = sanitizeForOutput(text) as string;
+  assert.ok(out.length <= MAX_OUTPUT_STRING_LENGTH + 64, `tamanho ${out.length}`);
+  assert.ok(out.endsWith('[truncado]'));
+  assert.ok(!out.includes('SEGREDO-SENHA-77') && !out.includes('cauda-descartada'));
+  assert.equal(sanitizeForOutput('curto'), 'curto');
+  assert.equal((sanitizeForOutput('x'.repeat(MAX_OUTPUT_STRING_LENGTH)) as string).length, MAX_OUTPUT_STRING_LENGTH, 'exatamente no teto: intacto');
+});
+
+test('saneamento de texto é linear: entradas adversariais de 200 mil caracteres terminam rápido', { timeout: 20_000 }, () => {
+  const inputs = ['a.'.repeat(100_000), 'a-'.repeat(100_000), 'a.b'.repeat(66_000), 'http://'.repeat(28_000), 'a.com/'.repeat(33_000)];
+  const start = process.hrtime.bigint();
+  for (const input of inputs) {
+    redactFreeText(input);
+    redactSecrets(input, {});
+  }
+  const ms = Number(process.hrtime.bigint() - start) / 1e6;
+  assert.ok(ms < 1500, `levou ${ms.toFixed(0)} ms (quadrático levaria dezenas de segundos)`);
+});
+
+test('scrubFreeText: consulta de link sem esquema continua cortada (comportamento preservado)', () => {
+  assert.equal(redactFreeText('veja www.exemplo.com.br/loja?token=abc&x=1 agora'), 'veja www.exemplo.com.br/loja agora');
+  assert.equal(redactFreeText('veja exemplo.com.br?abc agora'), 'veja exemplo.com.br agora');
+  assert.equal(redactFreeText('x exemplo.com.br/a%3Fsegredo y'), 'x exemplo.com.br/a y');
+  assert.equal(redactFreeText('-exemplo.com.br?abc'), '-exemplo.com.br');
+  assert.equal(redactSecrets('1-redis://u:senha1234@host', {}), '1-redis://[REDACTED]@host');
+});
+
+/*
+ * Oráculo: as expressões ANTIGAS (quadráticas), copiadas da versão anterior, para provar que as novas devolvem
+ * EXATAMENTE o mesmo texto. Entradas curtas (o oráculo é lento só com textos longos), geradas de forma
+ * determinística a partir de peças que exercitam os casos-limite (pontos duplos, hífen, %3F, caminho, @, eyJ…).
+ */
+const ORACLE_REDACTED = '[REDACTED]';
+function oracleRedactSecrets(text: string): string {
+  return text
+    .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]*:[^\s/@]+@/gi, `$1${ORACLE_REDACTED}@`)
+    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, `$1 ${ORACLE_REDACTED}`)
+    .replace(/\b(api[-_]?key|apikey|x-api-key|token|access[-_]?token|refresh[-_]?token|password|passwd|senha|secret)(["']?\s*[:=]\s*["']?)[^\s"',;&]{3,}/gi, `$1$2${ORACLE_REDACTED}`)
+    .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, ORACLE_REDACTED)
+    .replace(/\bsk-[A-Za-z0-9_-]{16,}\b/g, ORACLE_REDACTED);
+}
+function oracleKeepParameter(name: string, value: string): boolean {
+  if (name === 'cid') return /^\d{1,20}$/.test(value);
+  if (name === 'ftid') return /^0x[0-9a-f]{1,16}:0x[0-9a-f]{1,16}$/i.test(value);
+  if (name === 'place_id' || name === 'query_place_id') return /^[A-Za-z0-9_-]{20,255}$/.test(value);
+  if (name === 'q') return value.toLowerCase().startsWith('place_id:') && /^[A-Za-z0-9_-]{20,255}$/.test(value.slice('place_id:'.length));
+  return false;
+}
+function oracleRedactFreeText(text: string): string {
+  const withoutQueries = text.replace(/\b((?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s?#]*)?)(?:\?|%3[Ff])[^\s]*/gi, '$1').replace(/%3[Ff][^\s]*/g, '');
+  const scrubbed = withoutQueries.replace(/([A-Za-z0-9_.-]{1,40})=([^\s&#]+)/g, (pair, name: string, value: string) => (oracleKeepParameter(name, value) ? pair : `${name}=${ORACLE_REDACTED}`));
+  return oracleRedactSecrets(scrubbed);
+}
+
+test('as expressões lineares devolvem EXATAMENTE o mesmo texto que as antigas (comparação diferencial determinística)', () => {
+  const pieces = ['a', 'b', 'Z', '1', '-', '.', '/', '?', '#', '%3F', '%3f', ' ', '_', ':', '//', '@', '=', '&', 'eyJ', 'abcdefgh', 'com', 'br', 'x', '..', 'http://', 'redis://', 'u:p@', ',', ')', '+', 'é', 'A.', 'co.', '-.', 'token=', 'Bearer ', 'sk-', 'cid=123'];
+  let seed = 20261116;
+  const next = (n: number): number => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed % n;
+  };
+  const ITERATIONS = 20_000;
+  for (let i = 0; i < ITERATIONS; i++) {
+    let input = '';
+    const length = 1 + next(i % 3 === 0 ? 40 : 14);
+    for (let j = 0; j < length; j++) input += pieces[next(pieces.length)];
+    assert.equal(redactSecrets(input, {}), oracleRedactSecrets(input), `redactSecrets divergiu para ${JSON.stringify(input)}`);
+    assert.equal(redactFreeText(input), oracleRedactFreeText(input), `redactFreeText divergiu para ${JSON.stringify(input)}`);
+  }
 });

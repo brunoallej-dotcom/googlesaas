@@ -14,14 +14,23 @@ const SENSITIVE_ENV_NAMES = [
 
 export const REDACTED = '[REDACTED]';
 
-const PATTERNS: readonly [RegExp, string][] = [
+type Replacement = string | ((match: string, ...groups: (string | undefined)[]) => string);
+
+/*
+ * Todas as expressões rodam em tempo linear (o texto de entrada pode ser hostil e longo). Nas duas que eram
+ * quadráticas (credencial em URL e JWT), cada posição de uma sequência longa recomeçava a varredura até o fim.
+ * Agora um 2º ramo, tentado só quando o 1º falha, PULA o trecho (o esquema inteiro; o resto do segmento sem
+ * ponto do JWT) e devolve o texto sem alteração: um início posterior no mesmo trecho compartilharia a mesma
+ * continuação e também falharia. Resultado idêntico ao das expressões antigas (comparação diferencial).
+ */
+const PATTERNS: readonly [RegExp, Replacement][] = [
   // Credenciais embutidas em URLs: redis://user:senha@host, https://user:pass@host
-  [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]*:[^\s/@]+@/gi, `$1${REDACTED}@`],
+  [/\b(?:([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]*:[^\s/@]+@|[a-z][a-z0-9+.-]*)/gi, (match, scheme) => (scheme === undefined ? match : `${scheme}${REDACTED}@`)],
   // Cabeçalhos e parâmetros comuns
   [/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, `$1 ${REDACTED}`],
   [/\b(api[-_]?key|apikey|x-api-key|token|access[-_]?token|refresh[-_]?token|password|passwd|senha|secret)(["']?\s*[:=]\s*["']?)[^\s"',;&]{3,}/gi, `$1$2${REDACTED}`],
   // JWTs (três segmentos base64url) e chaves no estilo sk-...
-  [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, REDACTED],
+  [/\beyJ(?:([A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b)|[A-Za-z0-9_-]*)/g, (match, jwtRest) => (jwtRest === undefined ? match : REDACTED)],
   [/\bsk-[A-Za-z0-9_-]{16,}\b/g, REDACTED],
 ];
 
@@ -49,7 +58,9 @@ export function redactSecrets(
 ): string {
   let out = text;
   for (const value of secretValues(env)) out = out.split(value).join(REDACTED);
-  for (const [pattern, replacement] of PATTERNS) out = out.replace(pattern, replacement);
+  for (const [pattern, replacement] of PATTERNS) {
+    out = typeof replacement === 'string' ? out.replace(pattern, replacement) : out.replace(pattern, replacement as (substring: string, ...args: unknown[]) => string);
+  }
   return out;
 }
 
