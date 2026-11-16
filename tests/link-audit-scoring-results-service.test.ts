@@ -61,6 +61,32 @@ test('PONTUADO: grava resultado e recibo, devolve a projeção pública definiti
   assert.deepEqual(got.value.run, run, 'consulta e finalização devolvem a MESMA projeção');
 });
 
+test('PONTUADO: pontos obtidos são número no avaliado e null em NOT_VERIFIED, na finalização e na consulta de detalhe; o registro selado não muda ("ausência nunca vira zero")', async () => {
+  const s = setup({ kind: 'PONTUADO' });
+  const r = await finalize(s);
+  assert.ok(r.ok, JSON.stringify(r));
+  const sealed = fs.readFileSync(path.join(s.e.base, RES_AUDIT, 's0001.json'), 'utf8');
+  const check = (run: Record<string, any>): void => {
+    const subs = run.result.subcriteria as Array<Record<string, any>>;
+    assert.ok(subs.some((item) => item.state === 'NOT_VERIFIED') && subs.some((item) => item.state === 'SCORED'), 'a fixture mistura avaliado e não verificado');
+    for (const item of subs) {
+      if (item.state === 'SCORED' || item.state === 'ABSENCE_PROVEN') assert.equal(typeof item.obtainedHalfPoints, 'number', item.id);
+      else assert.equal(item.obtainedHalfPoints, null, `${item.id} ${item.state}`);
+    }
+    for (const item of run.result.criteria as Array<Record<string, any>>) {
+      if (item.status === 'EVALUATED' || item.status === 'PARTIAL') assert.equal(typeof item.obtainedHalfPoints, 'number', item.id);
+      else assert.equal(item.obtainedHalfPoints, null, `${item.id} ${item.status}`);
+    }
+  };
+  check(r.value.run as Record<string, any>);
+  const got = await s.svc.get(OP_B, RES_AUDIT, 1);
+  assert.ok(got.ok);
+  check(got.value.run as Record<string, any>);
+  const listed = await s.svc.list(OP_B, RES_AUDIT);
+  assert.ok(listed.ok && !/obtainedHalfPoints/.test(JSON.stringify(listed.value.results)), 'a lista é resumo: não carrega pontos por subcritério');
+  assert.equal(fs.readFileSync(path.join(s.e.base, RES_AUDIT, 's0001.json'), 'utf8'), sealed, 'a projeção não toca o registro selado');
+});
+
 test('INCONCLUSIVO é um resultado válido e selável, sem índice nem pontos (index:null)', async () => {
   const s = setup({ kind: 'INCONCLUSIVO' });
   const r = await finalize(s);
