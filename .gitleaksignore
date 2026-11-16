@@ -1,0 +1,7 @@
+# Falsos positivos do gitleaks: uma linha por achado (impressão digital commit:arquivo:regra:linha).
+# Cada entrada precisa de justificativa e de revisão em PR (docs/how-to/ci-security-scans.md).
+
+# Chave fictícia no formato "sk-" (sequência alfabética, nunca foi credencial) num caso de teste de vazamento
+# no corte da saída saneada; o campo do caso casou com a regra genérica. Corrigido no commit seguinte (campo
+# renomeado); a entrada cobre só este commit antigo, sem reescrever o histórico.
+e259936c1d0789963ddde27d18ee2e6446fba230:tests/link-audit-redaction.test.ts:generic-api-key:300
