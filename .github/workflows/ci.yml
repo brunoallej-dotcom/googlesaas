@@ -112,5 +112,6 @@ jobs:
           "$RUNNER_TEMP/semgrep-venv/bin/semgrep" scan \
             --metrics=off \
             --config p/typescript --config p/javascript --config p/react --config p/nodejs \
+            --config p/github-actions \
             --exclude node_modules --exclude .next --exclude tests --exclude docs \
-            src scripts deploy
+            src scripts deploy .github
