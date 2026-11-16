@@ -18,8 +18,9 @@ jobs:
     name: typecheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: '22', cache: 'npm' }
       - name: Install
         run: npm ci
@@ -30,8 +31,9 @@ jobs:
     name: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: '22', cache: 'npm' }
       - name: Install
         run: npm ci
@@ -42,8 +44,9 @@ jobs:
     name: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: '22', cache: 'npm' }
       - name: Install
         run: npm ci
@@ -53,14 +56,61 @@ jobs:
   security:
     name: security
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
-      security-events: write
-      pull-requests: read
+      pull-requests: read  # gitleaks-action lista os commits do PR
     steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }  # gitleaks needs full history
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0  # gitleaks precisa do histórico completo
+          persist-credentials: false
       - name: Secret scan (gitleaks)
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # SCA: npm audit com lista de exceções versionada (ver docs/how-to/ci-security-scans.md).
+  # Bloqueia avisos high/critical que NÃO estejam em .github/security/npm-audit-exceptions.json.
+  sca:
+    name: sca (npm audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with: { node-version: '22' }
+      - name: npm audit (JSON)
+        # npm audit sai com código != 0 quando há avisos; quem decide é o gate abaixo.
+        run: npm audit --json > "$RUNNER_TEMP/npm-audit.json" || true
+      - name: Gate com exceções versionadas
+        run: node .github/scripts/npm-audit-gate.mjs "$RUNNER_TEMP/npm-audit.json"
+
+  # SAST: Semgrep OSS. INICIALMENTE NÃO BLOQUEANTE (continue-on-error): só relatório no log.
+  # Critério para tornar bloqueante: docs/how-to/ci-security-scans.md.
+  sast:
+    name: sast (semgrep, não bloqueante)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    permissions:
+      contents: read
+    env:
+      SEMGREP_VERSION: '1.185.0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - name: Instalar Semgrep (versão fixada)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/semgrep-venv"
+          "$RUNNER_TEMP/semgrep-venv/bin/pip" install --quiet "semgrep==${SEMGREP_VERSION}"
+      - name: Semgrep (relatório no log, sem falhar por achados)
+        run: |
+          "$RUNNER_TEMP/semgrep-venv/bin/semgrep" scan \
+            --metrics=off \
+            --config p/typescript --config p/javascript --config p/react --config p/nodejs \
+            --exclude node_modules --exclude .next --exclude tests --exclude docs \
+            src scripts deploy

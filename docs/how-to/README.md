@@ -15,6 +15,7 @@ solve a specific problem. They are recipes, not tutorials.
 ## Index
 
 - [`loops.md`](loops.md) — how to run Claude Code in loops (turn/goal/time/proactive)
+- [`ci-security-scans.md`](ci-security-scans.md) — como tratar achados dos scans de segurança do CI (gitleaks, SCA, SAST)
 
 [CUSTOMIZE] List guides as you add them, e.g.:
 
