@@ -372,7 +372,7 @@ export async function runLedgerAction(ctx: Ctx, action: 'ENROLL' | 'RECOVER'): P
   if (out.kind === 'ok') {
     ctx.dispatch({ type: 'NOTICE', notice: { tone: 'success', text: action === 'ENROLL' ? 'Auditoria inscrita no livro de cabeças.' : 'Recuperação do livro concluída (apenas o que era verificável).' } });
   } else {
-    ctx.dispatch({ type: 'NOTICE', notice: { tone: out.kind === 'failure' && out.code === 'ADMIN_APPROVAL_UNAVAILABLE' ? 'warning' : 'danger', text: describeFailure(out) } });
+    ctx.dispatch({ type: 'NOTICE', notice: { tone: out.kind === 'failure' && (out.code === 'ADMIN_APPROVAL_UNAVAILABLE' || out.code === 'PENDING_UNCONFIRMED') ? 'warning' : 'danger', text: describeFailure(out) } });
   }
   await Promise.all([loadSection(ctx, 'decisions'), loadSection(ctx, 'preview')]);
 }

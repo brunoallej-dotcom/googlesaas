@@ -179,7 +179,7 @@ test('R1c: o dono que adota o CONFIRMED de outro processo NÃO tem sucesso se o 
     get: (target, key) =>
       key === 'confirmed'
         ? async (input: Parameters<LedgerPort['confirmed']>[0]) => {
-            const other = await runChild(w, null, { task: 'recover', actor: 'bia@empresa.com' }); // outro processo conclui o MESMO CONFIRMED (disco saudável)
+            const other = await runChild(w, null, { task: 'recover', actor: 'ana@empresa.com' }); // outro processo do MESMO autor conclui o MESMO CONFIRMED (disco saudável; §16.16)
             assert.equal(other.line?.ok, true);
             armed = true;
             return target.confirmed(input);
