@@ -118,7 +118,7 @@ export interface LedgerView {
   /** Quantas entradas de decisão o livro confirma. */
   readonly confirmedDecisions: number;
   readonly openOperation: OpenOperation | null;
-  /** Há receita segura (idempotente, verificável) que um `RECOVER` ou a próxima escrita aplica. */
+  /** Há receita segura (idempotente, verificável) que um `RECOVER` ou a próxima escrita aplica (a fase C, só o AUTOR da entrada; §16.16). */
   readonly recoverable: boolean;
   /** Entrada sem recibo, mas já confirmada pelo livro: o recibo de MESMO conteúdo pode ser reemitido pelo autor. */
   readonly receiptReissuable: boolean;
@@ -148,6 +148,8 @@ export type LedgerFailureCode =
   | 'LEDGER_LEGACY_READ_ONLY'
   | 'LEDGER_NOT_CONFIGURED'
   | 'DECISIONS_HISTORY_UNRESOLVED'
+  /** Fase C (§16.16): quem não é o autor da entrada não conclui o `CONFIRMED`. */
+  | 'PENDING_UNCONFIRMED'
   | 'LEDGER_OPERATION_IN_PROGRESS'
   | 'LEDGER_UNAVAILABLE'
   | 'LEDGER_CAPACITY_EXHAUSTED'

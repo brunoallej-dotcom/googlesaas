@@ -51,7 +51,7 @@ test('TOCTOU construído: a testemunha entrega a leitura VELHA nas leituras inic
   const before = trees(w, e);
   const { provider, calls } = scripted(real, [stale, stale]); // leitura inicial do serviço + leitura do início da tentativa: velhas
   const service = decisionsOver(w, { ledger: ledgerFor(w, { guard: null }), knownHeads: provider });
-  const done = await service.ledgerAction(BIA, w.auditId, { action: 'RECOVER' }, clock());
+  const done = await service.ledgerAction(ANA, w.auditId, { action: 'RECOVER' }, clock()); // o AUTOR (§16.16): a recusa tem de vir da testemunha, não da autoria
   assert.ok(!done.ok, `com evidência velha o RECOVER não pode gravar: ${JSON.stringify(done).slice(0, 200)}`);
   assert.equal(done.ok ? '' : done.code, 'DECISIONS_HISTORY_UNRESOLVED');
   assert.ok(calls() >= 3, `a testemunha foi relida antes de gravar (chamadas: ${calls()})`);
@@ -73,7 +73,7 @@ test('evidência MUDANDO DURANTE o RECOVER (a 3ª leitura traz o resultado que c
     const head = (await must(decisionsOver(w, { ledger: ledgerFor(w, { guard: null }), knownHeads: NO_RESULTS }).list(BIA, w.auditId, clock()))).head;
     const result =
       action === 'recover'
-        ? await service.ledgerAction(BIA, w.auditId, { action: 'RECOVER' }, clock())
+        ? await service.ledgerAction(ANA, w.auditId, { action: 'RECOVER' }, clock()) // o AUTOR (§16.16)
         : action === 'create'
           ? await service.create(ANA, w.auditId, { record: rec.naFeature(), expectedHead: head }, clock)
           : await service.revoke(ANA, w.auditId, { revokes: 'op-0001', reason: 'Revogada porque o juízo estava errado e foi refeito pelo operador.', expectedHead: head }, clock);
@@ -93,7 +93,7 @@ test('mudança BENIGNA durante o RECOVER (a releitura traz mais evidência, mas 
   const real = witnessOver(w, e);
   const benign = scripted(real, ['real', 'real', { ok: true, heads: [], unverifiedHeads: [], hasResults: true, ledgerHeads: [], unverifiedLedgerHeads: [] } as Read]);
   const healthy = decisionsOver(w, { ledger: ledgerFor(w, { guard: null }), knownHeads: benign.provider });
-  const done = await healthy.ledgerAction(BIA, w.auditId, { action: 'RECOVER' }, clock());
+  const done = await healthy.ledgerAction(ANA, w.auditId, { action: 'RECOVER' }, clock()); // o AUTOR (§16.16)
   assert.ok(done.ok, `evidência nova e consistente não impede a recuperação: ${JSON.stringify(done).slice(0, 200)}`);
   assert.equal((await ledgerEvents(w)).at(-1), 'CONFIRMED');
 
@@ -104,7 +104,7 @@ test('mudança BENIGNA durante o RECOVER (a releitura traz mais evidência, mas 
   const broken = scripted(witnessOver(w2, e2), ['real', 'real', 'throw']);
   const blocked = decisionsOver(w2, { ledger: ledgerFor(w2, { guard: null }), knownHeads: broken.provider });
   const before = (await ledgerEvents(w2)).length;
-  assert.ok(!(await blocked.ledgerAction(BIA, w2.auditId, { action: 'RECOVER' }, clock())).ok);
+  assert.ok(!(await blocked.ledgerAction(ANA, w2.auditId, { action: 'RECOVER' }, clock())).ok); // o AUTOR (§16.16): a recusa tem de vir da releitura que falha
   assert.equal((await ledgerEvents(w2)).length, before, 'testemunha ilegível na hora de gravar ⇒ nada gravado');
 });
 

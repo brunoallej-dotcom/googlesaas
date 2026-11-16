@@ -40,8 +40,8 @@ test('R6-04: o dono entre o recibo e o CONFIRMED NÃO recebe erro falso quando O
   // espera o dono chegar ao ponto (entrada e recibo publicados, CONFIRMED pendente)
   for (let i = 0; i < 200 && !(paused && fs.existsSync(entryPath(w, 1)) && fs.existsSync(anchorPath(w, 1))); i += 1) await new Promise((resolve) => setTimeout(resolve, 25));
   assert.ok(paused && fs.existsSync(entryPath(w, 1)) && fs.existsSync(anchorPath(w, 1)), 'o dono parou entre o recibo e o CONFIRMED');
-  // OUTRO PROCESSO (bia) vê a fase C e conclui o CONFIRMED
-  const rescuer = await runChild(w, null, { task: 'recover', actor: 'bia@empresa.com' });
+  // OUTRO PROCESSO do MESMO autor (ana) vê a fase C e conclui o CONFIRMED (§16.16: outro AUTOR não concluiria mais)
+  const rescuer = await runChild(w, null, { task: 'recover', actor: 'ana@empresa.com' });
   assert.equal(rescuer.status, 0, rescuer.stderr.slice(0, 200));
   assert.equal(rescuer.line?.ok, true, JSON.stringify(rescuer.line));
   assert.deepEqual(await ledgerEvents(w), ['GENESIS', 'INTENT', 'CONFIRMED'], 'o outro processo já concluiu');
@@ -50,7 +50,7 @@ test('R6-04: o dono entre o recibo e o CONFIRMED NÃO recebe erro falso quando O
   assert.ok(result.ok, `o dono recebe SUCESSO (a operação está confirmada): ${JSON.stringify(result).slice(0, 220)}`);
   assert.deepEqual(await ledgerEvents(w), ['GENESIS', 'INTENT', 'CONFIRMED'], 'nenhum registro duplicado');
   const records = await ledgerRecords(w);
-  assert.equal(records[2]?.actor, 'bia@empresa.com', 'LIMITE declarado: o CONFIRMED leva o actor de QUEM o gravou; a autoria da decisão está em `op.author`');
+  assert.equal(records[2]?.actor, 'ana@empresa.com', '§16.16: o CONFIRMED da fase C é sempre gravado pelo próprio autor (o actor coincide com `op.author`)');
   assert.equal(records[2]?.op?.author, 'ana@empresa.com');
   const view = await must(w.rawProtected.list(BIA, w.auditId));
   assert.deepEqual([view.ledger.state, view.decisions.length, view.finalizable], ['PROTECTED', 1, true]);

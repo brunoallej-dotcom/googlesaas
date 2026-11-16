@@ -251,7 +251,7 @@ const LEDGER_REASON: Readonly<Record<string, string>> = {
   UNLEDGERED_ENTRY: 'há decisão confirmada que o livro nunca registrou',
   UNLEDGERED_PENDING: 'há decisão pendente que o livro nunca registrou (não foi gravada por este sistema)',
   PUBLISHED_AFTER_ABORT: 'uma decisão foi publicada depois de a operação ter sido abortada no livro',
-  LEDGER_BEHIND: 'o livro ficou um registro atrás de uma decisão confirmada (queda entre o recibo e o livro); a recuperação é verificável',
+  LEDGER_BEHIND: 'o livro ficou um registro atrás de uma decisão confirmada (queda entre o recibo e o livro); a recuperação é verificável e só o autor da decisão a conclui',
   BEHIND_UNVERIFIABLE: 'o livro está atrasado e a origem da decisão não pode ser comprovada',
   RESULT_LEDGER_MISMATCH: 'um resultado selado cita uma posição do livro que não confere',
   RESULTS_EVIDENCE_UNAVAILABLE: 'os resultados (testemunha independente do livro) não puderam ser lidos',
@@ -268,7 +268,7 @@ const GUARD_TEXT: Readonly<Record<string, string>> = {
 const PHASE_TEXT: Readonly<Record<'A' | 'B' | 'C', string>> = {
   A: 'uma gravação começou e a decisão ainda não foi publicada',
   B: 'a decisão foi publicada e ainda falta o recibo (ela ainda não vale)',
-  C: 'a decisão e o recibo existem, mas o livro ainda não registrou a confirmação',
+  C: 'a decisão e o recibo existem, mas o livro ainda não registrou a confirmação (só o autor da decisão a conclui)',
 };
 
 /**

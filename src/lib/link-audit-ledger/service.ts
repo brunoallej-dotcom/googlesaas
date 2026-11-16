@@ -83,6 +83,9 @@ const MESSAGES: Partial<Record<LedgerReason, string>> = {
   GUARD_UNAVAILABLE: 'A guarda externa não pôde ser consultada.',
 };
 
+/** Texto fixo da recusa da fase C a quem não é o autor (sem identidade de terceiros; §16.16). */
+const PHASE_C_NOT_AUTHOR_MESSAGE = 'A decisão já tem entrada e recibo, mas o livro ainda não a confirmou; somente o autor dela, reenviando o mesmo pedido, a conclui. Nada foi gravado.';
+
 export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
   // Q3: o livro só aceita a chave EXCLUSIVA dele; uma chave de origem (decisões/resultados) nunca autentica o livro.
   if (options.authenticator.purpose !== 'ledger') throw new Error('o livro exige a chave exclusiva do livro (finalidade ledger)');
@@ -303,6 +306,9 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
         const plan = evaluation.plan;
         if (plan.kind === 'REISSUE_RECEIPT') return { kind: 'OK', pendingKind: 'RECEIPT_REMOVED' }; // só o reenvio do AUTOR passa pela 6B
         if (plan.kind !== 'COMPLETE_CONFIRMED') return refusedForState(view);
+        // Spec §16.16 (16/11/2026): a fase C só é concluída pelo AUTOR da entrada (os recibos não são autenticados: recibo forjado por quem escreve só na pasta de recibos
+        // não pode promover a pendente de outro operador). Escrita ou RECOVER de quem não é o autor: recusa, nada gravado; a pendente segue bloqueando (como na fase B).
+        if (actor !== plan.entry.author) return refused('PENDING_UNCONFIRMED', view, null, [PHASE_C_NOT_AUTHOR_MESSAGE]);
         // Fase C: o livro ficou um registro atrás (queda entre o recibo e o CONFIRMED). Conclui-se SOMENTE o verificável: origem comprovada (no modelo), testemunhas
         // frescas (resultados e decisões) e entrada + recibo comprovadamente DURÁVEIS (R7-04) antes de o CONFIRMED existir.
         const blocked = witnessBlock();
