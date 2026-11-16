@@ -76,6 +76,8 @@ No disco, a última entrada com etiqueta válida e sem recibo é **a mesma coisa
 **Proteção adicional para produção (não implementada):** guarda externa do `head` (`seq`+`sha256`) por auditoria, fora dos volumes; alerta quando um `head` conhecido some; ou a intenção durável (alternativa B do ADR 6C-02).
 
 ### 6.2 Escrita só na pasta de recibos
+**Mitigado para DECISÕES em 16/11/2026 (spec do livro §16.16):** o recibo forjado de uma pendente legítima de decisão só a leva à fase C, e a fase C só é concluída pelo AUTOR (escrita ou `RECOVER` de outro operador ⇒ `PENDING_UNCONFIRMED`, nada gravado). O parágrafo abaixo permanece válido para os **resultados** (6C), fora da emenda.
+
 Pode remover o último recibo (§6.1) ou **criar o recibo de uma pendente legítima** sem ação do operador — e, com isso, **pular as reconferências da conclusão** (evidência ainda com os mesmos hashes, histórico, coleta autêntica): o servidor recusaria (`EVIDENCE_HASH_CHANGED`) a mesma conclusão, e o recibo plantado a confirma (o resultado aparece como `stale`). Não forja conteúdo. Autenticar os recibos acoplaria toda leitura à chave: **não adotado**.
 
 ### 6.3 Escrita nas **duas** pastas (dados + recibos)

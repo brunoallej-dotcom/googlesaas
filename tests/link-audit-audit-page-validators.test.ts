@@ -99,7 +99,15 @@ test('prévia pontuada: exige índice com duas casas; PONTUADO sem índice ou se
     ['decimal2 fora do formato', (v) => void (any(v).result.index = { decimal2: '71,5' })],
     ['PONTUADO sem nível', (v) => void (any(v).outcomePreview.level = null)],
     ['nível desconhecido', (v) => void (any(v).outcomePreview.level = 'OURO')],
+    ['NOT_VERIFIED com número em vez de null (ausência nunca vira zero)', (v) => void (any(v).criteria[0].subcriteria[1].obtainedHalfPoints = 0)],
+    ['critério não avaliado com número', (v) => void (any(v).criteria[1].obtainedHalfPoints = 0)],
+    ['subcritério avaliado com null', (v) => void (any(v).criteria[0].subcriteria[0].obtainedHalfPoints = null)],
   ]);
+  const scored = scoredPreview();
+  const notVerified = scored.criteria[0]?.subcriteria[1];
+  assert.equal(notVerified?.state, 'NOT_VERIFIED');
+  assert.equal(notVerified?.obtainedHalfPoints, null);
+  assert.ok(isPreviewPayload(clone(scored), AUDIT), 'null em NOT_VERIFIED e número no avaliado são aceitos');
 });
 
 test('decisões: forma de cada item, status, pendente e coerência (pendente ⇒ não finalizável; "vigentes" só ativas)', () => {

@@ -40,7 +40,7 @@ export function previewFixture(over: Partial<PreviewPayload> = {}): PreviewPaylo
         ],
       },
       {
-        id: 'CATEGORIES', label: 'Categorias', maxPoints: 10, status: 'NOT_EVALUATED', evaluatedHalfPoints: 0,
+        id: 'CATEGORIES', label: 'Categorias', maxPoints: 10, status: 'NOT_VERIFIED', evaluatedHalfPoints: 0,
         subcriteria: [
           { id: 'C2', label: 'Compatibilidade da categoria principal', maxHalfPoints: 8, source: 'DECISAO_HUMANA', sourceReason: 'AWAITING_OPERATOR_DECISION', state: 'NOT_VERIFIED', stateReason: null, tier: null, evaluatedHalfPoints: 0, decisionIds: [], evidenceRefs: [], potential: { family: 'AWAITING_OPERATOR_DECISION', halfPoints: 8 } },
         ],
@@ -65,7 +65,8 @@ export function scoredPreview(): PreviewPayload {
     ...base,
     outcomePreview: { outcome: 'PONTUADO', level: 'PROVISORIO', reasonCode: null, failedGates: [], coveragePercent: 62, minimumCoveragePercent: 40 },
     result: { ...(base.result ?? {}), index: { shown: 72, decimal2: '71.50', classificationLabel: 'Em desenvolvimento' }, confidence: { level: 'MEDIUM', levelLabel: 'Média' }, publication: { status: 'PROVISIONAL', gates: [{ id: 'COVERAGE_MIN', passed: true, text: 'Cobertura global de 62% (mínimo de 40%).' }] } },
-    criteria: base.criteria.map((criterion) => ({ ...criterion, obtainedHalfPoints: 10, subcriteria: criterion.subcriteria.map((sub) => ({ ...sub, obtainedHalfPoints: 4 })) })),
+    // contrato "ausência nunca vira zero": número só no avaliado, null no não avaliado
+    criteria: base.criteria.map((criterion) => ({ ...criterion, obtainedHalfPoints: criterion.status === 'PARTIAL' || criterion.status === 'EVALUATED' ? 10 : null, subcriteria: criterion.subcriteria.map((sub) => ({ ...sub, obtainedHalfPoints: sub.state === 'SCORED' || sub.state === 'ABSENCE_PROVEN' ? 4 : null })) })),
   };
 }
 

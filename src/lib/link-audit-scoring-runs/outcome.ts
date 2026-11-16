@@ -1,4 +1,4 @@
-import type { ScoreResult } from '../link-audit/scoring/types';
+import type { CriterionResult, ScoreResult, SubcriterionResult } from '../link-audit/scoring/types';
 
 /*
  * Desfecho e projeção PÚBLICA da prévia (spec §12.1 e §12.2). PURO. O desfecho é DERIVADO do resultado do motor (nunca do cliente):
@@ -31,6 +31,16 @@ export function deriveOutcome(result: ScoreResult): OutcomePreview {
   return { outcome: 'INCONCLUSIVO', level: null, reasonCode, ...base };
 }
 
+/**
+ * "Ausência nunca vira zero" (spec 6C §19.2 item 4). Em PONTUADO os pontos obtidos só existem (número) para o que o motor AVALIOU:
+ * subcritério SCORED ou ABSENCE_PROVEN (o zero comprovado é avaliado) e critério EVALUATED ou PARTIAL. NOT_VERIFIED, NOT_APPLICABLE e
+ * SAMPLE_INSUFFICIENT estão fora do avaliado: o campo vai `null` (o motor grava 0 só como preenchimento interno). `null` e não omissão,
+ * porque em PONTUADO o campo sempre existe e `null` é a convenção dos demais campos sem valor do DTO; em INCONCLUSIVO o campo inteiro
+ * é omitido (nada que pareça nota), o que é outra semântica.
+ */
+export const obtainedPointsOfSubcriterion = (sub: Pick<SubcriterionResult, 'state' | 'obtainedHalfPoints'>): number | null => (sub.state === 'SCORED' || sub.state === 'ABSENCE_PROVEN' ? sub.obtainedHalfPoints : null);
+export const obtainedPointsOfCriterion = (item: Pick<CriterionResult, 'status' | 'obtainedHalfPoints'>): number | null => (item.status === 'EVALUATED' || item.status === 'PARTIAL' ? item.obtainedHalfPoints : null);
+
 /** O motor escreve "(X de Y pontos)" no texto de cada subcritério pontuado: é a razão obtido ÷ avaliado, proibida em INCONCLUSIVO. */
 const POINTS_IN_TEXT = /\s*\(\d+(?:[.,]\d+)? de \d+(?:[.,]\d+)? pontos?\)/g;
 const NOT_APPLICABLE_TEXT = (code: string): string => `Não aplicável (${code}): fora do denominador.`;
@@ -51,7 +61,7 @@ export function toPublicView(result: ScoreResult, outcome: OutcomePreview): Reco
     criterionId: sub.criterionId,
     maxHalfPoints: sub.maxHalfPoints,
     state: sub.state,
-    ...(showPoints ? { obtainedHalfPoints: sub.obtainedHalfPoints } : {}),
+    ...(showPoints ? { obtainedHalfPoints: obtainedPointsOfSubcriterion(sub) } : {}),
     evaluatedHalfPoints: sub.evaluatedHalfPoints,
     tier: sub.tier,
     reasonCode: sub.reasonCode,
@@ -67,7 +77,7 @@ export function toPublicView(result: ScoreResult, outcome: OutcomePreview): Reco
     label: item.label,
     weight: item.weight,
     status: item.status,
-    ...(showPoints ? { obtainedHalfPoints: item.obtainedHalfPoints } : {}),
+    ...(showPoints ? { obtainedHalfPoints: obtainedPointsOfCriterion(item) } : {}),
     evaluatedHalfPoints: item.evaluatedHalfPoints,
     notApplicableHalfPoints: item.notApplicableHalfPoints,
     sampleInsufficientHalfPoints: item.sampleInsufficientHalfPoints,
