@@ -9,7 +9,7 @@ import { assembleScoringInput } from './assemble';
 import { verifyAuditIdAlias, type AuditIdAlias } from './audit-id-alias';
 import { attributeFailure, fromMapper, previewBlocker, sortPreviewBlockers, type PreviewBlocker } from './blockers';
 import { classifyOperatorRecord, CRITERIA_SOURCES, decisionTargets } from './criteria-sources';
-import { deriveOutcome, toPublicView, type OutcomePreview } from './outcome';
+import { deriveOutcome, obtainedPointsOfCriterion, obtainedPointsOfSubcriterion, toPublicView, type OutcomePreview } from './outcome';
 import type { AssembleResult, CriterionSourceView } from './types';
 
 /*
@@ -112,8 +112,8 @@ export interface PreviewSubcriterion {
   readonly stateReason: string | null;
   readonly tier: string | null;
   readonly evaluatedHalfPoints: number | null;
-  /** Ausente em registros INCONCLUSIVOS (nada que pareça nota). */
-  readonly obtainedHalfPoints?: number;
+  /** Ausente em registros INCONCLUSIVOS (nada que pareça nota); `null` quando o subcritério não foi avaliado (nunca 0 para ausência). */
+  readonly obtainedHalfPoints?: number | null;
   readonly decisionIds: readonly string[];
   readonly evidenceRefs: readonly string[];
   readonly potential: { readonly family: string | null; readonly halfPoints: number };
@@ -124,7 +124,7 @@ export interface PreviewCriterion {
   readonly maxPoints: number;
   readonly status: string | null;
   readonly evaluatedHalfPoints: number | null;
-  readonly obtainedHalfPoints?: number;
+  readonly obtainedHalfPoints?: number | null;
   readonly subcriteria: readonly PreviewSubcriterion[];
 }
 
@@ -497,7 +497,8 @@ function potentialOf(row: CriterionSourceView, state: string | null): { family: 
   return { family: null, halfPoints: 0 };
 }
 
-function buildCriteria(view: readonly CriterionSourceView[], result: ScoreResult | null, outcome: OutcomePreview | null): PreviewCriterion[] {
+/** @internal exportada só para teste. */
+export function buildCriteria(view: readonly CriterionSourceView[], result: ScoreResult | null, outcome: OutcomePreview | null): PreviewCriterion[] {
   const showPoints = outcome?.outcome === 'PONTUADO';
   const labels = new Map(SUBCRITERIA.map((def) => [def.id as string, def.label]));
   return CRITERIA.map((criterion) => {
@@ -516,7 +517,7 @@ function buildCriteria(view: readonly CriterionSourceView[], result: ScoreResult
           stateReason: engine?.reasonCode ?? null,
           tier: engine && engine.state === 'SCORED' ? engine.tier : null,
           evaluatedHalfPoints: engine?.evaluatedHalfPoints ?? null,
-          ...(showPoints && engine ? { obtainedHalfPoints: engine.obtainedHalfPoints } : {}),
+          ...(showPoints && engine ? { obtainedHalfPoints: obtainedPointsOfSubcriterion(engine) } : {}),
           decisionIds: row.decisionIds,
           evidenceRefs: row.evidenceRefs,
           potential: potentialOf(row, engine?.state ?? null),
@@ -528,7 +529,7 @@ function buildCriteria(view: readonly CriterionSourceView[], result: ScoreResult
       maxPoints: criterion.maxWeight,
       status: engineCriterion?.status ?? null,
       evaluatedHalfPoints: engineCriterion?.evaluatedHalfPoints ?? null,
-      ...(showPoints && engineCriterion ? { obtainedHalfPoints: engineCriterion.obtainedHalfPoints } : {}),
+      ...(showPoints && engineCriterion ? { obtainedHalfPoints: obtainedPointsOfCriterion(engineCriterion) } : {}),
       subcriteria,
     };
   });

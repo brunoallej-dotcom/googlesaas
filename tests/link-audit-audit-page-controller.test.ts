@@ -672,8 +672,11 @@ test('livro: inscrever/recuperar chamam a API certa, recarregam decisões e pré
   api.ledgerQueue = [fail('ADMIN_APPROVAL_UNAVAILABLE', 403)];
   await flow.runLedgerAction(h.ctx, 'ENROLL');
   assert.equal(h.state().notice?.tone, 'warning', 'recusa administrativa é aviso');
+  api.ledgerQueue = [fail('PENDING_UNCONFIRMED', 409)];
+  await flow.runLedgerAction(h.ctx, 'RECOVER');
+  assert.equal(h.state().notice?.tone, 'warning', 'recusa por não ser o autor (fase C, §16.16) é aviso, não erro');
   api.ledgerQueue = [fail('LEDGER_UNAVAILABLE', 503)];
   await flow.runLedgerAction(h.ctx, 'RECOVER');
   assert.equal(h.state().notice?.tone, 'danger');
-  assert.deepEqual(api.calls.filter((call) => call.name === 'ledger').map((call) => call.args), [['ENROLL'], ['ENROLL'], ['RECOVER']]);
+  assert.deepEqual(api.calls.filter((call) => call.name === 'ledger').map((call) => call.args), [['ENROLL'], ['ENROLL'], ['RECOVER'], ['RECOVER']]);
 });
