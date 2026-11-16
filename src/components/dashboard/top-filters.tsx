@@ -19,7 +19,7 @@ interface TopFiltersProps {
 
 const LABEL_CLASS = 'mb-1.5 block text-xs font-medium text-gmn-muted';
 const INPUT_CLASS =
-  'h-11 w-full rounded-lg border border-white/[0.08] bg-gmn-tile text-sm text-gmn-text transition-colors placeholder:text-gmn-muted/60 hover:border-white/15 focus:border-gmn-accent/60 focus:outline-none focus:ring-2 focus:ring-gmn-accent/40';
+  'h-11 w-full rounded-lg border border-white/[0.08] bg-gmn-tile text-sm text-gmn-text transition-colors placeholder:text-gmn-muted/80 hover:border-white/15 focus:border-gmn-accent focus:outline-none focus:ring-2 focus:ring-gmn-accent/40';
 const ICON_CLASS =
   'pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gmn-muted';
 
@@ -99,7 +99,7 @@ export function TopFilters({
         <button
           type="submit"
           disabled={isProspecting}
-          className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-gmn-primary px-5 text-sm font-semibold text-white shadow-lg shadow-gmn-primary/25 transition hover:bg-gmn-accent active:scale-[.99] disabled:cursor-not-allowed disabled:opacity-60 sm:col-span-2 lg:col-span-1"
+          className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-gmn-primary-strong px-5 text-sm font-semibold text-white shadow-lg shadow-gmn-primary/25 transition hover:bg-gmn-primary-strong-hover active:scale-[.99] disabled:cursor-not-allowed disabled:opacity-60 sm:col-span-2 lg:col-span-1"
         >
           {isProspecting ? (
             <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
@@ -120,7 +120,7 @@ export function TopFilters({
             value={activeCampaignId ?? ''}
             disabled={loadingCampaignId !== null}
             onChange={(e) => e.target.value && onOpenSavedCampaign(e.target.value)}
-            className="h-10 min-w-0 flex-1 rounded-lg border border-white/[0.08] bg-gmn-tile px-3 text-sm text-gmn-text focus:border-gmn-accent/60 focus:outline-none focus:ring-2 focus:ring-gmn-accent/40 disabled:opacity-60"
+            className="h-10 min-w-0 flex-1 rounded-lg border border-white/[0.08] bg-gmn-tile px-3 text-sm text-gmn-text focus:border-gmn-accent focus:outline-none focus:ring-2 focus:ring-gmn-accent/40 disabled:opacity-60"
           >
             <option value="">Abrir uma campanha salva (sem custo)…</option>
             {savedCampaigns.map((c) => (

@@ -3,6 +3,8 @@
 > **Parecer: HOMOLOGAÇÃO FUNCIONAL APROVADA — REVISÃO ADVERSARIAL DE SEGURANÇA PENDENTE.**
 > **Estado formal da Onda 6C: NÃO ENCERRADA.** O responsável aprovou os testes executados, mas **não autorizou** declarar a Onda encerrada enquanto a revisão adversarial **independente** de segurança e integridade não for concluída. Essa revisão **não** pode ser substituída por autoavaliação, e **nenhum resultado dela é registrado aqui** (nem APROVADO, nem reprovado): ela não foi executada até o fim.
 
+> **Atualização 07/11/2026:** o commit de checkpoint desta homologação existe (`bd7c4fb`, `test(link-audit): add 6C end-to-end acceptance evidence`) e a 6C foi mergeada na `main` (PR #2, `24c19e9`). As revisões adversariais independentes posteriores estão registradas em `docs/phase6-auditoria-link/onda6c-revisao-adversarial-*.md` e resumidas em `NOTES.md`; a pendência de revisão descrita neste relatório é histórica. **A Onda 6C continua NÃO encerrada.**
+
 HEAD homologado: **`dab23bc`** (`feat(link-audit): integrate Lumos audit navigation`), sobre `7223fbc`. Ambiente 100% isolado (sem rede, sem `.env*`, sem Redis/Supabase/Serper, dados fictícios, sessão com segredo aleatório por execução). Este relatório e o roteiro `i7-homologacao.cjs` são registrados no commit `test(link-audit): add 6C end-to-end acceptance evidence` (checkpoint; autorizado pelo responsável). D5 e Onda 7 não foram tocadas; `scoring/` idêntico à `v1.0.1`; régua D3B intacta.
 
 ## Portões de qualidade

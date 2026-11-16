@@ -14,11 +14,16 @@ const gmn = {
   line: '#1C2A40',
   primary: '#247BFF',
   accent: '#36A3FF',
+  // Botões com texto branco: o primário puro (#247BFF) dá 3,92:1 com branco; este dá 5,18:1 (hover 5,86:1). O primário da marca não muda.
+  'primary-strong': '#1D68DB',
+  'primary-strong-hover': '#1A5FCF',
   text: '#F3F7FF',
   muted: '#91A3BF',
   success: '#22C55E',
   warning: '#F5B800',
   danger: '#EF4444',
+  // Botão com texto branco sobre vermelho: o danger puro (#EF4444) dá 3,76:1 com branco; este dá 4,83:1. O danger da marca não muda.
+  'danger-strong': '#DC2626',
 } as const;
 
 const config: Config = {

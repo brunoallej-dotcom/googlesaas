@@ -255,7 +255,7 @@ Princípio: o que não depende da régua nem de rede avança primeiro. Índice, 
 **Decisões do operador**
 - **D1 — APROVADA:** o documento mestre é a especificação reconstruída da metodologia, versão 1 (`lumos-reconstruida-v1`). Não se afirma reprodução integral do agente original (instruções e ferramentas antigas não recuperadas).
 - **D2 — APROVADA PARCIALMENTE:** adotadas as fórmulas do manual (cobertura = possíveis avaliados ÷ 100 × 100; índice = obtidos ÷ possíveis avaliados × 100); critério sem evidência suficiente fica “Não verificado”, com o peso excluído da base, e não vale zero; exemplos antigos que não fecham não são referência matemática; “Não encontrado” é observação de coleta, permitida só com fonte adequada consultada e ausência documentada, sem pontuação automática.
-- **D3 — PENDENTE:** arredondamento, avaliação parcial, classificação (incluindo 40–59), confiança e base zero; régua de pontos por critério. **Nada disso foi implementado.**
+- **D3 — PENDENTE:** arredondamento, avaliação parcial, classificação (incluindo 40–59), confiança e base zero; régua de pontos por critério. **Nada disso foi implementado.** *(Atualização 07/11/2026: D3 resolvida — régua `regua-d3b-r2` homologada e autorizada em 22/10/2026, D3B-17, e implementada na Onda 6A; ver §23 e `D3B-REGUA-LUMOS-V1-REVISADA.md` §11. O texto acima é o registro histórico de 19/10/2026.)*
 - D4 (padrão visual) e D5 (coleta e IA) seguem pendentes.
 
 **Onda 1 — implementada, offline**

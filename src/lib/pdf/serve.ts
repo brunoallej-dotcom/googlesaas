@@ -1,11 +1,56 @@
+import { constants as fsConstants } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { StructuredLogger } from '@/lib/logger';
 import type { DiagrammerOutput } from '@/types/gmn';
 import { defaultPdfDirectory } from './persist';
 
 export type PdfDownload =
   | { readonly status: 200; readonly body: Buffer<ArrayBuffer>; readonly headers: Record<string, string> }
   | { readonly status: 404; readonly error: string };
+
+/** Teto de tamanho de um PDF servido (os PDFs reais têm centenas de KB). */
+export const MAX_PDF_BYTES = 64 * 1024 * 1024;
+
+export type PdfReadRejectionCode = 'PDF_NOT_REGULAR_FILE' | 'PDF_TOO_LARGE' | 'PDF_SHORT_READ';
+
+/** Arquivo recusado: não é arquivo regular (FIFO, dispositivo, diretório), excede o teto ou mudou de tamanho durante a leitura. */
+export class PdfReadRejectedError extends Error {
+  constructor(readonly code: PdfReadRejectionCode) {
+    super(code);
+    this.name = 'PdfReadRejectedError';
+  }
+}
+
+/**
+ * Lê um PDF SOMENTE se for arquivo regular. `fs.readFile` direto abre FIFOs sem `O_NONBLOCK`: um FIFO
+ * colocado numa pasta de PDFs bloquearia uma thread do pool a cada requisição até esgotar o servidor.
+ * Aqui o arquivo é aberto sem bloquear e sem seguir link simbólico final (`O_NONBLOCK`, `O_NOFOLLOW`),
+ * o tipo e o tamanho são conferidos no descritor já aberto (sem corrida entre checar e abrir) e só então lido.
+ */
+export async function readRegularPdf(file: string, maxBytes: number = MAX_PDF_BYTES): Promise<Buffer<ArrayBuffer>> {
+  const flags = fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0) | (fsConstants.O_NOFOLLOW ?? 0);
+  const handle = await fs.open(file, flags);
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) throw new PdfReadRejectedError('PDF_NOT_REGULAR_FILE');
+    if (info.size > maxBytes) throw new PdfReadRejectedError('PDF_TOO_LARGE');
+    // Leitura limitada ao tamanho conferido no descritor: a memória nunca passa de `maxBytes`, mesmo que o
+    // arquivo cresça depois do `stat` (ou seja um pseudo-arquivo que informa tamanho 0).
+    const body = Buffer.alloc(info.size);
+    let offset = 0;
+    while (offset < info.size) {
+      const { bytesRead } = await handle.read(body, offset, info.size - offset, offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    // Arquivo que encolheu durante a leitura: recusa em vez de servir um PDF truncado como 200.
+    if (offset !== info.size) throw new PdfReadRejectedError('PDF_SHORT_READ');
+    return body;
+  } finally {
+    await handle.close();
+  }
+}
 
 /**
  * Pastas das quais o servidor aceita ler PDFs: a pasta privada atual, `GMN_PDF_OUTPUT_DIR` e
@@ -50,13 +95,19 @@ export function safeDownloadName(name: string | undefined): string {
   return cleaned.toLowerCase().endsWith('.pdf') && cleaned.length > 4 ? cleaned : 'auditoria-gmn.pdf';
 }
 
+/** Código de log de uma recusa deliberada (arquivo especial, grande, truncado ou symlink final); `undefined` para erros comuns (inexistente etc.). */
+function rejectionCodeOf(error: unknown): PdfReadRejectionCode | 'PDF_SYMLINK_REFUSED' | undefined {
+  if (error instanceof PdfReadRejectedError) return error.code;
+  return (error as NodeJS.ErrnoException | null)?.code === 'ELOOP' ? 'PDF_SYMLINK_REFUSED' : undefined;
+}
+
 /**
  * Resolve o download do PDF de uma auditoria. 404 se o PDF não foi finalizado, se o caminho gravado
  * está fora das pastas permitidas ou se o arquivo não existe (o chamador pode então regenerar).
  */
 export async function resolvePdfDownload(
   diagrammer: DiagrammerOutput | undefined,
-  readFile: (path: string) => Promise<Buffer<ArrayBuffer>> = fs.readFile,
+  readFile: (path: string) => Promise<Buffer<ArrayBuffer>> = readRegularPdf,
   roots: readonly string[] = allowedPdfRoots()
 ): Promise<PdfDownload> {
   if (!diagrammer?.pdfStoragePath) {
@@ -67,7 +118,15 @@ export async function resolvePdfDownload(
     let body: Buffer<ArrayBuffer>;
     try {
       body = await readFile(candidate);
-    } catch {
+    } catch (error) {
+      const rejection = rejectionCodeOf(error);
+      if (rejection) {
+        // Sem o caminho no log (pode conter nome de empresa); só o motivo e a auditoria.
+        new StructuredLogger('DIAGRAMMER', diagrammer.auditId).warn('Download de PDF recusado antes da leitura', {
+          stage: 'pdf-download',
+          errorCode: rejection,
+        });
+      }
       continue;
     }
     return {

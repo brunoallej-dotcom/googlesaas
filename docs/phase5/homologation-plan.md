@@ -13,7 +13,7 @@ Provar, uma vez, com dados reais, que: o Worker processa uma auditoria completa;
 | `npm run validate:recovery` sem falhas | **OK** (32/32) |
 | `npm run db:check` sem problemas | **OK** |
 | Backup local dos PDFs históricos | **OK** (`.data/backups/…`); cópia externa **recomendada** |
-| G1 (bucket privado) | PENDENTE (recomendado antes, para o PDF novo já ter cópia durável) |
+| G1 (bucket privado) | PENDENTE (recomendado antes, para o PDF novo já ter cópia durável) — **Atualização 07/11/2026: G1–G4 FEITOS** (`release-checklist.md`); G5 e G6 seguem pendentes |
 | Redis (Upstash) acessível | OK na última verificação (`/api/system/health`) |
 | `npm run worker:prod` disponível | OK |
 

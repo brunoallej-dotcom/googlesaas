@@ -94,19 +94,80 @@ test('operadores DIFERENTES no mesmo estado: um só resultado; quem chegou na ja
   assert.ok(retry.every((o) => o.ok && o.replayed === true && o.seq === 1), JSON.stringify(retry));
 });
 
-test('processos com visão ANTIGA do mundo são recusados (nada gravado por eles); os atuais produzem um único resultado', async () => {
+/*
+ * VISÃO ANTIGA DO MUNDO: quem enviou o pedido com uma prévia desatualizada NUNCA finaliza. Os três testes seguintes usam o mesmo mundo (S2).
+ * Os DOIS primeiros fixam a ORDEM por sincronização explícita (cada fase só começa quando a anterior terminou), então os códigos são EXATOS e
+ * não dependem de temporização. O terceiro é a corrida real e confere só o que o protocolo garante em qualquer intercalação: um processo
+ * de outro operador que chega entre a gravação do resultado e o recibo do dono recebe o 409 TRANSITÓRIO `RESULT_PENDING_UNCONFIRMED`
+ * (a pendente vem antes da conferência da visão; comportamento documentado no teste dos operadores diferentes e no da queda real).
+ */
+const STALE_BY_HEAD: ChildSpec = { actor: OP_A, world: S2, seen: S1 }; // viu a prévia antiga (outra cabeça de decisões)
+const STALE_BY_INPUT: ChildSpec = { actor: OP_A, world: S2, seen: { ...S2, evidenceSalt: 'captura-trocada' } }; // viu outra captura (mesmo número e data)
+const STALE_OWNER: ChildSpec = { actor: OP_B, world: S2, seen: S1 }; // até o autor do resultado vigente, com a visão velha, não regrava
+const CURRENT_OWNER: ChildSpec = { actor: OP_B, world: S2, seen: S2 };
+const codesOf = (outcomes: readonly Outcome[]): Array<string | undefined> => outcomes.map((o) => (o.ok ? 'OK' : o.code));
+
+test('visão ANTIGA ANTES de qualquer resultado (ordem fixada): cada processo recebe o código exato da sua defasagem e nada é gravado', async () => {
   const e = resultsEnv();
-  const outcomes = await race(e, [
-    { actor: OP_A, world: S2, seen: S1 }, // viu a prévia antiga
-    { actor: OP_B, world: S2, seen: S2 },
-    { actor: OP_A, world: S2, seen: S1 },
-    { actor: OP_B, world: S2, seen: S2 },
-    { actor: OP_A, world: S2, seen: { ...S2, evidenceSalt: 'captura-trocada' } }, // viu outra captura (mesmo número e data)
-  ]);
-  assert.deepEqual(outcomes.map((o) => (o.ok ? 'OK' : o.code)), ['HEAD_MISMATCH', 'OK', 'HEAD_MISMATCH', 'OK', 'INPUT_CHANGED'], JSON.stringify(outcomes));
-  assert.equal(outcomes.filter((o) => o.ok && o.replayed === false).length, 1);
+  const before = [hashTree(e.base), hashTree(e.anchors)];
+  const outcomes = await race(e, [STALE_BY_HEAD, STALE_BY_INPUT, STALE_BY_HEAD, STALE_OWNER]);
+  assert.ok(outcomes.every((o) => o.signal === null), JSON.stringify(outcomes));
+  assert.deepEqual(codesOf(outcomes), ['HEAD_MISMATCH', 'INPUT_CHANGED', 'HEAD_MISMATCH', 'HEAD_MISMATCH'], JSON.stringify(outcomes));
+  assert.deepEqual([hashTree(e.base), hashTree(e.anchors)], before, 'nenhum byte foi gravado');
   const s = await state(e);
-  assert.ok(s.runs.length === 1 && s.runs[0]?.decisions.head?.sha256 === buildEvaluation(S2).decisions.head?.sha256);
+  assert.ok(s.runs.length === 0 && s.pending === null, 'nenhum resultado, nenhuma pendente');
+});
+
+test('visão ANTIGA DEPOIS do resultado confirmado (ordem fixada): ninguém regrava, nem o autor com a visão velha; o resultado vigente fica intacto', async () => {
+  const e = resultsEnv();
+  const [first] = await race(e, [CURRENT_OWNER]); // fase 1: o estado atual finaliza e o recibo é dado ANTES de a fase 2 começar
+  assert.deepEqual([first?.ok, first?.replayed, first?.seq], [true, false, 1], JSON.stringify(first));
+  const sealed = [hashTree(e.base), hashTree(e.anchors)];
+  const outcomes = await race(e, [STALE_BY_HEAD, STALE_BY_INPUT, STALE_BY_HEAD, STALE_OWNER]); // fase 2: sem pendente, logo sem janela transitória
+  assert.ok(outcomes.every((o) => o.signal === null), JSON.stringify(outcomes));
+  assert.deepEqual(codesOf(outcomes), ['HEAD_MISMATCH', 'INPUT_CHANGED', 'HEAD_MISMATCH', 'HEAD_MISMATCH'], JSON.stringify(outcomes));
+  assert.deepEqual([hashTree(e.base), hashTree(e.anchors)], sealed, 'o resultado e o recibo vigentes não mudaram um byte');
+  const s = await state(e);
+  assert.ok(s.runs.length === 1 && s.pending === null && s.anchors.unanchored === 0 && s.orphanTempFiles.length === 0);
+  assert.equal(s.runs[0]?.finalizedBy, OP_B.email);
+});
+
+test('visão ANTIGA em CORRIDA real com os atuais: só o dono com o estado atual grava, um único resultado e cadeia íntegra; o 409 transitório vale só para quem não é dono', async () => {
+  const e = resultsEnv();
+  const children = [STALE_BY_HEAD, CURRENT_OWNER, STALE_BY_HEAD, CURRENT_OWNER, STALE_BY_INPUT];
+  const exact = ['HEAD_MISMATCH', undefined, 'HEAD_MISMATCH', undefined, 'INPUT_CHANGED'];
+  const outcomes = await race(e, children);
+  outcomes.forEach((o, index) => {
+    const label = `processo ${index}: ${JSON.stringify(o)}`;
+    assert.equal(o.signal, null, `${label}: nenhum processo pode ter sido morto nem ter travado`);
+    if (children[index]?.actor.email === OP_B.email) {
+      assert.ok(o.ok && o.seq === 1, `${label}: o dono com a visão ATUAL conclui (novo ou reenvio), nunca recebe 409`);
+      return;
+    }
+    assert.equal(o.ok, false, `${label}: visão antiga NUNCA finaliza`);
+    // Só duas respostas são legítimas: o código exato da defasagem OU o 409 transitório (resultado do dono gravado, recibo ainda não).
+    // Qualquer outro código (CHILD_CRASH, INTERNAL_ERROR, NO_OUTPUT, KILLED_*, RESULT_INTEGRITY…) é falha inesperada e reprova o teste.
+    assert.ok(o.code === exact[index] || o.code === 'RESULT_PENDING_UNCONFIRMED', `${label}: código inesperado`);
+  });
+  assert.equal(outcomes.filter((o) => o.ok && o.replayed === false).length, 1, 'exatamente UM resultado novo');
+  assert.equal(outcomes.filter((o) => o.ok).length, 2, 'só os dois processos do dono concluíram');
+
+  // Invariantes finais, valem em qualquer intercalação: um arquivo, um recibo, cadeia íntegra, dono autorizado, estado atual.
+  const expected = buildEvaluation(S2);
+  const s = await state(e);
+  assert.ok(s.runs.length === 1 && s.pending === null && s.anchors.unanchored === 0 && s.orphanTempFiles.length === 0, JSON.stringify(outcomes));
+  assert.deepEqual(fs.readdirSync(path.join(e.base, RES_AUDIT)), ['s0001.json']);
+  assert.deepEqual(fs.readdirSync(path.join(e.anchors, RES_AUDIT)), ['a0001.json']);
+  const run = s.runs[0];
+  assert.equal(run?.finalizedBy, OP_B.email, 'o resultado pertence ao operador autorizado que tinha o estado atual');
+  assert.equal(run?.decisions.head?.sha256, expected.decisions.head?.sha256, 'cita as decisões ATUAIS');
+  assert.equal(run?.inputSha256, expected.inputSha256, 'pontua a entrada ATUAL');
+
+  // Com o dono já com recibo não há mais janela transitória: as visões antigas reenviadas agora recebem o código EXATO (sem 409) e nada muda.
+  const sealed = [hashTree(e.base), hashTree(e.anchors)];
+  const after = await race(e, [STALE_BY_HEAD, STALE_BY_INPUT]);
+  assert.deepEqual(codesOf(after), ['HEAD_MISMATCH', 'INPUT_CHANGED'], JSON.stringify(after));
+  assert.deepEqual([hashTree(e.base), hashTree(e.anchors)], sealed);
 });
 
 test('estados DIFERENTES em sequência, vindos de processos distintos: cada um vira um resultado encadeado, sem sobrescrever', async () => {

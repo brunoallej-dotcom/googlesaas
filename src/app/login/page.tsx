@@ -62,7 +62,7 @@ export default function LoginPage(): React.JSX.Element {
               required
               value={email}
               onChange={(event) => setEmail(event.target.value)}
-              className="mt-1.5 w-full rounded-lg border border-white/[0.08] bg-gmn-tile px-3 py-2 text-sm text-gmn-text outline-none focus:border-gmn-primary"
+              className="mt-1.5 w-full rounded-lg border border-white/[0.08] bg-gmn-tile px-3 py-2 text-sm text-gmn-text focus-visible:border-gmn-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gmn-accent"
             />
           </label>
           <label className="block text-xs font-medium text-gmn-muted">
@@ -73,7 +73,7 @@ export default function LoginPage(): React.JSX.Element {
               required
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              className="mt-1.5 w-full rounded-lg border border-white/[0.08] bg-gmn-tile px-3 py-2 text-sm text-gmn-text outline-none focus:border-gmn-primary"
+              className="mt-1.5 w-full rounded-lg border border-white/[0.08] bg-gmn-tile px-3 py-2 text-sm text-gmn-text focus-visible:border-gmn-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gmn-accent"
             />
           </label>
           {error && (
@@ -84,7 +84,7 @@ export default function LoginPage(): React.JSX.Element {
           <button
             type="submit"
             disabled={busy || email.length === 0 || password.length === 0}
-            className="w-full rounded-lg bg-gmn-primary px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-gmn-primary/25 transition-colors hover:bg-gmn-accent disabled:cursor-not-allowed disabled:opacity-50"
+            className="w-full rounded-lg bg-gmn-primary-strong px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-gmn-primary/25 transition-colors hover:bg-gmn-primary-strong-hover disabled:cursor-not-allowed disabled:opacity-50"
           >
             {busy ? 'Entrando…' : 'Entrar'}
           </button>
