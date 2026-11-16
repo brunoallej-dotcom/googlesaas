@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { OperatorRecord, ScoreResult } from '../src/lib/link-audit/scoring';
+import { buildCriteria } from '../src/lib/link-audit-scoring-runs/preview';
 import { attributeFailure, deriveOutcome, fromMapper, MAX_ATTRIBUTION_RUNS, previewBlocker, sortPreviewBlockers, toPublicView } from '../src/lib/link-audit-scoring-runs';
 import { run, without } from './helpers/link-audit-scoring-fixtures';
 
@@ -48,6 +49,42 @@ test('a projeção não altera o resultado original (que continua verificável) 
   assert.equal(JSON.stringify(none), before);
   for (const key of ['index', 'confidence', 'naSensitivity']) assert.equal(view[key], null);
   assert.ok(typeof view.resultSha256 === 'string' && view.resultSha256 === none.resultSha256);
+});
+
+test('PONTUADO: pontos obtidos só existem (número) para subcritério/critério avaliado; NOT_VERIFIED, NOT_APPLICABLE e SAMPLE_INSUFFICIENT levam null, nunca 0 ("ausência nunca vira zero")', () => {
+  const provisional = run(without('reviews', 'replies', 'posts', 'photos', 'videos', 'services', 'attributes', 'products', 'description', 'logoCover', 'latestMedia', 'latestReviewDate', 'actions'));
+  const view = toPublicView(provisional, deriveOutcome(provisional)) as Record<string, any>;
+  const subs = view.subcriteria as Array<Record<string, any>>;
+  const states = new Set(subs.map((item) => item.state));
+  assert.ok(states.has('NOT_VERIFIED') && (states.has('SCORED') || states.has('ABSENCE_PROVEN')), 'a fixture precisa misturar avaliado e não verificado');
+  for (const item of subs) {
+    const evaluated = item.state === 'SCORED' || item.state === 'ABSENCE_PROVEN';
+    assert.ok(Object.hasOwn(item, 'obtainedHalfPoints'), `${item.id}: o campo existe em PONTUADO`);
+    if (evaluated) assert.equal(typeof item.obtainedHalfPoints, 'number', `${item.id} avaliado ⇒ número`);
+    else assert.equal(item.obtainedHalfPoints, null, `${item.id} (${item.state}) ⇒ null, nunca 0`);
+  }
+  for (const item of view.criteria as Array<Record<string, any>>) {
+    if (item.status === 'EVALUATED' || item.status === 'PARTIAL') assert.equal(typeof item.obtainedHalfPoints, 'number');
+    else assert.equal(item.obtainedHalfPoints, null, `${item.id} (${item.status}) ⇒ null`);
+  }
+});
+
+test('prévia PONTUADA (matriz de critérios): obtainedHalfPoints é número no avaliado e null em NOT_VERIFIED; INCONCLUSIVO omite o campo', () => {
+  const provisional = run(without('reviews', 'replies', 'posts', 'photos', 'videos', 'services', 'attributes', 'products', 'description', 'logoCover', 'latestMedia', 'latestReviewDate', 'actions'));
+  const view = provisional.subcriteria.map((item) => ({ id: item.id, criterionId: item.criterionId, maxHalfPoints: item.maxHalfPoints, source: 'AUTOMATICO', reasonCode: null, factEmitted: true, evidenceRefs: [], decisionIds: [] }));
+  const criteria = buildCriteria(view as never, provisional, deriveOutcome(provisional));
+  const subs = criteria.flatMap((item) => item.subcriteria);
+  assert.ok(subs.some((item) => item.state === 'NOT_VERIFIED') && subs.some((item) => item.state === 'SCORED'));
+  for (const item of subs) {
+    if (item.state === 'SCORED' || item.state === 'ABSENCE_PROVEN') assert.equal(typeof item.obtainedHalfPoints, 'number', item.id);
+    else assert.equal(item.obtainedHalfPoints, null, `${item.id} ${item.state}`);
+  }
+  for (const item of criteria) {
+    if (item.status === 'EVALUATED' || item.status === 'PARTIAL') assert.equal(typeof item.obtainedHalfPoints, 'number', item.id);
+    else assert.equal(item.obtainedHalfPoints, null, `${item.id} ${item.status}`);
+  }
+  const none = run((draft) => { delete draft.profile; delete draft.operatorRecords; delete draft.site; delete draft.nap; delete draft.competitors; delete draft.authority; });
+  assert.ok(!hasObtained(buildCriteria(view as never, none, deriveOutcome(none))));
 });
 
 /* ---------------------------------------------------------------- atribuição por experimento */

@@ -127,14 +127,57 @@ export interface AuditDetailDto {
   readonly scoring: 'NOT_AVAILABLE_PENDING_D3';
 }
 
+const MAX_DISPLAY_URL_INPUT = 2048;
+
+/**
+ * Link exibido pela API de evidências: SÓ esquema e host (`https://exemplo.com.br/`). Caminho, consulta,
+ * credenciais e fragmento podem carregar segredo (`;jsessionid=`, tokens) e nunca saem (spec 6C §19.2 item 5:
+ * URL bruta nunca exibida). O estado de UTM do website aparece na prévia da pontuação, que usa a regra
+ * `lumos-url-derive-v1`. O que não é URL http(s) com host não é exibido.
+ */
+const displayUrl = (value: unknown): string | null => {
+  if (typeof value !== 'string' || value.length === 0 || value.length > MAX_DISPLAY_URL_INPUT) return null;
+  try {
+    const url = new URL(value.trim());
+    return (url.protocol === 'http:' || url.protocol === 'https:') && url.hostname !== '' ? `${url.protocol}//${url.host}/` : null;
+  } catch {
+    return null;
+  }
+};
+
+const URL_IN_TEXT = /\bhttps?:\/\/[^\s"'<>`]+/gi;
+const TRAILING_PUNCTUATION = new Set(['.', ',', ';', ':', '!', '?', ')', ']', '}']);
+export const OMITTED_LINK = '[link omitido]';
+
+/** Quantos caracteres de pontuação colam no fim do link (varredura de trás para frente; linear). */
+function trailingPunctuationLength(match: string): number {
+  let length = 0;
+  while (length < match.length && TRAILING_PUNCTUATION.has(match[match.length - 1 - length] as string)) length += 1;
+  return length;
+}
+
+/**
+ * Reduz toda URL http(s) de um texto livre à forma de `displayUrl` (`esquema://host[:porta]/`), mantendo a
+ * pontuação colada ao link. URL que não reduz vira `[link omitido]`. Textos livres do coletor (ex.: `Site
+ * informado no perfil: <url>`) carregam o caminho completo, que pode ter segredo. Aplicado ANTES de qualquer corte.
+ */
+export function reduceUrlsInText(text: string): string {
+  return text.replace(URL_IN_TEXT, (match) => {
+    const trailingLength = trailingPunctuationLength(match);
+    const core = trailingLength > 0 ? match.slice(0, -trailingLength) : match;
+    return `${displayUrl(core) ?? OMITTED_LINK}${trailingLength > 0 ? match.slice(-trailingLength) : ''}`;
+  });
+}
+
 const rec = (value: unknown): Record<string, unknown> => (value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {});
-const str = (value: unknown, max = 600): string | null => (typeof value === 'string' && value.length > 0 ? value.slice(0, max) : null);
+const str = (value: unknown, max = 600): string | null => (typeof value === 'string' && value.length > 0 ? reduceUrlsInText(value).slice(0, max) : null);
 const num = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) ? value : null);
 const arr = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
-const strs = (value: unknown, max = 80): string[] => arr(value).filter((v): v is string => typeof v === 'string').slice(0, max).map((v) => v.slice(0, 600));
+const strs = (value: unknown, max = 80): string[] => arr(value).filter((v): v is string => typeof v === 'string').slice(0, max).map((v) => reduceUrlsInText(v).slice(0, 600));
 
-const cut = (value: string | null, max = 200): string | null => (value === null ? null : value.slice(0, max));
-const integrityDto = (info: IntegrityInfo): IntegrityDto => ({ status: info.status, algorithm: info.algorithm, checkedFiles: info.checkedFiles, issues: info.issues.slice(0, 20).map((issue) => issue.slice(0, 300)), note: info.note.slice(0, 600) });
+const cut = (value: string | null, max = 200): string | null => (value === null ? null : reduceUrlsInText(value).slice(0, max));
+
+const integrityDto = (info: IntegrityInfo): IntegrityDto => ({ status: info.status, algorithm: info.algorithm, checkedFiles: info.checkedFiles, issues: info.issues.slice(0, 20).map((issue) => reduceUrlsInText(issue).slice(0, 300)), note: reduceUrlsInText(info.note).slice(0, 600) });
 
 export function toListItem(summary: AuditSummary): AuditListItemDto {
   return {
@@ -157,11 +200,11 @@ const evidenceDto = (item: EvidenceItem): EvidenceDto => ({
   id: item.id.slice(0, 80),
   criterionId: item.criterionId.slice(0, 40),
   attribute: item.attribute.slice(0, 80),
-  claim: item.claim.slice(0, 600),
+  claim: reduceUrlsInText(item.claim).slice(0, 600),
   status: item.status.slice(0, 30),
   origin: item.origin.slice(0, 30),
   consultedAt: cut(item.consultedAt, 40),
-  limitation: item.limitation ? item.limitation.slice(0, 1200) : null,
+  limitation: item.limitation ? reduceUrlsInText(item.limitation).slice(0, 1200) : null,
 });
 
 function establishmentOf(value: unknown): EstablishmentDto | null {
@@ -171,7 +214,7 @@ function establishmentOf(value: unknown): EstablishmentDto | null {
     name: str(g.name),
     address: str(g.address),
     phone: str(g.phone, 60),
-    website: str(g.website, 2048),
+    website: displayUrl(g.website),
     category: str(g.category, 200),
     secondaryCategories: strs(g.secondaryCategories, 10),
     rating: num(g.rating),
@@ -187,7 +230,7 @@ function establishmentOf(value: unknown): EstablishmentDto | null {
 function siteOf(value: unknown): SiteObservationDto | null {
   const s = rec(value);
   if (Object.keys(s).length === 0) return null;
-  return { requestedUrl: str(s.requestedUrl, 2048), accessClass: str(s.accessClass, 60), accessNote: str(s.accessNote, 800), httpRequests: num(s.httpRequests), checkedAt: str(s.checkedAt, 40) };
+  return { requestedUrl: displayUrl(s.requestedUrl), accessClass: str(s.accessClass, 60), accessNote: str(s.accessNote, 800), httpRequests: num(s.httpRequests), checkedAt: str(s.checkedAt, 40) };
 }
 
 function triple(value: unknown): { cid: string | null; featureId: string | null; placeId: string | null } {
@@ -253,7 +296,7 @@ export function toAuditDetailDto(view: AuditView): AuditDetailDto {
       unverified: view.evidences.unverified.slice(0, MAX_EVIDENCES).map(evidenceDto),
       other: view.evidences.other.slice(0, MAX_EVIDENCES).map(evidenceDto),
     },
-    limitations: view.limitations.slice(0, 40).map((l) => l.slice(0, 1200)),
+    limitations: view.limitations.slice(0, 40).map((l) => reduceUrlsInText(l).slice(0, 1200)),
     divergences: arr(view.divergences)
       .map(rec)
       .map((d) => ({ field: str(d.field, 20) ?? '', googleMaps: str(d.googleMaps, 300) ?? '', site: str(d.site, 300) ?? '', note: str(d.note, 600) ?? '' }))

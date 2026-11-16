@@ -54,11 +54,13 @@ function resultOk(result: unknown, outcome: unknown, required: boolean): boolean
 
 const pendingSummaryOk = (v: unknown): boolean => v === null || (isObj(v) && int(v.seq) && oneOf(v.action, ['RECORD', 'REVOKE']) && strN(v.decisionId) && strN(v.revokes));
 export const blockerOk = (b: unknown): boolean => isObj(b) && str(b.code) && oneOf(b.severity, ['BLOCKING', 'WARNING']) && str(b.message) && strN(b.reasonCode) && strs(b.decisionIds) && strs(b.subcriterionIds);
+/** Falha fechada ("ausência nunca vira zero"): número só em item avaliado; `null` só em item não avaliado; omitido é sempre válido (INCONCLUSIVO). `evaluated === null` = o motor não calculou o item: nada de pontos. */
+const obtainedOk = (v: unknown, evaluated: boolean | null): boolean => v === undefined || (evaluated === true ? num(v) : evaluated === false && v === null);
 const subOk = (s: unknown): boolean =>
-  isObj(s) && str(s.id) && str(s.label) && num(s.maxHalfPoints) && str(s.source) && strN(s.sourceReason) && strN(s.state) && strN(s.stateReason) && strN(s.tier) && numN(s.evaluatedHalfPoints) && (s.obtainedHalfPoints === undefined || num(s.obtainedHalfPoints)) && strs(s.decisionIds) && strs(s.evidenceRefs) &&
+  isObj(s) && str(s.id) && str(s.label) && num(s.maxHalfPoints) && str(s.source) && strN(s.sourceReason) && strN(s.state) && strN(s.stateReason) && strN(s.tier) && numN(s.evaluatedHalfPoints) && obtainedOk(s.obtainedHalfPoints, s.state === null ? null : s.state === 'SCORED' || s.state === 'ABSENCE_PROVEN') && strs(s.decisionIds) && strs(s.evidenceRefs) &&
   isObj(s.potential) && strN(s.potential.family) && num(s.potential.halfPoints);
 const criterionOk = (c: unknown): boolean => isObj(c) && str(c.id) && str(c.label) && num(c.maxPoints) && strN(c.status) && // `status` é null quando o motor não calculou (SEM_EVIDENCIA, ENTRADA_RECUSADA)
-   numN(c.evaluatedHalfPoints) && (c.obtainedHalfPoints === undefined || num(c.obtainedHalfPoints)) && arr(c.subcriteria, subOk);
+   numN(c.evaluatedHalfPoints) && obtainedOk(c.obtainedHalfPoints, c.status === null ? null : c.status === 'EVALUATED' || c.status === 'PARTIAL') && arr(c.subcriteria, subOk);
 const baseOk = (b: unknown): boolean => isObj(b) && str(b.ref) && str(b.kind) && str(b.observedAt) && str(b.origin) && isHex64(b.contentSha256) && bool(b.legacy) && bool(b.superseded);
 const refSourceOk = (v: unknown): boolean => v === null || (isObj(v) && str(v.ref) && str(v.observedAt));
 

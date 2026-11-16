@@ -92,6 +92,7 @@ test('matriz: tabela acessível no desktop + cartões no celular; ação só par
   const scored = render(createElement(CriteriaMatrix, { ...props, preview: scoredPreview() }));
   assert.match(scored, /Pontos<\/th>/);
   assert.match(text(scored), /2 de 3/);
+  assert.ok(!/(^|\D)0 de \d/.test(text(scored)), 'ausência (NOT_VERIFIED) nunca aparece como "0 de N"');
   const unavailable = render(createElement(CriteriaMatrix, { ...props, preview: previewFixture({ decisionOptions: [{ type: 'JUDGEMENT', subcriterionId: 'C2', code: null, available: false, reasonCode: 'BASIS_MISSING' }] }) }));
   assert.match(text(unavailable), /Decisão indisponível/);
   assert.ok(!/Registrar decisão para C2/.test(unavailable));

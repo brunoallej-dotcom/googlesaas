@@ -11,6 +11,24 @@ import { REDACTED, redactSecrets } from '../redact';
 
 const MAX_TEXT = 2048;
 
+/**
+ * Teto do tamanho de cada texto NA SAÍDA de `sanitizeForOutput`. O texto inteiro é saneado primeiro (as
+ * expressões são lineares) e só então a saída saneada é cortada aqui, com a marca `[truncado]`. Cortar antes
+ * de sanear deixaria um segredo que cruza o corte sem casar com os padrões e vazaria um pedaço dele.
+ */
+export const MAX_OUTPUT_STRING_LENGTH = 4096;
+const TRUNCATION_MARK = '…[truncado]';
+
+/**
+ * Domínio sem esquema seguido de consulta (1º ramo; o grupo 1 é o que fica). A expressão antiga recomeçava em
+ * cada rótulo de uma cadeia longa e varria o resto do texto a cada vez (tempo quadrático). Os ramos 2 e 3 só
+ * PULAM trechos sem alterar nada: se o 1º ramo falha no início mais à esquerda de uma cadeia, todo início
+ * posterior na mesma cadeia (ou no mesmo caminho sem consulta) compartilha o último rótulo e a continuação e
+ * também falharia. Resultado idêntico ao da expressão antiga (comparação diferencial) e tempo linear.
+ */
+const SCHEMELESS_LINK_QUERY =
+  /\b(?:((?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s?#]*)?)(?:\?|%3[Ff])[^\s]*|(?:[a-z0-9-]+\.)+[a-z]{2,}\/[^\s?#]*|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.?)/gi;
+
 const CID_VALUE = /^\d{1,20}$/;
 const FEATURE_ID_VALUE = /^0x[0-9a-f]{1,16}:0x[0-9a-f]{1,16}$/i;
 const PLACE_ID_VALUE = /^[A-Za-z0-9_-]{20,255}$/;
@@ -40,7 +58,7 @@ function looksLikeLink(value: string): boolean {
 /** Texto solto: consulta de link sem esquema cortada e pares nome=valor fora dos identificadores redigidos. */
 function scrubFreeText(text: string): string {
   const withoutQueries = text
-    .replace(/\b((?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s?#]*)?)(?:\?|%3[Ff])[^\s]*/gi, '$1')
+    .replace(SCHEMELESS_LINK_QUERY, (match: string, kept: string | undefined) => kept ?? match)
     .replace(/%3[Ff][^\s]*/g, '');
   return withoutQueries.replace(/([A-Za-z0-9_.-]{1,40})=([^\s&#]+)/g, (pair, name: string, value: string) =>
     keepParameter(name, value) ? pair : `${name}=${REDACTED}`,
@@ -103,12 +121,21 @@ export function isSanitizedUrl(raw: string): boolean {
 }
 
 const URL_IN_TEXT = /\bhttps?:\/\/[^\s"'<>`]+/gi;
+const TRAILING_PUNCTUATION = new Set(['.', ',', ';', ':', '!', '?', ')', ']', '}']);
+
+/** Pontuação colada ao fim de um link no texto. Varredura de trás para frente (linear; a regex com `+$` era quadrática). */
+function trailingPunctuationLength(match: string): number {
+  let length = 0;
+  while (length < match.length && TRAILING_PUNCTUATION.has(match[match.length - 1 - length] as string)) length += 1;
+  return length;
+}
 
 /** Aplica `sanitizeUrl` a cada URL dentro de um texto e redige chaves/tokens soltos. */
 export function redactUrlsInText(text: string): string {
   const withUrls = text.replace(URL_IN_TEXT, (match) => {
-    const trailing = /[.,;:!?)\]}]+$/.exec(match)?.[0] ?? '';
-    const core = trailing ? match.slice(0, -trailing.length) : match;
+    const trailingLength = trailingPunctuationLength(match);
+    const trailing = trailingLength > 0 ? match.slice(-trailingLength) : '';
+    const core = trailingLength > 0 ? match.slice(0, -trailingLength) : match;
     return `${sanitizeUrl(core)}${trailing}`;
   });
   return redactFreeText(withUrls);
@@ -131,6 +158,12 @@ export function safeFailureReason(error: unknown, maxLength = 300): string {
   return redactUrlsInText(`${name}: ${message}`).slice(0, maxLength);
 }
 
+/** Um texto (inteiro, sem corte prévio): link já saneado passa intacto; UM link inteiro vira a forma saneada; texto com links dentro passa pela redação de texto. */
+function sanitizeText(value: string): string {
+  if (isSanitizedUrl(value)) return value;
+  return /^https?:\/\/\S+$/i.test(value.trim()) ? sanitizeUrl(value) : redactUrlsInText(value);
+}
+
 const SENSITIVE_KEY = /(pass(word|wd)?|senha|secret|token|api[-_]?key|apikey|authorization|cookie|credential|session|private[-_]?key|access[-_]?key)/i;
 const MAX_OUTPUT_DEPTH = 16;
 
@@ -141,9 +174,8 @@ const MAX_OUTPUT_DEPTH = 16;
  */
 export function sanitizeForOutput(value: unknown, depth = 0): unknown {
   if (typeof value === 'string') {
-    if (isSanitizedUrl(value)) return value;
-    // Valor que é UM link inteiro: forma saneada (mantém só os identificadores). Texto com links dentro: redação de texto.
-    return /^https?:\/\/\S+$/i.test(value.trim()) ? sanitizeUrl(value) : redactUrlsInText(value);
+    const clean = sanitizeText(value);
+    return clean.length > MAX_OUTPUT_STRING_LENGTH ? `${clean.slice(0, MAX_OUTPUT_STRING_LENGTH)}${TRUNCATION_MARK}` : clean;
   }
   if (value === null || typeof value === 'boolean') return value;
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
