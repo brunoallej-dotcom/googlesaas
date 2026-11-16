@@ -427,6 +427,13 @@ Corpo estrito `{ candidate: <registro no formato do formulário da 6B>, supersed
 ### 14.6 Variáveis (só servidor)
 `GMN_LINK_AUDIT_RESULTS_DIR`, `GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR` (D6C-5): pastas dedicadas, absolutas, existentes, distintas entre si e das de evidências/decisões/âncoras, nenhuma dentro de outra. Ausentes ⇒ 503 **na finalização e nas consultas de resultados** (a prévia funciona; a simulação segue adiada). A configuração insegura (iguais, aninhadas, relativas, ou iguais/aninhadas às de evidências, decisões e âncoras das decisões) ⇒ 503 `RESULTS_MISCONFIGURED`. **Em dev/teste usar pastas ISOLADAS; nenhum volume é criado na VPS por esta onda.**
 
+### 14.7 Nota de contrato (16/11/2026) — `obtainedHalfPoints` nunca é 0 para ausência
+Critério de aceite §19.2 item 4 ("ausência nunca vira zero"). Nos DTOs da prévia (`criteria[].subcriteria[]` e `criteria[]`) e da projeção pública do resultado (`result.subcriteria[]` e `result.criteria[]`, finalização e consulta), em desfecho PONTUADO:
+- subcritério `SCORED` ou `ABSENCE_PROVEN` ⇒ `obtainedHalfPoints` é número (o zero comprovado continua 0); `NOT_VERIFIED`, `NOT_APPLICABLE` e `SAMPLE_INSUFFICIENT` ⇒ `null` (antes saía `0`);
+- critério `EVALUATED` ou `PARTIAL` ⇒ número; `NOT_VERIFIED` e `NOT_APPLICABLE` ⇒ `null`;
+- INCONCLUSIVO não muda: o campo continua omitido (nada que pareça nota). `null` e não omissão em PONTUADO porque o campo sempre existe nesse desfecho e `null` já é a convenção dos demais campos sem valor do DTO; `totals.obtainedHalfPoints` segue numérico (soma só do avaliado).
+- Compatibilidade: o registro selado e o formato persistido não mudam (o campo é só projeção do DTO); verificação e reprodução de resultados não são afetadas. O validador do cliente (falha fechada) agora recusa número em estado não avaliado e `null` em estado avaliado. Cliente e servidor são publicados juntos no mesmo app Next, então não há janela de versões mistas.
+
 ---
 
 ## 15. Persistência e rastreabilidade

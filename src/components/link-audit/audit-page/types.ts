@@ -26,7 +26,8 @@ export interface PreviewSubcriterion {
   readonly stateReason: string | null;
   readonly tier: string | null;
   readonly evaluatedHalfPoints: number | null;
-  readonly obtainedHalfPoints?: number;
+  /** Ausente em INCONCLUSIVO; `null` quando não avaliado (NOT_VERIFIED etc.): ausência nunca é 0. */
+  readonly obtainedHalfPoints?: number | null;
   readonly decisionIds: readonly string[];
   readonly evidenceRefs: readonly string[];
   readonly potential: { readonly family: string | null; readonly halfPoints: number };
@@ -39,7 +40,8 @@ export interface PreviewCriterion {
   /** `null` quando o motor não calculou (sem evidência, entrada recusada). */
   readonly status: string | null;
   readonly evaluatedHalfPoints: number | null;
-  readonly obtainedHalfPoints?: number;
+  /** Ausente em INCONCLUSIVO; `null` quando não avaliado (NOT_VERIFIED etc.): ausência nunca é 0. */
+  readonly obtainedHalfPoints?: number | null;
   readonly subcriteria: readonly PreviewSubcriterion[];
 }
 
