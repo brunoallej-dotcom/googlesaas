@@ -77,7 +77,7 @@ test('evidência MUDANDO DURANTE o RECOVER (a 3ª leitura traz o resultado que c
         : action === 'create'
           ? await service.create(ANA, w.auditId, { record: rec.naFeature(), expectedHead: head }, clock)
           : await service.revoke(ANA, w.auditId, { revokes: 'op-0001', reason: 'Revogada porque o juízo estava errado e foi refeito pelo operador.', expectedHead: head }, clock);
-    assert.ok(!result.ok, `${action}: ${JSON.stringify(result).slice(0, 160)}`);
+    assert.ok(!result.ok && result.code === 'DECISIONS_HISTORY_UNRESOLVED', `${action}: ${JSON.stringify(result).slice(0, 160)}`);
     assert.deepEqual(trees(w, e), before, `${action}: nada gravado`);
   }
 });
@@ -104,7 +104,8 @@ test('mudança BENIGNA durante o RECOVER (a releitura traz mais evidência, mas 
   const broken = scripted(witnessOver(w2, e2), ['real', 'real', 'throw']);
   const blocked = decisionsOver(w2, { ledger: ledgerFor(w2, { guard: null }), knownHeads: broken.provider });
   const before = (await ledgerEvents(w2)).length;
-  assert.ok(!(await blocked.ledgerAction(ANA, w2.auditId, { action: 'RECOVER' }, clock())).ok); // o AUTOR (§16.16): a recusa tem de vir da releitura que falha
+  const refused = await blocked.ledgerAction(ANA, w2.auditId, { action: 'RECOVER' }, clock());
+  assert.ok(!refused.ok && refused.code === 'DECISIONS_HISTORY_UNRESOLVED' && refused.issues.some((i) => /RESULTS_EVIDENCE_UNAVAILABLE/.test(i)), JSON.stringify(refused).slice(0, 200)); // o AUTOR (§16.16): a recusa tem de vir da releitura que falha
   assert.equal((await ledgerEvents(w2)).length, before, 'testemunha ilegível na hora de gravar ⇒ nada gravado');
 });
 

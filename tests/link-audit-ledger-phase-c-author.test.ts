@@ -6,6 +6,7 @@ import { seal, serialize } from '../src/lib/link-audit-storage';
 import { nodeFsOps } from '../src/lib/link-audit/snapshot-store';
 import { ANA, BIA, anchorPath, clock, entryPath, hashTree, must, rec, registerCleanup } from './helpers/link-audit-decisions-fixtures';
 import { errno, faulty } from './helpers/link-audit-evidence-fixtures';
+import { runChild } from './helpers/link-audit-ledger-results-fixtures';
 import { decisionsOver, ledgerEvents, ledgerFor, ledgerWorld, NO_RESULTS, type LedgerWorld } from './helpers/link-audit-ledger-fixtures';
 
 /*
@@ -125,4 +126,27 @@ test('fases A e B inalteradas: o RECOVER de OUTRO operador ainda aborta a INTENT
   assert.deepEqual(snapshotOf(b), before, 'a fase B não foi alterada pelo RECOVER de outro operador');
   const blocked = await healthy(b).create(BIA, b.auditId, { record: rec.c2(), expectedHead: null }, clock);
   assert.ok(!blocked.ok && blocked.code === 'PENDING_UNCONFIRMED');
+});
+
+test('identidade normalizada dos dois lados: o autor com o e-mail da sessão em caixa/espaços diferentes conclui a fase C; um não autor com variação parecida não', async () => {
+  const w = await forgedReceiptWorld();
+  const before = snapshotOf(w);
+  const other = await healthy(w).ledgerAction({ email: ' BIA@Empresa.com ' }, w.auditId, RECOVER, clock);
+  assert.ok(!other.ok && other.code === 'PENDING_UNCONFIRMED', JSON.stringify(other).slice(0, 200));
+  await assertStillPending(w, before);
+  const own = await must(healthy(w).ledgerAction({ email: ' ANA@Empresa.com ' }, w.auditId, RECOVER, clock));
+  assert.equal(own.ledger.state, 'PROTECTED');
+  assert.deepEqual(await ledgerEvents(w), ['GENESIS', 'INTENT', 'CONFIRMED']);
+});
+
+test('RECOVER de um NÃO autor por PROCESSO FILHO é recusado (PENDING_UNCONFIRMED) sem gravar nada; o filho do autor conclui', async () => {
+  const w = await forgedReceiptWorld();
+  const before = snapshotOf(w);
+  const refused = await runChild(w, null, { task: 'recover', actor: 'bia@empresa.com' });
+  assert.ok(refused.line, `filho sem resposta: ${refused.stderr.slice(0, 300)}`);
+  assert.deepEqual([refused.line.ok, refused.line.code], [false, 'PENDING_UNCONFIRMED']);
+  await assertStillPending(w, before);
+  const own = await runChild(w, null, { task: 'recover', actor: 'ana@empresa.com' });
+  assert.deepEqual([own.line?.ok, own.line?.code], [true, null], own.stderr.slice(0, 300));
+  assert.deepEqual(await ledgerEvents(w), ['GENESIS', 'INTENT', 'CONFIRMED']);
 });

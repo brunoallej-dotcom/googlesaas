@@ -148,7 +148,7 @@ export const PUBLIC_MESSAGE: Readonly<Record<ServiceErrorCode, string>> = Object
   LIMIT_REACHED: 'Limite de decisões atingido.',
   WRITE_CONFLICT: 'Outro processo gravou ao mesmo tempo; nada foi sobrescrito. Tente novamente.',
   ANCHOR_PENDING: 'A decisão foi gravada, mas o recibo na pasta de âncoras NÃO foi confirmado: ela ainda NÃO vale. Reenvie o MESMO pedido (é seguro repetir) para concluir.',
-  PENDING_UNCONFIRMED: 'Há uma decisão gravada e ainda não confirmada neste histórico; só o autor, reenviando o mesmo pedido, a conclui. Nada foi gravado.',
+  PENDING_UNCONFIRMED: 'Há uma decisão gravada e ainda não confirmada neste histórico; só o autor a conclui, reenviando o mesmo pedido ou pela recuperação verificável do livro. Nada foi gravado.',
   PENDING_ORIGIN_UNPROVEN: 'A origem desta decisão pendente NÃO pôde ser comprovada pelo servidor (arquivo adulterado, forjado, anterior à proteção ou de outra chave). Ela NÃO pode ser concluída por esta tela e nada foi gravado; siga o procedimento de quarentena.',
   DECISIONS_HISTORY_UNRESOLVED: 'A integridade do histórico de decisões NÃO está resolvida: a testemunha independente (resultados já selados) não confere com o histórico de hoje, ou não pôde ser lida. Nenhuma decisão é considerada vigente e nada foi gravado. Não apague nem mova arquivos; avise a operação.',
   ORIGIN_KEY_NOT_CONFIGURED: 'A chave de comprovação de origem das decisões não está configurada (ou é fraca) neste servidor; nenhuma decisão é gravada ou concluída.',

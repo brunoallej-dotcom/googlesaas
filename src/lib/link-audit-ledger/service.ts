@@ -84,7 +84,7 @@ const MESSAGES: Partial<Record<LedgerReason, string>> = {
 };
 
 /** Texto fixo da recusa da fase C a quem não é o autor (sem identidade de terceiros; §16.16). */
-const PHASE_C_NOT_AUTHOR_MESSAGE = 'A decisão já tem entrada e recibo, mas o livro ainda não a confirmou; somente o autor dela, reenviando o mesmo pedido, a conclui. Nada foi gravado.';
+const PHASE_C_NOT_AUTHOR_MESSAGE = 'A decisão já tem entrada e recibo, mas o livro ainda não a confirmou; somente o autor dela a conclui, reenviando o mesmo pedido ou pela recuperação verificável do livro. Nada foi gravado.';
 
 export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
   // Q3: o livro só aceita a chave EXCLUSIVA dele; uma chave de origem (decisões/resultados) nunca autentica o livro.
