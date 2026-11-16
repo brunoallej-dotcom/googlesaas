@@ -293,18 +293,18 @@ test('sanitizeForOutput: segredo que cruza a posição do teto não vaza nenhum 
   const jwtHeader = 'eyJhbGciOiJIUzI1NiJ9';
   const jwtPayload = 'eyJzdWIiOiJqb2FvQGV4YW1wbGUuY29tIn0';
   const jwtSignature = 'SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV';
-  const cases: { secret: string; fragments: string[] }[] = [
-    { secret: `${jwtHeader}.${jwtPayload}.${jwtSignature}`, fragments: [jwtHeader, jwtPayload, 'SflKxw'] },
-    { secret: 'https://joao:S3nh4-Longa-99@host.example.com/', fragments: ['joao', 'S3nh4', 'senha'] },
-    { secret: 'Bearer abcdefghijklmnop1234', fragments: ['abcdefg', 'Bearer abc'] },
-    { secret: 'sk-abcdefghijklmnop1234567890', fragments: ['sk-abc', 'abcdefghij'] },
-    { secret: 'password=SEGREDO-SENHA-77', fragments: ['SEGREDO', 'SENHA'] },
+  const cases: { sample: string; fragments: string[] }[] = [
+    { sample: `${jwtHeader}.${jwtPayload}.${jwtSignature}`, fragments: [jwtHeader, jwtPayload, 'SflKxw'] },
+    { sample: 'https://joao:S3nh4-Longa-99@host.example.com/', fragments: ['joao', 'S3nh4', 'senha'] },
+    { sample: 'Bearer abcdefghijklmnop1234', fragments: ['abcdefg', 'Bearer abc'] },
+    { sample: 'sk-abcdefghijklmnop1234567890', fragments: ['sk-abc', 'abcdefghij'] },
+    { sample: 'password=SEGREDO-SENHA-77', fragments: ['SEGREDO', 'SENHA'] },
   ];
-  for (const { secret, fragments } of cases) {
-    for (const cut of [1, 3, 8, Math.floor(secret.length / 2), secret.length - 1]) {
-      const text = `${'a'.repeat(MAX_OUTPUT_STRING_LENGTH - cut - 1)} ${secret} ${'b'.repeat(50)}`;
+  for (const { sample, fragments } of cases) {
+    for (const cut of [1, 3, 8, Math.floor(sample.length / 2), sample.length - 1]) {
+      const text = `${'a'.repeat(MAX_OUTPUT_STRING_LENGTH - cut - 1)} ${sample} ${'b'.repeat(50)}`;
       const out = sanitizeForOutput(text) as string;
-      for (const fragment of fragments) assert.ok(!out.includes(fragment), `vazou "${fragment}" (corte ${cut}) em ${secret.slice(0, 12)}…`);
+      for (const fragment of fragments) assert.ok(!out.includes(fragment), `vazou "${fragment}" (corte ${cut}) em ${sample.slice(0, 12)}…`);
       assert.ok(out.length <= MAX_OUTPUT_STRING_LENGTH + 16, `tamanho ${out.length}`);
     }
   }
