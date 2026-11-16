@@ -1,5 +1,15 @@
 # Fase 5: análise dos 9 avisos do `npm audit`
 
+## Atualização 16/11/2026 (o quadro abaixo é o registro histórico de 16/10/2026)
+`npm audit --json` sobre o `package-lock.json` atual: **1 aviso moderado, 0 alto, 0 crítico**.
+
+| Pacote | Instalado | Sev. | Aviso | Em execução no servidor? |
+|---|---|---|---|---|
+| `postcss-selector-parser` (transitivo, via Tailwind 3) | 6.1.4 | moderada | GHSA-rj75-hqrm-r3gf (complexidade quadrática em seletores planos; corrigido em ≥ 6.1.5) | **Não** (só no build, com o CSS do próprio projeto) |
+
+- Os outros 8 itens do quadro histórico **não são mais reportados**. O `postcss` aninhado no `next` está em **8.5.30** pelo `overrides` do `package.json` (a opção B abaixo, na prática, já está aplicada). `braces` 3.0.3, `micromatch` 4.0.8 e `tailwindcss` 3.4.19 continuam nas mesmas versões: o banco de avisos deixou de apontá-los (não investigado se por retirada ou revisão do aviso).
+- O CI passa a ter o job **SCA** (`npm audit` + gate com lista de exceções versionada, `.github/security/npm-audit-exceptions.json`): bloqueia `high`/`critical` sem exceção; moderados aparecem só como informação. A lista de exceções começa **vazia** (nenhum aviso atual a exige). Procedimento: `docs/how-to/ci-security-scans.md`.
+
 Atualizado em 16/10/2026. **Nada foi atualizado** (nenhum `npm audit fix`, nenhuma versão maior). Fonte: `npm audit --json` e consulta ao registro do npm. Resultado: 6 altas, 3 moderadas, 0 críticas.
 
 ## Quadro
