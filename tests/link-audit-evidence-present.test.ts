@@ -106,3 +106,48 @@ test('TUVAPLAST real: o que a interface exibirá (CID, HTTP 200, nota 5,0, 49 av
   assert.ok(!/bodyText|thumbnail|googleusercontent|"places"|searchParameters/.test(wire));
   assert.deepEqual(snapshot(), before, 'SHA-256 e data de modificação idênticos antes e depois');
 });
+
+test('DTO: website e requestedUrl só saem como esquema + host; caminho, credenciais, parâmetros (inclusive UTM) e fragmento nunca', () => {
+  const raw = 'https://user:pass@exemplo.com.br/convidado/abc123XYZ;jsessionid=SECRET012345?token=zz&utm_source=gbp';
+  const view = {
+    auditId: 'auditoria-teste-0001', layout: 'VERSIONED', selected: { capture: 1, revision: 1 }, state: 'COMPLETE',
+    company: { name: null, city: null, stateCode: null, originalLink: null }, collectedAt: null, methodologyVersion: null,
+    source: { provider: 'x', officialGoogleApi: false, description: null, httpStatus: null, httpAttempts: null, creditsReportedByApi: null, resultCount: null },
+    located: null, location: null, identifiers: null, identityBasis: null,
+    data: { googleMaps: { name: 'Empresa', website: raw }, site: { requestedUrl: raw, accessClass: 'OK' } },
+    evidences: { verified: [], unverified: [], other: [] }, limitations: [], divergences: [], calls: null, scoring: 'NOT_AVAILABLE_PENDING_D3',
+    integrity: { status: 'OK', algorithm: 'SHA-256', checkedFiles: 1, issues: [], note: 'n' }, versions: [],
+  } as unknown as AuditView;
+  const dto = toAuditDetailDto(view);
+  assert.equal(dto.establishment?.website, 'https://exemplo.com.br/');
+  assert.equal(dto.site?.requestedUrl, 'https://exemplo.com.br/');
+  assert.ok(!/SECRET012345|jsessionid|convidado|abc123XYZ|token|user:pass|gbp/.test(JSON.stringify(dto)));
+  const junk = toAuditDetailDto({ ...view, data: { googleMaps: { name: 'E', website: 'texto livre ?token=zz' }, site: { requestedUrl: 'javascript:alert(1)' } } } as unknown as AuditView);
+  assert.equal(junk.establishment?.website, null, 'valor que não é URL http(s) não é exibido');
+  assert.equal(junk.site?.requestedUrl, null);
+});
+
+test('DTO: URLs dentro de textos livres (claim, limitation, limitations, divergências, notas) saem só como esquema + host', () => {
+  const raw = 'https://exemplo.com.br/convidado/abc123XYZ;jsessionid=SECRET012345/x?token=zz';
+  const evidence = { id: 'e1', criterionId: 'C1', attribute: 'website', claim: `Site informado no perfil: ${raw}`, status: 'VERIFIED', origin: 'GOOGLE_MAPS', consultedAt: null, limitation: `Veja (${raw}), depois ${raw}.` };
+  const view = {
+    auditId: 'auditoria-teste-0001', layout: 'VERSIONED', selected: { capture: 1, revision: 1 }, state: 'COMPLETE',
+    company: { name: null, city: null, stateCode: null, originalLink: null }, collectedAt: null, methodologyVersion: null,
+    source: { provider: 'x', officialGoogleApi: false, description: `fonte ${raw}`, httpStatus: null, httpAttempts: null, creditsReportedByApi: null, resultCount: null },
+    located: null, location: null, identifiers: null, identityBasis: null,
+    data: { googleMaps: { name: 'Empresa', address: `Rua A, ${raw}` }, site: { accessClass: 'OK', accessNote: `nota ${raw}` } },
+    evidences: { verified: [evidence], unverified: [evidence], other: [evidence] },
+    limitations: [`Limite: ${raw}!`, `https://${'a'.repeat(3000)}.com/segredo`],
+    divergences: [{ field: 'website', googleMaps: 'exemplo.com.br', site: 'exemplo.com.br', note: `Diferem: ${raw}.` }],
+    calls: null, scoring: 'NOT_AVAILABLE_PENDING_D3',
+    integrity: { status: 'OK', algorithm: 'SHA-256', checkedFiles: 1, issues: [`erro em ${raw}`], note: `nota ${raw}` }, versions: [],
+  } as unknown as AuditView;
+  const dto = toAuditDetailDto(view);
+  const wire = JSON.stringify(dto);
+  assert.ok(!/convidado|abc123XYZ|jsessionid|SECRET012345|token=zz|segredo/.test(wire), 'nenhum segmento do caminho aparece no JSON do DTO');
+  assert.equal(dto.evidences.verified[0]?.claim, 'Site informado no perfil: https://exemplo.com.br/');
+  assert.equal(dto.evidences.verified[0]?.limitation, 'Veja (https://exemplo.com.br/), depois https://exemplo.com.br/.');
+  assert.equal(dto.limitations[0], 'Limite: https://exemplo.com.br/!', 'pontuação colada ao link é preservada');
+  assert.equal(dto.limitations[1], '[link omitido]', 'URL que não reduz vira marcador neutro');
+  assert.equal(dto.divergences[0]?.note, 'Diferem: https://exemplo.com.br/.');
+});

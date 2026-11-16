@@ -1,0 +1,4 @@
+{
+  "_comentario": "Exceções do gate de SCA (npm audit). Cada item vale SÓ para o pacote na versão instalada indicada, até a severidade indicada e até a data review_by. Ver docs/how-to/ci-security-scans.md. Lista vazia em 16/11/2026: o npm audit só reporta 1 aviso moderado (postcss-selector-parser 6.1.4), que o gate não bloqueia; as 9 exceções herdadas de docs/phase5/dependency-audit.md não correspondiam a nenhum aviso atual e foram removidas para não mascarar avisos futuros.",
+  "exceptions": []
+}

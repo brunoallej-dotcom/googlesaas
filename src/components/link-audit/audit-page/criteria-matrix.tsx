@@ -67,7 +67,7 @@ function CriterionTable({ criterion, hasPoints, ...rest }: { readonly criterion:
                 <th scope="row" className="py-2 pr-3 font-medium text-gmn-text"><span className="font-mono text-gmn-muted">{sub.id}</span> {safeText(sub.label, 100)}</th>
                 <td className="py-2 pr-3"><div className="flex flex-col items-start gap-1">{stateBadge(sub)}{sub.tier && <span className="text-gmn-muted">faixa: {safeText(sub.tier, 60)}</span>}</div></td>
                 <td className="py-2 pr-3"><div className="flex flex-col items-start gap-1">{sourceBadge(sub)}{sub.sourceReason && <span className="text-gmn-muted">{reasonLabel(sub.sourceReason)}</span>}{potentialText(sub) && <span className="text-gmn-muted">{potentialText(sub)}</span>}</div></td>
-                {hasPoints && <td className="py-2 pr-3 text-gmn-text">{sub.obtainedHalfPoints === undefined ? '—' : `${formatHalfPoints(sub.obtainedHalfPoints)} de ${formatHalfPoints(sub.maxHalfPoints)}`}</td>}
+                {hasPoints && <td className="py-2 pr-3 text-gmn-text">{sub.obtainedHalfPoints == null ? '—' : `${formatHalfPoints(sub.obtainedHalfPoints)} de ${formatHalfPoints(sub.maxHalfPoints)}`}</td>}
                 <td className="py-2"><Action sub={sub} {...rest} /></td>
               </tr>
             ))}
@@ -83,7 +83,7 @@ function CriterionTable({ criterion, hasPoints, ...rest }: { readonly criterion:
             {sub.tier && <p className="mt-1 text-gmn-muted">faixa: {safeText(sub.tier, 60)}</p>}
             {sub.sourceReason && <p className="mt-1 text-gmn-muted">{reasonLabel(sub.sourceReason)}</p>}
             {potentialText(sub) && <p className="mt-1 text-gmn-muted">{potentialText(sub)}</p>}
-            {hasPoints && sub.obtainedHalfPoints !== undefined && <p className="mt-1 text-gmn-text">{formatHalfPoints(sub.obtainedHalfPoints)} de {formatHalfPoints(sub.maxHalfPoints)} pts</p>}
+            {hasPoints && sub.obtainedHalfPoints != null && <p className="mt-1 text-gmn-text">{formatHalfPoints(sub.obtainedHalfPoints)} de {formatHalfPoints(sub.maxHalfPoints)} pts</p>}
             <div className="mt-2"><Action sub={sub} {...rest} /></div>
           </li>
         ))}

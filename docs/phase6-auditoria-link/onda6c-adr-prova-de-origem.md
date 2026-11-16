@@ -134,7 +134,7 @@ Quando há uma operação **pendente** que **revoga ou substitui** uma decisão,
 | Quem escreve só em… | Consegue | NÃO consegue | Detecção |
 |---|---|---|---|
 | **Decisões** | Criar pendente forjada (bloqueia a auditoria); adulterar confirmadas | Fazer a forja virar confirmada; reviver revogada | Selo/encadeamento/recibo (confirmadas); etiqueta (pendentes) |
-| **Recibos das decisões** | Remover o último recibo (cria ambiguidade); criar o recibo de uma pendente **legítima** | Forjar conteúdo; reviver revogada (a decisão fica EM DÚVIDA) | Testemunha (se houver); etiqueta |
+| **Recibos das decisões** | Remover o último recibo (cria ambiguidade); criar o recibo de uma pendente **legítima** (**desde 16/11/2026** isso só a leva à fase C, que **só o autor conclui**: escrita ou `RECOVER` de outro operador recebe `PENDING_UNCONFIRMED` — spec do livro §16.16) | Forjar conteúdo; reviver revogada (a decisão fica EM DÚVIDA); **promover pendente alheia a confirmada** | Testemunha (se houver); etiqueta |
 | **Resultados** | Criar pendente forjada (bloqueia) | Torná-la confirmada | Etiqueta; `explains`; hashes |
 | **Recibos dos resultados** | Remover o último; confirmar uma pendente **legítima** sem ação do operador (pula as reconferências da conclusão) | Forjar conteúdo | Etiqueta; recibo ausente |
 | **Evidências** | Fabricar fatos com integridade "OK" | Fazê-los **autênticos** ou finalizáveis | Manifesto assinado (ADR 6C-03) |

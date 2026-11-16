@@ -125,13 +125,13 @@ test('RECOVER da fase C (CONFIRMED que faltou): só grava o CONFIRMED depois de 
   assert.ok(!failed.ok);
   failConfirmed = false;
   assert.ok(fs.existsSync(entryPath(w, 1)) && fs.existsSync(anchorPath(w, 1)), 'fase C: entrada e recibo existem, CONFIRMED não');
-  // fsync da pasta de DECISÕES falha na recuperação: o CONFIRMED NÃO é gravado
-  const noConfirm = await runChild(w, null, { task: 'recover', failSync: 'decisions', actor: 'bia@empresa.com' });
+  // fsync da pasta de DECISÕES falha na recuperação: o CONFIRMED NÃO é gravado (o RECOVER é do AUTOR: §16.16, só ele conclui a fase C)
+  const noConfirm = await runChild(w, null, { task: 'recover', failSync: 'decisions', actor: 'ana@empresa.com' });
   assert.equal(noConfirm.line?.ok, false);
   assert.deepEqual(await ledgerEvents(w), ['GENESIS', 'INTENT'], 'sem durabilidade da entrada o CONFIRMED não entra');
   // saudável: sincroniza decisões e recibos ANTES do CONFIRMED e conclui
   const log = syncLogOf();
-  const done = await runChild(w, null, { task: 'recover', syncLog: log, actor: 'bia@empresa.com' });
+  const done = await runChild(w, null, { task: 'recover', syncLog: log, actor: 'ana@empresa.com' });
   assert.equal(done.line?.ok, true, JSON.stringify(done.line));
   const synced = read(log);
   assert.ok(synced.includes(auditDirs(w).decisions) && synced.includes(auditDirs(w).anchors), `entrada e recibo sincronizados (${synced.length} chamadas)`);

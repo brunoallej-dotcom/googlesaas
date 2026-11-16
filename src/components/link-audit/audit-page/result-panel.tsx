@@ -89,7 +89,7 @@ export function ScoredResultPanel({ outcome, result, criteria, context }: { read
           {criteria.map((criterion) => (
             <li key={criterion.id} className="flex justify-between gap-3 rounded-lg border border-white/[0.06] px-3 py-1.5">
               <span className="text-gmn-text">{criterion.label}</span>
-              <span className="shrink-0 text-gmn-muted">{criterion.obtainedHalfPoints === undefined ? '—' : `${formatHalfPoints(criterion.obtainedHalfPoints)} de ${criterion.maxPoints}`}</span>
+              <span className="shrink-0 text-gmn-muted">{criterion.obtainedHalfPoints == null ? '—' : `${formatHalfPoints(criterion.obtainedHalfPoints)} de ${criterion.maxPoints}`}</span>
             </li>
           ))}
         </ul>
