@@ -40,7 +40,7 @@ export function previewFixture(over: Partial<PreviewPayload> = {}): PreviewPaylo
         ],
       },
       {
-        id: 'CATEGORIES', label: 'Categorias', maxPoints: 10, status: 'NOT_EVALUATED', evaluatedHalfPoints: 0,
+        id: 'CATEGORIES', label: 'Categorias', maxPoints: 10, status: 'NOT_VERIFIED', evaluatedHalfPoints: 0,
         subcriteria: [
           { id: 'C2', label: 'Compatibilidade da categoria principal', maxHalfPoints: 8, source: 'DECISAO_HUMANA', sourceReason: 'AWAITING_OPERATOR_DECISION', state: 'NOT_VERIFIED', stateReason: null, tier: null, evaluatedHalfPoints: 0, decisionIds: [], evidenceRefs: [], potential: { family: 'AWAITING_OPERATOR_DECISION', halfPoints: 8 } },
         ],

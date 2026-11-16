@@ -433,6 +433,7 @@ Critério de aceite §19.2 item 4 ("ausência nunca vira zero"). Nos DTOs da pr�
 - critério `EVALUATED` ou `PARTIAL` ⇒ número; `NOT_VERIFIED` e `NOT_APPLICABLE` ⇒ `null`;
 - INCONCLUSIVO não muda: o campo continua omitido (nada que pareça nota). `null` e não omissão em PONTUADO porque o campo sempre existe nesse desfecho e `null` já é a convenção dos demais campos sem valor do DTO; `totals.obtainedHalfPoints` segue numérico (soma só do avaliado).
 - Compatibilidade: o registro selado e o formato persistido não mudam (o campo é só projeção do DTO); verificação e reprodução de resultados não são afetadas. O validador do cliente (falha fechada) agora recusa número em estado não avaliado e `null` em estado avaliado. Cliente e servidor são publicados juntos no mesmo app Next, então não há janela de versões mistas.
+- Limite conhecido: a falha fechada do validador do cliente vale para a **prévia**. O validador do detalhe de registros (`resultOk`) não valida `result.subcriteria` nem `result.criteria` (só índice, confiança, publicação, limitações e totais), e a tela de registro não exibe a matriz de critérios; nesse caminho a regra depende do servidor (`toPublicView`). Não é regressão: o validador já era assim antes desta nota.
 
 ---
 
