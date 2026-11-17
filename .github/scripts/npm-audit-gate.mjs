@@ -85,9 +85,30 @@ function installedVersions(v, lock) {
   return { ok, versions: versions.filter((x) => typeof x === 'string') };
 }
 
-function coversAdvisory(e, urls) {
+// URLs dos avisos de origem de um pacote: as do próprio `via` e, para cada NOME em `via` (aviso herdado de outro
+// pacote do relatório), as daquele pacote, recursivamente. `unresolved` = um elo não se prova (nome ausente do
+// relatório, item sem URL): uma exceção com `advisory` não cobre o pacote. Ciclos não acrescentam URL.
+function rootAdvisories(name, vulns, seen = new Set()) {
+  if (seen.has(name)) return { urls: [], unresolved: false };
+  seen.add(name);
+  const v = vulns[name];
+  if (!isPlainObject(v)) return { urls: [], unresolved: true };
+  const urls = [];
+  let unresolved = false;
+  for (const x of Array.isArray(v.via) ? v.via : []) {
+    if (typeof x === 'string') {
+      const r = rootAdvisories(x, vulns, seen);
+      urls.push(...r.urls);
+      unresolved ||= r.unresolved;
+    } else if (isPlainObject(x) && typeof x.url === 'string') urls.push(x.url);
+    else unresolved = true;
+  }
+  return { urls: [...new Set(urls)], unresolved };
+}
+
+function coversAdvisory(e, roots) {
   if (e.advisory === undefined) return true;
-  return urls.length > 0 && urls.every((u) => u.includes(e.advisory));
+  return !roots.unresolved && roots.urls.length > 0 && roots.urls.every((u) => u.includes(e.advisory));
 }
 
 if (!auditPath) fail('uso: npm-audit-gate.mjs <audit.json>');
@@ -116,8 +137,8 @@ for (const [name, v] of Object.entries(audit.vulnerabilities)) {
     continue;
   }
   const { ok, versions } = installedVersions(v, lock);
-  const urls = (Array.isArray(v.via) ? v.via : []).filter(isPlainObject).map((x) => x.url).filter((u) => typeof u === 'string');
-  const label = `${name}@${versions.join(',') || '?'} [${v.severity}] ${urls.join(' ')}`.trim();
+  const roots = rootAdvisories(name, audit.vulnerabilities);
+  const label = `${name}@${versions.join(',') || '?'} [${v.severity}] ${roots.urls.join(' ')}`.trim();
   if (hasRank(v.severity) && RANK[v.severity] < RANK[BLOCK_FROM]) {
     console.log(`info   ${label}`);
     continue;
@@ -133,7 +154,7 @@ for (const [name, v] of Object.entries(audit.vulnerabilities)) {
           e.version === ver &&
           hasRank(e.max_severity) &&
           RANK[v.severity] <= RANK[e.max_severity] &&
-          coversAdvisory(e, urls),
+          coversAdvisory(e, roots),
       ),
     );
   if (isCovered) console.log(`aceito ${label}`);
