@@ -272,7 +272,8 @@ Não mudam: coletor, formato das capturas, `EvidenceToProve`, leitor (`scoring-b
 | V2-44 | **N4:** posição com > 256 KiB, erro de E/S ou diretório **não** suprime o pré-passo: com posição autêntica de chave revogada em outro arquivo, a razão é `SEAL_KEY_REVOKED`; estouro do orçamento de 16 MiB interrompe a leitura dos restantes e o veredito é `VERIFICATION_ERROR` (residual (ii) registrado) | N4 |
 | V2-45 | **N6:** qualquer `\` no texto de manifesto ou de fecho ⇒ `SEAL_INVALID`; chave duplicada ⇒ `SEAL_INVALID`; fecho com 1000 `heads` cabe em `MAX_CLOSURE_BYTES`; 1001 ⇒ recusado | N6 |
 | V2-46 | **N2 — aceite da W4, fora da DoD da W3 (registrado aqui):** o comando de fecho lista cadeias de `R` presentes no servidor e ausentes do registro externo como `UNKNOWN_SEAL_ON_SERVER` e **não** as inclui em `heads` | N2 |
-| V2-47 | Fecho fixado com `signerKeyId` **removido da lista** ⇒ continua `AUTHENTICATED` (só a conferência da assinatura é omitida); com `signerKeyId` presente e **assinatura inválida** ⇒ fecho recusado; `[1,2]` com o arquivo mais recente ilegível ou com `schemaVersion` 3 ⇒ caminho B, falha fechada com o sinal de revogação preservado | O2, N1 |
+| V2-47 | Fecho fixado com `signerKeyId` **removido da lista** ⇒ continua `AUTHENTICATED` (só a conferência da assinatura é omitida); com `signerKeyId` presente e **assinatura inválida** ⇒ fecho recusado | O2, N1 |
+| V2-48 | `[1,2]` com o arquivo mais recente ilegível ou com `schemaVersion` 3 ⇒ caminho B, falha fechada com o sinal de revogação preservado | N5, M1 |
 
 ---
 
