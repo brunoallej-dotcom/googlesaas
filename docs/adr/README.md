@@ -9,6 +9,7 @@ described by Michael Nygard. The ADR process itself is established in
 | #    | Title                                                                | Status   |
 |------|----------------------------------------------------------------------|----------|
 | 0001 | [Record architecture decisions](0001-record-architecture-decisions.md) | Accepted |
+| 0002 | [Autenticar a confirmação dos resultados pelo livro de cabeças](0002-authenticate-result-receipts.md) | Proposed |
 
 ## Adding a new ADR
 
