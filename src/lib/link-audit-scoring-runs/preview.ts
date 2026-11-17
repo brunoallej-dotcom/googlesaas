@@ -1,3 +1,4 @@
+import { evidenceToProveFromBasis } from '../link-audit-evidence/evidence-to-prove';
 import { CLOSED_EVIDENCE_PROVENANCE, type EvidenceProvenancePolicy, type EvidenceTrust, type EvidenceTrustReason } from '../link-audit-evidence/provenance';
 import { canonicalJson, sha256Hex } from '../link-audit/canonical';
 import { CRITERIA } from '../link-audit/methodology';
@@ -216,7 +217,7 @@ export function createScoringPreviewService(deps: PreviewDeps) {
     let trust: EvidenceTrust | null = null;
     if (basis.status === 'READY') {
       if (!basis.basis || !Array.isArray(basis.basis.evidences)) return fail('INTERNAL_ERROR'); // forma que o leitor não produz: nunca é tratada como pronta
-      trust = await provenance.classify(auditId, [...basis.basis.evidences, ...(basis.basis.artifacts ?? [])].map((e) => ({ ref: e.ref, contentSha256: e.contentSha256, legacy: e.legacy })));
+      trust = await provenance.classify(auditId, evidenceToProveFromBasis(basis.basis));
     }
     return { ok: true, value: { decisions: decisions.value, basis, trust } };
   }
