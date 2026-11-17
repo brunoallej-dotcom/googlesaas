@@ -8,6 +8,17 @@ const h = (c: string): string => c.repeat(64);
 const AUDIT = 'auditoria-teste-0001';
 const AT = '2026-10-22T12:54:48.079Z';
 
+const fullChecks = (): CandidatePackage['checks'] => [
+  { id: 'INTEGRITY_LOCAL', status: 'PASS' },
+  { id: 'COLLECTOR_HASH_MATCHES', status: 'PASS' },
+  { id: 'COLLECTION_GAP_WITHIN_LIMIT', status: 'PASS' },
+  { id: 'HTTP_2XX_AND_COLLECTED_AT', status: 'NOT_EXECUTED' },
+  { id: 'REPORT_REPRODUCES', status: 'NOT_EXECUTED' },
+  { id: 'AUTHORIZATION_CONSUMED', status: 'NOT_EXECUTED' },
+  { id: 'PROVIDER_PANEL_CREDITS', status: 'NOT_EXECUTED' },
+  { id: 'URL_QUERY_COHERENCE', status: 'NOT_EXECUTED' },
+];
+
 function basePackage(): CandidatePackage {
   const pkg: CandidatePackage = {
     schemaVersion: 1,
@@ -17,7 +28,7 @@ function basePackage(): CandidatePackage {
     attestable: true,
     summary: { company: { name: 'Padaria Exemplo', city: 'Cidade Exemplo', stateCode: 'GO' }, firstCollectedAt: AT, lastCollectedAt: AT, captures: 1, reportRevisions: 2, artifacts: 0, containsLegacy: false },
     integrity: { status: 'OK', algorithm: 'SHA-256', checkedFiles: 6 },
-    checks: [{ id: 'INTEGRITY_LOCAL', status: 'PASS' }, { id: 'REPORT_REPRODUCES', status: 'NOT_EXECUTED' }],
+    checks: fullChecks(),
     gap: { maxHours: 24, observedHours: 2, justification: null },
     entries: [
       { ref: 'capture:c0001', contentSha256: h('a'), legacy: false },
@@ -30,6 +41,10 @@ function basePackage(): CandidatePackage {
   };
   return { ...pkg, packageSha256: computePackageSha256(pkg) };
 }
+const rawBodyHash = (p: CandidatePackage): string => {
+  const { delta: _d, packageSha256: _p, generatedAt: _g, ...body } = p;
+  return sha256Hex(canonicalJson(body));
+};
 const mutate = (fn: (p: CandidatePackage) => CandidatePackage): CandidatePackage => fn(structuredClone(basePackage()));
 const rehash = (p: CandidatePackage): CandidatePackage => ({ ...p, packageSha256: computePackageSha256(p) });
 
@@ -59,14 +74,23 @@ test('IA-10: qualquer mudança em ref, hash, resumo ou verificação muda o hash
     ['resumo (empresa)', (p) => ({ ...p, summary: { ...p.summary, company: { ...p.summary.company, city: 'Outra Cidade' } } })],
     ['resumo (data)', (p) => ({ ...p, summary: { ...p.summary, lastCollectedAt: '2026-10-22T13:00:00.000Z' } })],
     ['verificação (status)', (p) => ({ ...p, checks: [{ id: 'INTEGRITY_LOCAL', status: 'FAIL' }, ...p.checks.slice(1)] })],
-    ['verificação (a mais)', (p) => ({ ...p, checks: [...p.checks, { id: 'URL_QUERY_COHERENCE', status: 'NOT_EXECUTED' }] })],
+    ['verificação (outra)', (p) => ({ ...p, checks: p.checks.map((c) => (c.id === 'HTTP_2XX_AND_COLLECTED_AT' ? { ...c, status: 'PASS' as const } : c)) })],
+    ['layout', (p) => ({ ...p, layout: 'LEGACY' })],
+    ['attestable', (p) => ({ ...p, attestable: false })],
+    ['kind', (p) => ({ ...p, kind: 'LINK_AUDIT_P1_OTHER' as never })],
+    ['schemaVersion', (p) => ({ ...p, schemaVersion: 2 as never })],
+    ['maxHours', (p) => ({ ...p, gap: p.gap && { ...p.gap, maxHours: 48 } })],
+    ['observedHours', (p) => ({ ...p, gap: p.gap && { ...p.gap, observedHours: 3 } })],
+    ['entries[].legacy', (p) => ({ ...p, entries: p.entries.map((e, i) => (i === 1 ? { ...e, legacy: true } : e)) })],
+    ['integrity.algorithm', (p) => ({ ...p, integrity: { ...p.integrity, algorithm: 'SHA-512' as never } })],
+    ['firstCollectedAt', (p) => ({ ...p, summary: { ...p.summary, firstCollectedAt: '2026-10-22T12:00:00.000Z' } })],
     ['integridade', (p) => ({ ...p, integrity: { ...p.integrity, checkedFiles: 7 } })],
     ['intervalo', (p) => ({ ...p, gap: p.gap && { ...p.gap, justification: 'chuva' } })],
     ['auditId', (p) => ({ ...p, auditId: 'auditoria-teste-0002' })],
   ];
   const seen = new Set<string>([original]);
   for (const [label, fn] of variants) {
-    const hash = computePackageSha256(mutate(fn));
+    const hash = rawBodyHash(mutate(fn));
     assert.ok(!seen.has(hash), `${label} não mudou o hash`);
     seen.add(hash);
   }
@@ -144,3 +168,87 @@ test('esquema da aprovação: válido passa; estrito; só APPROVED; rótulos sem
   assert.ok(bad({ auditId: 'CURTO' }));
   assert.ok(approvalSchema.safeParse({ ...approval(), riskAcceptance: { id: 'aceite-1', sha256: h('8') } }).success);
 });
+
+/* ---------------------------------------------------------------- revisão independente (M1, M2, M3, M4, m1, m2, m3) */
+const badPkg = (pkg: unknown): boolean => !candidatePackageSchema.safeParse(pkg).success;
+
+test('M1: coerências cruzadas do pacote (atestável exige gap; LEGACY ⇔ containsLegacy; datas em ordem; verificações obrigatórias uma vez)', () => {
+  assert.ok(badPkg(mutate((p) => ({ ...p, gap: null }))), 'atestável sem gap');
+  assert.ok(badPkg(mutate((p) => ({ ...p, layout: 'LEGACY' }))), 'LEGACY sem containsLegacy');
+  const legacyBody = (p: CandidatePackage, layout: 'VERSIONED' | 'LEGACY'): CandidatePackage => ({ ...p, layout, attestable: false, gap: null, entries: [{ ref: 'capture:c0001', contentSha256: h('a'), legacy: true }], summary: { ...p.summary, captures: 1, reportRevisions: 0, artifacts: 0, containsLegacy: true } });
+  assert.ok(candidatePackageSchema.safeParse(legacyBody(basePackage(), 'LEGACY')).success);
+  assert.ok(badPkg(legacyBody(basePackage(), 'VERSIONED')), 'containsLegacy com layout VERSIONED');
+  assert.ok(badPkg(mutate((p) => ({ ...p, summary: { ...p.summary, firstCollectedAt: '2026-10-23T00:00:00.000Z' } }))), 'primeira depois da última');
+  for (const id of ['INTEGRITY_LOCAL', 'COLLECTOR_HASH_MATCHES', 'COLLECTION_GAP_WITHIN_LIMIT', 'HTTP_2XX_AND_COLLECTED_AT', 'REPORT_REPRODUCES', 'AUTHORIZATION_CONSUMED', 'PROVIDER_PANEL_CREDITS', 'URL_QUERY_COHERENCE']) {
+    assert.ok(badPkg(mutate((p) => ({ ...p, checks: p.checks.filter((c) => c.id !== id) }))), `falta ${id}`);
+  }
+  for (const id of ['AUTHORIZATION_CONSUMED', 'PROVIDER_PANEL_CREDITS', 'URL_QUERY_COHERENCE']) {
+    assert.ok(badPkg(mutate((p) => ({ ...p, checks: p.checks.map((c) => (c.id === id ? { ...c, status: 'PASS' as const } : c)) }))), `${id} nunca é mecanizável`);
+  }
+});
+
+test('M2: hash consistente implica corpo válido (o hash recusa ordem, repetição, contagem e legado incoerentes)', () => {
+  const bodies: CandidatePackage[] = [
+    mutate((p) => ({ ...p, entries: [...p.entries].reverse() })),
+    mutate((p) => ({ ...p, entries: [p.entries[0]!, p.entries[0]!, ...p.entries.slice(1)], summary: { ...p.summary, captures: 2 } })),
+    mutate((p) => ({ ...p, summary: { ...p.summary, captures: 5 } })),
+    mutate((p) => ({ ...p, entries: [{ ...p.entries[0]!, legacy: true }, ...p.entries.slice(1)] })),
+    mutate((p) => ({ ...p, gap: null })),
+  ];
+  for (const body of bodies) {
+    assert.throws(() => computePackageSha256(body), PackageHashError);
+    assert.equal(isPackageHashConsistent({ ...body, packageSha256: rawBodyHash(body) }), false);
+  }
+});
+
+test('M3: texto livre e rótulos sem e-mail (inclusive largura total), telefone, controle ou bidi; identificador curto por lista de permissão', () => {
+  const bad = (over: Record<string, unknown>): boolean => !approvalSchema.safeParse({ ...approval(), ...over }).success;
+  const good = (over: Record<string, unknown>): boolean => approvalSchema.safeParse({ ...approval(), ...over }).success;
+  const pii = ['ana@x.com', 'ana＠x.com', '11 91234-5678', '(11) 91234.5678', '１１９１２３４５６７８', 'a\u202Eb', 'a\u0000b', 'a\u200Bb'];
+  for (const value of pii) {
+    assert.ok(bad({ approvedBy: value }), `approvedBy ${value}`);
+    assert.ok(bad({ operator: value }), `operator ${value}`);
+    assert.ok(bad({ dossier: { id: value, sha256: h('9') } }), `dossier.id ${value}`);
+    assert.ok(bad({ riskAcceptance: { id: value, sha256: h('8') } }), `riskAcceptance.id ${value}`);
+    assert.ok(bad({ humanChecks: [{ id: 'AUTHORIZATION_CONSUMED', result: 'PASS', note: value }] }), `note ${value}`);
+    assert.ok(badPkg(mutate((p) => ({ ...p, gap: p.gap && { ...p.gap, justification: value } }))), `gap.justification ${value}`);
+  }
+  assert.ok(good({ approvedBy: 'OP-20261023' }), '8 dígitos é aceito');
+  assert.ok(good({ operator: 'José D.' }));
+  assert.ok(bad({ approvedBy: 'OP-202610231' }), '9 dígitos');
+  assert.ok(bad({ approvedBy: 'a/b' }), 'fora da lista de permissão');
+  assert.ok(good({ humanChecks: [{ id: 'AUTHORIZATION_CONSUMED', result: 'PASS', note: 'Conferido no painel, ok.' }] }));
+});
+
+test('M4: humanChecks sem id repetido, só ids não mecanizáveis (e REPORT_REPRODUCES), no máximo 4', () => {
+  const bad = (humanChecks: unknown): boolean => !approvalSchema.safeParse({ ...approval(), humanChecks }).success;
+  const hc = (id: string) => ({ id, result: 'PASS', note: '' });
+  assert.ok(bad([hc('AUTHORIZATION_CONSUMED'), hc('AUTHORIZATION_CONSUMED')]));
+  for (const id of ['INTEGRITY_LOCAL', 'COLLECTOR_HASH_MATCHES', 'COLLECTION_GAP_WITHIN_LIMIT', 'HTTP_2XX_AND_COLLECTED_AT']) assert.ok(bad([hc(id)]), id);
+  assert.ok(approvalSchema.safeParse({ ...approval(), humanChecks: ['AUTHORIZATION_CONSUMED', 'PROVIDER_PANEL_CREDITS', 'URL_QUERY_COHERENCE', 'REPORT_REPRODUCES'].map(hc) }).success);
+  assert.ok(bad([...['AUTHORIZATION_CONSUMED', 'PROVIDER_PANEL_CREDITS', 'URL_QUERY_COHERENCE', 'REPORT_REPRODUCES'].map(hc), hc('REPORT_REPRODUCES')]));
+});
+
+test('m1/m2: observedHours inteiro; delta limitado; nome/cidade sem controle nem bidi', () => {
+  assert.ok(badPkg(mutate((p) => ({ ...p, gap: p.gap && { ...p.gap, observedHours: 1.5 } }))));
+  const refs = Array.from({ length: 2001 }, (_, i) => `capture:c${String(i + 1).padStart(4, '0')}`);
+  assert.ok(badPkg(mutate((p) => ({ ...p, delta: { added: refs, changed: [], missing: [] } }))));
+  for (const value of ['Pad\u202Earia', 'Pad\u0007aria', 'Pad\u200Baria']) {
+    assert.ok(badPkg(mutate((p) => ({ ...p, summary: { ...p.summary, company: { ...p.summary.company, name: value } } }))), `name ${value}`);
+    assert.ok(badPkg(mutate((p) => ({ ...p, summary: { ...p.summary, company: { ...p.summary.company, city: value } } }))), `city ${value}`);
+  }
+});
+
+/** VETOR-OURO: o hash esperado é literal. Se `canonicalJson` ou o corpo mudarem, hashes já aprovados se moveriam: este teste tem de falhar. */
+const GOLDEN_SHA256 = '4194569139930c19913885f23a32f8a3c9f2c834150f84f52c066b04f83c105c';
+test('m3 GOLDEN: corpo fixo ⇒ packageSha256 literal; o mesmo corpo com strings em NFD dá o mesmo hash', () => {
+  const body = basePackage();
+  assert.equal(body.packageSha256, GOLDEN_SHA256);
+  const nfd = (value: string): string => value.normalize('NFD');
+  const decomposed = mutate((p) => ({ ...p, summary: { ...p.summary, company: { name: nfd('Padaria Exemplo São João'), city: nfd('Goiânia'), stateCode: 'GO' } } }));
+  const composed = mutate((p) => ({ ...p, summary: { ...p.summary, company: { name: 'Padaria Exemplo São João', city: 'Goiânia', stateCode: 'GO' } } }));
+  assert.notEqual(decomposed.summary.company.name, composed.summary.company.name);
+  assert.equal(computePackageSha256(decomposed), computePackageSha256(composed));
+  assert.equal(computePackageSha256(composed), GOLDEN_COMPOSED_SHA256);
+});
+const GOLDEN_COMPOSED_SHA256 = 'dc236479f8614a58786ccf6eff1c99765cf31073e06add9cbc6c1a9cd00285d3';
