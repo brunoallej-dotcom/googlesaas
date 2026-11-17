@@ -232,6 +232,9 @@ const SCORING_RUNS_TARGETS: ReadonlySet<string> = new Set(['canonical.ts', 'meth
 const SCORING_RUNS_STORE_TARGETS: ReadonlyMap<string, ReadonlySet<string>> = new Map([['src/lib/link-audit-scoring-runs/results-store.ts', new Set(['snapshot-store.ts'])]]);
 /** Onda 6C (I3): a rota da prévia (servidor). Só ela e o serviço de prévia consomem o índice do motor; cada arquivo é conferido em `link-audit-scoring-runs-isolation.test.ts`. */
 const SCORING_ROUTES_DIR = 'src/app/api/link-audit/scoring/';
+/** P1 W1: núcleo de atestação (puro). Só o selo canônico (SHA-256 do pacote); nunca o motor, o disco nem as decisões. Conferido arquivo a arquivo em `link-audit-seal-isolation.test.ts`. */
+const ATTESTATION_DIR = 'src/lib/link-audit-attestation/';
+const ATTESTATION_TARGETS: ReadonlySet<string> = new Set(['canonical.ts']);
 const CLIENT_DIRS = ['src/components/link-audit/', 'src/app/auditoria-por-link/'];
 /** Único valor (não só tipo) que o navegador pode importar: constantes puras, sem nenhum import. */
 const CLIENT_VALUE_IMPORTS: ReadonlySet<string> = new Set(['methodology']);
@@ -290,6 +293,9 @@ test('isolamento reverso: só os consumidores declarados importam o módulo, e s
       } else if (isOrigin) {
         const withExtension = target.endsWith('.ts') ? target : `${target}.ts`;
         assert.ok(ORIGIN_TARGETS.has(withExtension), `${name} importa "${statement.specifier}", fora da lista fechada do módulo de prova de origem`);
+      } else if (name.startsWith(ATTESTATION_DIR)) {
+        const withExtension = target.endsWith('.ts') ? target : `${target}.ts`;
+        assert.ok(ATTESTATION_TARGETS.has(withExtension), `${name} importa "${statement.specifier}", fora da lista fechada do núcleo de atestação`);
       } else if (isStorage) {
         const withExtension = target.endsWith('.ts') ? target : `${target}.ts`;
         assert.ok(STORAGE_TARGETS.has(withExtension), `${name} importa "${statement.specifier}", fora da lista fechada do módulo neutro de armazenamento`);
@@ -461,7 +467,7 @@ const DECISIONS_ROUTES_DIR = 'src/app/api/link-audit/decisions/';
 test('Onda 5A/5B: só o runtime, os comandos e as rotas de leitura importam o serviço de evidências; o navegador só importa tipos', () => {
   const evidenceRoot = path.join(ROOT, 'src', 'lib', 'link-audit-evidence');
   const allowedImporters = (name: string): boolean =>
-    name.startsWith('src/lib/link-audit-evidence/') || name.startsWith(RUNTIME_DIR) || name === RUNTIME_CLI || name === EVIDENCE_CLI || name.startsWith(EVIDENCE_ROUTES_DIR) || name.startsWith(DECISIONS_ROUTES_DIR);
+    name.startsWith('src/lib/link-audit-evidence/') || name.startsWith('src/lib/link-audit-attestation/') || name.startsWith(RUNTIME_DIR) || name === RUNTIME_CLI || name === EVIDENCE_CLI || name.startsWith(EVIDENCE_ROUTES_DIR) || name.startsWith(DECISIONS_ROUTES_DIR);
   for (const file of [...walk(path.join(ROOT, 'src')), ...walk(path.join(ROOT, 'scripts'))]) {
     const name = rel(file);
     if (name.startsWith(SCORING_RUNS_DIR)) {
@@ -470,7 +476,7 @@ test('Onda 5A/5B: só o runtime, os comandos e as rotas de leitura importam o se
         const resolved = resolveImport(file, statement.specifier);
         if (resolved === null || !(resolved === evidenceRoot || resolved.startsWith(evidenceRoot + path.sep))) continue;
         // exceção deliberada (R2-MINOR-1): o serviço de prévia usa a POLÍTICA de proveniência das evidências (a fronteira com o motor); mais ninguém do módulo
-        if (name.endsWith('/preview.ts') && resolved === path.join(evidenceRoot, 'provenance')) continue;
+        if (name.endsWith('/preview.ts') && (resolved === path.join(evidenceRoot, 'provenance') || resolved === path.join(evidenceRoot, 'evidence-to-prove'))) continue; // W1 P1: a montagem única base → evidências a provar
         assert.ok(statement.typeOnly && resolved === path.join(evidenceRoot, 'scoring-basis'), `${name} importa "${statement.specifier}": só tipos de scoring-basis são permitidos`);
       }
       continue;
