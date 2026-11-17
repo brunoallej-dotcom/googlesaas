@@ -51,7 +51,9 @@ Edite `.github/security/npm-audit-exceptions.json` e inclua **todos** os campos:
   "advisory": "GHSA-xxxx-xxxx-xxxx" }
 ```
 
-`advisory` é opcional. Quando presente, a exceção só cobre esse aviso: se o pacote/versão ganhar outro aviso `high`/`critical` (URL em `via` sem esse identificador), o gate volta a falhar. Prefira informá-lo sempre que o aviso tiver GHSA.
+`advisory` é opcional. Quando presente, a exceção só cobre esse aviso: se o pacote/versão ganhar outro aviso (qualquer URL de origem sem esse identificador), o gate volta a falhar. Prefira informá-lo sempre que o aviso tiver GHSA.
+
+Pacote que só **herda** o aviso (no `npm audit`, o `via` traz o nome de outro pacote, sem URL): o gate segue a cadeia de nomes dentro do relatório até as URLs de origem e compara o `advisory` com elas. Se um elo não se prova (nome ausente do relatório, item sem URL, ciclo sem URL), a exceção com `advisory` não cobre o pacote e o job falha. Assim, cada pacote da cadeia ganha sua exceção, todas presas ao mesmo GHSA.
 
 - Vale **só** para aquela versão instalada e até aquela severidade. Atualizar o pacote ou o aviso piorar derruba o job de propósito: reavalie e atualize a entrada.
 - `review_by`: data real `AAAA-MM-DD`, no máximo 90 dias à frente da execução (o gate valida). Data inválida, vencida ou além de 90 dias faz o job falhar até alguém reavaliar e renovar com justificativa.
