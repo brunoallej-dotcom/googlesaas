@@ -383,13 +383,15 @@ CLI offline, sem métricas nem alertas. Saída estável e testável: `--json` co
 | D4 | **Separação de papéis:** conferente ≠ custodiante como regra padrão; se só uma pessoa operar, exige **aceite formal e escrito do risco** e **revisão posterior** dos dossiês | §5.4, §5.5 passo 9, IA-16 |
 | D5 | **Custódia:** preferência por token de hardware com Ed25519 puro (compatível com `crypto.verify(null, …)`, RS-15); na falta, PKCS#8 cifrado com frase-senha digitada no terminal sem eco. A chave nunca entra por argv, variável de ambiente, log ou arquivo temporário | §8, IA-04, IA-15, IA-22 |
 | D6 | **Hash da coleta via `--json`, sem mudar o coletor** | §3, §5.3, IA-19 |
+| D7 | **Canal do manifesto até a VPS (decidido em princípio, 16/11/2026):** pelo pipeline de CI (deploy só por CI), nunca por cópia manual; o servidor confere a assinatura contra a chave pública fixada, que é o portão. Detalhes (onde o custodiante deposita o manifesto e quem escreve no volume) ficam para a W5 | §13.2 item 3, §14 (W5) |
+| D8 | **Política de rotação da chave de atestação (forma decidida, 16/11/2026):** troca imediata por comprometimento (revogação do `keyId` na lista de confiança) e troca periódica com período de convivência das duas chaves; limite de chaves aceitas ao mesmo tempo na lista. **Ficam abertos os números** (prazo da troca periódica, duração da convivência e o limite) | §13.2 item 4, §14 (W4) |
 
 ### 13.2 Questões que continuam abertas (do responsável)
 
 1. **Titular e suplente** do custodiante.
 2. **Dispositivo concreto** (e se ele assina Ed25519 puro e como é acessado, ver tensão com RS-14 na §8).
-3. **Canal de entrega do manifesto à VPS** e **quem escreve no volume de manifestos** (o administrador da VPS, que também edita a lista de chaves, está fora da garantia "web comprometido não falsifica").
-4. **Política e prazo de rotação** da chave de atestação (e limite de chaves simultâneas na lista).
+3. ~~Canal de entrega do manifesto à VPS~~ **decidido em princípio (D7)**; continua aberto **quem escreve no volume de manifestos** (o administrador da VPS, que também edita a lista de chaves, está fora da garantia "web comprometido não falsifica"), a fechar na W5.
+4. ~~Política~~ de rotação **decidida na forma (D8)**; continuam abertos o **prazo** da troca periódica, a **convivência** e o **limite de chaves simultâneas** na lista (necessários antes da W4).
 5. **Limite de tempo entre coleta e exportação** (valor de `--max-gap-hours`; quem monitora).
 
 ### 13.3 Pontos que esta conciliação deixou **sem decisão** (a confirmar)
@@ -404,7 +406,7 @@ CLI offline, sem métricas nem alertas. Saída estável e testável: `--json` co
 
 ## 14. Fatiamento em ondas
 
-(Sugestão desta spec; **não** cria `docs/plan/`. Cada onda: spec atualizada, testes no `package.json`, `typecheck` + testes do arquivo alterado, sem rede, sem chave real.)
+(Sugestão original desta spec. **Desde 16/11/2026 a fonte da verdade é `docs/plan/implementation-waves.md`**, que detalha estas ondas, acrescenta a onda **R1** (ADR-0002, confirmação de resultados pelo livro, antes do primeiro resultado de produção) e traz critérios verificáveis por onda. Cada onda: spec atualizada, testes no `package.json`, `typecheck` + testes do arquivo alterado, sem rede, sem chave real.)
 
 | Onda | Entrega | Depende de | Observação |
 |---|---|---|---|
