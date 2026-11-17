@@ -1,4 +1,104 @@
 {
-  "_comentario": "Exceções do gate de SCA (npm audit). Cada item vale SÓ para o pacote na versão instalada indicada, até a severidade indicada e até a data review_by. Ver docs/how-to/ci-security-scans.md. Lista vazia em 16/11/2026: o npm audit só reporta 1 aviso moderado (postcss-selector-parser 6.1.4), que o gate não bloqueia; as 9 exceções herdadas de docs/phase5/dependency-audit.md não correspondiam a nenhum aviso atual e foram removidas para não mascarar avisos futuros.",
-  "exceptions": []
+  "_comentario": "Exceções do gate de SCA (npm audit). Cada item vale SÓ para o pacote na versão instalada indicada, até a severidade indicada e até a data review_by. Ver docs/how-to/ci-security-scans.md. 16/11/2026: lista esvaziada (as 9 exceções herdadas não correspondiam a nenhum aviso atual). 17/11/2026: 11 itens para um único aviso (GHSA-fc5q-39xc-vjpf, picomatch sem correção), todos presos ao GHSA; os 9 pacotes que só herdam o aviso são resolvidos pela cadeia via.",
+  "exceptions": [
+    {
+      "name": "picomatch",
+      "version": "2.3.2",
+      "max_severity": "high",
+      "reason": "ReDoS do picomatch (padrões extglob +(*) fornecidos pelo atacante), sem versão corrigida. Só no build/dev, com os globs do nosso tailwind.config (devDependency; fora das imagens de produção: web standalone, worker --omit=dev). Ninguém de fora fornece padrão glob.",
+      "reference": "docs/phase5/dependency-audit.md (Atualização 17/11/2026: picomatch)",
+      "review_by": "2026-12-17",
+      "advisory": "GHSA-fc5q-39xc-vjpf"
+    },
+    {
+      "name": "picomatch",
+      "version": "4.0.7",
+      "max_severity": "high",
+      "reason": "ReDoS do picomatch (padrões extglob +(*) fornecidos pelo atacante), sem versão corrigida. Só no build/dev, com os globs do nosso tailwind.config (devDependency; fora das imagens de produção: web standalone, worker --omit=dev). Ninguém de fora fornece padrão glob.",
+      "reference": "docs/phase5/dependency-audit.md (Atualização 17/11/2026: picomatch)",
+      "review_by": "2026-12-17",
+      "advisory": "GHSA-fc5q-39xc-vjpf"
+    },
+    {
+      "name": "anymatch",
+      "version": "3.1.3",
+      "max_severity": "high",
+      "reason": "ReDoS do picomatch (padrões extglob +(*) fornecidos pelo atacante), sem versão corrigida. Só no build/dev, com os globs do nosso tailwind.config (devDependency; fora das imagens de produção: web standalone, worker --omit=dev). Ninguém de fora fornece padrão glob.",
+      "reference": "docs/phase5/dependency-audit.md (Atualização 17/11/2026: picomatch)",
+      "review_by": "2026-12-17",
+      "advisory": "GHSA-fc5q-39xc-vjpf"
+    },
+    {
+      "name": "chokidar",
+      "version": "3.6.0",
+      "max_severity": "high",
+      "reason": "ReDoS do picomatch (padrões extglob +(*) fornecidos pelo atacante), sem versão corrigida. Só no build/dev, com os globs do nosso tailwind.config (devDependency; fora das imagens de produção: web standalone, worker --omit=dev). Ninguém de fora fornece padrão glob.",
+      "reference": "docs/phase5/dependency-audit.md (Atualização 17/11/2026: picomatch)",
+      "review_by": "2026-12-17",
+      "advisory": "GHSA-fc5q-39xc-vjpf"
+    },
+    {
+      "name": "fast-glob",
+      "version": "3.3.3",
+      "max_severity": "high",
+      "reason": "ReDoS do picomatch (padrões extglob +(*) fornecidos pelo atacante), sem versão corrigida. Só no build/dev, com os globs do nosso tailwind.config (devDependency; fora das imagens de produção: web standalone, worker --omit=dev). Ninguém de fora fornece padrão glob.",
+      "reference": "docs/phase5/dependency-audit.md (Atualização 17/11/2026: picomatch)",
+      "review_by": "2026-12-17",
+      "advisory": "GHSA-fc5q-39xc-vjpf"
+    },
+    {
+      "name": "fdir",
+      "version": "6.5.0",
+      "max_severity": "high",
+      "reason": "ReDoS do picomatch (padrões extglob +(*) fornecidos pelo atacante), sem versão corrigida. Só no build/dev, com os globs do nosso tailwind.config (devDependency; fora das imagens de produção: web standalone, worker --omit=dev). Ninguém de fora fornece padrão glob.",
+      "reference": "docs/phase5/dependency-audit.md (Atualização 17/11/2026: picomatch)",
+      "review_by": "2026-12-17",
+      "advisory": "GHSA-fc5q-39xc-vjpf"
+    },
+    {
+      "name": "micromatch",
+      "version": "4.0.8",
+      "max_severity": "high",
+      "reason": "ReDoS do picomatch (padrões extglob +(*) fornecidos pelo atacante), sem versão corrigida. Só no build/dev, com os globs do nosso tailwind.config (devDependency; fora das imagens de produção: web standalone, worker --omit=dev). Ninguém de fora fornece padrão glob.",
+      "reference": "docs/phase5/dependency-audit.md (Atualização 17/11/2026: picomatch)",
+      "review_by": "2026-12-17",
+      "advisory": "GHSA-fc5q-39xc-vjpf"
+    },
+    {
+      "name": "readdirp",
+      "version": "3.6.0",
+      "max_severity": "high",
+      "reason": "ReDoS do picomatch (padrões extglob +(*) fornecidos pelo atacante), sem versão corrigida. Só no build/dev, com os globs do nosso tailwind.config (devDependency; fora das imagens de produção: web standalone, worker --omit=dev). Ninguém de fora fornece padrão glob.",
+      "reference": "docs/phase5/dependency-audit.md (Atualização 17/11/2026: picomatch)",
+      "review_by": "2026-12-17",
+      "advisory": "GHSA-fc5q-39xc-vjpf"
+    },
+    {
+      "name": "sucrase",
+      "version": "3.35.1",
+      "max_severity": "high",
+      "reason": "ReDoS do picomatch (padrões extglob +(*) fornecidos pelo atacante), sem versão corrigida. Só no build/dev, com os globs do nosso tailwind.config (devDependency; fora das imagens de produção: web standalone, worker --omit=dev). Ninguém de fora fornece padrão glob.",
+      "reference": "docs/phase5/dependency-audit.md (Atualização 17/11/2026: picomatch)",
+      "review_by": "2026-12-17",
+      "advisory": "GHSA-fc5q-39xc-vjpf"
+    },
+    {
+      "name": "tailwindcss",
+      "version": "3.4.19",
+      "max_severity": "high",
+      "reason": "ReDoS do picomatch (padrões extglob +(*) fornecidos pelo atacante), sem versão corrigida. Só no build/dev, com os globs do nosso tailwind.config (devDependency; fora das imagens de produção: web standalone, worker --omit=dev). Ninguém de fora fornece padrão glob.",
+      "reference": "docs/phase5/dependency-audit.md (Atualização 17/11/2026: picomatch)",
+      "review_by": "2026-12-17",
+      "advisory": "GHSA-fc5q-39xc-vjpf"
+    },
+    {
+      "name": "tinyglobby",
+      "version": "0.2.17",
+      "max_severity": "high",
+      "reason": "ReDoS do picomatch (padrões extglob +(*) fornecidos pelo atacante), sem versão corrigida. Só no build/dev, com os globs do nosso tailwind.config (devDependency; fora das imagens de produção: web standalone, worker --omit=dev). Ninguém de fora fornece padrão glob.",
+      "reference": "docs/phase5/dependency-audit.md (Atualização 17/11/2026: picomatch)",
+      "review_by": "2026-12-17",
+      "advisory": "GHSA-fc5q-39xc-vjpf"
+    }
+  ]
 }
