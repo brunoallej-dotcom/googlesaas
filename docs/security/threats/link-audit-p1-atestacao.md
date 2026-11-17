@@ -1,6 +1,6 @@
 # Threat Model: Link Audit P1 — atestação offline da coleta (manifesto Ed25519)
 
-> Status: modelo de ameaças da PROPOSTA de P1 (o produtor NÃO existe; o verificador existe). Data: 2026-11-16.
+> Status: **aprovado na onda W0 do P1 (17/11/2026)**, junto com a spec; respostas datadas nas "Perguntas ao responsável". O produtor ainda NÃO existe; o verificador existe. Data original: 2026-11-16.
 > Base lida: `docs/phase6-auditoria-link/onda6c-contrato-p1-atestacao.md` (§2 custódia, §3 processo, §4 conferência, §5 dossiê, §7 riscos), `onda6c-adr-proveniencia-evidencias.md`, `onda6c-runbook-chaves.md`, `src/lib/link-audit-evidence/provenance.ts`, `src/lib/link-audit/snapshot-store.ts` (leitura), `scripts/link-audit-collect.ts`, `src/lib/link-audit-runtime/{run,used-authorizations}.ts`.
 > Nada foi executado; nenhuma chamada externa. Citações `arquivo:linha` referem-se à árvore de trabalho em 2026-11-16.
 
@@ -407,28 +407,30 @@ Servidor e detecção
 
 1. Quem são o custodiante titular, o suplente e o conferente? Podem ser três pessoas distintas? Se o time for de uma pessoa só, aceita-se formalmente que o P1 não oferece quatro olhos (risco aceito e registrado)?
    - **PARCIAL (16/11/2026). DECIDIDA a regra: conferente ≠ custodiante como padrão; se só uma pessoa operar, exige aceite formal e escrito do risco e revisão posterior dos dossiês. ABERTA: quem são titular, suplente e conferente.**
+   - **Atualização 17/11/2026 (spec D10):** titular = o responsável (de preferência sem administrar a VPS); suplente com par próprio; sem segunda pessoa, aceite formal antes da chave real. Os nomes entram no runbook da W5.
 2. Aprova alterar o coletor (mudança aditiva: imprimir o hash da captura e dos arquivos) ou prefere um comando separado somente leitura para o operador? A frase do contrato §6 ("o coletor não é tocado") precisa ser revista de acordo.
    - **DECIDIDA (16/11/2026): hash da coleta via `--json`, sem mudar o coletor; o contrato §6 fica como está (ver correção de fato acima).**
 3. Existe, de fato, fonte independente e anterior (backup fora da VPS, e-mail, impressão, registro externo) para a coleta TUVAPLAST? Se não, aceita que permaneça NÃO ATESTÁVEL e rotulada na UI?
    - **DECIDIDA (16/11/2026): TUVAPLAST é NÃO ATESTÁVEL; quando o P1 existir, fazer coleta LIVE nova (autorização escrita específica; ~3 créditos Serper) em vez de atestar o legado.**
 4. Qual dispositivo (token PIV/HSM ou arquivo cifrado)? Antes de comprar: ele assina Ed25519 puro?
    - **PARCIAL (16/11/2026). DECIDIDA a preferência: token de hardware que assine Ed25519 puro (compatível com `crypto.verify(null, …)`, RS-15); na falta, PKCS#8 cifrado com frase-senha digitada no terminal sem eco; chave nunca por argv, variável de ambiente, log ou arquivo temporário. ABERTA: qual dispositivo concretamente.**
+   - **DECIDIDA (17/11/2026, spec D11):** K1 (PKCS#8 cifrado) primeiro; K2 só depois do teste da RS-15 e de exceção escrita e isolada à RS-14 (o acesso ao token exige biblioteca nativa ou utilitário externo).
 5. A v2 do manifesto (hash do dossiê, `prevSealSha256`, `source`) entra ANTES do primeiro resultado de produção? Recomendação: sim, pois mudar depois exige reatestar tudo.
    - **DECIDIDA (16/11/2026): `v2` antes do primeiro resultado de produção, com `dossier.sha256` e `prevSealSha256` dentro da parte assinada (RS-10); exige mudança aditiva no verificador, em onda e contrato próprios; `v1` continua legível. NÃO decidido: `entries[].source` (fora da decisão).**
 6. Aprova a aprovação assinada pelo conferente (segundo par de chaves) em vez de assinatura no texto do dossiê?
    - **ABERTA. Não adotada na spec (RS-03 "não adotado"); mitigação parcial por hash do pacote/dossiê e confirmação digitada.**
 7. Qual o limite aceitável entre a coleta e a exportação (24 h? 72 h?) e quem monitora?
-   - **ABERTA (limite de tempo entre coleta e exportação; quem monitora). A spec torna `--max-gap-hours` obrigatório, sem valor padrão.**
+   - **DECIDIDA (17/11/2026, spec D13): 24 h** (validade da autorização de coleta); o conferente monitora no dossiê e o `export` bloqueia acima do limite.
 8. A estação do custodiante será dedicada (sem navegador/IDE, disco cifrado, swap desligado)? Se for máquina de uso geral (ou o WSL de desenvolvimento, proibido pelo §2), qual a decisão sobre o risco?
-   - **ABERTA.**
+   - **DECIDIDA (17/11/2026, spec D11): dedicada e sem rede.** Os detalhes de endurecimento (disco cifrado, swap) entram no runbook da W5.
 9. Que meio será usado para a entrega do manifesto à VPS e quem tem escrita no volume de manifestos? Aceita que o administrador da VPS (que também edita a lista de chaves) está fora da garantia "web comprometido não falsifica"?
-   - **ABERTA (canal de entrega do manifesto à VPS e quem escreve no volume de manifestos).**
+   - **PARCIAL (16/11/2026, spec D7): canal = pipeline de CI**, com a assinatura conferida no servidor. **ABERTA:** quem escreve no volume de manifestos (W5).
 10. Como serão arquivados os dossiês, quem os revisará e com que frequência (revisão amostral por pessoa fora do fluxo)?
    - **ABERTA (a revisão posterior de dossiês foi decidida só para o caso de papéis acumulados).**
 11. Prazo e política de rotação preventiva da chave de atestação (por exemplo, 12 meses) e limite de chaves simultâneas na lista?
-   - **ABERTA (política/prazo de rotação da chave de atestação e limite de chaves).**
+   - **DECIDIDA (16–17/11/2026, spec D8 e D12):** 12 meses; convivência para assinar = 0; a aposentada só verifica o histórico, pelo **fecho de aposentadoria** proposto no contrato do verificador `v2` (a aprovar); no máximo 2 chaves que assinam (titular e suplente).
 12. Resultados já confirmados antes de uma revogação de chave devem ser reabertos para revisão humana? (O runbook hoje não os reavalia.)
-   - **ABERTA.**
+   - **DECIDIDA (17/11/2026, spec D12):** sim, marcados para reconferência humana; os manifestos da chave revogada deixam de valer para finalizações novas.
 
 13. (Do contrato §8, Q5) O comando de exportação é entregue antes do de assinatura?
    - **DECIDIDA (16/11/2026): sim**, em ondas separadas.
