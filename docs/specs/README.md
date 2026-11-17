@@ -16,7 +16,7 @@ or alongside its implementation.
 
 ## Index
 
-[CUSTOMIZE] List specs as you add them, e.g.:
+- [link-audit-observability](link-audit-observability.md) — logs estruturados, correlation id, métricas e alertas da Auditoria por Link (Fase 6)
+- [link-audit-p1-attestation](link-audit-p1-attestation.md) — produtor P1: atestação offline da coleta com manifesto Ed25519 (Fase 6)
 
-- [orders](orders.md) — order placement, payment, fulfillment
-- [auth](auth.md) — sign-in, sign-up, password reset
+As specs anteriores da Fase 6 ficam em `docs/phase6-auditoria-link/` (mantidas como estão).
