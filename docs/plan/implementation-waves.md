@@ -1,7 +1,7 @@
 # Implementation waves — Produtor P1 da Auditoria por Link (atestação offline da coleta)
 
 > Spec de origem: `docs/specs/link-audit-p1-attestation.md` (§14 sugeria W0–W6; este arquivo os detalha e acrescenta
-> a onda **R1**, do ADR-0002). Este arquivo é a fonte da verdade do roadmap de ondas; a tabela do `NOTES.md` espelha a
+> a onda **R1**, do ADR-0002). Os testes seguem o padrão `tests/link-audit-seal-*.test.ts` da spec §5.2. Este arquivo é a fonte da verdade do roadmap de ondas; a tabela do `NOTES.md` espelha a
 > coluna Status.
 >
 > **Contexto (16/11/2026):** a Onda 6C foi encerrada formalmente pelo responsável. A finalização continua falhando
@@ -11,16 +11,18 @@
 
 | Onda | Entrega | Depende de | Paralela com | Status |
 |------|---------|------------|--------------|--------|
-| W0 | Fundação documental: spec e modelo de ameaças aprovados, contrato P1 ajustado, **ADR-0002 aceito** e emenda §16.17 da spec do livro | — | — | 🟡 ADR-0002 proposto |
+| W0 | Fundação documental: spec e modelo de ameaças aprovados, contrato P1 ajustado, **ADR-0002 aceito** e emenda §16.17 da spec do livro | — | — | 🟡 PR da W0 aberto (decisões D9–D13; §16.17 em revisão independente) |
 | W1 | Função única `basis → EvidenceToProve[]` + teste de equivalência; esquemas do pacote e da aprovação; `packageSha256` determinístico | W0 | W3 | ⬜ |
 | W2 | CLI `export` (somente leitura) | W1 | W3, R1 | ⬜ |
-| W3 | Verificador `v2` (aditivo em `provenance.ts`) + contrato próprio | W0 | W1, W2, R1 | ⬜ |
-| R1 | ADR-0002: confirmação de resultados pelo livro de cabeças (fase C do resultado só pelo autor) | W0, W1 | W2, W3 | ⬜ |
+| W3 | Verificador `v2` (aditivo em `provenance.ts`) + contrato próprio | W0 + contrato aprovado | W1, W2 | ⬜ |
+| R1 | ADR-0002: confirmação de resultados pelo livro de cabeças (fase C do resultado só pelo autor) | W0 (§16.17 revisada), W1, W3 | W2 | ⬜ |
+| R2 | Resultado confirmado registra a proveniência que o atestou (`headSeq`, `headSealSha256`, `keyIds`); `UNAUTHENTICATED` na releitura ⇒ revisão humana | W3, R1 | W4 | ⬜ |
 | W4 | CLI `sign` (manifesto `v2`) | W1, W3, decisões §13.2 itens 1, 2 e 4 | — | ⬜ |
-| W5 | Procedimento, dossiê e ensaio ponta a ponta em homologação com chave descartável | W4, R1 | — | ⬜ |
+| W5 | Procedimento, dossiê e ensaio ponta a ponta em homologação com chave descartável | W4, R1, R2 | — | ⬜ |
 | W6 | Coleta LIVE nova da TUVAPLAST (fora do código) | W5 + autorização escrita específica | — | ⬜ |
 
-Ordem prática: W0 → {W1 ∥ W3} → {W2 ∥ R1 ∥ resto de W3} → W4 → W5 → W6.
+Ordem prática: W0 → {W1 ∥ W3} → {W2 ∥ R1} → {R2 ∥ W4} → W5 → W6. A R1 espera a W3 porque as duas mexem nos validadores da
+interface (`audit-page/validators.ts`).
 
 **Regras de todas as ondas.**
 - Uma branch e um PR por onda, com a spec atualizada no mesmo PR.
@@ -46,7 +48,7 @@ Ordem prática: W0 → {W1 ∥ W3} → {W2 ∥ R1 ∥ resto de W3} → W4 → W5
   - o contrato P1 cita D1–D6;
   - a spec do P1 marca como aprovada a si e ao modelo de ameaças.
   - As decisões em si são do responsável: um goal loop só confere que estão escritas.
-- **Goal command**: `/goal grep -q "0002.*Accepted" docs/adr/README.md && grep -q "^## 16.17" docs/phase6-auditoria-link/onda6c-especificacao-livro-de-cabecas.md && grep -q "D6" docs/phase6-auditoria-link/onda6c-contrato-p1-atestacao.md, stop after 3 tries`
+- **Goal command**: `/goal grep -q "0002.*Accepted" docs/adr/README.md && grep -q "^## 16.17" docs/phase6-auditoria-link/onda6c-especificacao-livro-de-cabecas.md && grep -q "CONTRATO APROVADO" docs/phase6-auditoria-link/onda6c-contrato-p1-atestacao.md && grep -q "APROVADA na onda W0" docs/specs/link-audit-p1-attestation.md, stop after 3 tries`
 
 ## Onda W1 — Base comum do pacote
 
@@ -56,7 +58,7 @@ Ordem prática: W0 → {W1 ∥ W3} → {W2 ∥ R1 ∥ resto de W3} → W4 → W5
   - extrair a montagem de `src/lib/link-audit-scoring-runs/preview.ts:219` para uma função pura;
   - novo módulo do P1 com os esquemas zod do pacote e da aprovação e o `packageSha256` determinístico;
   - viabilidade de `REPORT_REPRODUCES`;
-  - testes `tests/link-audit-p1-basis*.test.ts`.
+  - testes `tests/link-audit-seal-*.test.ts` (base, pacote e isolamento).
 - **Depende de / paralela com**: W0. Paralela com W3: arquivos disjuntos, e W3 não altera `EvidenceToProve`. Se precisar
   alterar, as duas viram sequenciais. **Não** é paralela com R1 (ambas mexem em `preview.ts`).
 - **Critérios de aceite**:
@@ -64,7 +66,7 @@ Ordem prática: W0 → {W1 ∥ W3} → {W2 ∥ R1 ∥ resto de W3} → W4 → W5
   - o teste de equivalência prova saída idêntica da prévia antes e depois da extração;
   - `typecheck` limpo;
   - motor intacto.
-- **Goal command**: `/goal scripts/run-isolated.sh npm run typecheck && scripts/run-isolated.sh node --require ./tests/register-typescript.cjs --test tests/link-audit-p1-basis*.test.ts tests/link-audit-scoring-preview-*.test.ts && grep -lq "IA-09" tests/link-audit-p1-basis*.test.ts && grep -lq "IA-10" tests/link-audit-p1-basis*.test.ts && git diff --quiet v1.0.1 -- src/lib/link-audit/scoring, stop after 6 tries`
+- **Goal command**: `/goal scripts/run-isolated.sh npm run typecheck && scripts/run-isolated.sh node --require ./tests/register-typescript.cjs --test tests/link-audit-seal-*.test.ts tests/link-audit-scoring-preview-*.test.ts && grep -lq "IA-09" tests/link-audit-seal-*.test.ts && grep -lq "IA-10" tests/link-audit-seal-*.test.ts && git diff --quiet v1.0.1 -- src/lib/link-audit/scoring, stop after 6 tries`
 
 ## Onda W2 — Exportação (entregável sozinha, D2)
 
@@ -72,25 +74,37 @@ Ordem prática: W0 → {W1 ∥ W3} → {W2 ∥ R1 ∥ resto de W3} → W4 → W5
 - **Escopo (slices/arquivos)**:
   - CLI novo em `scripts/` (sem escrita fora da pasta de saída), com `--collector-hash` e janela entre coleta e
     exportação;
-  - testes `tests/link-audit-p1-export*.test.ts`.
+  - testes `tests/link-audit-seal-export*.test.ts`.
 - **Depende de / paralela com**: W1 (função e esquemas). Paralela com W3 e R1: arquivos disjuntos e só leitura do
   armazenamento.
 - **Critérios de aceite**:
   - IA-02 (1–4), IA-05, IA-13, IA-14, IA-17, IA-19 e IA-20 cobertos por testes com o identificador no nome;
   - o CLI não abre rede nem escreve fora da saída (teste);
-  - stdout e `--json` estáveis.
-- **Goal command**: `/goal scripts/run-isolated.sh npm run typecheck && scripts/run-isolated.sh node --require ./tests/register-typescript.cjs --test tests/link-audit-p1-export*.test.ts && for id in IA-02 IA-05 IA-13 IA-14 IA-17 IA-19 IA-20; do grep -lq "$id" tests/link-audit-p1-export*.test.ts || exit 1; done, stop after 8 tries`
+  - stdout e `--json` estáveis;
+  - herdado da revisão da W1 (esquemas já exigem): datas do pacote normalizadas com `toISOString()` (o leitor aceita
+    0 ou 6 casas fracionárias, o esquema exige exatamente 3 e `Z`); os 8 `checks` gravados também no pacote legado
+    (mecânicos em `NOT_EXECUTED`); pacote `attestable` com `INTEGRITY_LOCAL` ou `COLLECTOR_HASH_MATCHES` em `FAIL` é
+    recusado pelo `export` (o esquema sozinho não recusa).
+- **Goal command**: `/goal scripts/run-isolated.sh npm run typecheck && scripts/run-isolated.sh node --require ./tests/register-typescript.cjs --test tests/link-audit-seal-export*.test.ts && for id in IA-02 IA-05 IA-13 IA-14 IA-17 IA-19 IA-20; do grep -lq "$id" tests/link-audit-seal-export*.test.ts || exit 1; done, stop after 8 tries`
 
 ## Onda W3 — Verificador `v2` (contrato próprio antes do código)
 
 - **Objetivo**: o servidor aceita o manifesto `v2` de forma aditiva (o `v1` continua legível), com continuidade e
   anti-rebaixamento.
 - **Escopo (slices/arquivos)**:
-  - contrato novo em `docs/phase6-auditoria-link/`, aprovado antes do código;
+  - contrato `docs/phase6-auditoria-link/p1-contrato-verificador-v2.md` (proposto em 17/11/2026), aprovado antes do código;
   - `src/lib/link-audit-evidence/provenance.ts`, com acréscimos e sem mudar `EvidenceToProve`;
+  - formato da lista de confiança com estado da chave (ativa, aposentada, revogada; D12), compatível com o atual, e o
+    **fecho de aposentadoria** (`<sealsDir>/_closures/<id>.json`, assinado por uma chave ativa) como único caminho para uma
+    chave aposentada continuar valendo no histórico;
+  - rótulos e validadores da interface para os motivos novos (`labels.ts`, `validators.ts`) e a configuração de produção
+    só com `v2` (`acceptedVersions: [2]`), conforme o contrato;
+  - runbook de chaves (`onda6c-runbook-chaves.md` §4): de "remover a pública antiga" para marcá-la aposentada ou revogada;
   - vetor-ouro em arquivo de teste;
   - testes `tests/link-audit-evidence-provenance-v2*.test.ts`.
-- **Depende de / paralela com**: W0. Paralela com W1, W2 e R1: só `provenance.ts` e o contrato novo.
+- **Depende de / paralela com**: W0 e a aprovação do contrato. Paralela com W1 e W2: `provenance.ts`, os rótulos e
+  validadores dos motivos de prova e o contrato novo, que nenhuma das duas toca (a W1 usa o arquivo próprio
+  `evidence-to-prove.ts`). **Não** é paralela com R1: as duas mexem em `audit-page/validators.ts`.
 - **Critérios de aceite**:
   - IA-21, a parte do vetor-ouro de IA-03 e RS-20 cobertos por testes;
   - 1 byte alterado em `contentSha256`, `signature`, `seq`, `keyId`, `sealedAt`, `dossier` ou `prevSealSha256` dá
@@ -103,13 +117,16 @@ Ordem prática: W0 → {W1 ∥ W3} → {W2 ∥ R1 ∥ resto de W3} → W4 → W5
 - **Objetivo**: recibo de resultado sem `RUN_CONFIRMED` no livro vira fase C, que só o autor conclui; resultado sem
   `RUN_INTENT` falha fechado.
 - **Escopo (slices/arquivos)**:
-  - `src/lib/link-audit-ledger/` (tipos de registro, capacidade, receitas);
-  - `src/lib/link-audit-scoring-runs/{results,results-store,preview}.ts`;
+  - `src/lib/link-audit-ledger/` (tipos de registro `RUN_INTENT`/`RUN_CONFIRMED`/`RUN_ABORTED`, capacidade, receitas,
+    cabeça das decisões separada da cabeça do livro);
+  - `src/lib/link-audit-scoring-runs/{results,results-store,results-types,preview}.ts` (inclui as leituras condicionadas
+    ao `RUN_CONFIRMED`);
+  - `src/lib/link-audit-decisions/` (porta do livro e serviço) e a interface `audit-page/{types,validators}.ts`;
   - mensagens;
   - testes `tests/link-audit-results-ledger*.test.ts`;
   - a spec do livro já emendada (§16.17, W0).
-- **Depende de / paralela com**: W0 (ADR aceito e §16.17) e W1 (ambas mexem em `preview.ts`). Paralela com W2 e W3:
-  arquivos disjuntos.
+- **Depende de / paralela com**: W0 (ADR aceito e §16.17 revisada de forma independente), W1 (ambas mexem em
+  `preview.ts`) e W3 (ambas mexem em `audit-page/validators.ts`). Paralela com W2: arquivos disjuntos.
 - **Critérios de aceite** (testes escritos antes do código, falhando no código de hoje):
   - recibo fabricado para a pendente legítima de outro operador não confirma o resultado;
   - outro operador recebe `RESULT_PENDING_UNCONFIRMED`, e o reenvio do autor conclui;
@@ -119,6 +136,28 @@ Ordem prática: W0 → {W1 ∥ W3} → {W2 ∥ R1 ∥ resto de W3} → W4 → W5
   - toda a suíte de livro e resultados verde.
 - **Goal command**: `/goal scripts/run-isolated.sh npm run typecheck && scripts/run-isolated.sh node --require ./tests/register-typescript.cjs --test tests/link-audit-results-ledger*.test.ts tests/link-audit-ledger-*.test.ts tests/link-audit-scoring-results-*.test.ts && git diff --quiet v1.0.1 -- src/lib/link-audit/scoring, stop after 10 tries`
 
+## Onda R2 — Proveniência registrada no resultado (portão antes do primeiro resultado de produção)
+
+- **Objetivo**: cada resultado confirmado guarda qual cadeia de manifestos e quais chaves o atestaram. Assim a
+  revogação de uma chave marca os resultados afetados para reconferência (D12, pergunta 12 do modelo de ameaças) mesmo
+  que alguém suprima o sinal apagando ou corrompendo os manifestos.
+- **Escopo (slices/arquivos)**:
+  - `src/lib/link-audit-scoring-runs/{results,results-types}.ts`: o resultado grava o `{headSeq, headSealSha256, keyIds}`
+    que o verificador `v2` devolve em `AUTHENTICATED` (contrato da W3, §7.3);
+  - a releitura de um resultado confirmado cruza os `keyIds` gravados com as chaves revogadas e trata qualquer
+    `UNAUTHENTICATED` como "a reconferir", sem invalidar o histórico em silêncio;
+  - rótulos e validadores da interface para o estado "a reconferir";
+  - testes `tests/link-audit-results-provenance*.test.ts`.
+- **Depende de / paralela com**: W3 (o verificador devolve os campos) e R1 (as duas mexem nos resultados). Paralela com
+  W4: arquivos disjuntos.
+- **Critérios de aceite**:
+  - um resultado confirmado com chave depois revogada aparece "a reconferir" mesmo com a pasta de manifestos apagada,
+    corrompida ou com lacuna;
+  - um resultado confirmado cuja releitura dá `UNAUTHENTICATED` aparece "a reconferir";
+  - resultados antigos (sem os campos) continuam legíveis e são rotulados "proveniência não registrada";
+  - motor intacto.
+- **Goal command**: `/goal scripts/run-isolated.sh npm run typecheck && scripts/run-isolated.sh node --require ./tests/register-typescript.cjs --test tests/link-audit-results-provenance*.test.ts tests/link-audit-scoring-results-*.test.ts && git diff --quiet v1.0.1 -- src/lib/link-audit/scoring, stop after 8 tries`
+
 ## Onda W4 — Assinatura
 
 - **Objetivo**: CLI `sign` que produz o manifesto `v2` cumulativo com todas as recusas da spec §5.5.
@@ -126,15 +165,18 @@ Ordem prática: W0 → {W1 ∥ W3} → {W2 ∥ R1 ∥ resto de W3} → W4 → W5
   - núcleo de recusas, primeiro com chave de teste em memória;
   - depois: entrada da chave (token K2 e/ou PKCS#8 cifrado K1, D5), confirmação humana, autoteste, recibo e artefato
     empacotado;
-  - testes `tests/link-audit-p1-sign*.test.ts`.
+  - testes `tests/link-audit-seal-sign*.test.ts`.
 - **Depende de / paralela com**: W1, W3 e as decisões §13.2 itens 1 (titular e suplente), 2 (dispositivo) e 4 (prazo de
   rotação e limite de chaves). Sequencial: é a única que toca a chave.
 - **Critérios de aceite**:
   - IA-01, IA-03, IA-04, IA-06, IA-07, IA-08, IA-11, IA-12, IA-15, IA-16, IA-18, IA-22, IA-23 e IA-24 cobertos por
     testes com o identificador no nome;
   - a ida e volta (IA-03 iii) é `AUTHENTICATED` pelo verificador `v2` real;
-  - a chave nunca aparece em argv, ambiente, log ou arquivo temporário (teste).
-- **Goal command**: `/goal scripts/run-isolated.sh npm run typecheck && scripts/run-isolated.sh node --require ./tests/register-typescript.cjs --test tests/link-audit-p1-sign*.test.ts tests/link-audit-evidence-provenance*.test.ts && for id in IA-01 IA-03 IA-04 IA-06 IA-07 IA-08 IA-11 IA-12 IA-15 IA-16 IA-18 IA-22 IA-23 IA-24; do grep -lq "$id" tests/link-audit-p1-sign*.test.ts || exit 1; done, stop after 10 tries`
+  - a chave nunca aparece em argv, ambiente, log ou arquivo temporário (teste);
+  - herdado da W1: o formato do `dossier.id` definido antes (o esquema aceita só letras, dígitos, espaço, `.`, `_` e `-`;
+    alinhar com o ponto O7 do contrato do verificador `v2`) e a regra "resultado humano só para checks que o pacote
+    marca `NOT_EXECUTED`" implementada no `sign`.
+- **Goal command**: `/goal scripts/run-isolated.sh npm run typecheck && scripts/run-isolated.sh node --require ./tests/register-typescript.cjs --test tests/link-audit-seal-sign*.test.ts tests/link-audit-evidence-provenance*.test.ts && for id in IA-01 IA-03 IA-04 IA-06 IA-07 IA-08 IA-11 IA-12 IA-15 IA-16 IA-18 IA-22 IA-23 IA-24; do grep -lq "$id" tests/link-audit-seal-sign*.test.ts || exit 1; done, stop after 10 tries`
 
 ## Onda W5 — Procedimento, dossiê e ensaio
 
@@ -147,7 +189,8 @@ Ordem prática: W0 → {W1 ∥ W3} → {W2 ∥ R1 ∥ resto de W3} → W4 → W5
   - procedimento do suplente;
   - canal de entrega do manifesto pelo CI (decidido em princípio em 16/11/2026; detalhes aqui);
   - relatório do ensaio.
-- **Depende de / paralela com**: W4 e R1 (o ensaio finaliza um resultado, então precisa da confirmação autenticada).
+- **Depende de / paralela com**: W4, R1 e R2 (o ensaio finaliza um resultado, então precisa da confirmação autenticada e
+  do registro da proveniência).
   Depende também da fase 2 do ADR 6C-03 (volume de manifestos).
 - **Critérios de aceite**:
   - o relatório do ensaio mostra `export` → aprovação → `sign` → entrega → verificador `v2` `AUTHENTICATED` → resultado
