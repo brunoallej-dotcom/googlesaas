@@ -226,8 +226,10 @@ Endurecimento de código (antes de expor): bypass `GMN_AUTH_DISABLED` desligado 
   - nomes de teste no padrão `link-audit-seal-*`.
 - **Defeito que já existe na `main`, achado pela revisão da §16.17:** um `CHECKPOINT` do `RECOVER`, permitido com operação aberta (`ledger/service.ts:350-365`), faz o `CONFIRMED` de uma decisão falhar com `LEDGER_UNAVAILABLE`. A decisão fica em fase C até o autor reenviar. É disponibilidade, não integridade. Será corrigido na R1, regra dos "fechos intercalados", com o teste RL-32 reproduzindo o caso.
 - **Achado de ambiente:** com o Node v24 local, 1 teste de `link-audit-evidence-provenance` falha também na `main` limpa ("ORDEM PEQUENA"). O teste exige que o `crypto.verify` aceite a assinatura universal da chave identidade, e o Node 24 passou a recusá-la. CI e produção (Node 22) passam. Ajustar o teste quando o projeto migrar para o Node 24.
+- **CI PARADO POR COBRANÇA (17/11/2026, 04:52 UTC):** desde os PRs #25 e #26, o GitHub recusa iniciar os jobs ("recent account payments have failed or your spending limit needs to be increased"). Os checks aparecem como `failure` em 1–2 s, sem rodar. O #24 passou 6/6 antes disso. Sem CI não há merge (regra da rodada) nem verificação no servidor. A W2 **não** foi iniciada por isso (onda seguinte possível; empilhada sobre a W1). A cobrança é decisão do responsável; nada foi alterado. Na madrugada de 16–17/11 houve cerca de 40 execuções do CI (31 com sucesso), o que pode ter contribuído para atingir o limite de minutos do plano.
 - **Pendências do responsável:**
-  - merge do #24 e do PR da W0;
+  - resolver a cobrança do GitHub Actions (ou aguardar a renovação do ciclo) e depois rodar de novo o CI dos PRs #25 e #26;
+  - merge do #24 e do PR da W0 (#26);
   - aprovar ou mudar o contrato da W3 (#25);
   - nomes de titular, suplente e conferente e o local dos backups (runbook da W5);
   - `entries[].source`, aprovação assinada pelo conferente e revisão amostral de dossiês (spec §13.3).
