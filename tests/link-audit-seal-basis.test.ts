@@ -20,7 +20,12 @@ test('IA-09: equivalência com o mapeamento antigo, layout versionado (capturas 
   const basis = makeBasis({ evidences: [captureEvidence(1), reportEvidence(1, 1, { superseded: true }), reportEvidence(1, 2), captureEvidence(2, { contentSha256: hash('e') })] });
   const out = evidenceToProveFromBasis(basis);
   assert.deepEqual(out, oldInlineMapping(basis));
-  assert.deepEqual(out.map((e) => e.ref), ['capture:c0001', 'report:c0001-r0001', 'report:c0001-r0002', 'capture:c0002']);
+  assert.deepEqual(out, [
+    { ref: 'capture:c0001', contentSha256: 'a'.repeat(64), legacy: false },
+    { ref: 'report:c0001-r0001', contentSha256: 'd'.repeat(64), legacy: false },
+    { ref: 'report:c0001-r0002', contentSha256: 'd'.repeat(64), legacy: false },
+    { ref: 'capture:c0002', contentSha256: 'e'.repeat(64), legacy: false },
+  ]);
   assert.ok(out.every((e) => Object.keys(e).sort().join() === 'contentSha256,legacy,ref'), 'só os três campos que a verificação usa');
 });
 
@@ -28,8 +33,21 @@ test('IA-09: equivalência com o mapeamento antigo, layout legado (evidências l
   const basis = { ...makeBasis({ layout: 'LEGACY', evidences: [captureEvidence(1, { legacy: true }), reportEvidence(1, 1, { legacy: true })] }), artifacts: [LEGACY_STATUS] };
   const out = evidenceToProveFromBasis(basis);
   assert.deepEqual(out, oldInlineMapping(basis));
-  assert.deepEqual(out.map((e) => [e.ref, e.legacy]), [['capture:c0001', true], ['report:c0001-r0001', true], ['legacy-status:c0001', true]]);
+  assert.deepEqual(out, [
+    { ref: 'capture:c0001', contentSha256: 'a'.repeat(64), legacy: true },
+    { ref: 'report:c0001-r0001', contentSha256: 'd'.repeat(64), legacy: true },
+    { ref: 'legacy-status:c0001', contentSha256: 'd'.repeat(64), legacy: true },
+  ]);
 });
+
+test('IA-09: casos de borda: evidences vazio, artifacts explicitamente undefined e só artefatos', () => {
+  assert.deepEqual(evidenceToProveFromBasis({ evidences: [] }), []);
+  assert.deepEqual(evidenceToProveFromBasis({ evidences: [], artifacts: undefined }), []);
+  assert.deepEqual(evidenceToProveFromBasis({ evidences: [], artifacts: [LEGACY_STATUS] }), [LEGACY_STATUS]);
+  assert.deepEqual(evidenceToProveFromBasis({ evidences: [captureEvidence(1)], artifacts: undefined }).map((e) => e.ref), ['capture:c0001']);
+});
+
+// READY sem `evidences` ⇒ INTERNAL_ERROR (nunca tratado como pronto): coberto em tests/link-audit-scoring-preview-service.test.ts, caso 'evidências nulas' (~linha 533).
 
 test('IA-09: artefatos ausentes ou vazios não alteram a lista; a função é pura (não muda a entrada, devolve cópia)', () => {
   const basis = makeBasis();

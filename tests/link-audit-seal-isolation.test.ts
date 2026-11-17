@@ -8,13 +8,26 @@ import { computePackageSha256, evidenceToProveFromBasis } from '../src/lib/link-
 const ROOT = path.join(__dirname, '..');
 const LIB = path.join(ROOT, 'src', 'lib', 'link-audit-attestation');
 const strip = (source: string): string => source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/.*$/gm, '$1');
-const importsOf = (source: string): string[] => [...strip(source).matchAll(/(?:^|\n)\s*(?:import|export)\s+(?:type\s+)?[^;]*?from\s*['"]([^'"]+)['"]/g)].map((m) => m[1] ?? '');
+/** Todas as formas de dependência: `import/export ... from`, `import 'x'` (efeito colateral), `import('x')` e `require('x')`. */
+const importsOf = (source: string): string[] => {
+  const code = strip(source);
+  return [
+    ...[...code.matchAll(/(?:^|\n)\s*(?:import|export)\s+(?:type\s+)?[^;]*?from\s*['"]([^'"]+)['"]/g)].map((m) => m[1] ?? ''),
+    ...[...code.matchAll(/(?:^|[;\n])\s*import\s*['"]([^'"]+)['"]/g)].map((m) => m[1] ?? ''),
+    ...[...code.matchAll(/\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1] ?? ''),
+    ...[...code.matchAll(/\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1] ?? ''),
+  ];
+};
 const FILES = ['index.ts', 'package-hash.ts', 'schemas.ts'];
 const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   'index.ts': new Set(['../link-audit-evidence/evidence-to-prove', './package-hash', './schemas']),
   'package-hash.ts': new Set(['../link-audit/canonical', './schemas']),
   'schemas.ts': new Set(['zod', '../link-audit-evidence/types']),
 };
+
+test('importsOf enxerga import de efeito colateral, import() dinâmico, require e export from', () => {
+  assert.deepEqual(importsOf("import 'a';\nimport { b } from 'b';\nconst c = await import('c');\nconst d = require('d');\nexport { e } from 'e';\n// import 'comentario'"), ['b', 'e', 'a', 'c', 'd']);
+});
 
 test('lista exata de arquivos do módulo (arquivo novo exige decisão e revisão deste teste)', () => {
   assert.deepEqual(fs.readdirSync(LIB).sort(), FILES);

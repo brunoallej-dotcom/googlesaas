@@ -234,6 +234,11 @@ const SCORING_RUNS_STORE_TARGETS: ReadonlyMap<string, ReadonlySet<string>> = new
 const SCORING_ROUTES_DIR = 'src/app/api/link-audit/scoring/';
 /** P1 W1: núcleo de atestação (puro). Só o selo canônico (SHA-256 do pacote); nunca o motor, o disco nem as decisões. Conferido arquivo a arquivo em `link-audit-seal-isolation.test.ts`. */
 const ATTESTATION_DIR = 'src/lib/link-audit-attestation/';
+/** Arquivo do núcleo de atestação → arquivos do módulo de evidências que ele pode importar. */
+const ATTESTATION_EVIDENCE_IMPORTS: ReadonlyMap<string, readonly string[]> = new Map([
+  ['src/lib/link-audit-attestation/index.ts', ['evidence-to-prove']],
+  ['src/lib/link-audit-attestation/schemas.ts', ['types']],
+]);
 const ATTESTATION_TARGETS: ReadonlySet<string> = new Set(['canonical.ts']);
 const CLIENT_DIRS = ['src/components/link-audit/', 'src/app/auditoria-por-link/'];
 /** Único valor (não só tipo) que o navegador pode importar: constantes puras, sem nenhum import. */
@@ -467,7 +472,7 @@ const DECISIONS_ROUTES_DIR = 'src/app/api/link-audit/decisions/';
 test('Onda 5A/5B: só o runtime, os comandos e as rotas de leitura importam o serviço de evidências; o navegador só importa tipos', () => {
   const evidenceRoot = path.join(ROOT, 'src', 'lib', 'link-audit-evidence');
   const allowedImporters = (name: string): boolean =>
-    name.startsWith('src/lib/link-audit-evidence/') || name.startsWith('src/lib/link-audit-attestation/') || name.startsWith(RUNTIME_DIR) || name === RUNTIME_CLI || name === EVIDENCE_CLI || name.startsWith(EVIDENCE_ROUTES_DIR) || name.startsWith(DECISIONS_ROUTES_DIR);
+    name.startsWith('src/lib/link-audit-evidence/') || name.startsWith(RUNTIME_DIR) || name === RUNTIME_CLI || name === EVIDENCE_CLI || name.startsWith(EVIDENCE_ROUTES_DIR) || name.startsWith(DECISIONS_ROUTES_DIR);
   for (const file of [...walk(path.join(ROOT, 'src')), ...walk(path.join(ROOT, 'scripts'))]) {
     const name = rel(file);
     if (name.startsWith(SCORING_RUNS_DIR)) {
@@ -487,6 +492,16 @@ test('Onda 5A/5B: só o runtime, os comandos e as rotas de leitura importam o se
         const resolved = resolveImport(file, statement.specifier);
         if (resolved === null || !(resolved === evidenceRoot || resolved.startsWith(evidenceRoot + path.sep))) continue;
         assert.ok(resolved === evidenceRoot || resolved === path.join(evidenceRoot, 'scoring-basis') || resolved === path.join(evidenceRoot, 'provenance'), `${name} importa "${statement.specifier}": só o índice público, o leitor de pontuação e a política de proveniência são permitidos`);
+      }
+      continue;
+    }
+    if (name.startsWith(ATTESTATION_DIR)) {
+      // P1 W1: o núcleo de atestação usa SÓ estes dois arquivos do módulo de evidências, e só nestes importadores
+      for (const statement of importStatements(fs.readFileSync(file, 'utf8'))) {
+        const resolved = resolveImport(file, statement.specifier);
+        if (resolved === null || !(resolved === evidenceRoot || resolved.startsWith(evidenceRoot + path.sep))) continue;
+        const allowed = ATTESTATION_EVIDENCE_IMPORTS.get(name);
+        assert.ok(allowed !== undefined && allowed.some((target) => resolved === path.join(evidenceRoot, target)), `${name} importa "${statement.specifier}": fora da lista fechada do núcleo de atestação`);
       }
       continue;
     }
