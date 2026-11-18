@@ -149,7 +149,27 @@ O `export` executa e grava em `checks[]` (`PASS|FAIL|NOT_EXECUTED`) o que for me
 | 3 | `EXPORT_GAP_EXCEEDED` | RS-06 |
 | 3 | `EXPORT_OUT_UNSAFE` | `--out` existente ou dentro da pasta de evidências |
 | 3 | `EXPORT_TOO_MANY_ENTRIES` | mais de 2000 entradas |
+| 3 | `EXPORT_CLOCK_REGRESSION` | **(acréscimo da W2)** `lastCollectedAt` posterior ao relógio da estação; recusa mesmo com `--gap-justification` |
 | 4 | `UNEXPECTED` | erro não previsto (mensagem genérica) |
+
+#### 5.3.2 Decisões de implementação da W2 (17/11/2026)
+
+Implementado em `src/lib/link-audit-attestation/export.ts` (montagem pura), `export-run.ts` (único arquivo do módulo com disco: só os leitores existentes, `FsOps` injetado, e a criação exclusiva do `--out`) e `scripts/link-audit-seal.ts`; testes `tests/link-audit-seal-export*.test.ts`. Onde a spec era ambígua, valeu a opção que falha fechado:
+
+- **`gap.observedHours`: fica DENTRO do hash, arredondado PARA CIMA à hora.** O limite é conferido em milissegundos exatos; o teto nunca subestima o intervalo e mantém `observedHours ≤ maxHours` ⇔ dentro do limite. Duas exportações na mesma hora dão o mesmo `packageSha256`; em horas diferentes, hashes diferentes, o que a reprodutibilidade do fluxo não proíbe, porque o `sign` nunca reexporta (RS-04): assina os bytes do pacote aprovado.
+- **`HTTP_2XX_AND_COLLECTED_AT`** usa o que o leitor de evidências **já expõe** (`VersionEntry.httpStatus`/`collectedAt`, via `getAudit`), sem ampliar leitor nenhum. `PASS` se todas as capturas têm status 2xx e `collectedAt`; `FAIL` se alguma não tem (o pacote sai; quem recusa é o `sign`). Se as duas leituras divergirem (captura a mais ou a menos, ou `collectedAt` diferente), a recusa é `EXPORT_INTEGRITY_NOT_OK`. **Para a W4:** esta verificação não está em `HUMAN_CHECK_IDS`, então um `NOT_EXECUTED` dela nunca seria assinável. Pelo `export` ela nunca sai `NOT_EXECUTED` numa captura nova.
+- **Empresa no resumo:** nome/cidade/UF **informados pelo operador** (`identity.operatorProvided` do relatório mais recente, como o leitor de evidências já expõe). Valor fora de forma vira `null` e nunca é corrigido.
+- **Sem `--out` (tensão §5.3 × IA-14/RS-21):** o pacote contém nome/cidade/UF, então só vai para a saída padrão **com `--show-summary`**; sem os dois, é erro de uso. Nesse modo, a saída padrão traz exatamente os bytes do arquivo do pacote, e o resumo humano vai para stderr. Com `--json`, o objeto único inclui `package`.
+- **Legado:** as 8 verificações são gravadas, **todas** `NOT_EXECUTED`, inclusive `INTEGRITY_LOCAL`, conforme a leitura literal do critério herdado da W1. Além disso, `gap = null`, `--max-gap-hours` não é exigido e `--collector-hash` é recusado com `EXPORT_COLLECTOR_HASH_MISMATCH` ("valor sem captura não legada").
+- **Argumentos:**
+  - `--max-gap-hours` é inteiro de 1 a 8760 (teto de sanidade; continua sem valor padrão);
+  - `--gap-justification` passa pela regra de texto seguro do esquema (sem e-mail, telefone nem controle), exige `--max-gap-hours` e nunca é ecoada (o `--json` só diz `justified`);
+  - `--evidence-dir` na área do projeto dá erro de uso, e inexistente dá `EXPORT_NOT_FOUND`;
+  - falha ao gravar o `--out` dá `EXPORT_OUT_UNSAFE`. O `export` nunca apaga nada; um arquivo parcial é declarado na mensagem.
+- **Outros pontos:**
+  - `integrity.checkedFiles` é o número de entradas do pacote;
+  - o `delta` (`--seals-dir`) não confere assinatura e informa `deltaStatus` (`NOT_REQUESTED`, `NO_SEALS`, `COMPUTED` ou `UNREADABLE`); uma pasta de manifestos inexistente conta como `UNREADABLE`, não como "nenhum manifesto";
+  - lixo com nome **fora** do conjunto (ex.: um FIFO `lixo.fifo`) não é aberto nem atestado (§7.2: o comando não acrescenta leitura própria).
 
 ### 5.4 Arquivo de aprovação (entrada do `sign`)
 
