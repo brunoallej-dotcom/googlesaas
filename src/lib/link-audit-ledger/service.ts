@@ -86,6 +86,17 @@ const MESSAGES: Partial<Record<LedgerReason, string>> = {
 /** Texto fixo da recusa da fase C a quem não é o autor (sem identidade de terceiros; §16.16). */
 const PHASE_C_NOT_AUTHOR_MESSAGE = 'A decisão já tem entrada e recibo, mas o livro ainda não a confirmou; somente o autor dela a conclui, reenviando o mesmo pedido ou pela recuperação verificável do livro. Nada foi gravado.';
 
+/**
+ * FECHOS INTERCALADOS (spec §16.17.3; D-20): quantas vezes o dono regrava o MESMO fecho na nova cauda depois de um EEXIST. Mesmo limite das escritas das decisões e dos
+ * resultados (`WRITE_RETRIES` dos stores). Esgotado ⇒ recusa; a decisão fica em fase C e o autor a conclui (reenvio ou `RECOVER` dele).
+ */
+const WRITE_RETRIES = 5;
+/** Textos fixos das recusas do fecho (nunca caminho do disco). */
+const CLOSING_CHANGED_MESSAGE = 'Outro processo alterou o livro durante a operação; a confirmação não foi gravada (a decisão e o recibo existem; reenvie para concluir).';
+const CLOSING_UNTRUSTED_MESSAGE = 'O livro relido depois de uma gravação concorrente não confere (cadeia, etiqueta ou histórico lido); a confirmação não foi gravada.';
+const CLOSING_CLOSED_MESSAGE = 'A operação desta decisão foi encerrada por outro processo antes da confirmação; a confirmação não foi gravada.';
+const CLOSING_RETRIES_MESSAGE = 'O livro mudou a cada tentativa de gravar a confirmação; ela não foi gravada (a decisão e o recibo existem; reenvie para concluir).';
+
 export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
   // Q3: o livro só aceita a chave EXCLUSIVA dele; uma chave de origem (decisões/resultados) nunca autentica o livro.
   if (options.authenticator.purpose !== 'ledger') throw new Error('o livro exige a chave exclusiva do livro (finalidade ledger)');
@@ -252,8 +263,41 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
     affectsPrior: entry.affectsPrior,
   });
 
+  /*
+   * EEXIST nas gravações do `prepare` (CHECKPOINT, `ABORTED` da fase A vencida, `CONFIRMED` da fase C): vira `RETRY` e o laço das decisões RELÊ tudo e REAVALIA (limitado
+   * pelo `WRITE_RETRIES` do store). Por isso a regra dos fechos intercalados (`reconcileClosing`) NÃO é aplicada a esses fechos, embora eles também possam colidir com o
+   * CHECKPOINT de outro `RECOVER` (ex.: um que viu a fase A ainda recente — outro relógio ou idade observada, R7-09 — grava o CHECKPOINT com a operação aberta, R7-03): são
+   * RECEITAS de recuperação, não o passo do dono, e precisam ser rederivadas de uma leitura nova — o `ABORTED` grava o que foi observado (entrada e recibo ausentes, idade),
+   * e as conferências de R7-06 (testemunhas, `revalidate`) e a origem/durabilidade da fase C valem para CADA gravação. Regravar o mesmo registro às cegas afirmaria uma
+   * observação velha. A nova tentativa já leva o fecho à nova cauda quando a receita continua valendo e não grava nada quando a operação foi fechada por outro processo.
+   */
   const stepFromAppend = (result: 'OK' | 'CONFLICT' | LedgerRefusal): LedgerStep | null =>
     result === 'OK' ? null : result === 'CONFLICT' ? { kind: 'RETRY', ms: 10, transient: false } : { kind: 'REFUSED', refusal: result };
+
+  /**
+   * FECHOS INTERCALADOS (spec §16.17.3, MAJOR-2; D-20), família das DECISÕES. O `link()` do fecho do dono achou a posição ocupada. Relê o livro INTEIRO e exige etiquetas e
+   * replay válidos e que a releitura ESTENDA o que esta sessão leu (o livro só cresce; a INTENT da operação é a mesma). Então: (ii) fecho idêntico gravado por outro processo
+   * (R6-04) ⇒ `ADOPTED`; (i) a PRÓPRIA operação segue aberta (antes da R1 o intruso só pode ser `CHECKPOINT`: é o único registro que o replay admite ali) ⇒ `REAPPEND`;
+   * (iii) qualquer outra coisa (operação abortada por outro processo, cadeia que não confere) ⇒ recusa. Nunca grava nada.
+   */
+  async function reconcileClosing(session: Session, intent: LedgerRecord, sameClosing: (record: LedgerRecord) => boolean): Promise<'REAPPEND' | 'ADOPTED' | LedgerRefusal> {
+    const reread = await readLedgerFiles(options.dir, session.auditId, storeOptions);
+    if (!reread.ok) return refusal('LEDGER_UNAVAILABLE', null, null, [CLOSING_CHANGED_MESSAGE]);
+    const records = reread.value.records;
+    const replayed = replayLedger(records, session.auditId);
+    if (verifyTags(records, auth) !== null || !replayed.ok) return refusal('LEDGER_UNAVAILABLE', null, null, [CLOSING_UNTRUSTED_MESSAGE]);
+    const known = session.records[session.records.length - 1];
+    const extendsRead = known !== undefined && records.length > session.records.length && records[known.ledgerSeq - 1]?.contentSha256 === known.contentSha256 && records[intent.ledgerSeq - 1]?.contentSha256 === intent.contentSha256;
+    if (!extendsRead) return refusal('LEDGER_UNAVAILABLE', null, null, [CLOSING_UNTRUSTED_MESSAGE]);
+    const adopted = records.some(sameClosing);
+    // a INTENT aberta no replay é a desta operação (mesmo hash ⇒ mesmo opId e mesma cadeia até ela); o replay só admite CHECKPOINT entre ela e o fecho
+    const ownOpen = replayed.value.open?.contentSha256 === intent.contentSha256;
+    if (!adopted && !ownOpen) return refusal('LEDGER_UNAVAILABLE', null, null, [CLOSING_CLOSED_MESSAGE]);
+    session.records = [...records];
+    session.state = 'OK';
+    session.tagFailure = null;
+    return adopted ? 'ADOPTED' : 'REAPPEND';
+  }
 
   return {
     begin,
@@ -335,6 +379,7 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
         if (evaluation.plan.kind === 'ABORT') {
           const intent = evaluation.plan.intent;
           const intentOp = intent.op as LedgerOp;
+          // EEXIST (p.ex. o CHECKPOINT de outro RECOVER) ⇒ RETRY com releitura e reavaliação, nunca regravação cega (ver o comentário de `stepFromAppend`)
           const written = await append(session, { event: 'ABORTED', recordedAt: input.nowIso, actor, op: { ...intentOp, intentSeq: intent.ledgerSeq, observed: { entryPresent: false, receiptPresent: false, ageMs: Math.max(0, view.openOperation?.ageMs ?? 0) } } }, input.nowIso);
           const stop = stepFromAppend(written);
           if (stop) return stop;
@@ -433,28 +478,27 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
       const intent = session.intent ?? session.evaluation?.replay?.open ?? null;
       const intentOp = intent?.op;
       if (!intent || !intentOp || intentOp.newDecisionsHead.sha256 !== input.entry.sha256) return refused('LEDGER_UNAVAILABLE', null, null, ['Não há INTENT do livro para esta entrada; a confirmação não foi gravada.']);
-      const written = await append(session, { event: 'CONFIRMED', recordedAt: input.nowIso, actor: input.actor, op: { ...intentOp, intentSeq: intent.ledgerSeq, anchorRef: { name: anchorName(input.entry.seq), headSha256: input.entry.sha256 } } }, input.nowIso);
-      if (written === 'CONFLICT') {
-        // R6-04: outro processo (recuperação) pode ter gravado, antes, o MESMO `CONFIRMED` desta operação enquanto o dono estava entre o recibo e o livro. Então a operação
-        // ESTÁ confirmada e o dono recebe sucesso — desde que o registro concorrente case com a INTENT (opId, posição, entrada) e a cadeia continue autêntica.
-        const reread = await readLedgerFiles(options.dir, session.auditId, storeOptions);
-        if (reread.ok) {
-          const records = reread.value.records;
-          const same = records.find((r) => r.event === 'CONFIRMED' && r.op?.opId === intentOp.opId && r.op.intentSeq === intent.ledgerSeq && r.op.anchorRef?.headSha256 === input.entry.sha256);
-          if (same && verifyTags(records, auth) === null && replayLedger(records, session.auditId).ok) {
-            session.records = [...records];
-            session.state = 'OK';
-            session.tagFailure = null;
-            // R7-04: o CONFIRMED adotado foi gravado por OUTRO processo e o fsync dele pode ter falhado/não ter ocorrido: o sucesso do dono exige sincronizar o livro AGORA
-            const adopted = await syncLedgerDirectory(options.dir, session.auditId, storeOptions);
-            if (!adopted.ok) return refused('LEDGER_UNAVAILABLE', null, null, [...adopted.issues]);
-            await publishGuard(session);
-            return { kind: 'OK', pendingKind: null };
-          }
+      // O conteúdo do fecho não depende da posição: numa regravação só `ledgerSeq`, `prevSha256`, `recordedAt`, etiqueta e hash mudam (calculados por `append`).
+      const draft: LedgerDraft = { event: 'CONFIRMED', recordedAt: input.nowIso, actor: input.actor, op: { ...intentOp, intentSeq: intent.ledgerSeq, anchorRef: { name: anchorName(input.entry.seq), headSha256: input.entry.sha256 } } };
+      // R6-04: o MESMO `CONFIRMED` desta operação gravado por outro processo (opId, posição da INTENT e entrada ancorada)
+      const sameClosing = (record: LedgerRecord): boolean => record.event === 'CONFIRMED' && record.op?.opId === intentOp.opId && record.op.intentSeq === intent.ledgerSeq && record.op.anchorRef?.headSha256 === input.entry.sha256;
+      for (let reappends = 0; ; reappends += 1) {
+        // CAPACIDADE: cada tentativa passa pelo teto duro de `append` (R7-02: nenhum registro além de `policy.max`; recusa sem gravar). O fecho já estava reservado — a INTENT só
+        // entrou com espaço para ela e para o fecho, e o CHECKPOINT do `RECOVER` com operação aberta deixa 1 registro livre — então a regravação cabe enquanto a regra valer.
+        const written = await append(session, draft, input.nowIso);
+        if (written === 'OK') break;
+        if (written !== 'CONFLICT') return { kind: 'REFUSED', refusal: written };
+        const next = await reconcileClosing(session, intent, sameClosing);
+        if (next === 'ADOPTED') {
+          // R7-04: o CONFIRMED adotado foi gravado por OUTRO processo e o fsync dele pode ter falhado/não ter ocorrido: o sucesso do dono exige sincronizar o livro AGORA
+          const adopted = await syncLedgerDirectory(options.dir, session.auditId, storeOptions);
+          if (!adopted.ok) return refused('LEDGER_UNAVAILABLE', null, null, [...adopted.issues]);
+          break;
         }
-        return refused('LEDGER_UNAVAILABLE', null, null, ['Outro processo alterou o livro durante a operação; a confirmação não foi gravada (a decisão e o recibo existem; reenvie para concluir).']);
+        if (next !== 'REAPPEND') return { kind: 'REFUSED', refusal: next };
+        // (i) a própria operação segue aberta atrás de um CHECKPOINT alheio: regrava o MESMO fecho na nova cauda (publicação estrita, como toda gravação do livro), limitado.
+        if (reappends >= WRITE_RETRIES) return refused('LEDGER_UNAVAILABLE', null, null, [CLOSING_RETRIES_MESSAGE]);
       }
-      if (written !== 'OK') return { kind: 'REFUSED', refusal: written };
       await publishGuard(session);
       return { kind: 'OK', pendingKind: null };
     },
