@@ -364,6 +364,27 @@ test('argumentos: flag desconhecida, repetida ou sem valor ⇒ USAGE (código 1)
   assert.match(human.stderr, /Uso: npm run link-audit:seal -- export/);
 });
 
+test('argumentos: opção desconhecida na forma --x=valor ecoa SÓ o nome da opção (nunca caminho nem nome de empresa); nome fora do padrão ⇒ texto fixo', async () => {
+  const audit = await makeAudit();
+  const leaky = '--evidence-dir=/home/operador/Empresa Silva LTDA/evidencias';
+  for (const json of [false, true]) {
+    const run = await runCli([...exportArgs(audit), leaky, ...(json ? ['--json'] : [])]);
+    assert.equal(run.code, 1);
+    const message = json ? String(jsonOf(run).message) : (run.err[0] ?? '');
+    assert.match(message, /^Opção desconhecida: --evidence-dir\b/);
+    for (const secret of ['/home/operador', 'Empresa Silva', 'LTDA', 'evidencias']) assert.ok(!(run.stdout + run.stderr).includes(secret), `ecoou "${secret}"`);
+    assert.ok(!message.includes('='), 'nada depois do nome da opção');
+  }
+  const long = `--${'a'.repeat(60)}`;
+  const longRun = await runCli([...exportArgs(audit), long, '--json']);
+  assert.equal(String(jsonOf(longRun).message), `Opção desconhecida: ${long.slice(0, 20)}`, 'nome cortado em 20 caracteres');
+  for (const token of ['--Empresa-Silva', '--x/y', '--ção', '--1abc', '--a_b']) {
+    const run = await runCli([...exportArgs(audit), token, '--json']);
+    assert.equal(run.code, 1, token);
+    assert.equal(String(jsonOf(run).message), 'Opção desconhecida.', `${token}: fora do padrão ⇒ texto fixo`);
+  }
+});
+
 test('subcomando sign (onda W4) ainda não existe: responde erro de uso, sem ler nada', async () => {
   for (const json of [false, true]) {
     const run = await runCli(['sign', '--audit', 'auditoria-teste-0001', '--package', '/nao/existe.json', ...(json ? ['--json'] : [])]);

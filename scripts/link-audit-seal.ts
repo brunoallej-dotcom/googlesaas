@@ -30,7 +30,9 @@ const REPEATABLE_FLAG = 'collector-hash';
 const COLLECTOR_HASH = /^c(\d{4})=([0-9a-f]{64})$/;
 const POSITIVE_INTEGER = /^[1-9]\d*$/;
 const MAX_JUSTIFICATION_LENGTH = 280;
-const MAX_ECHOED_FLAG = 40;
+/** Só o NOME da opção desconhecida é ecoado (nunca o valor da forma `--x=valor`, que pode trazer caminho ou nome de empresa). */
+const MAX_ECHOED_FLAG = 20;
+const ECHOABLE_FLAG = /^--[a-z][a-z-]*$/;
 
 export interface ExportArgs {
   readonly evidenceDir: string;
@@ -42,6 +44,11 @@ export interface ExportArgs {
   readonly out: string | null;
   readonly showSummary: boolean;
   readonly json: boolean;
+}
+
+function unknownFlag(token: string): string {
+  const flag = token.split('=')[0] ?? '';
+  return ECHOABLE_FLAG.test(flag) ? `Opção desconhecida: ${flag.slice(0, MAX_ECHOED_FLAG)}` : 'Opção desconhecida.';
 }
 
 const pathValue = (value: string | undefined): string | null | false => (value === undefined ? null : value.length > 0 && !value.includes('\0') ? value : false);
@@ -60,7 +67,7 @@ export function parseExportArgs(tokens: readonly string[]): ExportArgs | string 
       flags.add(name);
       continue;
     }
-    if (!VALUE_FLAGS.has(name)) return `Opção desconhecida: ${token.slice(0, MAX_ECHOED_FLAG)}`;
+    if (!VALUE_FLAGS.has(name)) return unknownFlag(token);
     const value = tokens[index + 1];
     if (value === undefined || value.startsWith('--')) return `A opção --${name} exige um valor.`;
     index += 1;
