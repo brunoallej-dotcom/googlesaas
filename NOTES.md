@@ -208,11 +208,11 @@ Endurecimento de código (antes de expor): bypass `GMN_AUTH_DISABLED` desligado 
 - **PR #24 (W1, mergeado em 17/11/2026 como `bd07e35`):** função única `basis → EvidenceToProve[]` e esquemas do pacote e da aprovação.
   - Revisão independente: a 1ª rodada pediu mudanças (4 MAJOR: coerência do pacote, hash sem coerência, PII na aprovação, `humanChecks`); a 2ª aprovou.
   - CI 6/6. Lembretes da revisão viraram critérios da W2 e da W4 no plano.
-- **PR #25 (contrato do verificador `v2`, PROPOSTO):** a revisão adversarial independente teve quatro leituras.
+- **PR #25 (contrato do verificador `v2`, APROVADO pelo responsável em 17/11/2026, D14 da spec):** a revisão adversarial independente teve quatro leituras.
   - **1ª leitura, BLOQUEADO:** a regra branda que o manager tinha pedido para a chave aposentada a fazia agir como ativa.
   - **Correção:** o **fecho de aposentadoria com hash fixado na lista de chaves**. Fora dele, a aposentada não vale.
   - **3ª e 4ª leituras:** aprovar com ajustes de texto, já aplicados.
-  - **Precisa da aprovação do responsável:** o fecho como implementação da D12, além dos pontos O2, O6 e O7.
+  - **Aprovado em 17/11/2026** ("de resto pode fazer a recomendação"): o fecho como implementação da D12, O2 (16 itens, aposentadas permanecem), O6 (formato gravado no resultado, R2) e O7 (256 manifestos, 16 MiB, padrão do `dossier.id`). Registrado como D14 na spec; runbook §4 ganhou a nota da mudança, que vale quando o verificador `v2` for implantado.
 - **Emenda §16.17 da spec do livro (confirmação de resultados pelo livro, ADR-0002), no PR da W0:**
   - Revisão independente (condição da D9), duas rodadas. A 1ª deu aprovar com mudanças: a conta de capacidade foi conferida por força bruta e três MAJOR foram apontados. A 2ª confirmou os três fechados e pediu ajustes de texto, aplicados antes do commit.
   - Os três MAJOR corrigidos no texto:
@@ -228,10 +228,10 @@ Endurecimento de código (antes de expor): bypass `GMN_AUTH_DISABLED` desligado 
 - **Achado de ambiente:** com o Node v24 local, 1 teste de `link-audit-evidence-provenance` falha também na `main` limpa ("ORDEM PEQUENA"). O teste exige que o `crypto.verify` aceite a assinatura universal da chave identidade, e o Node 24 passou a recusá-la. CI e produção (Node 22) passam. Ajustar o teste quando o projeto migrar para o Node 24.
 - **CI PARADO POR COBRANÇA (17/11/2026, 04:52 UTC):** desde os PRs #25 e #26, o GitHub recusa iniciar os jobs ("recent account payments have failed or your spending limit needs to be increased"). Os checks aparecem como `failure` em 1–2 s, sem rodar. O #24 passou 6/6 antes disso. Sem CI não há merge (regra da rodada) nem verificação no servidor. A W2 **não** foi iniciada por isso (onda seguinte possível; empilhada sobre a W1). A cobrança é decisão do responsável; nada foi alterado. Na madrugada de 16–17/11 houve cerca de 40 execuções do CI (31 com sucesso), o que pode ter contribuído para atingir o limite de minutos do plano.
   - **Resolvido no mesmo dia:** o responsável tornou o repositório **público**, e repositório público não consome a cota de Actions. Causa medida pela API: a cota é da conta, e novembro somava ~2.489 min em 12 repositórios privados, acima dos 2.000 do plano gratuito; no googlesaas, o job `test` (~14 min) responde por ~74% dos minutos. A recomendação do manager era não publicar (e-mail pessoal nos commits, dados de cliente e documentos de segurança no histórico); a decisão foi do responsável. Daqui em diante, nada de dado real de cliente, e-mail ou endereço de servidor em commit novo.
+  - **Proteções do repositório público (17/11/2026, autorizadas pelo responsável, aplicadas pelo manager via API):** varredura de segredos com proteção contra push (varre o histórico inteiro); alertas e atualizações de segurança do Dependabot; regra `main: PR com CI verde` (PR obrigatório, os 6 checks do GitHub Actions verdes, branch atualizada, sem push forçado nem exclusão, sem exceções); CI de PR de fork só com aprovação. O e-mail privado nos commits é configuração da conta do responsável.
 - **Aviso novo do `npm audit` (17/11/2026): GHSA-fc5q-39xc-vjpf**, ReDoS no `picomatch` sem versão corrigida, só pela cadeia do Tailwind 3 (build/dev; fora das imagens de produção). PR #27 mergeado (`c069acb`): 11 exceções presas ao GHSA até 17/12/2026, e o gate passou a seguir a cadeia `via` dos pacotes que só herdam o aviso. Análise em `docs/phase5/dependency-audit.md`.
 - **Pendências do responsável:**
   - reavaliar a exceção do `picomatch` até 17/12/2026 (removê-la quando sair versão corrigida);
-  - aprovar ou mudar o contrato da W3 (#25);
   - nomes de titular, suplente e conferente e o local dos backups (runbook da W5);
   - `entries[].source`, aprovação assinada pelo conferente e revisão amostral de dossiês (spec §13.3).
 
@@ -242,7 +242,7 @@ Endurecimento de código (antes de expor): bypass `GMN_AUTH_DISABLED` desligado 
 | W0 | Fundação documental (spec e ameaças aprovadas, contrato P1, ADR-0002 aceito, emenda §16.17 do livro) | ✅ mergeada (PR #26; D9–D13; §16.17 revisada) |
 | W1 | Função única `basis → EvidenceToProve[]`, esquemas e `packageSha256` | ✅ mergeada (PR #24, `bd07e35`) |
 | W2 | CLI `export` (somente leitura) | ⬜ |
-| W3 | Verificador `v2` + contrato próprio | 🟡 contrato no PR #25 (aguarda aprovação) |
+| W3 | Verificador `v2` + contrato próprio | 🟡 contrato aprovado (PR #25, D14); código a fazer |
 | R1 | Confirmação de resultados pelo livro (ADR-0002) | ⬜ |
 | R2 | Proveniência registrada no resultado (portão antes do primeiro resultado de produção) | ⬜ |
 | W4 | CLI `sign` (manifesto `v2`) | ⬜ |
