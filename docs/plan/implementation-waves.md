@@ -196,7 +196,8 @@ interface (`audit-page/validators.ts`).
   - o relatório do ensaio mostra `export` → aprovação → `sign` → entrega → verificador `v2` `AUTHENTICATED` → resultado
     confirmado com `RUN_CONFIRMED`;
   - nada em produção;
-  - a chave do ensaio é destruída e o fato fica registrado.
+  - a chave do ensaio é destruída e o fato fica registrado;
+  - runbook avisa que reexportar muda o `packageSha256` (observedHours no hash); conferir e assinar sempre os mesmos bytes.
 - **Goal command**: `/goal test -f docs/phase6-auditoria-link/p1-relatorio-ensaio.md && grep -q "AUTHENTICATED" docs/phase6-auditoria-link/p1-relatorio-ensaio.md && grep -q "RUN_CONFIRMED" docs/phase6-auditoria-link/p1-relatorio-ensaio.md, stop after 3 tries`
 
 ## Onda W6 — Coleta LIVE nova da TUVAPLAST (fora do código)

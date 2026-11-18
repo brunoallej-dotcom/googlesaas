@@ -238,8 +238,13 @@ const ATTESTATION_DIR = 'src/lib/link-audit-attestation/';
 const ATTESTATION_EVIDENCE_IMPORTS: ReadonlyMap<string, readonly string[]> = new Map([
   ['src/lib/link-audit-attestation/index.ts', ['evidence-to-prove']],
   ['src/lib/link-audit-attestation/schemas.ts', ['types']],
+  // P1 W2: a montagem pura do pacote (função única basis → evidências) e o adaptador de disco do `export` (só os leitores e o FsOps)
+  ['src/lib/link-audit-attestation/export.ts', ['evidence-to-prove', 'types']],
+  ['src/lib/link-audit-attestation/export-run.ts', ['provenance', 'reader', 'scoring-basis', 'store']],
 ]);
 const ATTESTATION_TARGETS: ReadonlySet<string> = new Set(['canonical.ts']);
+/** P1 W2: só o adaptador de disco do `export` usa também o FsOps (leitura O_NOFOLLOW/O_NONBLOCK e a criação exclusiva do --out). */
+const ATTESTATION_EXTRA_TARGETS: ReadonlyMap<string, ReadonlySet<string>> = new Map([['src/lib/link-audit-attestation/export-run.ts', new Set(['snapshot-store.ts'])]]);
 const CLIENT_DIRS = ['src/components/link-audit/', 'src/app/auditoria-por-link/'];
 /** Único valor (não só tipo) que o navegador pode importar: constantes puras, sem nenhum import. */
 const CLIENT_VALUE_IMPORTS: ReadonlySet<string> = new Set(['methodology']);
@@ -300,7 +305,7 @@ test('isolamento reverso: só os consumidores declarados importam o módulo, e s
         assert.ok(ORIGIN_TARGETS.has(withExtension), `${name} importa "${statement.specifier}", fora da lista fechada do módulo de prova de origem`);
       } else if (name.startsWith(ATTESTATION_DIR)) {
         const withExtension = target.endsWith('.ts') ? target : `${target}.ts`;
-        assert.ok(ATTESTATION_TARGETS.has(withExtension), `${name} importa "${statement.specifier}", fora da lista fechada do núcleo de atestação`);
+        assert.ok(ATTESTATION_TARGETS.has(withExtension) || ATTESTATION_EXTRA_TARGETS.get(name)?.has(withExtension) === true, `${name} importa "${statement.specifier}", fora da lista fechada do núcleo de atestação`);
       } else if (isStorage) {
         const withExtension = target.endsWith('.ts') ? target : `${target}.ts`;
         assert.ok(STORAGE_TARGETS.has(withExtension), `${name} importa "${statement.specifier}", fora da lista fechada do módulo neutro de armazenamento`);
