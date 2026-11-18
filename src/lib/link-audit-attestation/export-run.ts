@@ -44,8 +44,11 @@ export type ExportOutcome = { readonly ok: true; readonly package: CandidatePack
 /** Bytes exatos do arquivo do pacote (e da saída padrão, quando não há `--out`). */
 export const serializePackage = (pkg: CandidatePackage): string => `${JSON.stringify(pkg, null, 2)}\n`;
 
-const OUT_UNSAFE = refuse('EXPORT_OUT_UNSAFE', '--out tem de ser um arquivo NOVO, numa pasta existente e fora da pasta de evidências. Nada foi gravado.');
-const OUT_FAILED = refuse('EXPORT_OUT_UNSAFE', 'Não foi possível criar --out (já existe, o destino mudou, sem permissão ou sem espaço). Se sobrou um arquivo parcial, apague-o: ele não é um pacote válido.');
+const OUT_UNSAFE = refuse('EXPORT_OUT_UNSAFE', '--out tem de ser um arquivo NOVO, numa pasta existente, fora da pasta de evidências e fora da árvore do projeto (o pacote tem nome/cidade/UF). Nada foi gravado.');
+const OUT_WRITE_FAILED = refuse(
+  'EXPORT_OUT_WRITE_FAILED',
+  'Falha ao gravar o pacote em --out (sem espaço, erro de disco, permissão ou um arquivo surgiu no mesmo caminho durante a gravação). Pode ter ficado um arquivo parcial no caminho informado em --out: ele NÃO é um pacote válido; confira e apague-o antes de exportar de novo (o export nunca apaga nada).',
+);
 const FORBIDDEN_BASE = refuse('USAGE', 'A pasta de evidências não pode ficar na área pública ou de código do projeto.');
 const BASE_NOT_FOUND = refuse('EXPORT_NOT_FOUND', 'Pasta de evidências não encontrada ou não é um diretório.');
 
@@ -54,7 +57,7 @@ export async function exportCandidatePackage(options: ExportOptions, deps: Expor
   const outFs = deps.outFs ?? nodeFsOps;
   const base = await resolveEvidenceDir(fs, options.evidenceDir, options.projectRoot);
   if (!base.ok) return base;
-  const target = options.out === null ? null : await checkOutTarget(outFs, options.out, base.real);
+  const target = options.out === null ? null : await checkOutTarget(outFs, options.out, base.real, options.projectRoot);
   if (target !== null && !target.ok) return target;
   const facts = await readEvidence(fs, base.real, options);
   if (!facts.ok) return facts;
@@ -85,8 +88,12 @@ async function resolveEvidenceDir(fs: FsOps, dir: string, projectRoot: string): 
 
 interface OutTarget {
   readonly file: string;
+  /** Caminho pedido, sem resolver links: também não pode cair numa área proibida (ex.: link em `public/` apontando para fora). */
+  readonly lexical: string;
   readonly requestedParent: string;
   readonly parentReal: string;
+  readonly evidenceReal: string;
+  readonly projectRoot: string;
 }
 
 /** Inclusão por prefixo, sem diferenciar caixa (drvfs/Windows ignoram a caixa): na dúvida, recusa. */
@@ -96,7 +103,22 @@ const isInside = (candidate: string, root: string): boolean => {
   return c === r || c.startsWith(r.endsWith(path.sep) ? r : r + path.sep);
 };
 
-async function checkOutTarget(outFs: FsOps, out: string, evidenceReal: string): Promise<{ readonly ok: true; readonly value: OutTarget } | ExportRefusal> {
+/** Destino proibido para o pacote: a própria raiz ou qualquer descendente de uma das raízes (pasta de evidências, árvore do projeto). */
+export const isForbiddenOutPath = (file: string, roots: readonly string[]): boolean => roots.some((root) => isInside(file, root));
+
+/** Raízes proibidas para o `--out`, pelo caminho informado e pelo REAL (a árvore do projeto inteira: o pacote tem nome/cidade/UF). */
+async function forbiddenRoots(outFs: FsOps, evidenceReal: string, projectRoot: string): Promise<string[]> {
+  const project = path.resolve(projectRoot);
+  const roots = [evidenceReal, project];
+  try {
+    roots.push(await outFs.realpath(project));
+  } catch {
+    // projeto inexistente: vale a regra pelo caminho informado
+  }
+  return roots;
+}
+
+async function checkOutTarget(outFs: FsOps, out: string, evidenceReal: string, projectRoot: string): Promise<{ readonly ok: true; readonly value: OutTarget } | ExportRefusal> {
   const resolved = path.resolve(out);
   try {
     await outFs.lstat(resolved);
@@ -113,17 +135,31 @@ async function checkOutTarget(outFs: FsOps, out: string, evidenceReal: string): 
     return OUT_UNSAFE;
   }
   const file = path.join(parentReal, path.basename(resolved));
-  return isInside(file, evidenceReal) ? OUT_UNSAFE : { ok: true, value: { file, requestedParent, parentReal } };
+  const roots = await forbiddenRoots(outFs, evidenceReal, projectRoot);
+  if (isForbiddenOutPath(file, roots) || isForbiddenOutPath(resolved, roots)) return OUT_UNSAFE;
+  return { ok: true, value: { file, lexical: resolved, requestedParent, parentReal, evidenceReal, projectRoot } };
 }
 
-/** Grava pelo caminho REAL conferido, com criação exclusiva (`wx`, 0600). Nunca sobrescreve nem apaga. */
+/**
+ * Reconfere o destino IMEDIATAMENTE antes de gravar (TOCTOU: a pasta pode ter virado link para as evidências ou o projeto) e grava pelo
+ * caminho REAL conferido, com criação exclusiva (`wx`, 0600). Nunca sobrescreve nem apaga: falha depois da criação deixa o parcial e avisa.
+ */
 async function writeOut(outFs: FsOps, target: OutTarget, data: string): Promise<ExportRefusal | null> {
+  let freshParent: string;
+  let roots: string[];
   try {
-    if ((await outFs.realpath(target.requestedParent)) !== target.parentReal) return OUT_UNSAFE; // o destino mudou desde a conferência
+    freshParent = await outFs.realpath(target.requestedParent);
+    roots = [...new Set([...(await forbiddenRoots(outFs, target.evidenceReal, target.projectRoot)), target.evidenceReal, path.resolve(target.projectRoot)])];
+  } catch {
+    return OUT_UNSAFE;
+  }
+  const freshFile = path.join(freshParent, path.basename(target.file));
+  if (freshParent !== target.parentReal || [freshFile, target.file, target.lexical].some((file) => isForbiddenOutPath(file, roots))) return OUT_UNSAFE;
+  try {
     await outFs.writeExclusive(target.file, data);
     return null;
   } catch {
-    return OUT_FAILED;
+    return OUT_WRITE_FAILED;
   }
 }
 

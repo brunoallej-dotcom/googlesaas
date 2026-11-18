@@ -9,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import tls from 'node:tls';
+import { isForbiddenOutPath } from '../src/lib/link-audit-attestation/export-run';
 import { nodeFsOps, type FsOps } from '../src/lib/link-audit/snapshot-store';
 import { registerCleanup, SENTINEL, tmpDir } from './helpers/link-audit-evidence-fixtures';
 import { legacyReplica } from './helpers/link-audit-mapper-real-basis';
@@ -105,6 +106,92 @@ test('IA-02 (4): --out dentro da pasta de evidências (direto, na auditoria ou p
   // pela pasta de evidências apontada por link simbólico, o --out real dentro dela também é recusado
   const run = await runCli([...exportArgs({ ...audit, base: baseAlias }, ['--json'], path.join(audit.base, 'q.json'))]);
   assert.equal(jsonOf(run).code, 'EXPORT_OUT_UNSAFE');
+});
+
+test('IA-02 (4): --out em QUALQUER lugar da árvore do projeto (public/, src/, raiz, subpasta, por link simbólico ou com a raiz dada por link) ⇒ EXPORT_OUT_UNSAFE', async () => {
+  const audit = await makeAudit();
+  const project = tmpDir('lase-proj-');
+  for (const dir of ['public', 'src', path.join('docs', 'sub')]) fs.mkdirSync(path.join(project, dir), { recursive: true });
+  const alias = path.join(tmpDir('lase-alias-'), 'projeto');
+  fs.symlinkSync(project, alias);
+  fs.symlinkSync(tmpDir('lase-fora-'), path.join(project, 'public', 'fora')); // link em public/ para fora: servido pelo Next mesmo assim
+  const cases: ReadonlyArray<readonly [string, string]> = [
+    [path.join(project, 'public', 'fora', 'p.json'), project],
+    [path.join(project, 'public', 'p.json'), project],
+    [path.join(project, 'src', 'p.json'), project],
+    [path.join(project, 'p.json'), project],
+    [path.join(project, 'docs', 'sub', 'p.json'), project],
+    [path.join(alias, 'public', 'p.json'), project],
+    [path.join(project, 'public', 'p.json'), alias],
+  ];
+  for (const [out, projectRoot] of cases) {
+    const run = await runCli(exportArgs(audit, ['--json'], out), NOW, { projectRoot });
+    assert.equal(run.code, 3, `${out} (raiz ${projectRoot})`);
+    assert.equal(jsonOf(run).code, 'EXPORT_OUT_UNSAFE', out);
+    assert.equal(fs.existsSync(out), false);
+  }
+  assert.equal((await runCli(exportArgs(audit, [], newOut()), NOW, { projectRoot: project })).code, 0, 'fora do projeto continua aceito');
+});
+
+test('IA-02 (4) TOCTOU: a pasta do --out passa a apontar para a pasta de evidências (ou para o projeto) entre a conferência e a gravação ⇒ EXPORT_OUT_UNSAFE, nada gravado', async () => {
+  const audit = await makeAudit();
+  const project = tmpDir('lase-proj-');
+  for (const swapTo of [audit.dir, project]) {
+    const before = treeHash(audit.base);
+    const out = newOut();
+    const parent = path.dirname(out);
+    let parentCalls = 0;
+    const writes: string[] = [];
+    const swapping: FsOps = {
+      ...nodeFsOps,
+      realpath: async (target) => (target === parent && ++parentCalls > 1 ? swapTo : nodeFsOps.realpath(target)),
+      writeExclusive: async (target, data, mode) => {
+        writes.push(target);
+        return nodeFsOps.writeExclusive(target, data, mode);
+      },
+    };
+    const run = await runCli(exportArgs(audit, ['--json'], out), NOW, { outFs: swapping, projectRoot: project });
+    assert.equal(run.code, 3);
+    assert.equal(jsonOf(run).code, 'EXPORT_OUT_UNSAFE');
+    assert.ok(parentCalls >= 2, 'a pasta foi resolvida de novo logo antes de gravar');
+    assert.deepEqual(writes, [], 'nenhuma escrita');
+    assert.equal(treeHash(audit.base), before);
+  }
+});
+
+test('IA-02 (4) unidade: a regra de destino proibido recusa o próprio diretório, qualquer descendente e variação de caixa; aceita irmão de prefixo parecido', () => {
+  const root = path.join(path.sep, 'dados', 'evidencias');
+  assert.equal(isForbiddenOutPath(root, [root]), true);
+  assert.equal(isForbiddenOutPath(path.join(root, 'a', 'p.json'), [root]), true);
+  assert.equal(isForbiddenOutPath(path.join(path.sep, 'DADOS', 'Evidencias', 'p.json'), [root]), true);
+  assert.equal(isForbiddenOutPath(path.join(path.sep, 'dados', 'evidencias-copia', 'p.json'), [root]), false);
+  assert.equal(isForbiddenOutPath(path.join(path.sep, 'outro', 'p.json'), [root, path.join(path.sep, 'projeto')]), false);
+  assert.equal(isForbiddenOutPath(path.join(path.sep, 'projeto', 'public', 'p.json'), [root, path.join(path.sep, 'projeto')]), true);
+});
+
+test('IA-02 (4): falha DEPOIS de criar o --out (sem espaço) ou corrida (EEXIST) ⇒ EXPORT_OUT_WRITE_FAILED (código 3), avisa do arquivo parcial e nunca apaga', async () => {
+  const audit = await makeAudit();
+  for (const errno of ['ENOSPC', 'EEXIST']) {
+    const out = newOut();
+    const failing: FsOps = {
+      ...nodeFsOps,
+      writeExclusive: async (target) => {
+        fs.writeFileSync(target, '{"parcial":'); // a criação aconteceu; a gravação falhou no meio
+        throw Object.assign(new Error('falha simulada'), { code: errno });
+      },
+    };
+    for (const json of [true, false]) {
+      if (fs.existsSync(out)) fs.rmSync(out);
+      const run = await runCli(exportArgs(audit, json ? ['--json'] : [], out), NOW, { outFs: failing });
+      assert.equal(run.code, 3, errno);
+      const message = json ? String(jsonOf(run).message) : run.stderr;
+      if (json) assert.equal(jsonOf(run).code, 'EXPORT_OUT_WRITE_FAILED');
+      else assert.match(run.stderr, /RECUSADO \(EXPORT_OUT_WRITE_FAILED\)/);
+      assert.match(message, /parcial/);
+      assert.ok(!message.includes(out) && !message.includes(path.dirname(out)), 'sem caminho de disco na mensagem');
+      assert.equal(fs.readFileSync(out, 'utf8'), '{"parcial":', 'o export nunca apaga');
+    }
+  }
 });
 
 /* -------------------------------------------------------------------- IA-05 (v): sem rede */
