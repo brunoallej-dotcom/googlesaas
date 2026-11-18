@@ -43,6 +43,8 @@ Objetivo: **cortar imediatamente** o uso da chave vazada para novas autenticaç�
 
 ## 4. Chave de ATESTAÇÃO de coleta (pública no servidor)
 
+> **Mudança aprovada em 17/11/2026 (D12 e D14 da spec P1; contrato `p1-contrato-verificador-v2.md` §5–§7). Vale quando o verificador `v2` (onda W3) estiver implantado; até lá vale o texto abaixo.** A chave antiga **nunca é removida** da lista: cada item ganha um estado (`<id>:<pub>[:active|retired:<closureSha256>|revoked]`, no máximo 2 `active` e 16 itens). **Rotação planejada:** na aposentadoria, uma chave `active` assina offline o **fecho** `_closures/<id>.json` (as cadeias em que a aposentada assinou), o fecho é entregue à pasta de manifestos e o seu hash é fixado na lista como `retired:<closureSha256>`, nessa ordem; fora do fecho a aposentada não vale. **Comprometimento:** marcar a chave `revoked` (não remover): as cadeias dela deixam de autenticar novas finalizações e os resultados já confirmados com ela ficam marcados para reconferência humana (onda R2). Item removido da lista torna as cadeias dele inválidas, sem o sinal de revogação.
+
 - **Formato no servidor:** `GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS=<id>:<32 bytes da chave pública Ed25519 em base64url>[,<id>:<…>]`. É **pública** (não é segredo). Item malformado, id repetido ou lista vazia ⇒ política **FECHADA** (nada é autêntico).
 - **Custódia da privada:** fora da VPS, protegida (senha/cartão/HSM), com backup cifrado separado. O servidor web **nunca** a recebe. (Decisão de custódia pendente do responsável: ADR 6C-03 §7.)
 - **Rotação planejada:** adicionar a pública nova à lista (com id novo), atestar as auditorias com a nova, e só então remover a antiga. Manifestos assinados pela antiga continuam válidos **enquanto** a pública dela estiver na lista.
