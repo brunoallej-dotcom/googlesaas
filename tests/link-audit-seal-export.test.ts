@@ -91,6 +91,23 @@ test('IA-17 HTTP_2XX_AND_COLLECTED_AT: todas as capturas 2xx com collectedAt ⇒
   }
 });
 
+test('IA-17 HTTP_2XX_AND_COLLECTED_AT (limites da faixa 2xx, montagem pura): 200, 204 e 299 ⇒ PASS; 199, 300, 301 e 399 ⇒ FAIL', () => {
+  const evidences = [{ ref: 'capture:c0001', kind: 'CAPTURE' as const, capture: 1, observedAt: T_COLLECT, contentSha256: 'a'.repeat(64), legacy: false }];
+  const cases: ReadonlyArray<readonly [number, 'PASS' | 'FAIL']> = [[199, 'FAIL'], [200, 'PASS'], [204, 'PASS'], [299, 'PASS'], [300, 'FAIL'], [301, 'FAIL'], [399, 'FAIL']];
+  for (const [httpStatus, expected] of cases) {
+    const result = buildCandidatePackage({ auditId: 'auditoria-teste-0001', basis: { layout: 'VERSIONED', evidences }, captureFacts: [{ capture: 1, collectedAt: T_COLLECT, httpStatus }], company: null, collectorHashes: new Map([[1, 'a'.repeat(64)]]), maxGapHours: 24, gapJustification: null, now: NOW });
+    assert.ok(result.ok, String(httpStatus));
+    assert.equal(checkStatus(result.package, 'HTTP_2XX_AND_COLLECTED_AT'), expected, `HTTP ${httpStatus}`);
+  }
+});
+
+test('IA-17 HTTP_2XX_AND_COLLECTED_AT (limites, pelo leitor real): segunda captura HTTP 299 ⇒ PASS; HTTP 300 ⇒ FAIL', async () => {
+  for (const [status, expected] of [[299, 'PASS'], [300, 'FAIL']] as const) {
+    const audit = await makeAudit([{}, { collectedAt: at(T_COLLECT, HOUR).toISOString(), status }]);
+    assert.equal(checkStatus((await exportOk(audit, [], at(T_COLLECT, 3 * HOUR))).pkg, 'HTTP_2XX_AND_COLLECTED_AT'), expected, `HTTP ${status}`);
+  }
+});
+
 test('IA-17 REPORT_REPRODUCES: sempre NOT_EXECUTED (viabilidade não confirmada; conferência humana, contrato §4.1.5); os três não mecanizáveis também', async () => {
   const { pkg } = await exportOk(await makeAudit());
   assert.equal(checkStatus(pkg, 'REPORT_REPRODUCES'), 'NOT_EXECUTED');
