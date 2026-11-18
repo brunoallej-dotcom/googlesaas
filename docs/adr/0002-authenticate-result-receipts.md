@@ -1,7 +1,7 @@
 # 0002. Autenticar a confirmação dos resultados da Auditoria por Link pelo livro de cabeças
 
 - **Date**: 2026-11-16
-- **Status**: Proposed
+- **Status**: Accepted (2026-11-17), com a condição de que a emenda §16.17 da spec do livro passe por revisão independente antes do código da onda R1
 - **Deciders**: responsável pelo projeto
 - **Tags**: security, link-audit, fase-6, p1
 
@@ -37,8 +37,9 @@ Forças em jogo:
 - A etiqueta de origem dos registros **confirmados** não é reverificada na leitura (ADR 6C-02 §5). De propósito: uma
   chave aposentada vence (`KEY_EXPIRED`) e, com reverificação, resultados antigos deixariam de valer.
 - O livro já resolveu a rotação pela ordem da cadeia (época de chave, R6-06), com chave e pasta exclusivas.
-- Só auditorias com livro `PROTECTED` podem finalizar (`preview.ts:163`): todo resultado de produção nasce numa
-  auditoria com livro.
+- Só auditorias com livro `PROTECTED` podem finalizar (`isLedgerBlocking`, `preview.ts:265-266`, e `finalization.allowed`,
+  `preview.ts:373`; o comentário em `preview.ts:163` descreve a regra). Os dois também deixam passar `NOT_REQUIRED`, que
+  a configuração não alcança (R6-12): todo resultado de produção nasce numa auditoria com livro.
 - Nada da 6B/6C foi implantado: a primeira implantação pode já sair com o formato novo, sem migrar dados reais.
 
 ## Decision
@@ -98,8 +99,38 @@ Antes do código, uma emenda à spec do livro (§16.17) fixa:
   3. resultado sem `RUN_INTENT` falha fechado;
   4. o `ledgerHead` e o `INPUT_CHANGED` não mudam com a finalização;
   5. todas as mutações dos pontos novos morrem.
-- Quando aceito, entrar no índice de `docs/adr/README.md` como Accepted e registrar no ADR 6C-02 §8 que a linha "Recibos
-  dos resultados" foi fechada.
+- Aceito em 17/11/2026 ("Vamos seguir essa recomendação", em resposta à recomendação de aceitar com a condição acima). Quando a
+  R1 for mergeada, registrar no ADR 6C-02 §8 que a linha "Recibos dos resultados" foi fechada.
+
+## Nota de 17/11/2026: refinamentos da emenda §16.17 (não mudam a decisão)
+
+A emenda que especifica esta decisão (`onda6c-especificacao-livro-de-cabecas.md` §16.17) acrescentou:
+1. um terceiro registro, `RUN_ABORTED`. Sem ele, uma queda entre `RUN_INTENT` e a publicação do resultado travaria
+   as finalizações para sempre;
+2. **leituras condicionadas ao `RUN_CONFIRMED`** (`list`/`get` de resultados passam a consultar o livro). Sem isso, um
+   recibo forjado ainda apareceria como confirmado na consulta, e o fechamento do RV2-W1 não valeria;
+3. o escopo de código maior do que o previsto: `link-audit-decisions` (porta do livro e serviço) e os tipos e
+   validadores da interface;
+4. um custo de disponibilidade a mais: quem escreve só na pasta de resultados passa a poder congelar também as
+   decisões (`UNLEDGERED_RESULT`), na mesma família do congelamento já declarado.
+
+**Depois da revisão independente (condição do aceite; aprovada com mudanças em 17/11/2026):**
+5. **leitura amarrada ao hash do livro:** toda leitura, reenvio e conclusão exige que o próprio objeto devolvido tenha
+   o `runSha256` registrado no `RUN_CONFIRMED`. Isso fecha a corrida entre duas leituras que mostraria um resultado
+   forjado como confirmado;
+6. **fechos intercalados:** quando um registro de fechamento de decisão e um de resultado disputam a mesma posição,
+   quem ainda tem operação aberta regrava na nova cauda. Uma finalização nunca faz uma revogação falhar. Isso também
+   corrige um defeito que já existe na `main`: o `CHECKPOINT` do `RECOVER` com operação aberta derruba o `CONFIRMED`
+   de uma decisão;
+7. **recibo de resultado removido:** **qualquer operador** pode reemitir, porque o recibo é determinado pelo
+   `RUN_CONFIRMED` autenticado. Esse caso e o `RESULT_REGRESSED` fecham só os resultados, não as decisões (D-21). Os
+   motivos que podem revelar truncamento do livro continuam congelando as decisões;
+8. a conclusão das fases B e C continua exigindo origem `PROVEN`. Aceitar `KEY_EXPIRED` quando o `RUN_INTENT` amarra
+   hash e autor fica como **proposta para o responsável**. Até lá, vale uma regra de runbook: nenhuma chave de origem
+   aposentada vence enquanto houver resultado em fase B ou C assinado por ela.
+
+Os ajustes de texto finais da revisão (rótulos de teste, mensagens, gatilho da reemissão na interface) são feitos na
+própria emenda antes do código da R1.
 
 ## Alternatives considered
 

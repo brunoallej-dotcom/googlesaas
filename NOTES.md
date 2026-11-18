@@ -1,6 +1,6 @@
 # GMN Intelligence Platform: notas do projeto
 
-Uso **interno** (não é SaaS). Documentação detalhada por fase em `docs/`. Última atualização: 16/11/2026 (revisão adversarial nº 8 sem BLOCKER; PRs #12, #15 e #16–#21 mergeados; **Onda 6C ENCERRADA formalmente pelo responsável em 16/11/2026**, com riscos residuais declarados; próximo: **onda P1**, plano em `docs/plan/implementation-waves.md`; ver o fim do arquivo).
+Uso **interno** (não é SaaS). Documentação detalhada por fase em `docs/`. Última atualização: 17/11/2026 (**Onda 6C ENCERRADA** em 16/11/2026; **P1 em andamento**: W0 (decisões D9–D13, PR #26) e W1 (PR #24) mergeadas; contrato da W3 no PR #25 aguardando a aprovação do responsável; repositório **público** desde 17/11/2026; plano em `docs/plan/implementation-waves.md`; ver o fim do arquivo).
 
 ## Baseline Git local e versão (28/10/2026)
 - **Atualização 07/11/2026:** o repositório agora tem o remoto `origin` (`https://github.com/brunoallej-dotcom/googlesaas.git`); os PRs #1 (`765a93a`, Onda 6B), #2 (`24c19e9`, Onda 6C) e #3 (`7013b2a`, bootstrap/CI/Node 22) estão mergeados na `main`; tag `v1.0.1` mantida. O texto abaixo ("sem remote") é o registro histórico de 28/10/2026.
@@ -196,15 +196,55 @@ Endurecimento de código (antes de expor): bypass `GMN_AUTH_DISABLED` desligado 
   4. **#8** (Tailwind 4), **#9** (@types/node 26) e **#11** (TypeScript 7): CI falhando; exigem migração ou espera. Considerar `ignore` dessas majors no `dependabot.yml`.
   5. **#14** (G5, humano, em conflito): decisão do responsável, com rebase manual e revisão.
 
+## Rodada de 17/11/2026 — P1: W0 (decisões D9–D13), W1 e contrato da W3 (responsável ausente; Claude como manager)
+- **Autorização:** o responsável aceitou as recomendações do método AISAC ("Vamos seguir essa recomendação") e deu autonomia para "commits, push e PR", usando o método nas decisões importantes. **Merge não foi autorizado:** os PRs ficam prontos, com CI verde, aguardando o responsável.
+- **Decisões do responsável (17/11/2026), registradas na spec do P1 §13.1, no modelo de ameaças, no contrato do P1 e no ADR-0002:**
+  - **D9:** ADR-0002 aceito, com a condição de revisão independente da emenda §16.17 antes do código da R1.
+  - **D10:** regra das pessoas. Titular = o responsável, de preferência sem administrar a VPS; suplente com par próprio; sem segunda pessoa, aceite formal antes da chave real.
+  - **D11:** chave em arquivo cifrado (K1) numa estação dedicada e sem rede primeiro; token só depois do teste da RS-15 e de uma exceção escrita à RS-14.
+  - **D12:** troca da chave a cada 12 meses; sobreposição de assinatura = 0; no máximo 2 chaves que assinam; revogação marca resultados para reconferência.
+  - **D13:** `--max-gap-hours` = 24.
+  - A spec, o modelo de ameaças e o contrato do P1 foram marcados como **aprovados na W0** com base na mesma resposta, porque a recomendação dizia "com o aceite, registro as decisões e fecho a W0". **O responsável pode contestar** essa leitura.
+- **PR #24 (W1, mergeado em 17/11/2026 como `bd07e35`):** função única `basis → EvidenceToProve[]` e esquemas do pacote e da aprovação.
+  - Revisão independente: a 1ª rodada pediu mudanças (4 MAJOR: coerência do pacote, hash sem coerência, PII na aprovação, `humanChecks`); a 2ª aprovou.
+  - CI 6/6. Lembretes da revisão viraram critérios da W2 e da W4 no plano.
+- **PR #25 (contrato do verificador `v2`, PROPOSTO):** a revisão adversarial independente teve quatro leituras.
+  - **1ª leitura, BLOQUEADO:** a regra branda que o manager tinha pedido para a chave aposentada a fazia agir como ativa.
+  - **Correção:** o **fecho de aposentadoria com hash fixado na lista de chaves**. Fora dele, a aposentada não vale.
+  - **3ª e 4ª leituras:** aprovar com ajustes de texto, já aplicados.
+  - **Precisa da aprovação do responsável:** o fecho como implementação da D12, além dos pontos O2, O6 e O7.
+- **Emenda §16.17 da spec do livro (confirmação de resultados pelo livro, ADR-0002), no PR da W0:**
+  - Revisão independente (condição da D9), duas rodadas. A 1ª deu aprovar com mudanças: a conta de capacidade foi conferida por força bruta e três MAJOR foram apontados. A 2ª confirmou os três fechados e pediu ajustes de texto, aplicados antes do commit.
+  - Os três MAJOR corrigidos no texto:
+    1. corrida entre duas leituras mostrando resultado forjado como confirmado;
+    2. fechamentos intercalados de decisão e resultado fazendo uma revogação falhar;
+    3. recibo removido congelando as decisões para sempre.
+  - A emenda trouxe um terceiro registro (`RUN_ABORTED`) e leituras condicionadas ao `RUN_CONFIRMED`; o ADR-0002 ganhou nota datada e o escopo da R1 aumentou.
+- **Plano:**
+  - **onda R2 nova:** o resultado registra a proveniência que o atestou, um portão antes do primeiro resultado de produção, exigido pela revisão do contrato;
+  - a R1 passa a esperar a W3, porque as duas mexem nos validadores da interface;
+  - nomes de teste no padrão `link-audit-seal-*`.
+- **Defeito que já existe na `main`, achado pela revisão da §16.17:** um `CHECKPOINT` do `RECOVER`, permitido com operação aberta (`ledger/service.ts:350-365`), faz o `CONFIRMED` de uma decisão falhar com `LEDGER_UNAVAILABLE`. A decisão fica em fase C até o autor reenviar. É disponibilidade, não integridade. Será corrigido na R1, regra dos "fechos intercalados", com o teste RL-32 reproduzindo o caso.
+- **Achado de ambiente:** com o Node v24 local, 1 teste de `link-audit-evidence-provenance` falha também na `main` limpa ("ORDEM PEQUENA"). O teste exige que o `crypto.verify` aceite a assinatura universal da chave identidade, e o Node 24 passou a recusá-la. CI e produção (Node 22) passam. Ajustar o teste quando o projeto migrar para o Node 24.
+- **CI PARADO POR COBRANÇA (17/11/2026, 04:52 UTC):** desde os PRs #25 e #26, o GitHub recusa iniciar os jobs ("recent account payments have failed or your spending limit needs to be increased"). Os checks aparecem como `failure` em 1–2 s, sem rodar. O #24 passou 6/6 antes disso. Sem CI não há merge (regra da rodada) nem verificação no servidor. A W2 **não** foi iniciada por isso (onda seguinte possível; empilhada sobre a W1). A cobrança é decisão do responsável; nada foi alterado. Na madrugada de 16–17/11 houve cerca de 40 execuções do CI (31 com sucesso), o que pode ter contribuído para atingir o limite de minutos do plano.
+  - **Resolvido no mesmo dia:** o responsável tornou o repositório **público**, e repositório público não consome a cota de Actions. Causa medida pela API: a cota é da conta, e novembro somava ~2.489 min em 12 repositórios privados, acima dos 2.000 do plano gratuito; no googlesaas, o job `test` (~14 min) responde por ~74% dos minutos. A recomendação do manager era não publicar (e-mail pessoal nos commits, dados de cliente e documentos de segurança no histórico); a decisão foi do responsável. Daqui em diante, nada de dado real de cliente, e-mail ou endereço de servidor em commit novo.
+- **Aviso novo do `npm audit` (17/11/2026): GHSA-fc5q-39xc-vjpf**, ReDoS no `picomatch` sem versão corrigida, só pela cadeia do Tailwind 3 (build/dev; fora das imagens de produção). PR #27 mergeado (`c069acb`): 11 exceções presas ao GHSA até 17/12/2026, e o gate passou a seguir a cadeia `via` dos pacotes que só herdam o aviso. Análise em `docs/phase5/dependency-audit.md`.
+- **Pendências do responsável:**
+  - reavaliar a exceção do `picomatch` até 17/12/2026 (removê-la quando sair versão corrigida);
+  - aprovar ou mudar o contrato da W3 (#25);
+  - nomes de titular, suplente e conferente e o local dos backups (runbook da W5);
+  - `entries[].source`, aprovação assinada pelo conferente e revisão amostral de dossiês (spec §13.3).
+
 ## Roadmap P1 (espelho de `docs/plan/implementation-waves.md`, que é a fonte da verdade)
 
 | Onda | Entrega | Status |
 |---|---|---|
-| W0 | Fundação documental (spec e ameaças aprovadas, contrato P1, ADR-0002 aceito, emenda §16.17 do livro) | 🟡 ADR-0002 proposto |
-| W1 | Função única `basis → EvidenceToProve[]`, esquemas e `packageSha256` | ⬜ |
+| W0 | Fundação documental (spec e ameaças aprovadas, contrato P1, ADR-0002 aceito, emenda §16.17 do livro) | ✅ mergeada (PR #26; D9–D13; §16.17 revisada) |
+| W1 | Função única `basis → EvidenceToProve[]`, esquemas e `packageSha256` | ✅ mergeada (PR #24, `bd07e35`) |
 | W2 | CLI `export` (somente leitura) | ⬜ |
-| W3 | Verificador `v2` + contrato próprio | ⬜ |
+| W3 | Verificador `v2` + contrato próprio | 🟡 contrato no PR #25 (aguarda aprovação) |
 | R1 | Confirmação de resultados pelo livro (ADR-0002) | ⬜ |
+| R2 | Proveniência registrada no resultado (portão antes do primeiro resultado de produção) | ⬜ |
 | W4 | CLI `sign` (manifesto `v2`) | ⬜ |
 | W5 | Procedimento, dossiê e ensaio em homologação | ⬜ |
 | W6 | Coleta LIVE nova da TUVAPLAST (autorização escrita específica) | ⬜ |
