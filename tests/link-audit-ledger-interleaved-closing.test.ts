@@ -188,6 +188,59 @@ test('releitura NÃO confiável: intruso com etiqueta de chave desconhecida ou q
   }
 });
 
+test('releitura que NÃO estende o que a sessão leu (o intruso some depois do EEXIST, ou a INTENT foi reescrita na mesma posição) ⇒ recusa sem gravar, mesmo com etiquetas e replay válidos', async () => {
+  const eventOf = (file: string): string | undefined => (JSON.parse(fs.readFileSync(file, 'utf8')) as LedgerRecord).event;
+  /** Gancho no `link` do CONFIRMED do dono: `tamper` mexe no livro e devolve o que fazer DEPOIS do EEXIST (antes da releitura do dono). */
+  const atClosing = (w: LedgerWorld, tamper: (chain: LedgerRecord[], to: string) => () => void): FsOps => {
+    let done = false;
+    return faulty({
+      async link(from, to) {
+        if (done || path.dirname(to) !== path.join(w.ledgerDir, w.auditId) || eventOf(from) !== 'CONFIRMED') return nodeFsOps.link(from, to);
+        done = true;
+        const afterCollision = tamper(await ledgerRecords(w), to);
+        try {
+          return await nodeFsOps.link(from, to);
+        } finally {
+          afterCollision();
+        }
+      },
+    });
+  };
+  const write = (w: LedgerWorld, record: LedgerRecord): void => fs.writeFileSync(ledgerPath(w, record.ledgerSeq), serialize(record), { mode: 0o444, flag: 'wx' });
+  const cases: Array<[string, (w: LedgerWorld) => FsOps, string[]]> = [
+    [
+      // o livro "encolheu" entre a colisão e a releitura (o intruso que causou o EEXIST foi removido): a operação parece aberta, mas o histórico lido não confere
+      'intruso removido depois do EEXIST',
+      (w) => atClosing(w, (chain, to) => {
+        write(w, extend(LEDGER_AUTH_A, w, chain, checkpoint)[0] as LedgerRecord);
+        return () => fs.unlinkSync(to);
+      }),
+      ['l000001.json', 'l000002.json'],
+    ],
+    [
+      // outra INTENT (outra operação), válida e assinada, no lugar da do dono, com um CHECKPOINT encadeado a ela
+      'INTENT reescrita na mesma posição',
+      (w) => atClosing(w, (chain) => {
+        const [genesis, intent] = chain as [LedgerRecord, LedgerRecord];
+        const forged = makeRecord(LEDGER_AUTH_A, w.auditId, genesis, { event: 'INTENT', recordedAt: intent.recordedAt, actor: intent.actor, op: { ...intent.op, opId: 'e'.repeat(32) } } as LedgerDraft);
+        fs.unlinkSync(ledgerPath(w, 2));
+        write(w, forged);
+        write(w, extend(LEDGER_AUTH_A, w, [genesis, forged], checkpoint)[0] as LedgerRecord);
+        return () => undefined;
+      }),
+      ['l000001.json', 'l000002.json', 'l000003.json'],
+    ],
+  ];
+  for (const [label, hook, files] of cases) {
+    const w = await ledgerWorld();
+    const refused = await serviceOver(w, { fs: hook(w) }).create(ANA, w.auditId, { record: rec.c2(), expectedHead: null }, clock);
+    assert.equal(codeOf(refused), 'LEDGER_UNAVAILABLE', `${label}: ${JSON.stringify(refused).slice(0, 200)}`);
+    assert.match(JSON.stringify(refused), /histórico lido/, `${label}: recusa por releitura que não confere`);
+    assert.deepEqual(ledgerFiles(w), files, `${label}: o dono não gravou nada`);
+    assert.ok(!(await ledgerRecords(w)).some((r) => r.event === 'CONFIRMED'), `${label}: nenhum CONFIRMED`);
+  }
+});
+
 /* ============================================================================ limite de tentativas */
 
 test('tentativas LIMITADAS: um intruso a cada tentativa ⇒ o dono para depois de 1 publicação + 5 regravações e recusa (nada de fecho); o autor conclui depois pelo reenvio', async () => {
