@@ -13,10 +13,11 @@ import { TEST_ORIGIN } from './link-audit-origin-fixtures';
  * Configuração por variável de ambiente `LEDGER_CHILD` (JSON): pastas temporárias recebidas do pai; nada fora delas é tocado. Chaves fictícias.
  *  - `task: 'create'` com `crash`: faz UMA criação e se mata com SIGKILL antes/depois de publicar (`link`) um arquivo cujo nome termina em `match`.
  *  - `task: 'recover'`: roda `RECOVER` (com o mesmo mecanismo de queda opcional).
+ *  - `task: 'recover-retry'`: `RECOVER` com novas tentativas SÓ no 409 transitório da §16.16 (`PENDING_UNCONFIRMED`); qualquer outra recusa volta como veio.
  *  - `task: 'workload'`: várias rodadas de criar+revogar a MESMA decisão própria, com tentativas; imprime um resumo JSON.
  */
 interface Config {
-  readonly task: 'create' | 'recover' | 'workload' | 'enroll' | 'revoke' | 'create-retry' | 'revoke-retry' | 'list' | 'finalize';
+  readonly task: 'create' | 'recover' | 'recover-retry' | 'workload' | 'enroll' | 'revoke' | 'create-retry' | 'revoke-retry' | 'list' | 'finalize';
   /** `revoke`: decisão a revogar. */
   readonly decisionId?: string;
   /** Política de capacidade PEQUENA (só testes): total, revogações reservadas e intervalo dos pontos de verificação. */
@@ -82,6 +83,8 @@ const ops: FsOps = {
 const slots = [rec.c2, rec.c3, () => rec.p3(5), rec.naModel, rec.naFeature] as const;
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 const TRANSIENT = new Set(['HEAD_MISMATCH', 'LEDGER_OPERATION_IN_PROGRESS', 'WRITE_CONFLICT', 'PENDING_UNCONFIRMED', 'LEDGER_UNAVAILABLE']);
+/** `recover-retry`: tentativas além da primeira (cada uma depois de 3–14 ms); a janela da §16.16 dura um fsync. */
+const RECOVER_RETRIES = 200;
 
 (async () => {
   const reader = createEvidenceReader({ baseDir: config.evidenceDir, authorize: () => true });
@@ -134,6 +137,19 @@ const TRANSIENT = new Set(['HEAD_MISMATCH', 'LEDGER_OPERATION_IN_PROGRESS', 'WRI
   if (config.task === 'recover') {
     const result = await service.ledgerAction(actor, config.auditId, { action: 'RECOVER' }, clock);
     console.log(JSON.stringify({ ok: result.ok, code: result.ok ? null : result.code }));
+    return;
+  }
+  // §16.16: quem NÃO é o autor e lê a fase C de um dono VIVO (recibo gravado, CONFIRMED ainda não) recebe o 409 transitório `PENDING_UNCONFIRMED`; o cliente real tenta de novo
+  // pelo `Retry-After`. Só esse código é repetido (limitado): qualquer outra recusa — inclusive `LEDGER_UNAVAILABLE` — volta como veio, para não esconder defeito do livro.
+  if (config.task === 'recover-retry') {
+    let result = await service.ledgerAction(actor, config.auditId, { action: 'RECOVER' }, clock);
+    let retries = 0;
+    while (!result.ok && result.code === 'PENDING_UNCONFIRMED' && retries < RECOVER_RETRIES) {
+      retries += 1;
+      await sleep(3 + Math.floor(Math.random() * 12));
+      result = await service.ledgerAction(actor, config.auditId, { action: 'RECOVER' }, clock);
+    }
+    console.log(JSON.stringify({ ok: result.ok, code: result.ok ? null : result.code, retries }));
     return;
   }
   // com tentativas (só para conflitos transitórios): devolve o veredito FINAL, para provar a fronteira de capacidade sob concorrência sem depender de sorte
