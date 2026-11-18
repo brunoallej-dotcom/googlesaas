@@ -22,7 +22,7 @@ export function isSafeText(value: string): boolean {
   if (CONTROL_OR_BIDI.test(text) || text.includes('@')) return false;
   return !new RegExp(`\\p{Nd}{${PHONE_DIGIT_RUN},}`, 'u').test(text.replace(PHONE_SEPARATORS, ''));
 }
-const hasNoControlChars = (value: string): boolean => !CONTROL_OR_BIDI.test(value.normalize('NFKC'));
+export const hasNoControlChars = (value: string): boolean => !CONTROL_OR_BIDI.test(value.normalize('NFKC'));
 
 export const CHECK_IDS = [
   'INTEGRITY_LOCAL',
@@ -43,7 +43,7 @@ const hex64 = z.string().regex(/^[0-9a-f]{64}$/);
 /** Precisão fixa de milissegundos em UTC: assim a ordem lexicográfica é a ordem cronológica (sem `Date` neste módulo puro). */
 const isoInstant = z.iso.datetime({ precision: 3 });
 const auditId = z.string().regex(AUDIT_ID_PATTERN);
-const entryRef = z.string().regex(/^(?:capture:c\d{4}|report:c\d{4}-r\d{4}|legacy-status:c\d{4})$/);
+export const entryRef = z.string().regex(/^(?:capture:c\d{4}|report:c\d{4}-r\d{4}|legacy-status:c\d{4})$/);
 /** Rótulo/identificador curto: lista de permissão E texto seguro (NFKC). */
 const shortLabel = z.string().min(1).max(MAX_LABEL_LENGTH).regex(SHORT_ID_ALLOWLIST).refine(isSafeText, 'não pode conter e-mail, telefone nem caracteres de controle');
 const safeNote = z.string().max(MAX_NOTE_LENGTH).refine(isSafeText, 'não pode conter e-mail, telefone nem caracteres de controle');
