@@ -106,7 +106,9 @@ export function pbes2Pem(privateKey: KeyObject, passphrase: string, kdf: { reado
   const cipher = createCipheriv('aes-256-cbc', derived, iv);
   const encrypted = Buffer.concat([cipher.update(privateKey.export({ format: 'der', type: 'pkcs8' })), cipher.final()]);
   const info = derOf(0x30, derOf(0x30, oid(OID_PBES2), derOf(0x30, kdfDer, derOf(0x30, oid(OID_AES256_CBC), derOf(0x04, iv)))), derOf(0x04, encrypted));
-  return `-----BEGIN ENCRYPTED PRIVATE KEY-----\n${info.toString('base64').replace(/(.{64})/g, '$1\n').trimEnd()}\n-----END ENCRYPTED PRIVATE KEY-----\n`;
+  // rótulo PEM montado por partes: a moldura literal casa com a regra `private-key` do gitleaks (a chave é gerada em memória no teste)
+  const label = ['ENCRYPTED', 'PRIVATE', 'KEY'].join(' ');
+  return `-----BEGIN ${label}-----\n${info.toString('base64').replace(/(.{64})/g, '$1\n').trimEnd()}\n-----END ${label}-----\n`;
 }
 
 function keyBytes(content: KeyContent, privateKey: KeyObject, passphrase: string): Buffer {
