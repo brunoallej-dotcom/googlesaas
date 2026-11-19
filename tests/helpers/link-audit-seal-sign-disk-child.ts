@@ -1,13 +1,13 @@
 import { nodeFsOps } from '../../src/lib/link-audit/snapshot-store';
 import { signSealManifest } from '../../src/lib/link-audit-attestation/sign-chain';
 import { publishSeal, runSign, type SignRunInput } from '../../src/lib/link-audit-attestation/sign-run';
-import { AUD, KEY_ID, NOW, planFor, testKey } from './link-audit-seal-sign-disk-fixtures';
+import { AUD, custodianOf, E1, KEY_ID, makePackage, NOW, planFor, testKey } from './link-audit-seal-sign-disk-fixtures';
 
 /*
  * FILHO das corridas da W4.3 (`link-audit-seal-sign-disk.test.ts`, IA-12): vários processos Node DISTINTOS disputam o MESMO `seq` na MESMA pasta. Largada
  * sincronizada (`startAt`) para sobrepor a execução apesar da partida lenta de cada processo. Modos:
  *  - `publish`: só a gravação (temporário + `link()` exclusivo) de um manifesto próprio (`variant` muda o `sealedAt`): a disputa é toda no `link()`;
- *  - `run`: o `sign` inteiro (leitura única → cadeia → núcleo → assinatura → gravação).
+ *  - `run`: o `sign` inteiro (leitura única → cadeia → núcleo → confirmação humana (os 12 caracteres do pacote `E1`) → assinatura → gravação).
  * Imprime UMA linha JSON começando por `{"ok":` e sai com 0. Só dados sintéticos e a chave de TESTE; pastas recebidas do pai.
  */
 interface Payload {
@@ -37,7 +37,7 @@ async function main(): Promise<Record<string, unknown>> {
   }
   if (!payload.input) return { ok: false, code: 'NO_INPUT' };
   await waitStart();
-  const result = await runSign(payload.input, { fs: nodeFsOps, now: () => new Date(Date.parse(NOW) + payload.variant), openKey: testKey });
+  const result = await runSign(payload.input, { fs: nodeFsOps, now: () => new Date(Date.parse(NOW) + payload.variant), confirm: custodianOf(makePackage(E1)), openKey: testKey });
   return result.ok ? { ok: true, seq: result.seq, sealedAt: result.seal.sealedAt } : { ok: false, code: result.code };
 }
 

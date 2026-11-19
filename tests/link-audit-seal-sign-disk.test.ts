@@ -10,11 +10,13 @@ import { serializePackage } from '../src/lib/link-audit-attestation/export-run';
 import { approvalSchema } from '../src/lib/link-audit-attestation/schemas';
 import { signSealManifest, type SealManifest } from '../src/lib/link-audit-attestation/sign-chain';
 import { runSignCore } from '../src/lib/link-audit-attestation/sign-core';
-import { MAX_APPROVAL_BYTES, MAX_DOSSIER_BYTES, MAX_PACKAGE_BYTES, publishSeal, runSign, type SealWriteResult, type SignRunResult } from '../src/lib/link-audit-attestation/sign-run';
+import { MAX_APPROVAL_BYTES, MAX_DOSSIER_BYTES, MAX_PACKAGE_BYTES, MAX_RISK_ACCEPTANCE_BYTES, publishSeal, runSign, type SealWriteResult, type SignRunResult } from '../src/lib/link-audit-attestation/sign-run';
 import { createSealedEvidenceProvenance, parseEvidenceSealV2Text, parseTrustKeyring, sealSha256, type TrustKeyring } from '../src/lib/link-audit-evidence/provenance';
 import { errno, registerCleanup, tmpDir } from './helpers/link-audit-evidence-fixtures';
 import {
   AUD,
+  CONFIRM_LENGTH,
+  custodianOf,
   DOSSIER,
   DOSSIER_ID,
   E1,
@@ -27,11 +29,13 @@ import {
   NOW,
   planFor,
   RING,
+  RISK_ACCEPTANCE,
   sha256,
   signDeps,
   signInput,
   TEMP_NAME,
   testKey,
+  typing,
   writeStation,
   type Entries,
   type StationFiles,
@@ -42,6 +46,7 @@ import {
  * `--approval` e `--dossier` pelo `FsOps` injetado (bytes exatos, sem seguir link, com limite) e gravação à prova de queda: temporário não secreto na
  * pasta da auditoria + fsync + `link()` exclusivo + remoção do temporário + fsync da pasta. Corridas REAIS (no `link()` do disco e entre processos).
  * Dados 100% FICTÍCIOS em pastas temporárias; a chave é a de TESTE `a` dos vetores-ouro, em memória. Sem CLI, TTY, chave real, recibo nem autoteste.
+ * Revisão da W4.1: a confirmação humana (passo 11) é a porta injetada `confirm` (espião nas fixtures) e o aceite de risco é lido UMA vez, como as outras.
  */
 registerCleanup();
 
@@ -112,8 +117,9 @@ const tempsIn = (dir: string): string[] => listing(dir).filter((name) => name.st
 test('IA-18: --package, --approval e --dossier são lidos do disco UMA vez cada, pelo FsOps injetado (bytes exatos, com limite), e o manifesto gravado sai desses bytes (dossiê binário inclusive)', async () => {
   const { station, sealsDir } = world({ entries: E2 });
   const spy = spyFs();
-  const deps = signDeps({ fs: spy.fs });
+  const deps = signDeps({ fs: spy.fs, confirm: custodianOf(makePackage(E2)) });
   const result = await signed(signInput(station, sealsDir), deps);
+  assert.deepEqual(deps.order(), ['confirm', 'openKey'], 'confirmação humana uma vez, depois de todas as recusas; a chave depois dela');
   const inputs = new Set<unknown>(Object.values(station));
   const reads = spy.calls.filter((call) => (call.op === 'readFileBytes' || call.op === 'readFile') && inputs.has(call.args[0]));
   assert.deepEqual(
@@ -202,7 +208,10 @@ test('IA-18: trocar 1 byte do pacote depois da aprovação ⇒ recusa em TODA po
   const approvalBytes = jsonBytes(makeApproval(pkg));
   for (let at = 0; at < approved.length; at += 1) {
     let keyCalls = 0;
-    const result = runSignCore({ auditId: AUD, custodian: 'CUST-01', packageBytes: flip(at), approvalBytes, dossierBytes: DOSSIER, chain: { status: 'EMPTY' }, expectSeq: 1, first: true }, { now: () => new Date(NOW), openKey: () => (keyCalls += 1) });
+    const result = await runSignCore(
+      { auditId: AUD, custodian: 'CUST-01', packageBytes: flip(at), approvalBytes, dossierBytes: DOSSIER, riskAcceptanceBytes: null, chain: { status: 'EMPTY' }, expectSeq: 1, first: true },
+      { now: () => new Date(NOW), confirm: custodianOf(pkg), openKey: () => (keyCalls += 1) },
+    );
     if (result.ok) {
       assert.ok(outsideHash(at), `posição ${at} (${JSON.stringify(text[at])}) foi aceita`);
       assert.deepEqual([result.plan.packageSha256, result.plan.entries], [pkg.packageSha256, plainEntries(E1)], 'fora do hash: o plano é o aprovado');
@@ -286,8 +295,15 @@ test('IA-18: os limites de leitura cobrem com folga o maior pacote e a maior apr
   assert.ok(approvalBytes * 4 < MAX_APPROVAL_BYTES, `maior aprovação ${approvalBytes} B: folga de 4× sob ${MAX_APPROVAL_BYTES} B`);
 });
 
-test('RS-04 / IA-02 (5): o sign só toca os três arquivos de entrada e a pasta de manifestos (fs que falha em qualquer outro caminho) e só escreve em <seals-dir>/<auditId>/', async () => {
-  const { station, sealsDir } = world();
+test('RS-04 / IA-02 (5): o sign só toca os arquivos de entrada (três, ou quatro com o aceite de risco) e a pasta de manifestos (fs que falha em qualquer outro caminho) e só escreve em <seals-dir>/<auditId>/', async () => {
+  const pkg = makePackage(E1);
+  const withRisk = { pkg, approval: { ...makeApproval(pkg), riskAcceptance: { id: 'aceite-disco-0001', sha256: sha256(RISK_ACCEPTANCE) } }, riskAcceptance: RISK_ACCEPTANCE };
+  for (const [files, custodian] of [[{}, 'CUST-01'], [withRisk, 'CONF-01']] as const) {
+    await onlyAllowedPaths(world(files), custodian);
+  }
+});
+
+async function onlyAllowedPaths({ station, sealsDir }: ReturnType<typeof world>, custodian: string): Promise<void> {
   const root = real(sealsDir);
   const inputs = new Set<string>(Object.values(station));
   const inside = (target: string): boolean => inputs.has(target) || target === sealsDir || target === root || target.startsWith(root + path.sep);
@@ -305,14 +321,15 @@ test('RS-04 / IA-02 (5): o sign só toca os três arquivos de entrada e a pasta 
       },
     ]),
   ) as unknown as BytesFsOps;
-  const result = await signed(signInput(station, sealsDir), signDeps({ fs: guarded }));
+  const result = await signed(signInput(station, sealsDir, { custodian }), signDeps({ fs: guarded }));
   const dir = path.join(root, AUD);
   for (const entry of touched.filter((item) => WRITE_OPS.has(item.slice(0, item.indexOf(':'))))) {
     const target = entry.slice(entry.indexOf(':') + 1);
     assert.ok(target === dir || target === root || target.startsWith(dir + path.sep), `escrita fora de <seals-dir>/<auditId>/: ${entry}`);
   }
+  if (station.riskAcceptancePath) assert.ok(touched.includes(`readFileBytes:${station.riskAcceptancePath}`) && result.plan.roleException, 'o aceite de risco foi lido e valeu');
   await assertSealOnDisk(sealsDir, result.seal);
-});
+}
 
 /* =============================================================================================================== IA-12 */
 
@@ -344,7 +361,7 @@ test('IA-12 (§5.5.1 item 4): grava por temporário .seal-NNNN.json.tmp-<aleató
   await assertSealOnDisk(sealsDir, result.seal);
   // subpasta já existente: nada de mkdir nem de fsync da raiz; outro temporário (aleatório)
   const again = spyFs();
-  const second = await signed(signInput(writeStation(tmpDir('lasd-st-'), { entries: E2 }), sealsDir, { expectSeq: 2, first: false }), signDeps({ fs: again.fs, now: () => new Date(Date.parse(NOW) + 60_000) }));
+  const second = await signed(signInput(writeStation(tmpDir('lasd-st-'), { entries: E2 }), sealsDir, { expectSeq: 2, first: false }), signDeps({ fs: again.fs, now: () => new Date(Date.parse(NOW) + 60_000), confirm: custodianOf(makePackage(E2)) }));
   const secondWrites = writesOf(again.calls);
   assert.deepEqual(secondWrites.map((call) => call.op), ['writeExclusive', 'link', 'unlink', 'syncDirectory']);
   assert.notEqual(secondWrites[0]?.args[0], temp);
@@ -599,7 +616,7 @@ test('IA-12: o manifesto gravado é a cabeça do próximo sign (seq 2, prev = se
   const firstBytes = fs.readFileSync(sealPath(sealsDir));
   const crashTemp = path.join(sealsDir, AUD, `.seal-0002.json.tmp-${'cd'.repeat(16)}`);
   fs.writeFileSync(crashTemp, 'parcial de uma queda');
-  const second = await signed(signInput(writeStation(tmpDir('lasd-st-'), { entries: E2 }), sealsDir, { expectSeq: 2, first: false }), signDeps({ now: () => new Date(Date.parse(NOW) + 60_000) }));
+  const second = await signed(signInput(writeStation(tmpDir('lasd-st-'), { entries: E2 }), sealsDir, { expectSeq: 2, first: false }), signDeps({ now: () => new Date(Date.parse(NOW) + 60_000), confirm: custodianOf(makePackage(E2)) }));
   assert.deepEqual([second.seq, second.seal.prevSealSha256, second.seal.entries], [2, sealSha256(first.seal), plainEntries(E2)]);
   assert.equal(fs.readFileSync(crashTemp, 'utf8'), 'parcial de uma queda');
   assert.deepEqual(fs.readFileSync(sealPath(sealsDir)), firstBytes);
@@ -624,5 +641,76 @@ test('recusas do núcleo e da cadeia (passos 1–10) não escrevem nada (nem tem
     assert.deepEqual(writesOf(spy.calls), [], label);
     assert.equal(deps.keyCalls(), 0, label);
     assert.deepEqual(listing(sealsDir), [], label);
+  }
+});
+
+/* =============================================================================================================== revisão da W4.1: passos 9 e 11 no disco */
+
+test('passo 11 no disco (revisão da W4.1): confirmação errada ou porta que falha ⇒ SIGN_CONFIRMATION_FAILED; nenhum arquivo gravado, nem temporário nem subpasta, e a chave não é aberta', async () => {
+  const right = makePackage(E1).packageSha256.slice(0, CONFIRM_LENGTH);
+  const wrong = [typing(right.toUpperCase()), typing(right.slice(1)), typing(`${right}\n`), typing(makePackage(E2).packageSha256.slice(0, CONFIRM_LENGTH)), async (): Promise<string> => Promise.reject(new Error('sem TTY'))];
+  for (const [index, confirm] of wrong.entries()) {
+    const { station, sealsDir } = world();
+    const spy = spyFs();
+    const deps = signDeps({ fs: spy.fs, confirm });
+    refused(await runSign(signInput(station, sealsDir), deps), 'SIGN_CONFIRMATION_FAILED', `caso ${index}`);
+    assert.deepEqual(deps.order(), ['confirm'], `caso ${index}: confirmação perguntada uma vez, chave não aberta`);
+    assert.deepEqual(writesOf(spy.calls), [], `caso ${index}: nenhuma escrita (nem mkdir, temporário, link ou fsync)`);
+    assert.deepEqual(listing(sealsDir), [], `caso ${index}: nem a subpasta da auditoria`);
+  }
+  // com cadeia: a pasta da auditoria já existe e fica byte a byte igual (nenhum temporário)
+  const { station, sealsDir } = world({ entries: E1 });
+  await signed(signInput(station, sealsDir));
+  const dir = path.join(sealsDir, AUD);
+  const before = listing(dir).map((name) => [name, sha256(fs.readFileSync(path.join(dir, name)))]);
+  const next = writeStation(tmpDir('lasd-st-'), { entries: E2 });
+  const deps = signDeps({ confirm: custodianOf(makePackage(E1)), now: () => new Date(Date.parse(NOW) + 60_000) });
+  refused(await runSign(signInput(next, sealsDir, { expectSeq: 2, first: false }), deps), 'SIGN_CONFIRMATION_FAILED', 'digitou o hash do pacote ANTERIOR');
+  assert.equal(deps.keyCalls(), 0);
+  assert.deepEqual(listing(dir).map((name) => [name, sha256(fs.readFileSync(path.join(dir, name)))]), before);
+  assert.deepEqual(tempsIn(dir), []);
+});
+
+test('passo 9 no disco (revisão da W4.1): o arquivo do aceite de risco é lido UMA vez, depois do dossiê, pelo FsOps injetado e com limite; com os papéis coincidindo, vale só com o hash citado', async () => {
+  const pkg = makePackage(E1);
+  const approval = { ...makeApproval(pkg), riskAcceptance: { id: 'aceite-disco-0001', sha256: sha256(RISK_ACCEPTANCE) } };
+  const { station, sealsDir } = world({ pkg, approval, riskAcceptance: RISK_ACCEPTANCE });
+  const spy = spyFs();
+  const result = await signed(signInput(station, sealsDir, { custodian: 'conf 01' }), signDeps({ fs: spy.fs }));
+  const inputs = new Set<unknown>(Object.values(station));
+  assert.deepEqual(
+    spy.calls.filter((call) => (call.op === 'readFileBytes' || call.op === 'readFile') && inputs.has(call.args[0])).map((call) => [call.op, call.args[0], call.args[1]]),
+    [
+      ['readFileBytes', station.packagePath, MAX_PACKAGE_BYTES],
+      ['readFileBytes', station.approvalPath, MAX_APPROVAL_BYTES],
+      ['readFileBytes', station.dossierPath, MAX_DOSSIER_BYTES],
+      ['readFileBytes', station.riskAcceptancePath, MAX_RISK_ACCEPTANCE_BYTES],
+    ],
+  );
+  assert.deepEqual([result.plan.roleException, result.plan.requiresLaterReview], [true, true]);
+  // aceite citado, mas o arquivo é outro, ou não foi indicado ⇒ SIGN_ROLE_SEPARATION, nada gravado
+  const other = world({ pkg, approval, riskAcceptance: Buffer.concat([RISK_ACCEPTANCE, Buffer.from('x')]) });
+  const missing = world({ pkg, approval });
+  for (const [label, scenario] of [['outro arquivo', other], ['sem --risk-acceptance', missing]] as const) {
+    const deps = signDeps();
+    refused(await runSign(signInput(scenario.station, scenario.sealsDir, { custodian: 'CONF-01' }), deps), 'SIGN_ROLE_SEPARATION', label);
+    assert.deepEqual([deps.confirmCalls(), deps.keyCalls(), listing(scenario.sealsDir)], [0, 0, []], label);
+  }
+});
+
+test('passo 9 no disco: --risk-acceptance que é link, diretório, inexistente ou acima do limite ⇒ SIGN_INPUT_UNREADABLE (nomeia o argumento, sem caminho), mesmo com papéis distintos; nada gravado', async () => {
+  const cases: ReadonlyArray<readonly [string, (file: string) => void]> = [
+    ['link simbólico', (file) => (fs.renameSync(file, `${file}.real`), fs.symlinkSync(`${file}.real`, file))],
+    ['diretório', (file) => (fs.rmSync(file), fs.mkdirSync(file))],
+    ['inexistente', (file) => fs.rmSync(file)],
+    ['acima do limite', (file) => fs.truncateSync(file, MAX_RISK_ACCEPTANCE_BYTES + 1)],
+  ];
+  for (const [label, damage] of cases) {
+    const { station, sealsDir } = world({ riskAcceptance: RISK_ACCEPTANCE });
+    damage(station.riskAcceptancePath as string);
+    const deps = signDeps();
+    const refusal = refused(await runSign(signInput(station, sealsDir), deps), 'SIGN_INPUT_UNREADABLE', label);
+    assert.ok(refusal.message.includes('--risk-acceptance'), `${label}: a mensagem nomeia o argumento`);
+    assert.deepEqual([deps.confirmCalls(), deps.keyCalls(), listing(sealsDir)], [0, 0, []], label);
   }
 });

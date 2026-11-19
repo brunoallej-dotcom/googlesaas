@@ -3,14 +3,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { nodeFsOps } from '../../src/lib/link-audit/snapshot-store';
 import { CHECK_IDS, computePackageSha256, type Approval, type CandidatePackage } from '../../src/lib/link-audit-attestation';
-import type { SignPlan } from '../../src/lib/link-audit-attestation/sign-core';
+import type { SignCoreDeps, SignPlan } from '../../src/lib/link-audit-attestation/sign-core';
 import type { SignRunDeps, SignRunInput } from '../../src/lib/link-audit-attestation/sign-run';
 import { GOLDEN } from './link-audit-seal-v2-golden';
 
 /*
  * Fixtures da W4.3 (disco e concorrência do `sign`). Sem `node:test`: o processo FILHO da corrida também as importa. Dados 100% FICTÍCIOS; a chave é a
  * de TESTE `a` dos vetores-ouro, derivada da semente de teste em memória (PKCS#8 DER = prefixo + semente; nunca texto PEM no repositório, nunca chave
- * real). Quem chama cria e apaga as pastas temporárias.
+ * real). Quem chama cria e apaga as pastas temporárias. A confirmação humana (passo 11, revisão da W4.1) é um espião: o custodiante digita os 12
+ * primeiros caracteres do `packageSha256` APROVADO, que leu no dossiê (por padrão o do pacote `E1`).
  */
 
 export const AUD = 'auditoria-disco-sign-01';
@@ -84,34 +85,64 @@ export interface StationFiles {
   readonly packagePath: string;
   readonly approvalPath: string;
   readonly dossierPath: string;
+  /** Só quando a estação tem o arquivo do aceite formal de risco (passo 9). */
+  readonly riskAcceptancePath?: string;
 }
-/** Grava pacote, aprovação e dossiê na pasta da estação (temporária) e devolve os caminhos. */
-export function writeStation(dir: string, files: { readonly pkg?: CandidatePackage; readonly approval?: unknown; readonly dossier?: Uint8Array; readonly entries?: Entries } = {}): StationFiles {
+/** Arquivo FICTÍCIO do aceite formal de risco (passo 9: só existência e hash), binário como o dossiê. */
+export const RISK_ACCEPTANCE: Buffer = Buffer.concat([Buffer.from('%PDF-1.7 aceite formal de risco FICTÍCIO (W4.3)\n', 'utf8'), Buffer.from([0xff, 0x00, 0x0a])]);
+/** Grava pacote, aprovação, dossiê (e o aceite de risco, se pedido) na pasta da estação (temporária) e devolve os caminhos. */
+export function writeStation(
+  dir: string,
+  files: { readonly pkg?: CandidatePackage; readonly approval?: unknown; readonly dossier?: Uint8Array; readonly entries?: Entries; readonly riskAcceptance?: Uint8Array } = {},
+): StationFiles {
   const pkg = files.pkg ?? makePackage(files.entries ?? E1);
   const dossier = files.dossier ?? DOSSIER;
   const station = { packagePath: path.join(dir, 'pacote.json'), approvalPath: path.join(dir, 'aprovacao.json'), dossierPath: path.join(dir, 'dossie.pdf') };
   fs.writeFileSync(station.packagePath, jsonBytes(pkg));
   fs.writeFileSync(station.approvalPath, jsonBytes(files.approval ?? makeApproval(pkg, dossier)));
   fs.writeFileSync(station.dossierPath, dossier);
-  return station;
+  if (files.riskAcceptance === undefined) return station;
+  const riskAcceptancePath = path.join(dir, 'aceite-risco.pdf');
+  fs.writeFileSync(riskAcceptancePath, files.riskAcceptance);
+  return { ...station, riskAcceptancePath };
 }
 
 export function signInput(station: StationFiles, sealsDir: string, over: Partial<SignRunInput> = {}): SignRunInput {
-  return { auditId: AUD, custodian: 'CUST-01', ...station, sealsDir, trustKeys: RING, expectSeq: 1, first: true, keyId: KEY_ID, ...over };
+  return { auditId: AUD, custodian: 'CUST-01', ...station, riskAcceptancePath: station.riskAcceptancePath ?? null, sealsDir, trustKeys: RING, expectSeq: 1, first: true, keyId: KEY_ID, ...over };
 }
 
-/** Dependências do `sign` com o disco REAL, relógio fixo e o leitor de chave como espião (conta as aberturas). */
-export function signDeps(over: Partial<SignRunDeps> = {}): SignRunDeps & { readonly keyCalls: () => number } {
-  let calls = 0;
+/** Passo 11: quantos caracteres iniciais de `packageSha256` o custodiante digita. */
+export const CONFIRM_LENGTH = 12;
+type Confirm = SignCoreDeps<unknown>['confirm'];
+/** A tela devolve sempre este texto, como se o custodiante o tivesse digitado. */
+export const typing = (text: string): Confirm => async () => text;
+/** O custodiante que leu o dossiê: digita os 12 primeiros caracteres do `packageSha256` do pacote APROVADO. */
+export const custodianOf = (pkg: CandidatePackage): Confirm => typing(pkg.packageSha256.slice(0, CONFIRM_LENGTH));
+
+/**
+ * Dependências do `sign` com o disco REAL, relógio fixo, a confirmação humana e o leitor de chave como espiões (contam as chamadas e a ordem). Sem
+ * `confirm`, o custodiante digita os 12 caracteres do pacote `E1`.
+ */
+export function signDeps(over: Partial<SignRunDeps> = {}): SignRunDeps & { readonly keyCalls: () => number; readonly confirmCalls: () => number; readonly order: () => readonly string[] } {
+  const order: string[] = [];
+  const confirm = over.confirm ?? custodianOf(makePackage(E1));
+  const openKey = over.openKey ?? testKey;
+  const count = (name: string): number => order.filter((call) => call === name).length;
   return {
     fs: nodeFsOps,
     now: () => new Date(NOW),
-    openKey: () => {
-      calls += 1;
-      return testKey();
-    },
     ...over,
-    keyCalls: () => calls,
+    confirm: (facts) => {
+      order.push('confirm');
+      return confirm(facts);
+    },
+    openKey: () => {
+      order.push('openKey');
+      return openKey();
+    },
+    keyCalls: () => count('openKey'),
+    confirmCalls: () => count('confirm'),
+    order: () => [...order],
   };
 }
 
