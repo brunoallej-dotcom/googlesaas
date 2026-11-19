@@ -32,8 +32,8 @@ import { GOLDEN } from './helpers/link-audit-seal-v2-golden';
  * V2-38 (RS-09, IA-03) — golden vectors G1–G6 of the v2 format (contract §11). The VALUES come from `helpers/link-audit-seal-v2-golden.ts`, produced
  * by an independent route (Python canonical text, OpenSSL signatures, sha256sum; header of that file). These tests only read them: they recompute
  * `canonicalJson`, compare byte for byte, verify the signatures with the raw public keys in trust-list format, check `sealSha256`, go through the
- * verifier where the slice allows it, and fail with one byte changed in each field. G2/G3 through the chain verifier: W3.3; G6 through the closure
- * logic: W3.4 (here: bytes, pinned hash, canonical body and signature).
+ * verifier where the slice allows it, and fail with one byte changed in each field. G1 → G2 → G3 go through the chain verifier (W3.3); G6 through
+ * the closure logic is W3.4 (here: bytes, pinned hash, canonical body and signature).
  */
 registerCleanup();
 
@@ -155,6 +155,31 @@ test('V2-38 (IA-21) through the verifier: G1 gives the golden head metadata; G4 
   }
   assert.deepEqual(await createSealedEvidenceProvenance({ sealsDir, trustedKeys: TRUST, acceptedVersions: [1, 2] }).classify(GOLDEN.g4.body.auditId, evidencesOf(GOLDEN.g4.body)), { status: 'AUTHENTICATED' });
   assert.deepEqual(await createSealedEvidenceProvenance({ sealsDir, trustedKeys: TRUST, acceptedVersions: [2] }).classify(GOLDEN.g4.body.auditId, evidencesOf(GOLDEN.g4.body)), { status: 'UNAUTHENTICATED', reason: 'SEAL_VERSION_NOT_ALLOWED' });
+});
+
+test('V2-38 (IA-21, W3.3) G1 → G2 → G3 through the chain verifier: the golden head metadata, and one changed byte in G2 or G3 never authenticates', async () => {
+  const auditId = GOLDEN.g1.body.auditId;
+  const chain: ReadonlyArray<readonly [number, SealVector<V2Body>]> = [[1, GOLDEN.g1], [2, GOLDEN.g2], [3, GOLDEN.g3]];
+  const writeGoldenChain = (): string => {
+    const sealsDir = tmpDir('lepg-');
+    for (const [seq, vector] of chain) writeSealFile(sealsDir, auditId, seq, fileOf(vector));
+    return sealsDir;
+  };
+  const sealsDir = writeGoldenChain();
+  for (const acceptedVersions of [[2], [1, 2]] as const) {
+    const verdict = await createSealedEvidenceProvenance({ sealsDir, trustedKeys: TRUST, acceptedVersions }).classify(auditId, evidencesOf(GOLDEN.g3.body));
+    assert.deepEqual(verdict, { status: 'AUTHENTICATED', headSeq: 3, headSealSha256: GOLDEN.g3.sealSha256, keyIds: [KEY_A.keyId, KEY_B.keyId] }, JSON.stringify(acceptedVersions));
+  }
+  for (const [seq, vector] of chain.slice(1)) {
+    for (const [where, text] of oneByteTexts(fileOf(vector), (value) => JSON.stringify(value))) {
+      const dir = writeGoldenChain();
+      const file = path.join(dir, auditId, `seal-000${seq}.json`);
+      fs.chmodSync(file, 0o644);
+      fs.writeFileSync(file, text);
+      const verdict = await createSealedEvidenceProvenance({ sealsDir: dir, trustedKeys: TRUST, acceptedVersions: [2] }).classify(auditId, evidencesOf(GOLDEN.g3.body));
+      assert.equal(verdict.status, 'UNAUTHENTICATED', `G${seq} ${where}: ${JSON.stringify(verdict)}`);
+    }
+  }
 });
 
 test('V2-38 (RS-09) one changed byte in each field: G1 and G4 are refused by the verifier, G2 and G3 by the signature check', async () => {

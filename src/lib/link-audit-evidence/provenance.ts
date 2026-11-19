@@ -2,7 +2,7 @@ import { createPublicKey, sign as cryptoSign, verify as cryptoVerify, type KeyOb
 import path from 'node:path';
 import { z } from 'zod';
 import { canonicalJson, sha256Hex } from '../link-audit/canonical';
-import { nodeFsOps, type FsOps } from '../link-audit/snapshot-store';
+import { nodeFsOps, type FileInfo, type FsOps } from '../link-audit/snapshot-store';
 import { AUDIT_ID_PATTERN } from './types';
 
 /*
@@ -276,13 +276,16 @@ export function createSealedEvidenceProvenance(options: SealedEvidenceOptions): 
         if (sealed.length === 0) return unauthenticated(legacy ? 'LEGACY_NO_SEAL' : 'NO_SEAL');
         // o de MAIOR seq: se ele não valer, não se recua para um mais antigo (o atacante escolheria qual versão do passado vale)
         const latest = sealed.reduce((best, item) => (item.seq > best.seq ? item : best));
-        const text = await ops.readFile(path.join(dir, latest.name), MAX_SEAL_BYTES); // read ONCE; reused by whichever path is taken
-        const declared = declaredSeal(text);
+        // `[2]` always walks: rows 4–5 decide before (and without) reading the latest separately
+        if (!versions.includes(1)) return await classifyWalked({ ops, dir, sealed, auditId, evidences, trustedKeys, versions, budget: { remaining: MAX_CLASSIFY_BYTES } });
+        const budget: ReadBudget = { remaining: MAX_CLASSIFY_BYTES };
+        const latestRead = await readPosition(ops, path.join(dir, latest.name), budget); // read ONCE; reused by whichever path is taken
+        const declared = latestRead.kind === 'text' ? declaredSeal(latestRead.text) : null;
         // Path choice (contract §8): `[1]` emulates the old verifier, always. `[1,2]` with a v1 latest is path A, exactly today's behavior.
-        // Everything else (latest v2, `[2]`, or a latest that is unreadable or of another version) is the WALKED path B (fail-closed).
+        // Everything else (latest v2, or a latest that is unreadable or of another version) is the WALKED path B (fail-closed).
         if (!versions.includes(2)) return declared ? classifyLatestV1(declared.json, latest.seq, auditId, evidences, trustedKeys) : unauthenticated('VERIFICATION_ERROR');
-        if (versions.includes(1) && declared?.schemaVersion === SEAL_SCHEMA_VERSION) return classifyLatestV1(declared.json, latest.seq, auditId, evidences, trustedKeys);
-        return classifyWalked(text, sealed, auditId, evidences, trustedKeys, versions);
+        if (declared?.schemaVersion === SEAL_SCHEMA_VERSION) return classifyLatestV1(declared.json, latest.seq, auditId, evidences, trustedKeys);
+        return await classifyWalked({ ops, dir, sealed, auditId, evidences, trustedKeys, versions, budget, alreadyRead: { seq: latest.seq, read: latestRead } });
       } catch {
         return unauthenticated('VERIFICATION_ERROR');
       }
@@ -356,7 +359,7 @@ export function evidenceProvenanceFromConfig(
 /*
  * PURE, ADDITIVE primitives of the v2 manifest and of the key-retirement closure (contract `p1-contrato-verificador-v2.md` §2 and §6).
  * Nothing above changes: the v1 schemas, `createEvidenceSeal`, `parseTrustKeys` and the v1 `classify` path stay exactly as they were.
- * `classify` uses them for ONE v2 manifest since W3.2 (`classifyWalked`); the chain is W3.3, keyring states and closures W3.4, revocation W3.5.
+ * `classify` walks v2 chains with them (`classifyWalked`, W3.2–W3.3); keyring states and closures are W3.4, the revocation pre-step W3.5.
  *
  * Signed bytes = UTF-8(canonicalJson(file without `signature`)); Ed25519 PURE (`crypto.sign/verify(null, …)`), no pre-hash, no context: the
  * same framing as v1 and the only one a K2 device can reproduce (RS-15). `schemaVersion` and `kind` are inside the signed bytes.
@@ -589,7 +592,40 @@ export function sealSha256(file: EvidenceSealFile | EvidenceSealFileV2): string 
   return sha256Hex(canonicalJson(parsed.data));
 }
 
-/* ----------------------------------------------------------------------------------------- walked path B (W3.2: one manifest) */
+/* ----------------------------------------------------------------------------------------- walked path B: the chain (W3.3) */
+
+/** Total bytes of manifests (and, from W3.4, closures) read by ONE `classify` (contract §2, O7). */
+export const MAX_CLASSIFY_BYTES = 16 * 1024 * 1024;
+
+interface ReadBudget {
+  remaining: number;
+}
+/** One position as read: its text, NOT a regular file (link, directory, FIFO…: row 8), or a read FAILURE (I/O, > 256 KiB, budget: row 7). */
+type PositionRead = { readonly kind: 'text'; readonly text: string } | { readonly kind: 'not-regular' } | { readonly kind: 'failed' };
+
+/**
+ * Reads one file at most once, without following links and within the per-file and per-`classify` limits (contract §2, §7.2). Never throws.
+ * Once the budget is exceeded nothing else is read. The text comes from `FsOps.readFile` (a lossy UTF-8 decode): an invalid byte can only become
+ * U+FFFD, which no ASCII-only field or JSON token accepts, so the position is SEAL_INVALID as with a strict decode.
+ */
+async function readPosition(ops: FsOps, file: string, budget: ReadBudget): Promise<PositionRead> {
+  if (budget.remaining < 0) return { kind: 'failed' };
+  let info: FileInfo;
+  try {
+    info = await ops.lstat(file);
+  } catch {
+    return { kind: 'failed' };
+  }
+  if (info.isSymbolicLink() || !info.isFile()) return { kind: 'not-regular' }; // checked BEFORE opening: a FIFO is never opened
+  if (info.size > MAX_SEAL_BYTES) return { kind: 'failed' };
+  try {
+    const text = await ops.readFile(file, MAX_SEAL_BYTES);
+    budget.remaining -= Math.max(info.size, Buffer.byteLength(text, 'utf8'));
+    return budget.remaining < 0 ? { kind: 'failed' } : { kind: 'text', text };
+  } catch {
+    return { kind: 'failed' };
+  }
+}
 
 type SealPosition = { readonly version: 1; readonly file: EvidenceSealFile } | { readonly version: 2; readonly file: EvidenceSealFileV2 };
 
@@ -609,24 +645,78 @@ function parseSealPositionText(raw: Uint8Array): SealTextParse<SealPosition> {
   return textRejected('SCHEMA');
 }
 
+interface VerifiedPosition {
+  readonly seq: number;
+  readonly version: AcceptedSealVersion;
+  readonly file: EvidenceSealFile | EvidenceSealFileV2;
+}
+interface Walk {
+  readonly ops: FsOps;
+  readonly dir: string;
+  readonly sealed: ReadonlyArray<{ readonly name: string; readonly seq: number }>;
+  readonly auditId: string;
+  readonly evidences: readonly EvidenceToProve[];
+  readonly trustedKeys: ReadonlyMap<string, KeyObject>;
+  readonly versions: readonly AcceptedSealVersion[];
+  readonly budget: ReadBudget;
+  /** The latest, already read to choose the path (never read twice). */
+  readonly alreadyRead?: { readonly seq: number; readonly read: PositionRead };
+}
+
 /**
- * Path B (contract §8 rows 8, 10, 11, 14) for the layout W3.2 verifies: exactly ONE manifest, `seal-0001`. Any other layout (a chain, `seal-0000`,
- * gaps, more than 256) is walked from W3.3 on; until then it FAILS CLOSED as VERIFICATION_ERROR ("could not be completed"), never authenticates.
- * The text comes from `FsOps.readFile` (a lossy UTF-8 decode): an invalid byte can only become U+FFFD, which no ASCII-only field or JSON token
- * accepts, so the verdict is SEAL_INVALID as with a strict decode; reading raw bytes is a W3.3/W3.5 read-layer concern.
+ * Path B (contract §3, §4, §8 rows 4–14): EVERY `seal-0001 … seal-N` is read once and judged, in the order of the precedence table. Rows that
+ * belong to later slices stay fail-closed: row 6 (revocation pre-step, W3.5) has nothing to signal while every `trustedKeys` key is active, and
+ * row 13 (retired keys outside a pinned closure, W3.4) cannot occur for the same reason; a `keyring` closes the policy until W3.4.
  */
-function classifyWalked(text: string, sealed: ReadonlyArray<{ readonly seq: number }>, auditId: string, evidences: readonly EvidenceToProve[], trustedKeys: ReadonlyMap<string, KeyObject>, versions: readonly AcceptedSealVersion[]): EvidenceTrust {
-  if (sealed.length !== 1 || sealed[0]?.seq !== 1) return unauthenticated('VERIFICATION_ERROR');
-  const position = parseSealPositionText(Buffer.from(text, 'utf8'));
-  if (!position.ok) return unauthenticated('SEAL_INVALID'); // row 8: raw text (backslash, duplicate key, BOM), JSON, strict schema
-  const { version, file } = position.value;
-  const key = trustedKeys.get(file.keyId);
-  if (!key || file.auditId !== auditId || file.seq !== 1) return unauthenticated('SEAL_INVALID'); // row 8: key in the list, same audit, seq = name
-  const { signature, ...body } = file;
-  if (!verifyEd25519PureSignature(signingBytesOf(body), signature, key)) return unauthenticated('SEAL_INVALID'); // row 8 BEFORE rows 9–10
-  if (!versions.includes(version)) return unauthenticated('SEAL_VERSION_NOT_ALLOWED'); // row 10
-  if (version === SEAL_SCHEMA_VERSION_V2 && file.prevSealSha256 !== null) return unauthenticated('SEAL_CHAIN_BROKEN'); // row 11 (7b): seq 1 ⇔ prev null
-  return coverageVerdict(file.entries, evidences) ?? { status: 'AUTHENTICATED', headSeq: file.seq, headSealSha256: sealSha256(file), keyIds: [file.keyId] };
+async function classifyWalked(walk: Walk): Promise<EvidenceTrust> {
+  const ordered = [...walk.sealed].sort((a, b) => a.seq - b.seq);
+  const last = ordered[ordered.length - 1];
+  if (!last || ordered[0]?.seq === 0 || last.seq > MAX_CHAIN_SEALS) return unauthenticated('SEAL_CHAIN_BROKEN'); // row 4 (7a): names only, no read
+  const reads: Array<{ readonly seq: number; readonly read: PositionRead }> = [];
+  for (const item of ordered) reads.push({ seq: item.seq, read: walk.alreadyRead?.seq === item.seq ? walk.alreadyRead.read : await readPosition(walk.ops, path.join(walk.dir, item.name), walk.budget) }); // row 5
+  if (reads.some(({ read }) => read.kind === 'failed')) return unauthenticated('VERIFICATION_ERROR'); // row 7 (row 6 is W3.5)
+  const positions = verifiedPositions(reads, walk.auditId, walk.trustedKeys);
+  if (!positions) return unauthenticated('SEAL_INVALID'); // row 8
+  const order = chainOrderVerdict(positions, walk.versions); // rows 9–12
+  if (order) return order;
+  const head = positions[positions.length - 1] as VerifiedPosition;
+  const keyIds = [...new Set(positions.map((position) => position.file.keyId))].sort();
+  return coverageVerdict(head.file.entries, walk.evidences) ?? { status: 'AUTHENTICATED', headSeq: head.seq, headSealSha256: sealSha256(head.file), keyIds }; // row 14
+}
+
+/** Row 8 at EVERY position: a regular file, raw text and strict schema of its version, same audit, `seq` = name, key in the list, signature. */
+function verifiedPositions(reads: ReadonlyArray<{ readonly seq: number; readonly read: PositionRead }>, auditId: string, trustedKeys: ReadonlyMap<string, KeyObject>): VerifiedPosition[] | null {
+  const positions: VerifiedPosition[] = [];
+  for (const { seq, read } of reads) {
+    if (read.kind !== 'text') return null;
+    const parsed = parseSealPositionText(Buffer.from(read.text, 'utf8'));
+    if (!parsed.ok) return null;
+    const { version, file } = parsed.value;
+    const key = trustedKeys.get(file.keyId);
+    if (!key || file.auditId !== auditId || file.seq !== seq) return null;
+    const { signature, ...body } = file;
+    if (!verifyEd25519PureSignature(signingBytesOf(body), signature, key)) return null;
+    positions.push({ seq, version, file });
+  }
+  return positions;
+}
+
+/** Rows 9–12 over the verified positions (ascending `seq`), in this order: monotony, accepted versions, continuity (gaps and links), cumulativity. */
+function chainOrderVerdict(positions: readonly VerifiedPosition[], versions: readonly AcceptedSealVersion[]): EvidenceTrust | null {
+  const firstV2 = positions.find((position) => position.version === SEAL_SCHEMA_VERSION_V2)?.seq;
+  if (firstV2 !== undefined && positions.some((position) => position.version === SEAL_SCHEMA_VERSION && position.seq > firstV2)) return unauthenticated('SEAL_DOWNGRADE'); // row 9
+  if (positions.some((position) => !versions.includes(position.version))) return unauthenticated('SEAL_VERSION_NOT_ALLOWED'); // row 10
+  for (const [index, position] of positions.entries()) {
+    if (position.seq !== index + 1) return unauthenticated('SEAL_CHAIN_BROKEN'); // row 11: exactly 1…N (a gap)
+    const previous = positions[index - 1];
+    // row 11 (7b): a v2 links to sealSha256 of its predecessor (v1 or v2); `seq` 1 ⇔ `prev` null. A v1 has no link (only v1 v1 … under [1,2]).
+    if ('prevSealSha256' in position.file && position.file.prevSealSha256 !== (previous ? sealSha256(previous.file) : null)) return unauthenticated('SEAL_CHAIN_BROKEN');
+  }
+  for (let index = 1; index < positions.length; index += 1) {
+    const attested = new Map((positions[index] as VerifiedPosition).file.entries.map((entry) => [entry.ref, entry.contentSha256]));
+    if (!(positions[index - 1] as VerifiedPosition).file.entries.every((entry) => attested.get(entry.ref) === entry.contentSha256)) return unauthenticated('SEAL_NOT_CUMULATIVE'); // row 12
+  }
+  return null;
 }
 
 /* ----------------------------------------------------------------------------------------- v2 manifest: build / assemble / create */
