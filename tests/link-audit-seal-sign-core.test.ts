@@ -3,7 +3,7 @@ import { createHash, generateKeyPairSync } from 'node:crypto';
 import test from 'node:test';
 import { canonicalJson, sha256Hex } from '../src/lib/link-audit/canonical';
 import { CHECK_IDS, computePackageSha256, type Approval, type CandidatePackage } from '../src/lib/link-audit-attestation';
-import { approvalSchema } from '../src/lib/link-audit-attestation/schemas';
+import { approvalSchema, isSafeText } from '../src/lib/link-audit-attestation/schemas';
 import { runSignCore, type ConfirmationFacts, type LastSealFacts, type SignCoreDeps, type SignCoreInput } from '../src/lib/link-audit-attestation/sign-core';
 import { buildEvidenceSealBodyV2, createEvidenceSealV2 } from '../src/lib/link-audit-evidence/provenance';
 
@@ -420,6 +420,27 @@ test('W4.1 (herdado da W1, §5.5.1 item 3): approval.dossier.id segue o padrão 
   for (const id of corpus.filter(approvalAccepts)) assert.ok(sealAccepts(id), `a aprovação aceita "${id}" e o manifesto v2 não`);
   assert.deepEqual(corpus.filter((id) => sealAccepts(id) && !approvalAccepts(id)), ['11912345678', 'op-202611190'], 'só é mais estrito que o contrato para o que parece telefone (sem PII)');
   assert.ok(approvalSchema.safeParse({ ...makeApproval(makePackage()), riskAcceptance: { id: 'Aceite 1', sha256: h('8') } }).success, 'riskAcceptance.id não muda');
+});
+
+test('revisão da W4.1: telefone com dígitos separados por "_" ou "/" é recusado como dossier.id, rótulo e nota; até 8 dígitos seguidos continua valendo', async () => {
+  const pkg = makePackage();
+  const phones = ['119_1234_5678', '11_91234_5678', '(11)_9_1234_5678'];
+  for (const phone of [...phones, '119/1234/5678', '11/91234/5678']) assert.equal(isSafeText(phone), false, `isSafeText("${phone}")`);
+  for (const id of phones.filter((phone) => /^[a-z0-9]/.test(phone))) {
+    assert.equal(approvalSchema.safeParse(makeApproval(pkg, { dossier: { id, sha256: h('9') } })).success, false, `dossier.id ${id}`);
+    await assertRefused(inputFor(pkg, makeApproval(pkg, { dossier: { id, sha256: sha256(DOSSIER) } })), 'SIGN_APPROVAL_INVALID');
+  }
+  for (const label of ['119_1234_5678', 'tel_11_91234_5678']) {
+    await assertRefused(validInput({ custodian: label }), 'USAGE');
+    for (const over of [{ approvedBy: label }, { operator: label }, { riskAcceptance: { id: label, sha256: h('8') } }] satisfies Array<Partial<Approval>>) {
+      await assertRefused(inputFor(pkg, makeApproval(pkg, over)), 'SIGN_APPROVAL_INVALID');
+    }
+  }
+  const noted = makeApproval(pkg).humanChecks.map((check) => (check.id === 'AUTHORIZATION_CONSUMED' ? { ...check, note: 'confirmado por 119/1234/5678' } : check));
+  await assertRefused(inputFor(pkg, makeApproval(pkg, { humanChecks: noted })), 'SIGN_APPROVAL_INVALID');
+  const fine = makeApproval(pkg, { approvedBy: 'CONF_2026_1023', operator: 'OPER_01', dossier: { id: 'dossie_2026_0001', sha256: sha256(DOSSIER) } });
+  const dated = fine.humanChecks.map((check) => (check.id === 'AUTHORIZATION_CONSUMED' ? { ...check, note: 'conferido em 19/11/2026' } : check));
+  await assertSigned(inputFor(pkg, { ...fine, humanChecks: dated }, { custodian: 'CUST_01' }));
 });
 
 /* --------------------------------------------------------------------------------------------------------------- passo 9 (RS-01) */
