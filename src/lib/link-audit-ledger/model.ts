@@ -18,9 +18,14 @@ import {
   type LedgerReason,
   type LedgerRecord,
   type LedgerRun,
+  type LedgerRuns,
   type LedgerView,
   type OpenOperation,
+  type OpenRun,
   type ResultsEvidence,
+  type ResultsRuns,
+  type RunRef,
+  type RunsReason,
 } from './types';
 
 /*
@@ -58,7 +63,10 @@ export interface AbortedRun {
 }
 export interface LedgerReplay {
   readonly records: readonly LedgerRecord[];
+  /** Cabeça do LIVRO: o último registro, de qualquer tipo. */
   readonly head: LedgerHead;
+  /** Cabeça de DECISÕES (§16.17.7, D-6): o último registro que NÃO é `RUN_*` (decisão, GENESIS, ABORTED, RECEIPT_REISSUED, CHECKPOINT). A mesma que a I-3 confere. */
+  readonly decisionHead: LedgerHead;
   /** Operações confirmadas, em ordem de `decisionSeq` (1..n). */
   readonly confirmed: readonly ConfirmedOp[];
   /** O `INTENT` ainda sem `CONFIRMED`/`ABORTED` (no máximo um). */
@@ -195,7 +203,8 @@ export function replayLedger(records: readonly LedgerRecord[], auditId: string):
     previous = record;
   }
   const last = records[records.length - 1] as LedgerRecord;
-  return { ok: true, value: { records, head: { ledgerSeq: last.ledgerSeq, sha256: last.contentSha256 }, confirmed, open, aborted, confirmedRuns, openRun, abortedRuns } };
+  // o primeiro registro é sempre o GENESIS (conferido acima), então a cabeça de decisões existe em todo replay válido
+  return { ok: true, value: { records, head: { ledgerSeq: last.ledgerSeq, sha256: last.contentSha256 }, decisionHead: decisionHead as LedgerHead, confirmed, open, aborted, confirmedRuns, openRun, abortedRuns } };
 }
 
 export type TagFailure = { readonly reason: Extract<LedgerReason, 'UNTRUSTED' | 'KEY_REVOKED' | 'KEY_EXPIRED' | 'KEY_UNKNOWN'>; readonly seq: number };
@@ -374,7 +383,13 @@ export interface ProtectionInput {
   readonly decisions: DecisionsSnapshot;
   /** A etiqueta de ORIGEM da entrada `seq` é comprovada (autor genuíno): condição para o servidor concluir o `CONFIRMED` em nome do autor. */
   readonly entryOriginProven: (seq: number) => boolean;
+  /** R1: a testemunha dos resultados lida ANTES do livro (§16.17.8). É a única julgada contra o livro (citações e, na R1.5, as contradições de resultado). */
   readonly results: ResultsEvidence;
+  /**
+   * R2: a releitura dos resultados feita DEPOIS do livro e das decisões, quando a avaliação a pediu (`needsFreshResults`) ou antes de gravar (`revalidate`). Só decide o que o livro
+   * cita (`RUN_CONFIRMED` sem resultado/recibo ⇒ `RESULT_REGRESSED`/`RESULT_RECEIPT_REMOVED`) e a fase da operação aberta; o que só ela mostra nunca é acusado.
+   */
+  readonly resultsAfterLedger?: ResultsEvidence;
   readonly guard: GuardEvidence;
   /** Idade da operação aberta. `openKey` identifica a operação (opId) para a referência de tempo independente do relógio gravado (R7-09; ver `observed.ts`). */
   readonly ageMsOf: (recordedAt: string, openKey?: string) => number;
@@ -401,6 +416,11 @@ export interface Evaluation {
   readonly view: LedgerView;
   readonly replay: LedgerReplay | null;
   readonly plan: RecoveryPlan;
+  /**
+   * L → R2 (§16.17.8): um `RUN_CONFIRMED` que R1 (lida antes do livro) não mostra ancorado só pode ser julgado por uma releitura POSTERIOR ao livro. `true` = a avaliação foi feita
+   * sem ela (e, até lá, julgou sobre R1, falhando fechado para os resultados); quem avalia relê os resultados e avalia de novo com `resultsAfterLedger`.
+   */
+  readonly needsFreshResults: boolean;
 }
 
 const matchesOp = (entry: DecisionRef, op: LedgerOp): boolean =>
@@ -417,11 +437,14 @@ const matchesOp = (entry: DecisionRef, op: LedgerOp): boolean =>
 export function evaluateProtection(input: ProtectionInput): Evaluation {
   const none: RecoveryPlan = { kind: 'NONE' };
   const guardStatus: GuardStatus = input.guard.status === 'NOT_CONFIGURED' ? 'NOT_CONFIGURED' : input.guard.status === 'UNAVAILABLE' ? 'UNAVAILABLE' : 'CONSISTENT';
+  /** Família de resultados: só existe depois das TESTEMUNHAS (R6-05); atribuída antes do cruzamento livro × decisões, entra em toda vista montada dali em diante. */
+  let runs: RunsJudgement | null = null;
   const make = (state: LedgerView['state'], reason: LedgerReason | null, replay: LedgerReplay | null, extra: Partial<LedgerView> = {}, plan: RecoveryPlan = none): Evaluation => ({
     view: {
       state,
       reason,
       head: replay?.head ?? null,
+      decisionHead: replay?.decisionHead ?? null,
       confirmedDecisions: replay?.confirmed.length ?? 0,
       openOperation: null,
       recoverable: false,
@@ -429,10 +452,12 @@ export function evaluateProtection(input: ProtectionInput): Evaluation {
       externalGuard: guardStatus,
       // `closing` dos DOIS slots (16.17.6): o fecho da operação de decisão aberta e o do resultado aberto
       ...(replay && input.currentKeyId ? { capacity: ledgerCapacity(replay.records, input.currentKeyId, input.checkpointEvery ?? CHECKPOINT_EVERY, input.capacityPolicy ?? LEDGER_CAPACITY_POLICY, (replay.open ? 1 : 0) + (replay.openRun ? 1 : 0)), keyCoverage: keyCoverageOf(replay.records, input.currentKeyId) } : {}),
+      ...(runs ? { runs: settleRuns(runs, state) } : {}),
       ...extra,
     },
     replay,
     plan,
+    needsFreshResults: runs?.needsFreshResults ?? false,
   });
   const unresolved = (reason: LedgerReason, replay: LedgerReplay | null = null, extra: Partial<LedgerView> = {}, plan: RecoveryPlan = none): Evaluation => make('HISTORY_UNRESOLVED', reason, replay, extra, plan);
 
@@ -473,6 +498,10 @@ export function evaluateProtection(input: ProtectionInput): Evaluation {
   if (input.guard.status === 'READ' && input.guard.head) {
     if (at(input.guard.head.ledgerSeq)?.contentSha256 !== input.guard.head.sha256) return unresolved('GUARD_MISMATCH', replay, { externalGuard: 'MISMATCH' });
   }
+  // CRUZAMENTO DE RESULTADOS (§16.17.5): DEPOIS das testemunhas e ANTES do cruzamento livro × decisões — vale para toda vista montada daqui em diante, inclusive as de razão de DECISÃO.
+  // Uma releitura R2 que falhou não decide nada: a testemunha dos resultados está indisponível (falha fechada, como R1 ilegível).
+  if (input.resultsAfterLedger && !input.resultsAfterLedger.ok) return unresolved('RESULTS_EVIDENCE_UNAVAILABLE', replay);
+  runs = judgeRuns(replay, results, input.resultsAfterLedger, input);
 
   // Uma entrada publicada DEPOIS do ABORTED da sua posição: dono lento que perdeu a corrida (falha fechada, declarada).
   for (const abort of replay.aborted) {
@@ -528,6 +557,105 @@ export function evaluateProtection(input: ProtectionInput): Evaluation {
     replay,
     { openOperation: open && phase ? describeOpen(open, phase, input) : null, recoverable, externalGuard: guardBehind ? 'BEHIND' : guardStatus },
     plan,
+  );
+}
+
+/* ------------------------------------------------------------------ família de resultados (§16.17.2, 16.17.4, 16.17.5; R1.2) */
+
+const NO_RUNS: ResultsRuns = { anchored: [], pending: null };
+/** Como a leitura de resultados mostra o `sNNNN` de número `seq`: ancorado (com recibo), pendente (a cauda sem recibo) ou ausente. */
+function sightingOf(results: ResultsEvidence, seq: number): { readonly ref: RunRef; readonly anchored: boolean } | null {
+  if (!results.ok) return null;
+  const runs = results.runs ?? NO_RUNS;
+  const anchored = runs.anchored.find((ref) => ref.seq === seq);
+  if (anchored) return { ref: anchored, anchored: true };
+  return runs.pending !== null && runs.pending.seq === seq ? { ref: runs.pending, anchored: false } : null;
+}
+
+/** O que o cruzamento de resultados decidiu, antes de conhecer o estado final do livro (a receita do resultado depende dele: `settleRuns`). */
+interface RunsJudgement {
+  readonly state: LedgerRuns['state'];
+  readonly reason: RunsReason | null;
+  readonly confirmed: LedgerRuns['confirmed'];
+  /** A operação aberta, com `recoverable` = "haveria receita" (ainda sem exigir `PROTECTED`). */
+  readonly open: OpenRun | null;
+  readonly needsFreshResults: boolean;
+}
+
+/**
+ * Julga a família de resultados sobre o livro autêntico e as leituras de resultados (R1 e, se houver, R2). Nesta fatia: o que o LIVRO cita (L → R2) e a fase da operação aberta.
+ *  - L → R2: todo `RUN_CONFIRMED(k)` tem `sk` e `ak` duráveis; R1 (lida ANTES do livro) pode legitimamente não vê-los ainda. Ancorado em R1 com o MESMO hash ⇒ resolvido; senão só a
+ *    leitura POSTERIOR ao livro decide: sem `sk` (ou outro conteúdo no nome) ⇒ `RESULT_REGRESSED`; `sk` certo sem recibo ⇒ `RESULT_RECEIPT_REMOVED`. Sem R2, julga sobre R1 (falha
+ *    fechada só para os resultados) e pede a releitura (`needsFreshResults`).
+ *  - Operação aberta: fase pela leitura MAIS RECENTE, conferindo o hash — `sk` com o `runSha256` do `RUN_INTENT` ⇒ B (sem recibo) ou C (com recibo); nada ⇒ A. Um `sk` de OUTRO hash
+ *    no lugar nunca é B/C (a acusação dele, julgada sobre R1, é da R1.5); a fase fica A, sem receita.
+ * As contradições julgadas sobre R1 (`UNLEDGERED_RESULT`, `RESULT_DIVERGES`, `RESULT_PUBLISHED_AFTER_ABORT`) NÃO são avaliadas aqui: a finalização ainda não grava `RUN_*` (R1.3) e
+ * todo resultado novo seria acusado (D-R1-5).
+ */
+function judgeRuns(replay: LedgerReplay, r1: ResultsEvidence, r2: ResultsEvidence | undefined, input: ProtectionInput): RunsJudgement {
+  const settledInR1 = (run: ConfirmedRun): boolean => {
+    const seen = sightingOf(r1, run.runSeq);
+    return seen !== null && seen.anchored && seen.ref.sha256 === run.runSha256;
+  };
+  const unsettled = replay.confirmedRuns.filter((run) => !settledInR1(run));
+  const latest = r2 ?? r1;
+  let regressed = false;
+  let receiptRemoved = false;
+  for (const run of unsettled) {
+    const seen = sightingOf(latest, run.runSeq);
+    if (seen === null || seen.ref.sha256 !== run.runSha256) regressed = true;
+    else if (!seen.anchored) receiptRemoved = true;
+  }
+  const reason: RunsReason | null = regressed ? 'RESULT_REGRESSED' : receiptRemoved ? 'RESULT_RECEIPT_REMOVED' : null;
+  return {
+    state: reason === null ? 'OK' : 'UNRESOLVED',
+    reason,
+    confirmed: replay.confirmedRuns.map((run) => ({ runSeq: run.runSeq, runSha256: run.runSha256 })),
+    open: describeOpenRun(replay.openRun, latest, input),
+    needsFreshResults: unsettled.length > 0 && r2 === undefined,
+  };
+}
+
+function describeOpenRun(intent: LedgerRecord | null, latest: ResultsEvidence, input: ProtectionInput): OpenRun | null {
+  const run = intent?.run;
+  if (!intent || !run) return null;
+  const seen = sightingOf(latest, run.runSeq);
+  const ours = seen !== null && seen.ref.sha256 === run.runSha256 ? seen : null;
+  const phase: OpenRun['phase'] = ours ? (ours.anchored ? 'C' : 'B') : 'A';
+  const ageMs = input.ageMsOf(intent.recordedAt, `run:${run.runOpId}`);
+  const stale = ageMs >= input.staleMs;
+  // receita (16.17.4): A vencida e com o lugar VAZIO ⇒ qualquer operador aborta (a R1.3 relê antes de gravar); B/C ⇒ só o autor conclui, e só com a origem comprovada (D-16)
+  const recipe = ours ? ours.ref.originProven : seen === null && stale;
+  return { runOpId: run.runOpId, runSeq: run.runSeq, runSha256: run.runSha256, phase, ageMs, stale, recoverable: recipe };
+}
+
+/** Receita do resultado só em `PROTECTED` (o `RUN_ABORTED`, como o `ABORTED`, só em auditoria protegida; 16.17.9) e com a família de resultados resolvida (16.17.3, passo 1). */
+function settleRuns(judged: RunsJudgement, state: LedgerView['state']): LedgerRuns {
+  const open = judged.open && { ...judged.open, recoverable: judged.open.recoverable && state === 'PROTECTED' && judged.state === 'OK' };
+  return { state: judged.state, reason: judged.reason, confirmed: judged.confirmed, open, receiptReissuable: judged.reason === 'RESULT_RECEIPT_REMOVED' };
+}
+
+/**
+ * A releitura R2 mostra algo que R1 não mostrava (§16.17.8, MINOR-1): resultado ou recibo novo, citação nova do livro ou a primeira evidência de resultado. Na gravação isso é uma corrida
+ * legítima (resultado gravado depois da leitura do livro): relê-se TUDO (limitado) para que ele seja julgado como R1 contra o livro relido — nunca uma acusação. Menos coisa em R2 não é
+ * novidade (o que R1 mostrou já foi julgado).
+ */
+export function resultsGrew(r1: ResultsEvidence, r2: ResultsEvidence): boolean {
+  if (!r1.ok || !r2.ok) return false;
+  const heads = (list: readonly LedgerHead[]): Set<string> => new Set(list.map((head) => `${head.ledgerSeq}:${head.sha256}`));
+  const key = (ref: RunRef): string => `${ref.seq}:${ref.sha256}`;
+  const all = (results: Extract<ResultsEvidence, { ok: true }>): Set<string> => {
+    const runs = results.runs ?? NO_RUNS;
+    return new Set([...runs.anchored, ...(runs.pending ? [runs.pending] : [])].map(key));
+  };
+  const anchored = (results: Extract<ResultsEvidence, { ok: true }>): Set<string> => new Set((results.runs ?? NO_RUNS).anchored.map(key));
+  const newer = (before: Set<string>, after: Set<string>): boolean => [...after].some((item) => !before.has(item));
+  return (
+    (r2.hasResults && !r1.hasResults) ||
+    newer(heads(r1.ledgerHeads), heads(r2.ledgerHeads)) ||
+    newer(heads(r1.unverifiedLedgerHeads), heads(r2.unverifiedLedgerHeads)) ||
+    newer(all(r1), all(r2)) || // resultado novo (ou outro conteúdo num número)
+    newer(anchored(r1), anchored(r2)) // recibo novo
   );
 }
 

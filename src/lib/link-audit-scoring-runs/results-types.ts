@@ -109,7 +109,7 @@ export const scoreRunSchema = z
     resultSha256: hex64,
     /** PROVA DE ORIGEM (HMAC do servidor, chave fora das pastas): presente nos resultados gravados depois da remediação do MAJOR-1; ausente nos anteriores (não podem ser concluídos se ficarem pendentes). */
     origin: originProofSchema.optional(),
-    /** Cabeça do LIVRO no instante da finalização (v2): a leitura confere que a posição citada existe no livro com o mesmo hash. */
+    /** Cabeça de DECISÕES do livro no instante da finalização (v2; §16.17.7: nunca uma posição RUN_*): a leitura confere que a posição citada existe no livro com o mesmo hash. */
     ledgerHead: z.object({ ledgerSeq: z.number().int().min(1).max(4000), sha256: hex64 }).strict().optional(),
     prevSha256: hex64.nullable(),
     contentSha256: hex64,

@@ -272,3 +272,58 @@ export async function plantWorld(w: LedgerWorld, n: number, build: (chain: Chain
   writeLedger(w, chain.records);
   return chain.records;
 }
+
+/* ------------------------------------------------------------------ R1.2: o que a finalização da R1.3 vai gravar, simulado sobre resultados REAIS */
+
+/** O que um `RUN_INTENT` precisa de um resultado já selado (subconjunto estrutural de `ScoreRun`; o livro não conhece os resultados). */
+export interface SealedRunLike {
+  readonly seq: number;
+  readonly prevSha256: string | null;
+  readonly contentSha256: string;
+  readonly finalizedBy: string;
+  readonly ledgerHead?: { readonly ledgerSeq: number; readonly sha256: string } | undefined;
+  readonly decisions: { readonly head: { readonly seq: number; readonly sha256: string } | null };
+}
+
+/**
+ * `RUN_INTENT` + `RUN_CONFIRMED` de um resultado REAL já selado — o par que a finalização da R1.3 grava. A cabeça citada vem do PRÓPRIO resultado (`ledgerHead`), nunca
+ * recalculada: a I-3 do replay confere que ela é a cabeça de decisões do prefixo (resultado que citasse uma posição `RUN_*` deixaria o livro `UNTRUSTED`).
+ */
+export function runMakersFor(run: SealedRunLike) {
+  if (!run.ledgerHead) throw new Error('resultado sem ledgerHead (formato v1)');
+  const over: Partial<RunBody> = {
+    runSeq: run.seq,
+    prevRunSha256: run.prevSha256,
+    runSha256: run.contentSha256,
+    author: run.finalizedBy,
+    citedLedgerHead: { ledgerSeq: run.ledgerHead.ledgerSeq, sha256: run.ledgerHead.sha256 },
+    decisionsHead: run.decisions.head ? { seq: run.decisions.head.seq, sha256: run.decisions.head.sha256 } : null,
+  };
+  return [runIntentMaker(over), runClosingMaker('RUN_CONFIRMED')] as const;
+}
+/** Tentativa de finalização que caiu depois do `RUN_INTENT` e foi abortada (fase A vencida): dois `RUN_*` que movem a cabeça do livro e NÃO a de decisões. */
+export const abortedAttemptMakers = () => [runIntentMaker(), runClosingMaker('RUN_ABORTED')] as const;
+/** `CHECKPOINT` da cauda atual (manutenção; D-6: move a cabeça de decisões). */
+export const checkpointMaker = (records: readonly LedgerRecord[]): Record<string, unknown> => {
+  const tail = records[records.length - 1] as LedgerRecord;
+  return { event: 'CHECKPOINT', actor: 'system', checkpoint: { throughSeq: tail.ledgerSeq, throughSha256: tail.contentSha256 } };
+};
+
+/** Resultado como a testemunha dos resultados o entrega ao livro (`RunRef`, spec §16.17.8), para os testes do modelo puro. */
+export const runRefOf = (seq: number, sha256: string, over: Record<string, unknown> = {}) => ({
+  seq,
+  sha256,
+  prevSha256: seq === 1 ? null : hashOf(`anterior-${seq}`),
+  schemaVersion: 2 as const,
+  ledgerHead: null,
+  finalizedBy: 'ana@empresa.com',
+  originProven: true,
+  ...over,
+});
+
+/** Tira um arquivo do lugar (para simular que ele ainda não existia numa leitura) e devolve quem o põe de volta, idêntico. */
+export function hideFile(file: string, aside: string): () => void {
+  const parked = path.join(aside, `${path.basename(path.dirname(file))}-${path.basename(file)}`);
+  fs.renameSync(file, parked);
+  return () => fs.renameSync(parked, file);
+}

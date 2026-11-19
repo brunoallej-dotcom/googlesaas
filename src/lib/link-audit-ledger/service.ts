@@ -4,7 +4,7 @@ import type { OriginAuthenticator } from '../link-audit-origin';
 import { DURABILITY_UNPROVEN_MESSAGE, seal } from '../link-audit-storage';
 import { nodeFsOps, type FsOps } from '../link-audit/snapshot-store';
 import type { ExternalGuardPort } from './guard';
-import { evaluateProtection, ledgerCapacity, operationCost, pendingClosings, replayLedger, rotationCheckpointDue, verifyTags, type Evaluation, type GuardEvidence, type LedgerReadState, type TagFailure } from './model';
+import { evaluateProtection, ledgerCapacity, operationCost, pendingClosings, replayLedger, resultsGrew, rotationCheckpointDue, verifyTags, type Evaluation, type GuardEvidence, type LedgerReadState, type TagFailure } from './model';
 import { PROCESS_OBSERVATIONS, type OpenObservations } from './observed';
 import { ensureLedgerProven, ledgerDurabilityTripped, publishLedgerRecord, readLedgerFiles, newOpId, syncLedgerDirectory, type PublishLedgerResult } from './store';
 import { CHECKPOINT_EVERY, LEDGER_CAPACITY_POLICY, LEDGER_KIND, LEDGER_SCHEMA_VERSION, ledgerRecordSchema, type DecisionRef, type LedgerCapacityPolicy, type ResultsEvidence, type LedgerDraft, type LedgerHead, type LedgerOp, type LedgerReason, type LedgerRecord } from './types';
@@ -101,6 +101,8 @@ const CLOSING_CHANGED_MESSAGE = 'Outro processo alterou o livro durante a opera�
 const CLOSING_UNTRUSTED_MESSAGE = 'O livro relido depois de uma gravação concorrente não confere (cadeia, etiqueta ou histórico lido); a confirmação não foi gravada.';
 const CLOSING_CLOSED_MESSAGE = 'A operação desta decisão foi encerrada por outro processo antes da confirmação; a confirmação não foi gravada.';
 const CLOSING_RETRIES_MESSAGE = 'O livro mudou a cada tentativa de gravar a confirmação; ela não foi gravada (a decisão e o recibo existem; reenvie para concluir).';
+/** Recusa transitória da releitura R2 (§16.17.8): os resultados continuaram mudando a cada releitura antes de gravar (finalizações concorrentes). Nada foi gravado. */
+const RESULTS_MOVING_MESSAGE = 'Os resultados desta auditoria mudaram durante a operação (outra finalização em andamento); nada foi gravado. Tente novamente em instantes.';
 
 export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
   // Q3: o livro só aceita a chave EXCLUSIVA dele; uma chave de origem (decisões/resultados) nunca autentica o livro.
@@ -164,7 +166,8 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
     return { kind: session.state === 'UNTRUSTED' ? 'UNTRUSTED' : 'UNAVAILABLE' };
   }
 
-  function evaluate(session: Session, input: LedgerViewInput): Evaluation {
+  /** Avalia sobre a leitura do livro desta sessão. `afterLedger` = R2 (releitura dos resultados POSTERIOR ao livro; §16.17.8), quando já foi feita. */
+  function evaluate(session: Session, input: LedgerViewInput, afterLedger?: ResultsEvidence): Evaluation {
     const now = Date.parse(input.nowIso);
     const evaluation = evaluateProtection({
       configured: session.state !== 'NOT_CONFIGURED',
@@ -173,6 +176,7 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
       decisions: input.snapshot,
       entryOriginProven: input.entryOriginProven,
       results: input.results,
+      ...(afterLedger ? { resultsAfterLedger: afterLedger } : {}),
       guard: session.guard,
       // R7-09: hora gravada NO FUTURO (idade de parede negativa) ⇒ a idade vem do tempo monotônico observado por este processo; senão, a de parede
       ageMsOf: (recordedAt, openKey) => {
@@ -186,6 +190,25 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
     });
     session.evaluation = evaluation;
     return evaluation;
+  }
+
+  /** Relê os resultados agora (R2). Exceção NUNCA vira "sem resultados": vira testemunha indisponível. */
+  async function reread(freshResults: () => Promise<ResultsEvidence>): Promise<ResultsEvidence> {
+    try {
+      return await freshResults();
+    } catch {
+      return { ok: false };
+    }
+  }
+
+  /**
+   * LEITURA "SANDUÍCHE" (§16.17.8, D-13): R1 (antes do livro) → guarda → livro → decisões → R2 SÓ quando a avaliação pede (um `RUN_CONFIRMED` que R1 não mostra ancorado). A
+   * ordem é fixa e cada fonte só cresce, então a corrida legítima se resolve de forma determinística, sem releituras probabilísticas. Sem quem releia, fica a avaliação sobre R1.
+   */
+  async function evaluateSandwich(session: Session, input: LedgerViewInput): Promise<Evaluation> {
+    const first = evaluate(session, input);
+    if (!first.needsFreshResults || !input.freshResults) return first;
+    return evaluate(session, input, await reread(input.freshResults));
   }
 
   const refusal = (code: LedgerFailureCode, view: LedgerView | null, reason: LedgerReason | null = view?.reason ?? null, extra: string[] = []): LedgerRefusal => ({
@@ -310,7 +333,7 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
 
     async view(input) {
       const session = input.session as Session;
-      return evaluate(session, input).view;
+      return (await evaluateSandwich(session, input)).view;
     },
 
     async prepare(input: LedgerPrepareInput): Promise<LedgerStep> {
@@ -324,28 +347,24 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
       /** R7-06 (2): a testemunha das DECISÕES (6B) não resolvida impede QUALQUER gravação de recuperação/manutenção do livro. */
       const witnessBlock = (): LedgerStep | null => (input.decisionsWitness ? refused('DECISIONS_HISTORY_UNRESOLVED', view, null, [`testemunha: ${input.decisionsWitness}`]) : null);
       /**
-       * R7-06 (1): ANTES de cada gravação relê a testemunha dos RESULTADOS agora (depois da leitura do livro) e reavalia sobre a MESMA leitura do livro. Se ela passou a contradizer
-       * (resultado selado entre a primeira leitura e a gravação), recusa sem gravar; mudança benigna ⇒ releitura limitada (`rechecks`); persistente ⇒ recusa.
+       * R7-06 (1): ANTES de cada gravação relê a testemunha dos RESULTADOS agora e reavalia sobre a MESMA leitura do livro. Essa releitura é POSTERIOR ao livro, logo é R2 (§16.17.8,
+       * MINOR-1), nunca a testemunha anterior ao livro: (a) releitura que falha ⇒ recusa; (b) resultado, recibo ou citação que R1 não mostrava pode ter sido gravado DEPOIS da leitura
+       * do livro (uma finalização concorrente) ⇒ relê TUDO, limitado (`rechecks`), para que ele seja julgado como R1 contra o livro relido — nunca acusação; esgotado ⇒ recusa
+       * transitória, sem gravar; (c) nada novo ⇒ avalia com R1 + R2 (R2 só decide o que o livro cita e a fase do resultado aberto). As razões de resultado nunca entram em
+       * `WITNESS_REASONS`. Uma contradição real (resultado selado entre a leitura e a gravação que contradiz o livro) é recusada na releitura, antes de qualquer gravação.
        */
       const revalidate = async (): Promise<LedgerStep | null> => {
         if (!input.freshResults) return null;
-        let fresh: ResultsEvidence;
-        try {
-          fresh = await input.freshResults();
-        } catch {
-          fresh = { ok: false };
-        }
-        const again = evaluate(session, { ...input, results: fresh });
+        const fresh = await reread(input.freshResults);
+        if (!fresh.ok) return refusedForState(evaluate(session, { ...input, results: fresh }).view);
+        if (resultsGrew(input.results, fresh)) return input.rechecks < 3 ? { kind: 'RETRY', ms: 25, transient: true } : refused('LEDGER_OPERATION_IN_PROGRESS', view, null, [RESULTS_MOVING_MESSAGE]);
+        const again = evaluate(session, input, fresh);
         const same = again.view.state === evaluation.view.state && again.view.reason === evaluation.view.reason && again.plan.kind === evaluation.plan.kind;
         if (same) {
           evaluation = again;
           view = again.view;
           return null;
         }
-        // R7-05: um resultado que cita uma posição ALÉM da cabeça que esta sessão leu é a corrida legítima (outro processo gravou e selou depois da minha leitura do livro): relê (limitado),
-        // nunca acusa. Citação dentro do que foi lido e que não confere continua sendo desacordo real.
-        const citedAhead = fresh.ok && [...fresh.ledgerHeads, ...fresh.unverifiedLedgerHeads].some((cited) => cited.ledgerSeq > session.records.length);
-        if (citedAhead && input.rechecks < 3) return { kind: 'RETRY', ms: 25, transient: true };
         if (again.view.state === 'HISTORY_UNRESOLVED' && again.view.reason !== null && WITNESS_REASONS.has(again.view.reason)) return refusedForState(again.view);
         return input.rechecks < 3 ? { kind: 'RETRY', ms: 25, transient: true } : refusedForState(again.view);
       };
@@ -354,7 +373,16 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
         // Pode ser só uma corrida entre as leituras (livro lido antes; decisões já à frente): relê algumas vezes antes de acusar.
         if ((view.reason === 'UNLEDGERED_ENTRY' || view.reason === 'UNLEDGERED_PENDING') && input.rechecks < 3) return { kind: 'RETRY', ms: 25, transient: true };
         const plan = evaluation.plan;
-        if (plan.kind === 'REISSUE_RECEIPT') return { kind: 'OK', pendingKind: 'RECEIPT_REMOVED' }; // só o reenvio do AUTOR passa pela 6B
+        if (plan.kind === 'REISSUE_RECEIPT') {
+          // A reemissão GRAVA (`RECEIPT_REISSUED`, que pela D-6 move a cabeça de decisões): as mesmas conferências de R7-06, na mesma ordem dos outros ramos, antes de liberar —
+          // testemunha das decisões e releitura R2 dos resultados (§16.17.8). Revisão independente da R1.2 (`junin-02`): antes liberava sem nenhuma (desvio desde a 6C).
+          // Só o reenvio do AUTOR passa pela 6B.
+          const blocked = witnessBlock();
+          if (blocked) return blocked;
+          const stale = await revalidate();
+          if (stale) return stale;
+          return { kind: 'OK', pendingKind: 'RECEIPT_REMOVED' };
+        }
         if (plan.kind !== 'COMPLETE_CONFIRMED') return refusedForState(view);
         // Spec §16.16 (16/11/2026): a fase C só é concluída pelo AUTOR da entrada (os recibos não são autenticados: recibo forjado por quem escreve só na pasta de recibos
         // não pode promover a pendente de outro operador). Escrita ou RECOVER de quem não é o autor: recusa, nada gravado; a pendente segue bloqueando (como na fase B).
@@ -543,6 +571,7 @@ export function createUnconfiguredLedger(): LedgerPort {
     state: 'HISTORY_UNRESOLVED',
     reason: 'NOT_CONFIGURED',
     head: null,
+    decisionHead: null,
     confirmedDecisions: 0,
     openOperation: null,
     recoverable: false,

@@ -10,7 +10,7 @@ import { availableRefs, captureRef, parseEvidenceRef, referencedEvidence, report
 import { assertBase, DURABILITY_UNPROVEN_MESSAGE, type StoreErrorCode, type StoreFailure } from './files';
 import { canSupersede, effectiveScoringRecords, slotConflicts, toScoringRecord, type DecisionView, type LogState } from './project';
 import { appendEntry, assertDecisionBase, findReplay, readLog, syncDecisionDirectories, type OperationSpec, type PendingFailure, ledgerSnapshotOf } from './store';
-import { isLedgerBlocking, LEDGER_NOT_REQUIRED, NOT_REQUIRED_VIEW, type LedgerRefusal, type LedgerSource, type LedgerView, type ResultsEvidence } from './ledger-port';
+import { isLedgerBlocking, LEDGER_NOT_REQUIRED, NOT_REQUIRED_VIEW, type LedgerRefusal, type LedgerSource, type LedgerView, type ResultsEvidence, type ResultsRuns, type RunRef } from './ledger-port';
 import { evaluateKnownHeads, isUnresolved, WITNESS_NOT_REQUIRED, type KnownHeadsRead, type WitnessSource, type WitnessVerdict } from './witness';
 import {
   AUDIT_ID_PATTERN,
@@ -631,6 +631,8 @@ export function createDecisionService(options: DecisionServiceOptions) {
       const cited = read.ledgerHeads ?? [];
       const citedHints = read.unverifiedLedgerHeads ?? [];
       if (!Array.isArray(cited) || !Array.isArray(citedHints) || cited.length + citedHints.length > MAX_KNOWN_HEADS || !cited.every(ledgerOk) || !citedHints.every(ledgerOk)) return { ok: false, reason: 'UNTRUSTED' };
+      const runs = runsOf(read.runs, ledgerOk);
+      if (runs === null) return { ok: false, reason: 'UNTRUSTED' };
       return {
         ok: true,
         heads: read.heads.map((head) => ({ seq: head.seq, sha256: head.sha256 })),
@@ -638,10 +640,42 @@ export function createDecisionService(options: DecisionServiceOptions) {
         hasResults: read.hasResults ?? (read.heads.length > 0 || hints.length > 0),
         ledgerHeads: cited.map((head) => ({ ledgerSeq: head.ledgerSeq, sha256: head.sha256 })),
         unverifiedLedgerHeads: citedHints.map((head) => ({ ledgerSeq: head.ledgerSeq, sha256: head.sha256 })),
+        runs,
       };
     } catch {
       return { ok: false, reason: 'STORAGE_UNAVAILABLE' };
     }
+  }
+
+  /**
+   * Resultados que a testemunha entrega ao LIVRO (spec §16.17.8): ancorados em ordem 1..n, encadeados por `prevSha256`, e o pendente logo depois. Ausente ⇒ nenhum (como as listas de
+   * citações). Qualquer coisa fora do formato ⇒ `null` (a testemunha passa a ser `UNTRUSTED`, nunca "sem resultados"). Devolve cópias só com os campos do contrato.
+   */
+  function runsOf(raw: unknown, ledgerOk: (head: { ledgerSeq?: unknown; sha256?: unknown } | null | undefined) => boolean): ResultsRuns | null {
+    if (raw === undefined) return { anchored: [], pending: null };
+    if (!raw || typeof raw !== 'object') return null;
+    const { anchored, pending } = raw as { anchored?: unknown; pending?: unknown };
+    if (!Array.isArray(anchored) || anchored.length > MAX_KNOWN_HEADS) return null;
+    const refOf = (value: unknown, seq: number, prevSha256: string | null): RunRef | null => {
+      if (!value || typeof value !== 'object') return null;
+      const ref = value as Record<string, unknown>;
+      const sha = (field: unknown): field is string => typeof field === 'string' && /^[0-9a-f]{64}$/.test(field);
+      const author = ref.finalizedBy;
+      if (ref.seq !== seq || !sha(ref.sha256) || ref.prevSha256 !== prevSha256 || (ref.schemaVersion !== 1 && ref.schemaVersion !== 2)) return null;
+      if (!(ref.ledgerHead === null || ledgerOk(ref.ledgerHead as { ledgerSeq?: unknown; sha256?: unknown })) || typeof ref.originProven !== 'boolean') return null;
+      if (typeof author !== 'string' || author.length === 0 || author.length > 254) return null;
+      const head = ref.ledgerHead as { ledgerSeq: number; sha256: string } | null;
+      return { seq, sha256: ref.sha256, prevSha256, schemaVersion: ref.schemaVersion, ledgerHead: head ? { ledgerSeq: head.ledgerSeq, sha256: head.sha256 } : null, finalizedBy: author, originProven: ref.originProven };
+    };
+    const refs: RunRef[] = [];
+    for (const value of anchored) {
+      const ref = refOf(value, refs.length + 1, refs[refs.length - 1]?.sha256 ?? null);
+      if (ref === null) return null;
+      refs.push(ref);
+    }
+    if (pending === null || pending === undefined) return { anchored: refs, pending: null };
+    const tail = refOf(pending, refs.length + 1, refs[refs.length - 1]?.sha256 ?? null);
+    return tail === null ? null : { anchored: refs, pending: tail };
   }
 
   const chained = (entry: DecisionEntry): { seq: number; contentSha256: string; affectsPrior: boolean } => ({
@@ -653,10 +687,10 @@ export function createDecisionService(options: DecisionServiceOptions) {
   /** O que os resultados dizem ao livro. `null` (testemunha dispensada nos testes da 6B isolada) = sem resultados; falha da leitura NUNCA vira "sem resultados". */
   const resultsEvidenceOf = (heads: KnownHeadsRead | null): ResultsEvidence =>
     heads === null
-      ? { ok: true, hasResults: false, ledgerHeads: [], unverifiedLedgerHeads: [] }
+      ? { ok: true, hasResults: false, ledgerHeads: [], unverifiedLedgerHeads: [], runs: { anchored: [], pending: null } }
       : !heads.ok
         ? { ok: false }
-        : { ok: true, hasResults: heads.hasResults ?? false, ledgerHeads: heads.ledgerHeads ?? [], unverifiedLedgerHeads: heads.unverifiedLedgerHeads ?? [] };
+        : { ok: true, hasResults: heads.hasResults ?? false, ledgerHeads: heads.ledgerHeads ?? [], unverifiedLedgerHeads: heads.unverifiedLedgerHeads ?? [], runs: heads.runs ?? { anchored: [], pending: null } };
   const ledgerPort = options.ledger === LEDGER_NOT_REQUIRED ? null : options.ledger;
   /** Estados do livro que podem ser só uma corrida entre as leituras (livro lido antes das decisões): a consulta relê UMA vez antes de acusar. */
   const TRANSIENT_LEDGER = new Set(['UNLEDGERED_ENTRY', 'UNLEDGERED_PENDING', 'LEDGER_BEHIND']);
@@ -688,9 +722,10 @@ export function createDecisionService(options: DecisionServiceOptions) {
   };
 
   /**
-   * ORDEM DE LEITURA CONSISTENTE (R7-05): resultados (testemunha) → guarda → livro → decisões com recibos. Cada fonte só cresce e CITA as anteriores (o resultado cita o livro e as
-   * decisões; a guarda é publicada depois do livro; o livro registra antes de as decisões serem confirmadas), então ler primeiro a fonte citada pela seguinte nunca produz um
-   * desacordo FALSO por corrida; só a última fronteira (livro × decisões) pode parecer atrasada, e essa já é relida.
+   * ORDEM DE LEITURA CONSISTENTE (R7-05; "sanduíche" da §16.17.8): resultados (testemunha, R1) → guarda → livro → decisões com recibos → resultados de novo (R2, só quando a avaliação
+   * do livro pede; `ledgerViewOf`). Cada fonte só cresce e CITA as anteriores (o resultado cita o livro e as decisões; a guarda é publicada depois do livro; o livro registra antes de
+   * as decisões serem confirmadas; o `RUN_CONFIRMED` do livro cita o resultado e o recibo), então ler primeiro a fonte citada pela seguinte nunca produz um desacordo FALSO por
+   * corrida; a fronteira livro × decisões, que pode parecer atrasada, é relida, e o que o livro cita dos resultados é conferido na releitura POSTERIOR a ele.
    */
   async function takeSnapshot(auditId: string) {
     const heads = await readKnownHeads(auditId);
@@ -712,6 +747,8 @@ export function createDecisionService(options: DecisionServiceOptions) {
         return entry !== undefined && judgeOrigin(options.origin, 'DECISION', entry) === 'PROVEN';
       },
       nowIso,
+      // R2: releitura POSTERIOR ao livro e às decisões; não substitui `taken.heads` (a testemunha das decisões continua sobre R1, lida antes delas)
+      freshResults: async () => resultsEvidenceOf(await readKnownHeads(auditId)),
     });
   }
 
@@ -1004,6 +1041,7 @@ export function createDecisionService(options: DecisionServiceOptions) {
   /** Cabeças que a finalização conferiu e vai citar. Ausente = só prova a durabilidade e que o livro está PROTEGIDO (conclusão de resultado pendente). */
   interface BarrierExpectation {
     readonly decisionsHead?: Head | null;
+    /** Cabeça de DECISÕES do livro (`LedgerView.decisionHead`, §16.17.7): é a que o resultado grava como `ledgerHead`. */
     readonly ledgerHead?: { readonly ledgerSeq: number; readonly sha256: string } | null;
   }
   type BarrierOutcome = { readonly ok: true } | { readonly ok: false; readonly code: 'INPUT_CHANGED' | 'DURABILITY_UNKNOWN'; readonly issues: readonly string[] };
@@ -1019,8 +1057,9 @@ export function createDecisionService(options: DecisionServiceOptions) {
       if (payload.ledger.reason === 'DURABILITY_UNKNOWN') return { ok: false, code: 'DURABILITY_UNKNOWN', issues: [DURABILITY_UNPROVEN_MESSAGE] };
       if (payload.ledger.state !== 'PROTECTED' || payload.ledger.openOperation !== null || payload.pending !== null || !payload.finalizable) return { ok: false, code: 'INPUT_CHANGED', issues: ['O livro ou as decisões não estão em estado finalizável.'] };
       if (expected.decisionsHead !== undefined && !sameHeadOf(payload.head, expected.decisionsHead)) return { ok: false, code: 'INPUT_CHANGED', issues: ['O histórico de decisões mudou desde a avaliação.'] };
-      if (expected.ledgerHead !== undefined && (expected.ledgerHead === null || payload.ledger.head?.ledgerSeq !== expected.ledgerHead.ledgerSeq || payload.ledger.head?.sha256 !== expected.ledgerHead.sha256)) {
-        return { ok: false, code: 'INPUT_CHANGED', issues: ['A cabeça do livro mudou desde a avaliação.'] };
+      // A cabeça de DECISÕES do livro (§16.17.7): uma finalização (RUN_*) não a move, então nunca muda a entrada de outra; decisão nova, CHECKPOINT ou ABORTED movem
+      if (expected.ledgerHead !== undefined && (expected.ledgerHead === null || payload.ledger.decisionHead?.ledgerSeq !== expected.ledgerHead.ledgerSeq || payload.ledger.decisionHead?.sha256 !== expected.ledgerHead.sha256)) {
+        return { ok: false, code: 'INPUT_CHANGED', issues: ['A cabeça de decisões do livro mudou desde a avaliação.'] };
       }
       return null;
     };
