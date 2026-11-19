@@ -483,8 +483,9 @@ test('IA-08: entries = exatamente o conjunto do pacote, ordenado e sem repetiç�
 
 test('IA-08: pacote desordenado ou com ref repetida nunca vira plano (esquema do pacote, passo 1), mesmo com o hash refeito à mão', async () => {
   const sealsDir = tmpDir('lass-');
-  const body = makePackage(E3) as Record<string, unknown> & { entries: CandidatePackage['entries'] };
-  const rehash = (entries: CandidatePackage['entries']): Record<string, unknown> => {
+  const body = makePackage(E3);
+  /** Hash "na mão" (sem o esquema): o que um pacote adulterado e reaprovado traria. */
+  const rehash = (entries: CandidatePackage['entries']): Record<string, unknown> & { readonly packageSha256: string } => {
     const changed = { ...body, entries };
     const { delta: _delta, generatedAt: _generatedAt, packageSha256: _hash, ...hashed } = changed;
     return { ...changed, packageSha256: sha256Hex(canonicalJson(hashed)) };
