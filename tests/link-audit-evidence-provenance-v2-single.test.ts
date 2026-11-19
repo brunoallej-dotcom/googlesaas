@@ -47,6 +47,8 @@ const SAMPLE: EvidenceToProve[] = [
 ];
 const KEYS_A = evidenceKeys('ek-teste-v2-a');
 const KEYS_B = evidenceKeys('ek-teste-v2-b');
+/** `GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS` value with only key A (public part). */
+const LIST_A = KEYS_A.trustKeys;
 
 const v2Of = (keys: EvidenceKeys, over: Partial<Parameters<typeof createEvidenceSealV2>[0]> = {}): EvidenceSealFileV2 =>
   createEvidenceSealV2({ auditId: AUD, seq: 1, sealedAt: SEALED_AT, keyId: keys.keyId, privateKey: keys.privateKey, entries: SAMPLE, dossier: DOSSIER, prevSealSha256: null, ...over });
@@ -178,7 +180,7 @@ test('V2-06 (IA-21) a v1 last seal keeps EXACTLY today\'s answer {status:"AUTHEN
   const sealsDir = tmpDir('lep2-');
   writeSealFile(sealsDir, AUD, 1, v1Of(KEYS_A));
   for (const versions of [undefined, [1, 2], [2, 1], [1]] as const) assert.deepEqual(await policy(sealsDir, versions).classify(AUD, SAMPLE), { status: 'AUTHENTICATED' }, `versions ${JSON.stringify(versions)}`);
-  assert.deepEqual(await evidenceProvenanceFromConfig({ sealsDir, trustKeys: KEYS_A.trustKeys }).classify(AUD, SAMPLE), { status: 'AUTHENTICATED' }, 'library default [1,2]');
+  assert.deepEqual(await evidenceProvenanceFromConfig({ sealsDir, trustKeys: LIST_A }).classify(AUD, SAMPLE), { status: 'AUTHENTICATED' }, 'library default [1,2]');
   // path A is today's verifier, raw-text rules included: an escape that decodes to the same v1 seal still authenticates there (declared limit,
   // contract §4.3); the walked path (production [2]) refuses the same bytes before looking at the version
   const escaped = JSON.stringify(v1Of(KEYS_A)).replace('"LINK_AUDIT_EVIDENCE_SEAL"', '"LINK\\u005fAUDIT_EVIDENCE_SEAL"');
@@ -207,7 +209,7 @@ test('V2-19 (M3) invalid acceptedVersions, or keyring together with trustedKeys,
   const closed = { status: 'UNAUTHENTICATED', reason: 'PROOF_NOT_CONFIGURED' };
   for (const versions of [[], [3], [2, 2], [1, 1], [1, 2, 2], [0], ['2'], [1, 2, 3], '2', null, {}]) {
     assert.deepEqual(await createSealedEvidenceProvenance({ sealsDir, trustedKeys: trusted(KEYS_A), acceptedVersions: versions as never }).classify(AUD, SAMPLE), closed, `policy ${JSON.stringify(versions)}`);
-    assert.deepEqual(await evidenceProvenanceFromConfig({ sealsDir, trustKeys: KEYS_A.trustKeys, acceptedVersions: versions as never }).classify(AUD, SAMPLE), closed, `config ${JSON.stringify(versions)}`);
+    assert.deepEqual(await evidenceProvenanceFromConfig({ sealsDir, trustKeys: LIST_A, acceptedVersions: versions as never }).classify(AUD, SAMPLE), closed, `config ${JSON.stringify(versions)}`);
   }
   const keyring: TrustKeyring = new Map([[KEYS_A.keyId, { key: trusted(KEYS_A).get(KEYS_A.keyId) as KeyObject, status: 'active' as const, closureSha256: null }]]);
   assert.deepEqual(await createSealedEvidenceProvenance({ sealsDir, trustedKeys: trusted(KEYS_A), keyring, acceptedVersions: [2] }).classify(AUD, SAMPLE), closed, 'keyring + trustedKeys together');
@@ -221,14 +223,14 @@ test('V2-19 (M3) production [2]: a well-signed v1 seal is SEAL_VERSION_NOT_ALLOW
   const sealsDir = tmpDir('lep2-');
   writeSealFile(sealsDir, AUD, 1, v1Of(KEYS_A));
   assert.deepEqual(await policy(sealsDir, [2]).classify(AUD, SAMPLE), UNAUTH('SEAL_VERSION_NOT_ALLOWED'));
-  assert.deepEqual(await evidenceProvenanceFromConfig({ sealsDir, trustKeys: KEYS_A.trustKeys, acceptedVersions: [2] }).classify(AUD, SAMPLE), UNAUTH('SEAL_VERSION_NOT_ALLOWED'));
+  assert.deepEqual(await evidenceProvenanceFromConfig({ sealsDir, trustKeys: LIST_A, acceptedVersions: [2] }).classify(AUD, SAMPLE), UNAUTH('SEAL_VERSION_NOT_ALLOWED'));
   writeSealFile(sealsDir, AUD, 1, v1Of(evidenceKeys('ek-atacante-01')));
   assert.deepEqual(await policy(sealsDir, [2]).classify(AUD, SAMPLE), UNAUTH('SEAL_INVALID'), 'unknown key');
   writeSealFile(sealsDir, AUD, 1, { ...v1Of(KEYS_A), signature: v1Of(KEYS_B).signature });
   assert.deepEqual(await policy(sealsDir, [2]).classify(AUD, SAMPLE), UNAUTH('SEAL_INVALID'), 'signature of another key');
   const v2 = v2Of(KEYS_A);
   writeSealFile(sealsDir, AUD, 1, v2);
-  assert.deepEqual(await evidenceProvenanceFromConfig({ sealsDir, trustKeys: KEYS_A.trustKeys, acceptedVersions: [2] }).classify(AUD, SAMPLE), { status: 'AUTHENTICATED', headSeq: 1, headSealSha256: sealSha256(v2), keyIds: [KEYS_A.keyId] });
+  assert.deepEqual(await evidenceProvenanceFromConfig({ sealsDir, trustKeys: LIST_A, acceptedVersions: [2] }).classify(AUD, SAMPLE), { status: 'AUTHENTICATED', headSeq: 1, headSealSha256: sealSha256(v2), keyIds: [KEYS_A.keyId] });
 });
 
 /* ----- static part of V2-19: every caller outside tests/ chooses acceptedVersions explicitly; production is [2] ----- */

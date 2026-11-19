@@ -237,7 +237,7 @@ function acceptedVersionsOf(value: unknown): readonly AcceptedSealVersion[] | nu
 /** Política que só autentica o que um manifesto ASSINADO por uma chave de confiança cobre, com os MESMOS hashes. */
 export function createSealedEvidenceProvenance(options: SealedEvidenceOptions): EvidenceProvenancePolicy {
   const versions = acceptedVersionsOf(options.acceptedVersions);
-  const trustedKeys = options.trustedKeys;
+  const { trustedKeys } = options;
   // keyring + trustedKeys together, neither, or a keyring before W3.4 implements its states ⇒ nothing is authentic (contract §5, §8 row 1)
   if (versions === null || options.keyring !== undefined || trustedKeys === undefined) return CLOSED_EVIDENCE_PROVENANCE;
   const ops = options.fs ?? nodeFsOps;
