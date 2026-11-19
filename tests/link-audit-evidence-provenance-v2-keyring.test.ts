@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHash, createPublicKey, sign as cryptoSign } from 'node:crypto';
+import { createHash, createPublicKey, generateKeyPairSync, sign as cryptoSign, type KeyObject } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
@@ -179,6 +179,24 @@ test('V2-20 (RS-16) a keyring built in code rejects small-order (forgeable) publ
   assert.equal((await createSealedEvidenceProvenance({ sealsDir, keyring: valid, acceptedVersions: [2] }).classify(AUD, E1)).status, 'AUTHENTICATED', 'control');
 });
 
+test('V2-20 (W3.4 review MINOR) the TEST-ONLY trustedKeys option refuses small-order or non-Ed25519 public keys as well (fail closed)', async () => {
+  const sealsDir = writeChain(buildChain([{ keys: H, entries: E1 }]));
+  const spki = (rawHex: string) => createPublicKey({ key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), Buffer.from(rawHex, 'hex')]), format: 'der', type: 'spki' });
+  const holder = parseTrustKeys(item(H))?.get(H.keyId);
+  assert.ok(holder);
+  const bad: Array<[string, KeyObject]> = [
+    ['identity (order 1)', spki('0100000000000000000000000000000000000000000000000000000000000000')],
+    ['y = -1 (order 2)', spki('ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f')],
+    ['order 8', spki('c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a')],
+    ['an Ed448 key', generateKeyPairSync('ed448').publicKey],
+  ];
+  for (const [label, key] of bad) {
+    const listed: ReadonlyMap<string, KeyObject> = new Map([[H.keyId, holder], ['ek-anel-fraca', key]]);
+    assert.deepEqual(await createSealedEvidenceProvenance({ sealsDir, trustedKeys: listed, acceptedVersions: [2] }).classify(AUD, E1), UNAUTH('PROOF_NOT_CONFIGURED'), label);
+  }
+  assert.equal((await createSealedEvidenceProvenance({ sealsDir, trustedKeys: new Map([[H.keyId, holder]]), acceptedVersions: [2] }).classify(AUD, E1)).status, 'AUTHENTICATED', 'control');
+});
+
 /* ============================================================================================ V2-21, V2-22 */
 
 test('V2-21 (D10, D12) the two active keys interleave freely: A S A and S A S are AUTHENTICATED', async () => {
@@ -331,9 +349,9 @@ test('V2-26 (N1, N6) a closure signer revoked LATER keeps the history authentica
   assert.deepEqual(await classify(fileClosures, listOf(item(R, 'retired', pin), item(S)), E2), UNCOVERED, '_closures is a file');
 });
 
-test('V2-26 / W3.5 placeholder: a position signed by a REVOKED key never authenticates (the pre-step, its precedence and revokedKeyIds are W3.5)', async () => {
+test('V2-26 / V2-27 a position signed by a REVOKED key never authenticates and carries revokedKeyIds (precedence: revocation test file)', async () => {
   const seals = buildChain([{ keys: H, entries: E1 }, { keys: S, entries: E2 }]);
-  assert.deepEqual(await classify(writeChain(seals), listOf(item(H), item(S, 'revoked')), E2), UNAUTH('SEAL_KEY_REVOKED'));
+  assert.deepEqual(await classify(writeChain(seals), listOf(item(H), item(S, 'revoked')), E2), { status: 'UNAUTHENTICATED', reason: 'SEAL_KEY_REVOKED', revokedKeyIds: [S.keyId] }); // the full pre-step: revocation test file (W3.5)
 });
 
 /* ============================================================================================ V2-42, V2-47 */
@@ -387,6 +405,6 @@ test('V2-18 (keyring part) a v1 last on the compatible path [1,2]: retired signe
   const sealsDir = writeChain(seals);
   const pin = putClosure(sealsDir, `${R.keyId}.json`, closureText(R, S, [headOf(seals[0] as AnySeal)]));
   assert.deepEqual(await classify(sealsDir, listOf(item(R, 'retired', pin), item(S)), E1, [1, 2]), UNCOVERED, 'retired: a v1 is never covered');
-  assert.deepEqual(await classify(sealsDir, listOf(item(R, 'revoked'), item(S)), E1, [1, 2]), UNAUTH('SEAL_KEY_REVOKED'), 'revoked');
+  assert.deepEqual(await classify(sealsDir, listOf(item(R, 'revoked'), item(S)), E1, [1, 2]), { status: 'UNAUTHENTICATED', reason: 'SEAL_KEY_REVOKED', revokedKeyIds: [R.keyId] }, 'revoked (the signal travels with the reason, contract §7.2)');
   assert.deepEqual(await classify(sealsDir, listOf(item(R), item(S)), E1, [1, 2]), { status: 'AUTHENTICATED' }, 'active: today\'s answer');
 });

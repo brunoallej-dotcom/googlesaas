@@ -69,7 +69,13 @@ export type EvidenceTrust =
   | { readonly status: 'AUTHENTICATED' }
   | ({ readonly status: 'AUTHENTICATED' } & EvidenceHeadProof)
   /** `missingRefs`: só em `EVIDENCE_MISSING` (no máximo 5 referências, sem conteúdo): o manifesto atesta algo que a base de hoje NÃO tem. */
-  | { readonly status: 'UNAUTHENTICATED'; readonly reason: EvidenceTrustReason; readonly missingRefs?: readonly string[] };
+  | {
+      readonly status: 'UNAUTHENTICATED';
+      readonly reason: EvidenceTrustReason;
+      readonly missingRefs?: readonly string[];
+      /** Only with `SEAL_KEY_REVOKED` (contract §7.2): distinct, sorted public ids of revoked keys with an AUTHENTIC position here (at most 2). */
+      readonly revokedKeyIds?: readonly string[];
+    };
 
 /** O mínimo que a verificação precisa de cada evidência da base (o leitor já recalculou `contentSha256` sobre os bytes lidos). */
 export interface EvidenceToProve {
@@ -272,7 +278,16 @@ function isValidKeyring(ring: unknown): ring is TrustKeyring {
 function keyringOf(options: SealedEvidenceOptions): TrustKeyring | null {
   if (options.keyring !== undefined) return options.trustedKeys === undefined && isValidKeyring(options.keyring) ? options.keyring : null;
   if (options.trustedKeys === undefined) return null;
-  return new Map([...options.trustedKeys].map(([id, key]) => [id, { key, status: 'active' as const, closureSha256: null }]));
+  const listed = [...options.trustedKeys];
+  if (!listed.every(([, key]) => isUsablePublicKey(key))) return null; // same point rule as the parsers and `isValidKeyring` (fail-closed)
+  return new Map(listed.map(([id, key]) => [id, { key, status: 'active' as const, closureSha256: null }]));
+}
+
+/** An Ed25519 public key whose point is neither small-order nor non-canonical: the rule of `publicKeyFromRaw`, for keys handed over in code. */
+function isUsablePublicKey(key: KeyObject): boolean {
+  if (!isEd25519PublicKey(key)) return false;
+  const spki = key.export({ format: 'der', type: 'spki' });
+  return spki.length >= 32 && !isWeakEd25519PublicKey(spki.subarray(spki.length - 32));
 }
 
 export interface SealedEvidenceOptions {
@@ -377,7 +392,7 @@ function classifyLatestV1(json: unknown, latestSeq: number, auditId: string, evi
   if (new Set(refs).size !== refs.length || refs.some((ref, index) => index > 0 && (refs[index - 1] as string) >= ref)) return unauthenticated('SEAL_INVALID'); // ordenado e sem repetição
   if (!cryptoVerify(null, Buffer.from(canonicalJson(body), 'utf8'), signer.key, Buffer.from(signature, 'base64url'))) return unauthenticated('SEAL_INVALID');
   // the ONLY addition to the v1 path (contract §8.A, §9): the signer's state; a v1 is never covered by a retirement closure
-  if (signer.status === 'revoked') return unauthenticated('SEAL_KEY_REVOKED');
+  if (signer.status === 'revoked') return { status: 'UNAUTHENTICATED', reason: 'SEAL_KEY_REVOKED', revokedKeyIds: [body.keyId] };
   if (signer.status === 'retired') return unauthenticated('SEAL_KEY_RETIRED_UNCOVERED');
   return coverageVerdict(body.entries, evidences) ?? { status: 'AUTHENTICATED' };
 }
@@ -671,7 +686,8 @@ type PositionRead = { readonly kind: 'text'; readonly text: string } | { readonl
 
 /**
  * Reads one file at most once, without following links and within the per-file and per-`classify` limits (contract §2, §7.2). Never throws.
- * Once the budget is exceeded nothing else is read. The text comes from `FsOps.readFile` (a lossy UTF-8 decode): an invalid byte can only become
+ * The declared size is checked against the remaining budget BEFORE opening, and `readFile` never reads more than the budget still allows; once
+ * the budget is exceeded nothing else is read. The text comes from `FsOps.readFile` (a lossy UTF-8 decode): an invalid byte can only become
  * U+FFFD, which no ASCII-only field or JSON token accepts, so the position is SEAL_INVALID as with a strict decode.
  */
 async function readPosition(ops: FsOps, file: string, budget: ReadBudget, maxBytes = MAX_SEAL_BYTES): Promise<PositionRead> {
@@ -684,8 +700,13 @@ async function readPosition(ops: FsOps, file: string, budget: ReadBudget, maxByt
   }
   if (info.isSymbolicLink() || !info.isFile()) return { kind: 'not-regular' }; // checked BEFORE opening: a FIFO is never opened
   if (info.size > maxBytes) return { kind: 'failed' };
+  if (info.size > budget.remaining) {
+    budget.remaining = -1; // refused BEFORE reading; nothing else is read either (contract §7.2)
+    return { kind: 'over-budget' };
+  }
   try {
-    const text = await ops.readFile(file, maxBytes);
+    // the descriptor checks of readFile still apply (regular file, size, growth during the read), now against what the budget allows
+    const text = await ops.readFile(file, Math.min(maxBytes, budget.remaining));
     budget.remaining -= Math.max(info.size, Buffer.byteLength(text, 'utf8'));
     return budget.remaining < 0 ? { kind: 'over-budget' } : { kind: 'text', text };
   } catch {
@@ -733,20 +754,25 @@ interface Walk {
 }
 
 /**
- * Path B (contract §3, §4, §8 rows 4–14): EVERY `seal-0001 … seal-N` is read once and judged, in the order of the precedence table. Row 6 (the
- * revocation pre-step, W3.5) is a fail-closed PLACEHOLDER here: an authentic position of a `revoked` key gives SEAL_KEY_REVOKED right after row 8;
- * W3.5 moves it before rows 7–8 with tolerant reads and `revokedKeyIds`. Row 13 is the retirement closure (`retiredCoverage`).
+ * Path B (contract §3, §4, §7, §8 rows 4–14): EVERY `seal-0001 … seal-N` is read once, tolerating per-file failures, and judged in the order of
+ * the precedence table: names (row 4) before any read; the revocation pre-step (row 6) on whatever was read, before read failures (row 7) and every
+ * other rule; the retirement closure at row 13 (`retiredCoverage`). Declared residuals (§7.2): nothing read ⇒ no signal (folder deleted,
+ * `seal-0000`, N > 256), and files left unread by the byte budget are not examined.
  */
 async function classifyWalked(walk: Walk): Promise<EvidenceTrust> {
   const ordered = [...walk.sealed].sort((a, b) => a.seq - b.seq);
   const last = ordered[ordered.length - 1];
   if (!last || ordered[0]?.seq === 0 || last.seq > MAX_CHAIN_SEALS) return unauthenticated('SEAL_CHAIN_BROKEN'); // row 4 (7a): names only, no read
-  const reads: Array<{ readonly seq: number; readonly read: PositionRead }> = [];
-  for (const item of ordered) reads.push({ seq: item.seq, read: walk.alreadyRead?.seq === item.seq ? walk.alreadyRead.read : await readPosition(walk.ops, path.join(walk.dir, item.name), walk.budget) }); // row 5
+  const reads: ParsedRead[] = [];
+  for (const item of ordered) {
+    const read = walk.alreadyRead?.seq === item.seq ? walk.alreadyRead.read : await readPosition(walk.ops, path.join(walk.dir, item.name), walk.budget); // row 5
+    reads.push({ seq: item.seq, read, parsed: read.kind === 'text' ? parseSealPositionText(Buffer.from(read.text, 'utf8')) : null });
+  }
+  const revokedKeyIds = revocationSignal(reads, walk.auditId, walk.ring); // row 6: before every later row
+  if (revokedKeyIds.length > 0) return { status: 'UNAUTHENTICATED', reason: 'SEAL_KEY_REVOKED', revokedKeyIds };
   if (reads.some(({ read }) => read.kind === 'failed' || read.kind === 'over-budget')) return unauthenticated('VERIFICATION_ERROR'); // row 7
   const positions = verifiedPositions(reads, walk.auditId, walk.ring);
   if (!positions) return unauthenticated('SEAL_INVALID'); // row 8
-  if (positions.some((position) => position.status === 'revoked')) return unauthenticated('SEAL_KEY_REVOKED'); // row 6 placeholder (W3.5)
   const order = chainOrderVerdict(positions, walk.versions); // rows 9–12
   if (order) return order;
   const retired = await retiredCoverage(walk, positions); // row 13
@@ -808,12 +834,57 @@ async function pinnedClosure(walk: Walk, keyId: string): Promise<KeyRetirementCl
 }
 
 /** Row 8 at EVERY position: a regular file, raw text and strict schema of its version, same audit, `seq` = name, key in the list, signature. */
-function verifiedPositions(reads: ReadonlyArray<{ readonly seq: number; readonly read: PositionRead }>, auditId: string, ring: TrustKeyring): VerifiedPosition[] | null {
-  const positions: VerifiedPosition[] = [];
+/** One read position with its strict parse (once; shared by the pre-step and row 8). */
+interface ParsedRead {
+  readonly seq: number;
+  readonly read: PositionRead;
+  readonly parsed: SealTextParse<SealPosition> | null;
+}
+
+/** At most this many public ids travel with SEAL_KEY_REVOKED (contract §7.2). */
+const MAX_REVOKED_KEY_IDS = 2;
+
+/**
+ * Row 6, the revocation PRE-STEP (contract §7.2): every position that was read is checked ON ITS OWN, on a LENIENT parse (so a representation the
+ * strict raw-text rules refuse, such as an escape or a duplicate key, cannot hide an authentic revoked signature; row 8 still refuses the chain).
+ * It signals when the signature VERIFIES under a key listed as `revoked`, the body names THIS audit and its `seq` is the one of its FILE NAME (a
+ * copy of another audit's or position's manifest never fabricates the signal). No signal is possible without the revoked private key. Read
+ * failures elsewhere do not suppress it. Distinct ids, the first 2 in lexicographic order.
+ */
+function revocationSignal(reads: readonly ParsedRead[], auditId: string, ring: TrustKeyring): string[] {
+  const revoked = new Set<string>();
   for (const { seq, read } of reads) {
-    if (read.kind !== 'text') return null;
-    const parsed = parseSealPositionText(Buffer.from(read.text, 'utf8'));
-    if (!parsed.ok) return null;
+    const position = read.kind === 'text' ? leniently(read.text) : null;
+    const signer = position ? ring.get(position.keyId) : undefined;
+    if (!position || signer?.status !== 'revoked' || position.auditId !== auditId || position.seq !== seq) continue;
+    if (verifyEd25519PureSignature(position.signingBytes, position.signature, signer.key)) revoked.add(position.keyId);
+  }
+  return [...revoked].sort().slice(0, MAX_REVOKED_KEY_IDS);
+}
+
+/**
+ * The minimum the pre-step needs from a read file, by plain `JSON.parse` (never used to authenticate): an object with string `keyId`, `auditId`
+ * and `signature` and an integer `seq`, WHATEVER its `schemaVersion` says (contract §7.2 does not limit row 6 to known versions; row 8 refuses
+ * an unknown one). The signed input is the one of every version, UTF-8(canonicalJson(file without `signature`)), exactly as the strict path
+ * verifies it (contract §2; `createEvidenceSeal`). Never throws.
+ */
+function leniently(text: string): { readonly keyId: string; readonly auditId: string; readonly seq: number; readonly signature: string; readonly signingBytes: Buffer } | null {
+  try {
+    const json = JSON.parse(text) as unknown;
+    if (typeof json !== 'object' || json === null || Array.isArray(json)) return null;
+    const { signature, ...body } = json as Record<string, unknown>;
+    const { keyId, auditId, seq } = body;
+    if (typeof signature !== 'string' || typeof keyId !== 'string' || typeof auditId !== 'string' || typeof seq !== 'number' || !Number.isInteger(seq)) return null;
+    return { keyId, auditId, seq, signature, signingBytes: signingBytesOf(body) };
+  } catch {
+    return null;
+  }
+}
+
+function verifiedPositions(reads: readonly ParsedRead[], auditId: string, ring: TrustKeyring): VerifiedPosition[] | null {
+  const positions: VerifiedPosition[] = [];
+  for (const { seq, read, parsed } of reads) {
+    if (read.kind !== 'text' || !parsed?.ok) return null;
     const { version, file } = parsed.value;
     const signer = ring.get(file.keyId); // any state: a key absent from the list is SEAL_INVALID (V2-30); the state is judged later
     if (!signer || file.auditId !== auditId || file.seq !== seq) return null;

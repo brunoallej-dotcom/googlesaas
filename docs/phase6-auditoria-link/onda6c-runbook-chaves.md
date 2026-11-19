@@ -1,6 +1,6 @@
 # Onda 6C — Runbook de CHAVES (prova de origem e prova de coleta)
 
-> **Status:** procedimento documentado e **verificado por testes** (`tests/link-audit-origin-keys.test.ts`, `tests/link-audit-evidence-provenance.test.ts`). **Nada foi executado na VPS.** Este documento **nunca** contém valores reais: onde há valor, há `<placeholder>`. Quem executa gera o segredo na hora, **sem imprimir na tela nem registrar em histórico de shell**.
+> **Status:** procedimento documentado e **verificado por testes** (`tests/link-audit-origin-keys.test.ts`, `tests/link-audit-evidence-provenance.test.ts`, `tests/link-audit-evidence-provenance-v2-*.test.ts`). **Nada foi executado na VPS.** Este documento **nunca** contém valores reais: onde há valor, há `<placeholder>`. Quem executa gera o segredo na hora, **sem imprimir na tela nem registrar em histórico de shell**.
 
 ## 0. Duas famílias de chave (não confundir)
 
@@ -43,13 +43,30 @@ Objetivo: **cortar imediatamente** o uso da chave vazada para novas autenticaç�
 
 ## 4. Chave de ATESTAÇÃO de coleta (pública no servidor)
 
-> **Mudança aprovada em 17/11/2026 (D12 e D14 da spec P1; contrato `p1-contrato-verificador-v2.md` §5–§7). Vale quando o verificador `v2` (onda W3) estiver implantado; até lá vale o texto abaixo.** A chave antiga **nunca é removida** da lista: cada item ganha um estado (`<id>:<pub>[:active|retired:<closureSha256>|revoked]`, no máximo 2 `active` e 16 itens). **Rotação planejada:** na aposentadoria, uma chave `active` assina offline o **fecho** `_closures/<id>.json` (as cadeias em que a aposentada assinou), o fecho é entregue à pasta de manifestos e o seu hash é fixado na lista como `retired:<closureSha256>`, nessa ordem; fora do fecho a aposentada não vale. **Comprometimento:** marcar a chave `revoked` (não remover): as cadeias dela deixam de autenticar novas finalizações e os resultados já confirmados com ela ficam marcados para reconferência humana (onda R2). Item removido da lista torna as cadeias dele inválidas, sem o sinal de revogação.
+> Procedimento conforme as decisões D12 e D14 da spec P1 (17/11/2026) e o contrato do verificador `v2` (`p1-contrato-verificador-v2.md` §4–§7), implementado na onda W3. Verificado por `tests/link-audit-evidence-provenance-v2-keyring.test.ts` e `tests/link-audit-evidence-provenance-v2-revocation.test.ts`.
 
-- **Formato no servidor:** `GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS=<id>:<32 bytes da chave pública Ed25519 em base64url>[,<id>:<…>]`. É **pública** (não é segredo). Item malformado, id repetido ou lista vazia ⇒ política **FECHADA** (nada é autêntico).
-- **Custódia da privada:** fora da VPS, protegida (senha/cartão/HSM), com backup cifrado separado. O servidor web **nunca** a recebe. (Decisão de custódia pendente do responsável: ADR 6C-03 §7.)
-- **Rotação planejada:** adicionar a pública nova à lista (com id novo), atestar as auditorias com a nova, e só então remover a antiga. Manifestos assinados pela antiga continuam válidos **enquanto** a pública dela estiver na lista.
-- **Comprometimento da privada:** **remover imediatamente** a pública comprometida da lista (isso torna **toda** coleta atestada só por ela **não autêntica**: a finalização fecha); gerar novo par; **reatestar** só o que for conferido por **fonte independente**. Manifestos não se "revogam" um a um: a confiança vem da **lista de chaves**.
-- **Efeito sobre registros históricos:** resultados **já confirmados** não são reavaliados; novas prévias/finalizações dependem do manifesto válido.
+- **Formato no servidor (lista de chaves com estado):** `GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS=<item>[,<item>…]`, cada item numa destas formas:
+  - `<id>:<pública>` ou `<id>:<pública>:active` — chave **ativa**: assina manifestos novos;
+  - `<id>:<pública>:retired:<closureSha256>` — chave **aposentada** com o fecho fixado por hash: só confirma o que o fecho cobre;
+  - `<id>:<pública>:retired` — aposentada **sem** fecho fixado: as assinaturas dela **nunca** contam;
+  - `<id>:<pública>:revoked` — chave **revogada**: nunca conta, e as cadeias com assinatura autêntica dela são recusadas com `SEAL_KEY_REVOKED`.
+
+  `<pública>` são os 32 bytes da chave pública Ed25519 em base64url; `<closureSha256>` são 64 caracteres hexadecimais minúsculos. A lista é **pública** (não é segredo). No máximo **2** chaves `active` (titular e suplente, cada uma com **par próprio**, nunca cópia) e **16** itens; a mesma pública não pode aparecer sob dois ids. Item malformado, id repetido, estado fora de `active|retired|revoked` (inclusive em maiúsculas ou com espaços), item vazio, vírgula final ou lista vazia ⇒ política **FECHADA** (nada é autêntico). Uma lista com **zero** `active` é válida: nada novo autentica, e os fechos fixados e os sinais de revogação continuam funcionando. A produção aceita **só** manifestos `v2`.
+- **Nunca remover um item da lista.** Aposentadas e revogadas **permanecem** listadas (por isso o teto de 16). Um item removido torna inválidas todas as cadeias assinadas por ele (`SEAL_INVALID`) e apaga o sinal de revogação.
+- **Custódia da privada:** fora da VPS, protegida (senha/cartão/HSM), com backup cifrado separado. O servidor web **nunca** a recebe. Começa com chave em arquivo PKCS#8 cifrado numa estação dedicada e sem rede (K1); token de hardware (K2) só depois do teste de interoperabilidade (RS-15) e de exceção escrita (D11).
+- **Rotação planejada** (a cada **12 meses**, junto com o ensaio anual de restauração; **nenhuma sobreposição de assinatura**), nesta ordem:
+  1. a chave a aposentar (`R`) **para de assinar**;
+  2. as cabeças das cadeias em que `R` assinou vêm do **registro externo** de recibos/livro de manifestos, **nunca** da pasta do servidor; cadeia de `R` presente no servidor e ausente do registro externo **não** entra no fecho (`UNKNOWN_SEAL_ON_SERVER`);
+  3. uma chave `active` diferente de `R` (o sucessor, ou o titular remanescente quando o suplente é desativado) assina **offline** o **fecho de aposentadoria** `<pasta de manifestos>/_closures/<R>.json`;
+  4. o fecho é **entregue byte a byte** à pasta de manifestos (sem reformatar, sem converter fim de linha, sem recomprimir), e o **SHA-256 dos bytes entregues** é fixado na lista como `<R>:<pública>:retired:<closureSha256>`; sem a fixação, `R` não conta;
+  5. **destruir todas as cópias da privada de `R`**, inclusive o backup cifrado (D10), e **registrar** a destruição;
+  6. **qualquer dúvida ⇒ `revoked`**, nunca `retired`.
+
+  Fora do fecho fixado, a aposentada não vale: nada novo que ela assine autentica (auditoria nova, extensão depois da cabeça, cadeia truncada e reassinada). Trocar o arquivo de fecho por outro (rascunho, versão antiga, o de outra chave) não vale: a autoridade é o **hash fixado**. **Reemissão** de um fecho = conferir de novo, de forma independente, e **refixar** o hash.
+- **Comprometimento da privada:** marcar o item como **`revoked` na hora** (não remover). As cadeias com assinatura autêntica dessa chave deixam de autenticar novas finalizações (`SEAL_KEY_REVOKED`, com os ids em `revokedKeyIds`; o sinal tem precedência sobre os demais defeitos da cadeia) e os resultados **já confirmados** com ela ficam **marcados para reconferência humana** (onda R2: interseção dos `keyIds` gravados no resultado com os ids revogados). Gerar novo par e registrá-lo na lista. A reabilitação de uma coleta afetada é **nova coleta sob novo `auditId`** por fonte independente (D3), não reassinatura. Manifestos forjados entre o comprometimento e a revogação são indistinguíveis (limite declarado).
+- **Signatário de um fecho revogado depois:** o histórico **não cai** (o hash fixado segue como autoridade e o id dele aparece nos `keyIds`), mas a conferência que levou à fixação deve ser refeita: reemitir o fecho e refixar o hash. Evitar remover da lista o item do signatário de um fecho: sem ele, a assinatura do fecho não pode mais ser conferida (só o hash fixado decide).
+- **Efeito sobre registros históricos:** resultados já confirmados **não** são reavaliados nem reescritos; o verificador só lê manifestos e fechos e não grava nada. Novas prévias e finalizações dependem da cadeia válida. Qualquer `UNAUTHENTICATED` ao reler um resultado confirmado vai a revisão humana (onda R2).
+- **Quem edita a lista está fora da garantia:** pode acrescentar a própria chave como `active`, desfazer uma revogação ou fixar outro hash. O controle é humano (procedimento da W5, livro de manifestos).
 
 ## 5. O que o sistema NÃO faz (para ninguém supor)
 
