@@ -165,13 +165,14 @@ function dynamicLoads(code: string): string[] {
     const rest = code.slice(match.index);
     if (!/^import\s*\(\s*(['"])[^'"`$\\\n]*\1\s*\)/.test(rest)) found.push(rest.slice(0, 40));
   }
-  for (const match of code.matchAll(/\brequire\s*[.(]|\bcreateRequire\b|\bmodule\s*\.\s*require\b/g)) found.push(match[0]);
+  // qualquer ocorrência solta do identificador (`require(`, `(require)(…)`, `const r = require`…), não só a chamada direta (confirmação da W4.2)
+  for (const match of code.matchAll(/\brequire\b|\bcreateRequire\b/g)) found.push(match[0]);
   return found;
 }
 
 test('dynamicLoads enxerga import() com nome calculado e require; import() com string literal passa', () => {
   assert.deepEqual(dynamicLoads("const a = await import('./x');\nconst b = await import(\"node:crypto\");"), []);
-  for (const code of ["import('./' + 'x')", 'import(`./${name}`)', 'import(name)', "import( './x' + y)", "require('x')", "require.resolve('x')", "module.require('x')", "createRequire(url)"]) {
+  for (const code of ["import('./' + 'x')", 'import(`./${name}`)', 'import(name)', "import( './x' + y)", "require('x')", "require.resolve('x')", "module.require('x')", "createRequire(url)", "(require)('node:' + 'fs')", "const r = require; r('fs')"]) {
     assert.equal(dynamicLoads(code).length > 0, true, code);
   }
 });
