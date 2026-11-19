@@ -388,8 +388,9 @@ export function createScoringResultsService(deps: ResultsDeps) {
     if (!input || !result || !outcome || !mapped || !basis || !alias || !referenceDateSource || evaluation.inputSha256 === null) return null;
     const website = mapped.traceability.websiteDerivation;
     const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
-    // Auditoria PROTEGIDA pelo livro ⇒ formato v2 com a cabeça do livro; sem livro (testes da 6B/6C isoladas) o formato v1 de sempre.
-    const ledgerHead = decisions.ledger.state === 'PROTECTED' && decisions.ledger.head ? { ledgerSeq: decisions.ledger.head.ledgerSeq, sha256: decisions.ledger.head.sha256 } : null;
+    // Auditoria PROTEGIDA pelo livro ⇒ formato v2 citando a cabeça de DECISÕES do livro (§16.17.7: nunca uma posição RUN_*; uma finalização não a move); sem livro (testes da 6B/6C
+    // isoladas) o formato v1 de sempre.
+    const ledgerHead = decisions.ledger.state === 'PROTECTED' && decisions.ledger.decisionHead ? { ledgerSeq: decisions.ledger.decisionHead.ledgerSeq, sha256: decisions.ledger.decisionHead.sha256 } : null;
     return {
       schemaVersion: ledgerHead ? RUN_SCHEMA_VERSION_LEDGER : RUN_SCHEMA_VERSION,
       kind: RUN_FILE_KIND,
@@ -511,7 +512,7 @@ export function createScoringResultsService(deps: ResultsDeps) {
           // 6b. BARREIRA DE DURABILIDADE (só quando o resultado cita o livro): a cabeça citada está autenticada (livro PROTEGIDO), as escritas do livro, das decisões e dos recibos têm a durabilidade
           // comprovada AGORA e, depois disso, a vista continua mostrando EXATAMENTE as cabeças avaliadas (nenhuma gravação concorrente mudou o estado nem travou a base entre a verificação e o selamento).
           // Qualquer dúvida ⇒ nada é selado. O que é montado a seguir vem da MESMA avaliação que a barreira conferiu.
-          const cited = ev.value.decisions.ledger.state === 'PROTECTED' ? ev.value.decisions.ledger.head : null;
+          const cited = ev.value.decisions.ledger.state === 'PROTECTED' ? ev.value.decisions.ledger.decisionHead : null;
           if (cited) {
             const barrier = await deps.preview.durabilityBarrier(actor, auditId, { decisionsHead: ev.value.decisions.head, ledgerHead: { ledgerSeq: cited.ledgerSeq, sha256: cited.sha256 } });
             if (!barrier.ok) return reject(failure(barrier.code === 'DURABILITY_UNKNOWN' ? 'RESULT_DURABILITY_UNKNOWN' : 'INPUT_CHANGED', ...barrier.issues.slice(0, 3)));
@@ -648,9 +649,21 @@ export type KnownHeadsProvider = (
       readonly hasResults?: boolean;
       readonly ledgerHeads?: ReadonlyArray<{ readonly ledgerSeq: number; readonly sha256: string }>;
       readonly unverifiedLedgerHeads?: ReadonlyArray<{ readonly ledgerSeq: number; readonly sha256: string }>;
+      /** Os resultados em si, para o LIVRO (spec §16.17.8): ancorados em ordem e o pendente, com a origem julgada. `finalizedBy` só circula entre módulos do servidor. */
+      readonly runs?: { readonly anchored: readonly KnownRunRef[]; readonly pending: KnownRunRef | null };
     }
   | { readonly ok: false; readonly reason: 'NOT_CONFIGURED' | 'STORAGE_UNAVAILABLE' | 'UNTRUSTED' }
 >;
+/** Um resultado como a testemunha o entrega (mesma forma estrutural do `RunRef` da porta do livro; a 6C NÃO importa as decisões). */
+export interface KnownRunRef {
+  readonly seq: number;
+  readonly sha256: string;
+  readonly prevSha256: string | null;
+  readonly schemaVersion: 1 | 2;
+  readonly ledgerHead: { readonly ledgerSeq: number; readonly sha256: string } | null;
+  readonly finalizedBy: string;
+  readonly originProven: boolean;
+}
 
 const INTEGRITY_CODES: ReadonlySet<StoreErrorCode> = new Set(['CORRUPT', 'HASH_MISMATCH', 'CHAIN_BROKEN', 'SEQUENCE_GAP', 'SCHEMA', 'SEMANTIC', 'TRUNCATED', 'ANCHOR_MISMATCH', 'ANCHOR_INTEGRITY']);
 /**
@@ -710,6 +723,15 @@ export function createResultsKnownHeads(options: ResultsKnownHeadsOptions): Know
       const pending = read.value.pending;
       const proven = pending !== null && judgeOrigin(options.origin, 'RUN', pending) === 'PROVEN';
       const ledgerOf = (run: ScoreRun): Array<{ ledgerSeq: number; sha256: string }> => (run.ledgerHead ? [{ ledgerSeq: run.ledgerHead.ledgerSeq, sha256: run.ledgerHead.sha256 }] : []);
+      const refOf = (run: ScoreRun): KnownRunRef => ({
+        seq: run.seq,
+        sha256: run.contentSha256,
+        prevSha256: run.prevSha256,
+        schemaVersion: run.schemaVersion,
+        ledgerHead: run.ledgerHead ? { ledgerSeq: run.ledgerHead.ledgerSeq, sha256: run.ledgerHead.sha256 } : null,
+        finalizedBy: run.finalizedBy,
+        originProven: judgeOrigin(options.origin, 'RUN', run) === 'PROVEN',
+      });
       return {
         ok: true,
         heads: [...read.value.runs.flatMap(headOf), ...(pending && proven ? headOf(pending) : [])],
@@ -718,6 +740,8 @@ export function createResultsKnownHeads(options: ResultsKnownHeadsOptions): Know
         hasResults: read.value.runs.length > 0 || pending !== null,
         ledgerHeads: [...read.value.runs.flatMap(ledgerOf), ...(pending && proven ? ledgerOf(pending) : [])],
         unverifiedLedgerHeads: pending && !proven ? ledgerOf(pending) : [],
+        // o LIVRO confere o que ele cita (RUN_CONFIRMED ⇒ resultado e recibo) e a fase da operação de resultado aberta (§16.17.4, 16.17.5)
+        runs: { anchored: read.value.runs.map(refOf), pending: pending ? refOf(pending) : null },
       };
     } catch {
       return { ok: false, reason: 'STORAGE_UNAVAILABLE' };
