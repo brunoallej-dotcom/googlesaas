@@ -4,10 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { nodeFsOps, type BytesFsOps } from '../src/lib/link-audit/snapshot-store';
-import { defaultTempRoots, nodeKeyFileOps, type KeyFileOps } from '../src/lib/link-audit-attestation/sign-key';
+import { defaultTempRoots, MIN_PBKDF2_ITERATIONS, nodeKeyFileOps, type KeyFileOps, type OpenedKeyFile } from '../src/lib/link-audit-attestation/sign-key';
 import { openHiddenInput, terminalConfirm } from '../src/lib/link-audit-attestation/sign-terminal';
 import { registerCleanup, tmpDir } from './helpers/link-audit-evidence-fixtures';
-import { cliWorld, contentsOf, FakeTerminal, runSign, sealFile, treeOf, type CliWorld, type SignCliRun, type Typed } from './helpers/link-audit-seal-sign-cli-fixtures';
+import { cliWorld, contentsOf, FakeTerminal, runSign, sealFile, STRONG_PBKDF2_ITERATIONS, treeOf, WEAK_SCRYPT_COST, type CliWorld, type SignCliRun, type Typed } from './helpers/link-audit-seal-sign-cli-fixtures';
 
 /*
  * P1 W4.4 — a CHAVE K1 do `sign` (spec §8, §5.5 passo 12, §5.5.1 itens 1, 2 e 8; IA-04, IA-22; RS-11, RS-12, RS-13) e o TERMINAL sem eco. PKCS#8 cifrado
@@ -170,6 +170,136 @@ test('IA-22: depois de assinar (e de recusar), nenhum arquivo novo na árvore te
   assert.deepEqual([refused.sealsDir, refused.key.dir].map(treeOf), refusedBefore, 'recusa no passo 12: nada novo');
 });
 
+/* =============================================================================================================== revisão independente da W4.4 */
+
+/** `KeyFileOps` real com ganchos: `beforeOpen` roda no instante entre a conferência pelo caminho e a abertura; `wrap` troca o descritor aberto. */
+function hookedKeyFs(hooks: { readonly beforeOpen?: () => void; readonly wrap?: (opened: OpenedKeyFile) => OpenedKeyFile }): { readonly ops: KeyFileOps; readonly reads: () => number } {
+  let reads = 0;
+  const ops: KeyFileOps = {
+    ...nodeKeyFileOps,
+    openKeyFile: async (target) => {
+      hooks.beforeOpen?.();
+      const opened = await nodeKeyFileOps.openKeyFile(target);
+      const counted: OpenedKeyFile = { ...opened, read: (...args) => ((reads += 1), opened.read(...args)) };
+      return hooks.wrap ? hooks.wrap(counted) : counted;
+    },
+  };
+  return { ops, reads: () => reads };
+}
+
+/** Uma pasta `inter` de um lugar SEGURO e uma cópia idêntica da chave (0600 numa pasta 0700) num lugar PROIBIDO; `swap` troca a pasta por um link para lá. */
+function swappable(forbiddenParent: string): { readonly world: CliWorld; readonly swap: () => void } {
+  const safe = tmpDir('lasc-segura-');
+  const world = cliWorld({}, { dir: path.join(safe, 'inter') });
+  const target = path.join(forbiddenParent, 'inter');
+  fs.mkdirSync(target, { recursive: true, mode: 0o700 });
+  fs.chmodSync(target, 0o700);
+  const copy = path.join(target, path.basename(world.key.keyPath));
+  fs.copyFileSync(world.key.keyPath, copy);
+  fs.chmodSync(copy, 0o600);
+  const swap = (): void => {
+    fs.renameSync(path.join(safe, 'inter'), path.join(safe, 'inter-original'));
+    fs.symlinkSync(target, path.join(safe, 'inter'));
+  };
+  return { world, swap };
+}
+
+test('revisão da W4.4 (BLOCKER): uma pasta do caminho trocada por link entre a conferência e a abertura ⇒ SECRET_PATH_UNSAFE pelo caminho REAL do descritor aberto (pasta temporária ou árvore com .git); nada lido, frase não pedida', async () => {
+  const temp = tmpDir('lasc-proibida-');
+  const intoTemp = swappable(temp);
+  const tempFs = hookedKeyFs({ beforeOpen: intoTemp.swap });
+  const run = await runSign(intoTemp.world.argv(), { typed: intoTemp.world.typed(), keyFs: tempFs.ops, tempRoots: [temp] });
+  keyRefused(intoTemp.world, run, 'SECRET_PATH_UNSAFE', 'troca para pasta temporária', { askedPassphrase: false });
+  assert.match(run.stderr, /temporária/);
+  assert.equal(tempFs.reads(), 0, 'nenhum byte lido do arquivo aberto no lugar proibido');
+  const repo = tmpDir('lasc-repo-');
+  fs.mkdirSync(path.join(repo, '.git'));
+  const intoGit = swappable(path.join(repo, 'cofre'));
+  const gitFs = hookedKeyFs({ beforeOpen: intoGit.swap });
+  const viaGit = await runSign(intoGit.world.argv(), { typed: intoGit.world.typed(), keyFs: gitFs.ops });
+  keyRefused(intoGit.world, viaGit, 'SECRET_PATH_UNSAFE', 'troca para árvore com .git', { askedPassphrase: false });
+  assert.match(viaGit.stderr, /\.git/);
+  assert.equal(gitFs.reads(), 0);
+});
+
+test('revisão da W4.4 (BLOCKER): arquivo de chave com mais de um nome (hardlink, nlink > 1) ⇒ SECRET_PATH_UNSAFE, mesmo aberto pelo nome seguro; nada lido, frase não pedida', async () => {
+  const world = cliWorld();
+  const repo = tmpDir('lasc-repo-');
+  fs.mkdirSync(path.join(repo, '.git'));
+  fs.linkSync(world.key.keyPath, path.join(repo, 'copia-da-chave'));
+  const hooked = hookedKeyFs({});
+  const run = await runSign(world.argv(), { typed: world.typed(), keyFs: hooked.ops });
+  keyRefused(world, run, 'SECRET_PATH_UNSAFE', 'hardlink', { askedPassphrase: false });
+  assert.match(run.stderr, /mais de um nome/);
+  assert.equal(hooked.reads(), 0);
+});
+
+test('revisão da W4.4 (BLOCKER): sem o caminho real do descritor (/proc indisponível, caminho que não é absoluto, ou arquivo que mudou de lugar durante a conferência) ⇒ SECRET_PATH_UNSAFE, recusa fechada', async () => {
+  const cases: Array<[string, (opened: OpenedKeyFile) => OpenedKeyFile, RegExp]> = [
+    ['/proc indisponível', (opened) => ({ ...opened, realPath: async () => Promise.reject(Object.assign(new Error('sem /proc'), { code: 'ENOENT' })) }), /caminho real/],
+    ['caminho que não é absoluto', (opened) => ({ ...opened, realPath: async () => 'anon_inode:[chave]' }), /caminho real/],
+    ['caminho de arquivo apagado', (opened) => ({ ...opened, realPath: async () => `${await opened.realPath()} (deleted)` }), /caminho real/],
+    ['mudou de lugar durante a conferência', (opened) => {
+      let calls = 0;
+      return { ...opened, realPath: async () => ((calls += 1), calls === 1 ? opened.realPath() : path.join(path.dirname(await opened.realPath()), 'outro-nome')) };
+    }, /mudou de lugar/],
+  ];
+  for (const [label, wrap, message] of cases) {
+    const world = cliWorld();
+    const run = await runSign(world.argv(), { typed: world.typed(), keyFs: hookedKeyFs({ wrap }).ops });
+    keyRefused(world, run, 'SECRET_PATH_UNSAFE', label, { askedPassphrase: false });
+    assert.match(run.stderr, message, label);
+  }
+});
+
+test('revisão da W4.4 (MINOR): o buffer lido do arquivo de chave é zerado em TODO caminho: leitura que falha no meio, close que falha, recusa posterior (formato, frase errada) e também no sucesso', async () => {
+  const cases: Array<[string, (opened: OpenedKeyFile) => OpenedKeyFile, Partial<KeyFileOptionsLike>, Typed[] | null, string | null]> = [
+    ['read falha depois de leitura parcial', (opened) => {
+      let calls = 0;
+      return { ...opened, read: async (buffer, offset, length, position) => ((calls += 1), calls === 1 ? opened.read(buffer, offset, Math.min(length, 40), position) : Promise.reject(Object.assign(new Error('EIO simulado'), { code: 'EIO' }))) };
+    }, {}, null, 'SIGN_KEY_REJECTED'],
+    ['close falha', (opened) => ({ ...opened, close: async () => Promise.reject(Object.assign(new Error('EIO no close'), { code: 'EIO' })) }), {}, null, 'SIGN_KEY_REJECTED'],
+    ['recusa posterior (lixo)', (opened) => opened, { content: 'garbage' }, null, 'SIGN_KEY_REJECTED'],
+    ['recusa posterior (texto claro)', (opened) => opened, { content: 'plain-pem' }, null, 'SECRET_NOT_ENCRYPTED'],
+    ['frase errada', (opened) => opened, {}, ['__CONFIRMACAO__', 'frase errada (fictícia)\r'], 'SIGN_KEY_REJECTED'],
+    ['sucesso', (opened) => opened, {}, null, null],
+  ];
+  for (const [label, wrap, keyOptions, typed, code] of cases) {
+    const world = cliWorld({}, keyOptions);
+    const buffers: Buffer[] = [];
+    const spyWrap = (opened: OpenedKeyFile): OpenedKeyFile => {
+      const wrapped = wrap(opened);
+      return { ...wrapped, read: (buffer, ...rest) => (buffers.includes(buffer) || buffers.push(buffer), wrapped.read(buffer, ...rest)) };
+    };
+    const typing = typed === null ? world.typed() : typed.map((item) => (item === '__CONFIRMACAO__' ? `${world.confirmation}\r` : item));
+    const run = await runSign(world.argv(), { typed: typing, keyFs: hookedKeyFs({ wrap: spyWrap }).ops });
+    if (code === null) assert.equal(run.code, 0, `${label}: ${run.stderr}`);
+    else refusedCli(run, code, label);
+    assert.ok(buffers.length > 0, `${label}: o buffer de leitura foi observado`);
+    for (const buffer of buffers) assert.ok(buffer.every((byte) => byte === 0), `${label}: buffer do arquivo de chave zerado`);
+  }
+});
+type KeyFileOptionsLike = { readonly content: 'garbage' | 'plain-pem' };
+
+test('revisão da W4.4 (KDF, sem bloquear): PBES2 com PBKDF2 abaixo do mínimo provisório (o padrão do Node, 2048) ou scrypt de custo baixo ⇒ aviso na saída de erro ANTES da frase, e assina; PBKDF2 alto ⇒ sem aviso', async () => {
+  assert.equal(STRONG_PBKDF2_ITERATIONS >= MIN_PBKDF2_ITERATIONS, true, 'a chave forte das fixtures está no mínimo provisório');
+  const weak = cliWorld();
+  const weakRun = await runSign(weak.argv(), { typed: weak.typed() });
+  assert.equal(weakRun.code, 0, weakRun.stderr);
+  const warnAt = weakRun.err.findIndex((line) => /^Aviso \(KDF\): .*PBKDF2.*2048 iterações/.test(line));
+  const passAt = weakRun.err.findIndex((line) => PASS_PROMPT.test(line));
+  assert.ok(warnAt >= 0 && warnAt < passAt, `aviso antes do pedido da frase: ${weakRun.stderr}`);
+  const scrypt = cliWorld({}, { content: 'scrypt-weak' });
+  const scryptRun = await runSign(scrypt.argv(), { typed: scrypt.typed() });
+  assert.equal(scryptRun.code, 0, scryptRun.stderr);
+  assert.ok(scryptRun.err.some((line) => line.startsWith('Aviso (KDF): ') && line.includes('scrypt') && line.includes(String(WEAK_SCRYPT_COST))), scryptRun.stderr);
+  const strong = cliWorld({}, { content: 'pbkdf2-strong' });
+  const strongRun = await runSign(strong.argv(), { typed: strong.typed() });
+  assert.equal(strongRun.code, 0, strongRun.stderr);
+  assert.ok(!strongRun.err.some((line) => line.startsWith('Aviso (KDF)')), `sem aviso com PBKDF2 alto: ${strongRun.stderr}`);
+  for (const [world, run] of [[weak, weakRun], [scrypt, scryptRun], [strong, strongRun]] as const) noSecretShown(world, run, 'aviso do KDF');
+});
+
 /* =============================================================================================================== IA-04: sentinelas */
 
 type Fault = 'nenhuma' | 'frase errada' | 'confirmação errada' | 'leitura da chave lança com o material' | 'gravação lança com o material' | 'terminal lança com a frase' | 'relógio inválido';
@@ -187,7 +317,7 @@ function faultyDeps(world: CliWorld, fault: Fault): { readonly typed: Typed[]; r
     case 'confirmação errada':
       return { typed: ['000000000000\r', `${world.key.passphrase}\r`] };
     case 'leitura da chave lança com o material':
-      return { typed: world.typed(), keyFs: { ...nodeKeyFileOps, readKeyFile: async () => boom() } };
+      return { typed: world.typed(), keyFs: { ...nodeKeyFileOps, openKeyFile: async () => boom() } };
     case 'gravação lança com o material':
       return { typed: world.typed(), fs: { ...nodeFsOps, writeExclusive: async () => boom() } };
     case 'terminal lança com a frase':

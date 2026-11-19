@@ -134,6 +134,11 @@ test('P1 W4.4: sign-key.ts só LÊ do disco (um open somente leitura, sem seguir
   assert.ok(/\.open\s*\(\s*target\s*,\s*constants\.O_RDONLY\s*\|\s*\(constants\.O_NOFOLLOW \?\? 0\)\s*\|\s*\(constants\.O_NONBLOCK \?\? 0\)\s*\)/.test(code), 'open O_RDONLY | O_NOFOLLOW | O_NONBLOCK');
   assert.ok(!/writeFile|appendFile|\.write\s*\(|\.mkdir|\.mkdtemp|\.unlink|\.rm\s*\(|\.rmdir|\.rename|\.chmod|\.chown|\.link\s*\(|\.symlink|\.copyFile|\.cp\s*\(|\.truncate|\.utimes|createWriteStream|['"]w\+?['"]|['"]a\+?['"]/.test(code), 'escrita no disco');
   assert.ok(!/process\./.test(code), 'ambiente do processo');
+  // revisão da W4.4: o caminho real vem do DESCRITOR aberto (o mesmo que é lido), e só por /proc/self/fd
+  assert.deepEqual([...code.matchAll(/\.readlink\s*\(([^)]*)\)/g)].map((m) => (m[1] ?? '').trim()), ['`/proc/self/fd/${handle.fd}`'], 'readlink só do descritor aberto');
+  const reads = [...code.matchAll(/(\w+)\.read\s*\(/g)].map((m) => m[1]);
+  assert.ok(reads.includes('handle') && reads.every((owner) => owner === 'handle' || owner === 'opened'), `leitura só pelo descritor aberto (${reads.join(', ')})`);
+  assert.ok(!/readFile/.test(code), 'nunca lê de novo pelo caminho');
 });
 
 test('P1 W4.4: só sign-key.ts abre chave privada (createPrivateKey); a frase e a chave nunca passam por console, logger, ambiente nem relatório', () => {

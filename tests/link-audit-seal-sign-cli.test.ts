@@ -43,7 +43,7 @@ function refusedCli(run: SignCliRun, code: string, label = code): void {
   const at = run.err.findIndex((line) => line.startsWith('RECUSADO: '));
   assert.ok(at >= 0, `${label}: prefixo RECUSADO: (${run.stderr})`);
   assert.equal(run.err[at + 1], `Código: ${code}`, `${label}: código ${code} logo depois (${run.stderr})`);
-  assert.ok(run.err.slice(0, at).every((line) => /^(Confirmação humana|Digite os|Frase-senha)/.test(line)), `${label}: antes da recusa, só as telas do terminal`);
+  assert.ok(run.err.slice(0, at).every((line) => /^(Confirmação humana|Digite os|Frase-senha|Aviso \(KDF\))/.test(line)), `${label}: antes da recusa, só as telas do terminal (e o aviso do KDF)`);
 }
 function usageCli(run: SignCliRun, label: string): void {
   assert.equal(run.code, 1, `${label}: USAGE (veio ${run.code}): ${run.stderr}`);
@@ -182,7 +182,12 @@ test('IA-15 (§8.1): variável de ambiente com nome de segredo ⇒ SECRET_VIA_EN
     const env = new Proxy(values, { get: (target, prop) => (typeof prop === 'string' && reads.push(prop), Reflect.get(target, prop)) });
     return { env, reads };
   };
-  for (const name of ['GMN_LINK_AUDIT_SIGN_PASSPHRASE', 'GMN_SEAL_KEY', 'GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS', 'gmn_seal_pin', 'GMN_SECRET', 'GMN_TOKEN_X', 'MY_PASSPHRASE', 'KEY_PASSWORD', 'SENHA_DA_CHAVE', 'LINK_AUDIT_SIGNING_KEY', 'SEAL_PASS']) {
+  const names = [
+    ...['GMN_LINK_AUDIT_SIGN_PASSPHRASE', 'GMN_SEAL_KEY', 'GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS', 'gmn_seal_pin', 'GMN_SECRET', 'GMN_TOKEN_X', 'MY_PASSPHRASE', 'KEY_PASSWORD', 'SENHA_DA_CHAVE', 'LINK_AUDIT_SIGNING_KEY', 'SEAL_PASS'],
+    // revisão da W4.4 (MINOR): nomes GENÉRICOS de segredo, sem diferenciar caixa
+    ...['PRIVATE_KEY', 'MY_SECRET', 'AWS_SECRET_ACCESS_KEY', 'GITHUB_TOKEN', 'DB_PASSWD', 'SSH_PASSPHRASE', 'my_privatekey', 'SERVICE_CREDENTIAL', 'SERVICE_API_KEY', 'service_apikey', 'npm_token', 'Client_Secret'],
+  ];
+  for (const name of names) {
     const { env, reads } = recording({ PATH: '/usr/bin', [name]: sentinela });
     const data = spyData();
     const run = await runSign(world.argv(), { typed: world.typed(), env, fs: data.ops });
@@ -193,15 +198,15 @@ test('IA-15 (§8.1): variável de ambiente com nome de segredo ⇒ SECRET_VIA_EN
     assert.equal(data.calls.length, 0, `${name}: nada lido`);
     terminalUntouched(run, name);
   }
-  const benign = recording({ PATH: '/usr/bin', HOME: '/home/custodiante', LANG: 'pt_BR.UTF-8', GIT_ASKPASS: 'x', SSH_AUTH_SOCK: 'x', npm_config_cache: 'x', TERM: 'xterm' });
+  const benign = recording({ PATH: '/usr/bin', HOME: '/home/custodiante', LANG: 'pt_BR.UTF-8', GIT_ASKPASS: 'x', SSH_AUTH_SOCK: 'x', npm_config_cache: 'x', TERM: 'xterm', KEYBOARD_LAYOUT: 'br', XDG_SESSION_TYPE: 'tty', SHELL: '/bin/bash', USER: 'custodiante' });
   const run = await runSign(world.argv(), { typed: world.typed(), env: benign.env });
   assert.equal(run.code, 0, run.stderr);
   assert.deepEqual(benign.reads, [], 'com as pastas temporárias injetadas, nenhum valor de ambiente é lido');
 });
 
-test('§5.5.1 item 1: --key-source external:<id> (K2) ⇒ SIGN_KEY_SOURCE_UNSUPPORTED (código 3) antes de qualquer abertura: nada lido, terminal e chave intocados', async () => {
+test('§5.5.1 item 1: --key-source external:<id> (K2) com id público válido ⇒ SIGN_KEY_SOURCE_UNSUPPORTED (código 3) antes de qualquer abertura: nada lido, terminal e chave intocados', async () => {
   const world = cliWorld();
-  for (const value of ['external:token-piv-01', 'external:']) {
+  for (const value of ['external:token-piv-01', 'external:yubikey-5c']) {
     for (const json of [false, true]) {
       const data = spyData();
       const key = spyKey();
@@ -213,6 +218,27 @@ test('§5.5.1 item 1: --key-source external:<id> (K2) ⇒ SIGN_KEY_SOURCE_UNSUPP
     }
   }
   assert.deepEqual(sealsIn(world.sealsDir), []);
+});
+
+test('revisão da W4.4 (MAJOR): external: com sufixo fora do padrão de id público ⇒ SECRET_VIA_ARGV_FORBIDDEN (código 3), sem ecoar, com o aviso de exposição; nada lido', async () => {
+  const world = cliWorld();
+  const pem = String(world.key.privateKey.export({ format: 'pem', type: 'pkcs8' }));
+  for (const value of ['external:frase secreta da chave', 'external:', 'external:abc', 'external:Token-PIV', 'external:token_piv', `external:${'a'.repeat(33)}`, 'external:-token', `external:${world.key.passphrase}`, `external:${pem}`]) {
+    for (const json of [false, true]) {
+      const data = spyData();
+      const key = spyKey();
+      const run = await runSign(world.argv({ 'key-source': value }, json ? ['--json'] : []), { typed: world.typed(), fs: data.ops, keyFs: key.ops });
+      if (json) assert.deepEqual([run.code, jsonOut(run).code], [3, 'SECRET_VIA_ARGV_FORBIDDEN'], value);
+      else refusedCli(run, 'SECRET_VIA_ARGV_FORBIDDEN', value);
+      const shown = `${run.stdout}\n${run.stderr}`;
+      assert.match(shown, /expost[oa]/, `${value}: aviso de exposição (histórico do shell)`);
+      const suffix = value.slice('external:'.length);
+      if (suffix.length > 0) assert.ok(!shown.includes(suffix.slice(0, 12)), `${value}: valor nunca ecoado`);
+      for (const sentinel of world.key.sentinels) assert.ok(!shown.includes(sentinel), `${value}: nada da chave nem da frase na saída`);
+      assert.equal(data.calls.length + key.calls.length, 0, `${value}: nada lido`);
+      terminalUntouched(run, value);
+    }
+  }
 });
 
 /* =============================================================================================================== IA-23: confirmação humana */
@@ -515,12 +541,12 @@ test('IA-02 (5): pelo CLI, o sign só toca pacote, aprovação, dossiê, aceite 
   const keyDirs = new Set([path.dirname(world.key.keyPath), path.dirname(keyReal)]);
   for (const call of key.calls) {
     const target = String(call.args[0]);
-    if (call.op === 'readKeyFile') assert.equal(target, world.key.keyPath, 'só o arquivo de chave é LIDO');
-    else if (call.op === 'lstat') assert.ok(target === world.key.keyPath || keyDirs.has(target) || path.basename(target) === '.git', `lstat(${target}) fora da custódia`);
-    else if (call.op === 'realpath') assert.ok([world.key.keyPath, path.join(__dirname, '..'), forbiddenTemp].includes(target), `realpath(${target}) fora da custódia`);
+    if (call.op === 'openKeyFile') assert.equal(target, world.key.keyPath, 'só o arquivo de chave é ABERTO (e lido pelo mesmo descritor)');
+    else if (call.op === 'lstat') assert.ok(keyDirs.has(target) || path.basename(target) === '.git', `lstat(${target}) fora da custódia`);
+    else if (call.op === 'realpath') assert.ok([path.join(__dirname, '..'), forbiddenTemp].includes(target), `realpath(${target}) fora da custódia`);
     else assert.fail(`operação inesperada na chave: ${call.op}`);
   }
-  assert.equal(key.calls.filter((call) => call.op === 'readKeyFile').length, 1, 'arquivo de chave lido uma vez');
+  assert.equal(key.calls.filter((call) => call.op === 'openKeyFile').length, 1, 'arquivo de chave aberto uma vez');
 });
 
 /* =============================================================================================================== o script entrega o sign */

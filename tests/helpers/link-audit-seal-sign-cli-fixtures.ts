@@ -1,4 +1,4 @@
-import { generateKeyPairSync, type KeyObject } from 'node:crypto';
+import { createCipheriv, generateKeyPairSync, pbkdf2Sync, randomBytes, scryptSync, type KeyObject } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -36,7 +36,12 @@ export interface TestKeyFile {
   readonly sentinels: readonly string[];
 }
 
-export type KeyContent = 'encrypted' | 'plain-pem' | 'plain-der' | 'plain-jwk' | 'empty-passphrase' | 'legacy-cipher' | 'public-only' | 'ec-encrypted' | 'garbage';
+export type KeyContent = 'encrypted' | 'plain-pem' | 'plain-der' | 'plain-jwk' | 'empty-passphrase' | 'legacy-cipher' | 'public-only' | 'ec-encrypted' | 'garbage' | 'pbkdf2-strong' | 'scrypt-weak';
+
+/** Iterações do PBKDF2 da chave "forte" das fixtures (igual ao mínimo provisório do `sign`): sem aviso de KDF. */
+export const STRONG_PBKDF2_ITERATIONS = 600_000;
+/** Custo N do scrypt da chave "fraca" das fixtures (abaixo do mínimo provisório): o `sign` avisa. */
+export const WEAK_SCRYPT_COST = 16_384;
 
 export interface KeyFileOptions {
   readonly dir?: string;
@@ -62,6 +67,48 @@ function legacyCipherPem(privateKey: KeyObject, passphrase: string): string {
   return `-----BEGIN ENCRYPTED PRIVATE KEY-----\n${body}\n-----END ENCRYPTED PRIVATE KEY-----\n`;
 }
 
+/* PKCS#8 cifrado MONTADO À MÃO (PBES2 com PBKDF2-HMAC-SHA256 ou scrypt, AES-256-CBC), para escolher o custo do KDF, que a exportação do Node não deixa
+ * escolher (ela usa PBKDF2 com 2048 iterações). O Node abre o resultado com a frase (conferido nos testes). */
+const derOf = (tag: number, ...parts: Buffer[]): Buffer => {
+  const body = Buffer.concat(parts);
+  const lengthBytes: number[] = [];
+  for (let n = body.length; n > 0; n = Math.floor(n / 256)) lengthBytes.unshift(n % 256);
+  const length = body.length < 0x80 ? Buffer.from([body.length]) : Buffer.from([0x80 | lengthBytes.length, ...lengthBytes]);
+  return Buffer.concat([Buffer.from([tag]), length, body]);
+};
+const derInteger = (value: number): Buffer => {
+  const bytes: number[] = [];
+  let n = value;
+  do {
+    bytes.unshift(n % 256);
+    n = Math.floor(n / 256);
+  } while (n > 0);
+  if ((bytes[0] ?? 0) & 0x80) bytes.unshift(0);
+  return derOf(0x02, Buffer.from(bytes));
+};
+const oid = (hex: string): Buffer => Buffer.from(hex, 'hex');
+const OID_PBES2 = '06092a864886f70d01050d';
+const OID_PBKDF2 = '06092a864886f70d01050c';
+const OID_HMAC_SHA256 = '06082a864886f70d0209';
+const OID_SCRYPT = '06092b06010401da47040b';
+const OID_AES256_CBC = '060960864801650304012a';
+const SCRYPT_MAX_MEMORY = 256 * 1024 * 1024;
+
+export function pbes2Pem(privateKey: KeyObject, passphrase: string, kdf: { readonly kind: 'pbkdf2'; readonly iterations: number } | { readonly kind: 'scrypt'; readonly cost: number }): string {
+  const salt = randomBytes(16);
+  const iv = randomBytes(16);
+  const phrase = Buffer.from(passphrase, 'utf8');
+  const derived = kdf.kind === 'pbkdf2' ? pbkdf2Sync(phrase, salt, kdf.iterations, 32, 'sha256') : scryptSync(phrase, salt, 32, { N: kdf.cost, r: 8, p: 1, maxmem: SCRYPT_MAX_MEMORY });
+  const kdfDer =
+    kdf.kind === 'pbkdf2'
+      ? derOf(0x30, oid(OID_PBKDF2), derOf(0x30, derOf(0x04, salt), derInteger(kdf.iterations), derOf(0x30, oid(OID_HMAC_SHA256), oid('0500'))))
+      : derOf(0x30, oid(OID_SCRYPT), derOf(0x30, derOf(0x04, salt), derInteger(kdf.cost), derInteger(8), derInteger(1), derInteger(32)));
+  const cipher = createCipheriv('aes-256-cbc', derived, iv);
+  const encrypted = Buffer.concat([cipher.update(privateKey.export({ format: 'der', type: 'pkcs8' })), cipher.final()]);
+  const info = derOf(0x30, derOf(0x30, oid(OID_PBES2), derOf(0x30, kdfDer, derOf(0x30, oid(OID_AES256_CBC), derOf(0x04, iv)))), derOf(0x04, encrypted));
+  return `-----BEGIN ENCRYPTED PRIVATE KEY-----\n${info.toString('base64').replace(/(.{64})/g, '$1\n').trimEnd()}\n-----END ENCRYPTED PRIVATE KEY-----\n`;
+}
+
 function keyBytes(content: KeyContent, privateKey: KeyObject, passphrase: string): Buffer {
   switch (content) {
     case 'encrypted':
@@ -82,6 +129,10 @@ function keyBytes(content: KeyContent, privateKey: KeyObject, passphrase: string
       return Buffer.from(generateKeyPairSync('ec', { namedCurve: 'P-256' }).privateKey.export({ format: 'pem', type: 'pkcs8', cipher: 'aes-256-cbc', passphrase }));
     case 'garbage':
       return Buffer.from('isto não é uma chave (fictício)\n');
+    case 'pbkdf2-strong':
+      return Buffer.from(pbes2Pem(privateKey, passphrase, { kind: 'pbkdf2', iterations: STRONG_PBKDF2_ITERATIONS }));
+    case 'scrypt-weak':
+      return Buffer.from(pbes2Pem(privateKey, passphrase, { kind: 'scrypt', cost: WEAK_SCRYPT_COST }));
   }
 }
 
