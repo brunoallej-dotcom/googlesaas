@@ -704,3 +704,19 @@ test('passo 7 no núcleo: fato de cadeia fora de forma (seq, sealSha256) ⇒ SIG
   const unknown = core({ status: 'OUTRO' });
   assert.equal(unknown.ok ? 'OK' : unknown.code, 'SIGN_SEAL_CHAIN_INVALID');
 });
+
+test('§7.1 (revisão W4.2): erro de E/S na RAIZ --seals-dir (realpath ou lstat) ⇒ VERIFICATION_ERROR; só inexistente ou não diretório é SEALS_DIR_UNREADABLE', async () => {
+  const sealsDir = tmpDir('lass-');
+  chain(sealsDir, [{ entries: E1 }]);
+  const root = fs.realpathSync(sealsDir);
+  const failing: ReadonlyArray<readonly [string, FsOps]> = [
+    ['realpath da raiz (EACCES)', faulty({ realpath: async (target) => (path.resolve(target) === path.resolve(sealsDir) ? Promise.reject(errno('EACCES')) : nodeFsOps.realpath(target)) })],
+    ['lstat da raiz (EIO)', faulty({ lstat: async (target) => (target === root ? Promise.reject(errno('EIO')) : nodeFsOps.lstat(target)) })],
+  ];
+  for (const [label, fsOps] of failing) {
+    await chainRefused(inputOf({ sealsDir, expectSeq: 2 }), 'VERIFICATION_ERROR', label, { fs: fsOps });
+    await chainRefused(inputOf({ sealsDir, expectSeq: 1, first: true }), 'VERIFICATION_ERROR', `${label} com --first`, { fs: fsOps });
+  }
+  const enotdir = faulty({ realpath: async (target) => (path.resolve(target) === path.resolve(sealsDir) ? Promise.reject(errno('ENOTDIR')) : nodeFsOps.realpath(target)) });
+  await chainRefused(inputOf({ sealsDir, expectSeq: 1, first: true }), 'SEALS_DIR_UNREADABLE', 'ENOTDIR na raiz', { fs: enotdir });
+});
