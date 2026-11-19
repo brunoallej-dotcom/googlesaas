@@ -427,6 +427,7 @@ Fecham lacunas apontadas no mapa da W4; prevalecem sobre o texto acima onde houv
   - os parâmetros não puderam ser conferidos.
 
   Os mínimos são provisórios (recomendação atual da OWASP para PBKDF2-HMAC-SHA256 e para scrypt com r = 8 e p = 1) até o runbook confirmá-los ou substituí-los. O aviso não recusa.
+- **Achado na verificação desta correção (fora da lista do revisor):** a tela da confirmação era mostrada ANTES de o modo bruto ser ligado. Sob a carga da suíte completa, o teste em pseudo-terminal pegou a confirmação digitada logo depois da tela sendo ecoada; o mesmo valeria para uma colagem rápida do custodiante. Corrigido: o eco é desligado antes de cada tela (confirmação e frase), com teste que confere o modo do terminal no instante em que cada linha da tela é escrita. O teste em pseudo-terminal passou 18 vezes em 18, com 6 cópias simultâneas e outra suíte rodando ao lado.
 
 ### 5.6 Manifesto `v2` e verificador `v2` (onda W3, contrato próprio)
 
