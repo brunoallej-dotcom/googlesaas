@@ -246,7 +246,12 @@ interface (`audit-page/validators.ts`).
     confirmado com `RUN_CONFIRMED`;
   - nada em produção;
   - a chave do ensaio é destruída e o fato fica registrado;
-  - runbook avisa que reexportar muda o `packageSha256` (observedHours no hash); conferir e assinar sempre os mesmos bytes.
+  - runbook avisa que reexportar muda o `packageSha256` (observedHours no hash); conferir e assinar sempre os mesmos bytes;
+  - **chave e KDF (revisão da W4.4, 19/11/2026):** nenhuma chave real antes da W5. O runbook do custodiante fixa parâmetros
+    fortes e verificáveis para cifrar a chave K1 (PKCS#8 PBES2: scrypt com custo definido, ou PBKDF2 com número alto de
+    iterações) e frase de alta entropia, e diz como conferir os parâmetros do arquivo antes do uso. O `sign` só AVISA (saída
+    de erro) abaixo dos mínimos provisórios do código (PBKDF2 600000 iterações; scrypt N = 2^17), que o runbook confirma ou
+    substitui.
 - **Goal command**: `/goal test -f docs/phase6-auditoria-link/p1-relatorio-ensaio.md && grep -q "AUTHENTICATED" docs/phase6-auditoria-link/p1-relatorio-ensaio.md && grep -q "RUN_CONFIRMED" docs/phase6-auditoria-link/p1-relatorio-ensaio.md, stop after 3 tries`
 
 ## Onda W6 — Coleta LIVE nova da TUVAPLAST (fora do código)

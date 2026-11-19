@@ -393,7 +393,7 @@ Fecham lacunas apontadas no mapa da W4; prevalecem sobre o texto acima onde houv
     - pasta do arquivo com permissão diferente de exatamente 0700;
     - uma pasta acima não pôde ser inspecionada.
 
-    Os lugares valem pelo caminho dado e pelo caminho real (um link numa pasta do caminho não esconde nada). A permissão do arquivo é a do descritor aberto (`O_NOFOLLOW|O_NONBLOCK`, `fstat`), sem corrida entre conferir e ler.
+    Os lugares valem pelo caminho dado e pelo caminho real (um link numa pasta do caminho não esconde nada). A permissão do arquivo é a do descritor aberto (`O_NOFOLLOW|O_NONBLOCK`, `fstat`), sem corrida entre conferir e ler. **(Corrigido na revisão independente da W4.4, nota abaixo: o lugar era conferido por um caminho e o arquivo aberto por outro, e havia corrida.)**
   - **Formato:** só PEM `ENCRYPTED PRIVATE KEY` (PKCS#8 cifrado). Chave que o Node abre sem frase (PEM, DER PKCS#8/SEC1/PKCS#1 ou JWK) ⇒ `SECRET_NOT_ENCRYPTED`. Outro formato (só pública, lixo, PEM legado), arquivo inexistente, diretório ou acima de 16 KiB ⇒ `SIGN_KEY_REJECTED`.
   - **`SECRET_NOT_ENCRYPTED` × `SIGN_KEY_UNPROTECTED`** (o §8 e a IA-04 falam em chave "sem proteção", a IA-22 em "texto claro"): texto claro é `SECRET_NOT_ENCRYPTED`; `SIGN_KEY_UNPROTECTED` é o recipiente cifrado que não protege: abre com frase vazia, ou usa cifra que não é PBES2 (PBES1 legado). As duas recusas saem antes de pedir a frase.
   - **Frase:** pedida uma vez, sem nova tentativa (frase errada ⇒ rodar de novo). Vazia, interrompida ou não obtida ⇒ `SIGN_KEY_REJECTED`. Chave aberta que não é Ed25519 ⇒ `SIGN_KEY_REJECTED`. Os buffers da frase e do arquivo são zerados; o `KeyObject`, não (limite do §8).
@@ -407,6 +407,26 @@ Fecham lacunas apontadas no mapa da W4; prevalecem sobre o texto acima onde houv
   - sucesso sem `--json`: o nome do arquivo (nunca a pasta nem o `file` interno da W4.3), os campos do recibo e o recibo em JSON numa linha (para a pasta de recibos da W4.5).
 - **`artifactSha256: null`** até existir o artefato da W4.6 (o comando roda do código-fonte, sem artefato conferido). Um aviso na saída de erro lembra que o autoteste do passo 14 (W4.5) ainda não existe e que o manifesto não deve ser entregue antes dele.
 - **Pergunta aberta mantida:** operador = custodiante continua sem marca (nota da W4.1).
+
+**Revisão independente da W4.4 (19/11/2026, `junin-03`, BLOQUEAR; achados conferidos pelo manager, todos procedentes):**
+
+- **BLOCKER, custódia desligada do arquivo aberto.** A custódia conferia o caminho e as permissões antes, e a leitura abria o caminho de novo. O `O_NOFOLLOW` só protege o último componente: trocar uma pasta do caminho por um link entre a conferência e a abertura fazia ler (e assinar com) um arquivo de lugar proibido, e um hardlink dava ao mesmo arquivo um nome fora da árvore com `.git`. As duas brechas foram reproduzidas no código anterior: o `sign` assinava. A promessa "sem corrida entre conferir e ler" das notas da W4.4 era falsa. Corrigido:
+  1. o arquivo é aberto UMA vez (`O_RDONLY|O_NOFOLLOW|O_NONBLOCK`);
+  2. pelo `fstat` do descritor: arquivo comum, permissão exatamente 0600, **um só nome (`nlink = 1`, senão `SECRET_PATH_UNSAFE`)** e tamanho até 16 KiB;
+  3. o caminho REAL vem do próprio descritor (`readlink('/proc/self/fd/<fd>')`), e todas as conferências de lugar rodam sobre ele: projeto, pastas temporárias, `.git` acima e a pasta-mãe com 0700 (por `lstat` da pasta, pelo caminho real);
+  4. a leitura é feita pelo MESMO descritor, e o caminho do descritor é lido de novo no fim: se mudou, `SECRET_PATH_UNSAFE`;
+  5. o lugar pelo caminho DADO continua sendo conferido antes de abrir, só para antecipar a recusa; a prova é a do descritor.
+
+  Caminho do descritor indisponível (sistema sem `/proc`), que não é absoluto e normalizado, ou de arquivo apagado (` (deleted)`) ⇒ `SECRET_PATH_UNSAFE`, recusa fechada. **Limite declarado:** o `sign` só prova a custódia onde existe `/proc/self/fd` (Linux, a estação dedicada da D11); em outro sistema, recusa. Resíduo: uma pasta acima do arquivo renomeada entre a leitura do caminho do descritor e o `lstat` dos `.git` não é detectada; a releitura do caminho no fim estreita a janela, que só o próprio usuário da estação alcança. **Para a W4.6:** `node --permission` precisa permitir a leitura de `/proc/self/fd`.
+- **MAJOR, `external:` com sufixo arbitrário.** `--key-source external:<id>` só segue para `SIGN_KEY_SOURCE_UNSUPPORTED` com `<id>` no padrão do `--key-id` (`SIGN_KEY_ID_PATTERN`). Qualquer outro sufixo (vazio, com espaço, maiúscula, `_`, curto ou longo demais, frase ou PEM) ⇒ `SECRET_VIA_ARGV_FORBIDDEN`, sem eco, com o aviso de que o valor deve ser tratado como exposto (histórico do shell, `/proc`).
+- **MINOR, ambiente.** A barreira do §8.1 passou a recusar também nomes genéricos de segredo em qualquer posição, sem diferenciar caixa: `SECRET`, `PASSWORD`/`PASSWD`, `PASSPHRASE`, `PRIVATE_KEY`/`PRIVATEKEY`, `CREDENTIAL`, `API_KEY`/`APIKEY` e `TOKEN`, além dos padrões anteriores. Continua lendo só os nomes. Efeito declarado: variáveis comuns com esses nomes (ex.: `GITHUB_TOKEN`) também barram o `sign`; a estação dedicada não deve tê-las.
+- **MINOR, buffer.** O buffer lido do arquivo de chave é alocado antes de qualquer leitura e zerado em toda saída que não devolve a chave: falha de leitura depois de leitura parcial, falha no `close` (que também vira recusa, `SIGN_KEY_REJECTED`), recusa posterior (formato, frase); e também depois do sucesso.
+- **KDF (decisão do manager, aceita pelo revisor com portão; não bloqueia a W4.4).** Nenhuma chave real antes da W5. O runbook da W5 fixa parâmetros fortes e verificáveis: scrypt com custo definido, ou PBKDF2 com número alto de iterações, mais frase de alta entropia (critério de aceite da W5 em `docs/plan/implementation-waves.md`). Sem dependência nova, o `sign` lê os parâmetros do PBES2 no DER e imprime na saída de erro, antes de pedir a frase, `Aviso (KDF): …` quando:
+  - o PBKDF2 tem menos de 600000 iterações (a exportação padrão do Node usa 2048);
+  - o scrypt tem custo N abaixo de 2^17;
+  - os parâmetros não puderam ser conferidos.
+
+  Os mínimos são provisórios (recomendação atual da OWASP para PBKDF2-HMAC-SHA256 e para scrypt com r = 8 e p = 1) até o runbook confirmá-los ou substituí-los. O aviso não recusa.
 
 ### 5.6 Manifesto `v2` e verificador `v2` (onda W3, contrato próprio)
 
