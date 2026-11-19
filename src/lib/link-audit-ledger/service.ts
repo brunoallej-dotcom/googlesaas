@@ -98,10 +98,12 @@ interface Session {
    * AUTORIZAÇÃO DE USO ÚNICO (revisão da R1.2, `junin-02`): só um `prepare`/`runPrepare` LIBERADO a emite, para a gravação que ele liberou; `intent`, `reissue` e `runIntent` a
    * exigem e a consomem já na primeira chamada. `view()` (somente leitura) a revoga: uma avaliação de vista nunca vale como preparação.
    */
-  grant: 'INTENT' | 'REISSUE' | 'RUN_INTENT' | null;
+  grant: 'INTENT' | 'REISSUE' | 'RUN_INTENT' | 'RUN_CONCLUDE' | null;
   /** `RUN_INTENT` gravado por esta finalização (passos 7 e 11) e o instante monotônico anotado ANTES de publicá-lo (prazo do dono). */
   runIntent: LedgerRecord | null;
   runMark: number | null;
+  /** R1.4: o `RUN_INTENT` ABERTO (fase B/C) cuja conclusão o `runPrepare` desta sessão autorizou ao autor (`grant = 'RUN_CONCLUDE'`). */
+  concludeIntent: LedgerRecord | null;
 }
 
 const anchorName = (seq: number): string => `a${String(seq).padStart(4, '0')}.json`;
@@ -152,10 +154,13 @@ const RUN_NO_INTENT_MESSAGE = 'Não há operação de resultado aberta por esta 
 const RUN_CLOSED_MESSAGE = 'A operação desta finalização foi encerrada por outro processo antes da publicação; nenhum resultado foi publicado.';
 const RUN_DEADLINE_MESSAGE = 'A finalização passou do prazo seguro entre o registro no livro e a publicação; nenhum resultado foi publicado.';
 const RUN_CLOSED_BEFORE_CONFIRM_MESSAGE = 'A operação deste resultado foi encerrada por outro processo antes da confirmação; a confirmação não foi gravada.';
-const RUN_CLOSING_CONFLICT_MESSAGE = 'Outro processo gravou no livro durante a confirmação; o resultado e o recibo existem, mas a confirmação do livro não foi gravada.';
 const RUN_OPEN_NO_RECIPE_MESSAGE = 'Há uma operação de resultado aberta sem receita segura nesta auditoria; nada foi gravado.';
 const RUN_TOCTOU_UNAVAILABLE_MESSAGE = 'Sem como reler os resultados antes de abortar a operação de resultado; nada foi gravado.';
 const RUN_REPLAY_MESSAGE = 'O registro de resultado montado violaria as invariantes do livro (erro interno); nada foi gravado.';
+/* Textos fixos da conclusão B/C e dos fechos intercalados da família de resultados (R1.4; nunca caminho nem identidade). */
+const RUN_CONCLUDE_NOT_AUTHOR_MESSAGE = 'Há um resultado gravado e ainda não confirmado nesta auditoria; somente o autor dele o conclui, reenviando o mesmo pedido. Nada foi gravado.';
+const RUN_CLOSING_CHANGED_MESSAGE = 'Outro processo alterou o livro durante a confirmação do resultado; a confirmação não foi gravada (o resultado e o recibo existem; o autor conclui reenviando o mesmo pedido).';
+const RUN_CLOSING_RETRIES_MESSAGE = 'O livro mudou a cada tentativa de gravar a confirmação do resultado; ela não foi gravada (o resultado e o recibo existem; o autor conclui reenviando o mesmo pedido).';
 /** O rascunho do `RUN_INTENT` com EXATAMENTE os campos do contrato (o esquema é estrito; nada do chamador passa além deles). */
 const runFieldsOf = (run: RunDraft) => ({
   runSeq: run.runSeq,
@@ -227,7 +232,7 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
   }
 
   async function begin(auditId: string): Promise<Session> {
-    const session: Session = { auditId, state: 'OK', records: [], tagFailure: null, guard: { status: 'NOT_CONFIGURED' }, intent: null, evaluation: null, grant: null, runIntent: null, runMark: null };
+    const session: Session = { auditId, state: 'OK', records: [], tagFailure: null, guard: { status: 'NOT_CONFIGURED' }, intent: null, evaluation: null, grant: null, runIntent: null, runMark: null, concludeIntent: null };
     try {
       if (!path.isAbsolute(options.dir) || (await overlapping())) return { ...session, state: 'NOT_CONFIGURED' };
       // M2: depois de uma falha de fsync (ou erro fatal) neste processo a durabilidade do livro NÃO está comprovada: ele não é lido como protegido (nada vigente, nada finalizável) até reiniciar e provar de novo
@@ -422,16 +427,27 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
   const stepFromAppend = (result: 'OK' | 'CONFLICT' | LedgerRefusal): LedgerStep | null =>
     result === 'OK' ? null : result === 'CONFLICT' ? { kind: 'RETRY', ms: 10, transient: false } : { kind: 'REFUSED', refusal: result };
 
+  /** Textos fixos das recusas de um fecho intercalado, por família (o das decisões fala de decisão; o dos resultados, de resultado). */
+  interface ClosingTexts {
+    readonly changed: string;
+    readonly closed: string;
+    readonly retries: string;
+  }
+  const DECISION_CLOSING: ClosingTexts = { changed: CLOSING_CHANGED_MESSAGE, closed: CLOSING_CLOSED_MESSAGE, retries: CLOSING_RETRIES_MESSAGE };
+  const RUN_CLOSING: ClosingTexts = { changed: RUN_CLOSING_CHANGED_MESSAGE, closed: RUN_CLOSED_BEFORE_CONFIRM_MESSAGE, retries: RUN_CLOSING_RETRIES_MESSAGE };
+
   /**
-   * FECHOS INTERCALADOS (spec §16.17.3, MAJOR-2; D-20), família das DECISÕES. O `link()` do fecho do dono achou a posição ocupada. Relê o livro INTEIRO e exige etiquetas e
-   * replay válidos e que a releitura ESTENDA o que esta sessão leu (o livro só cresce; a INTENT da operação é a mesma). Então: (ii) fecho idêntico gravado por outro processo
-   * (R6-04) ⇒ `ADOPTED`; (i) a PRÓPRIA operação segue aberta (o intruso só pode ser `CHECKPOINT` ou o fecho de um resultado aberto ANTES da INTENT — `RUN_CONFIRMED`/
-   * `RUN_ABORTED`, D-8: são os únicos registros que o replay admite ali) ⇒ `REAPPEND`;
-   * (iii) qualquer outra coisa (operação abortada por outro processo, cadeia que não confere) ⇒ recusa. Nunca grava nada.
+   * FECHOS INTERCALADOS (spec §16.17.3, MAJOR-2; D-20), as DUAS famílias (o `slot` diz qual: `open` = decisão, `openRun` = resultado). O `link()` do fecho do dono achou a posição
+   * ocupada. Relê o livro INTEIRO e exige etiquetas e replay válidos e que a releitura ESTENDA o que esta sessão leu (o livro só cresce; o registro que abriu a operação é o mesmo).
+   * Então: (ii) fecho idêntico gravado por outro processo (R6-04; `sameClosing` exige também que ele tenha sido gravado pelo AUTOR quando confirma) ⇒ `ADOPTED`; (i) a PRÓPRIA
+   * operação segue aberta no slot dela ⇒ `REAPPEND`. O intruso só pode ser `CHECKPOINT`, registro da OUTRA família (D-8: um `INTENT`/`CONFIRMED`/`ABORTED` de decisão com
+   * resultado aberto; o `RUN_CONFIRMED`/`RUN_ABORTED` de um resultado aberto ANTES da INTENT de decisão) ou `RECEIPT_REISSUED` (só sem decisão aberta): são os únicos que o
+   * replay admite ali (I-1 recusa `RUN_INTENT` com qualquer operação aberta). (iii) Qualquer outra coisa (operação fechada de outro modo, cadeia que não confere) ⇒ recusa.
+   * Nunca grava nada.
    */
-  async function reconcileClosing(session: Session, intent: LedgerRecord, sameClosing: (record: LedgerRecord) => boolean): Promise<'REAPPEND' | 'ADOPTED' | LedgerRefusal> {
+  async function reconcileClosing(session: Session, intent: LedgerRecord, sameClosing: (record: LedgerRecord) => boolean, slot: 'open' | 'openRun', texts: ClosingTexts): Promise<'REAPPEND' | 'ADOPTED' | LedgerRefusal> {
     const reread = await readLedgerFiles(options.dir, session.auditId, storeOptions);
-    if (!reread.ok) return refusal('LEDGER_UNAVAILABLE', null, null, [CLOSING_CHANGED_MESSAGE]);
+    if (!reread.ok) return refusal('LEDGER_UNAVAILABLE', null, null, [texts.changed]);
     const records = reread.value.records;
     const replayed = replayLedger(records, session.auditId);
     if (verifyTags(records, auth) !== null || !replayed.ok) return refusal('LEDGER_UNAVAILABLE', null, null, [CLOSING_UNTRUSTED_MESSAGE]);
@@ -439,14 +455,50 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
     const extendsRead = known !== undefined && records.length > session.records.length && records[known.ledgerSeq - 1]?.contentSha256 === known.contentSha256 && records[intent.ledgerSeq - 1]?.contentSha256 === intent.contentSha256;
     if (!extendsRead) return refusal('LEDGER_UNAVAILABLE', null, null, [CLOSING_UNTRUSTED_MESSAGE]);
     const adopted = records.some(sameClosing);
-    // a INTENT aberta no replay é a desta operação (mesmo hash ⇒ mesmo opId e mesma cadeia até ela); entre ela e o fecho o replay só admite CHECKPOINT e o fecho de resultado
-    const ownOpen = replayed.value.open?.contentSha256 === intent.contentSha256;
-    if (!adopted && !ownOpen) return refusal('LEDGER_UNAVAILABLE', null, null, [CLOSING_CLOSED_MESSAGE]);
+    // o registro aberto no slot desta família é o desta operação (mesmo hash ⇒ mesmo opId/runOpId e mesma cadeia até ele)
+    const ownOpen = replayed.value[slot]?.contentSha256 === intent.contentSha256;
+    if (!adopted && !ownOpen) return refusal('LEDGER_UNAVAILABLE', null, null, [texts.closed]);
     session.records = [...records];
     session.state = 'OK';
     session.tagFailure = null;
     return adopted ? 'ADOPTED' : 'REAPPEND';
   }
+
+  /**
+   * Grava o FECHO de uma operação aplicando a regra dos fechos intercalados (spec §16.17.3; D-20): `CONFLICT` ⇒ `reconcileClosing`; (i) regrava o MESMO fecho na nova cauda (só
+   * `ledgerSeq`, `prevSha256`, `recordedAt`, etiqueta e hash mudam, calculados por `append`), até `WRITE_RETRIES` vezes, cada gravação estrita e dentro do teto duro de capacidade
+   * de `append` (R7-02: o fecho já estava reservado — a abertura só entrou com espaço para ele, e o CHECKPOINT/RECEIPT_REISSUED só entram deixando o fecho de toda operação
+   * aberta, 16.17.6); (ii) `ADOPTED` (o chamador sincroniza o livro antes de responder); (iii) recusa.
+   */
+  async function appendClosing(session: Session, intent: LedgerRecord, draft: LedgerDraft, nowIso: string, family: { readonly slot: 'open' | 'openRun'; readonly sameClosing: (record: LedgerRecord) => boolean; readonly texts: ClosingTexts; readonly verifyReplay: boolean }): Promise<'OK' | 'ADOPTED' | LedgerRefusal> {
+    for (let reappends = 0; ; reappends += 1) {
+      const written = await append(session, draft, nowIso, family.verifyReplay);
+      if (written === 'OK') return 'OK';
+      if (written !== 'CONFLICT') return written;
+      const next = await reconcileClosing(session, intent, family.sameClosing, family.slot, family.texts);
+      if (next !== 'REAPPEND') return next;
+      if (reappends >= WRITE_RETRIES) return refusal('LEDGER_UNAVAILABLE', null, null, [family.texts.retries]);
+    }
+  }
+
+  /**
+   * R6-04 na família de resultados: `record` é o `RUN_CONFIRMED` IDÊNTICO desta operação — mesmo `runOpId`, a posição do `RUN_INTENT` (`intentSeq`), o mesmo resultado (`runSha256`)
+   * e a âncora dele — GRAVADO PELO AUTOR (espelho do `isEntryAuthor` da família das decisões; D-R1-1). Um fecho autêntico de outro operador nunca vale como o do autor.
+   */
+  const sameRunClosing = (intent: LedgerRecord) => (record: LedgerRecord): boolean => {
+    const run = intent.run;
+    const closing = record.run;
+    return (
+      record.event === 'RUN_CONFIRMED' &&
+      run !== undefined &&
+      closing !== undefined &&
+      isEntryAuthor(record.actor, run.author) &&
+      closing.runOpId === run.runOpId &&
+      closing.intentSeq === intent.ledgerSeq &&
+      closing.runSha256 === run.runSha256 &&
+      closing.anchorRef?.headSha256 === run.runSha256
+    );
+  };
 
   /* ------------------------------------------------------------------ finalização pelo livro (R1.3; spec §16.17.3 e 16.17.4) */
 
@@ -469,6 +521,34 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
     session.state = 'OK';
     session.tagFailure = null;
     return { ok: true, replay: replayed.value };
+  }
+
+  /**
+   * FECHO QUE CONFIRMA um resultado (passo 11 da finalização e a conclusão B/C; R1.4). Só o AUTOR chega aqui (o chamador conferiu). Relê o prefixo (etiquetas, replay, estende o
+   * lido) e: (a) a operação já foi fechada antes da releitura ⇒ só vale o `RUN_CONFIRMED` idêntico do AUTOR (R6-04: outro processo do mesmo autor concluiu antes do dono), e o
+   * sucesso exige sincronizar o livro AGORA (R7-04); qualquer outro fecho (p.ex. `RUN_ABORTED` alheio) ⇒ recusa, nunca um `RUN_CONFIRMED` depois de um `RUN_ABORTED`; (b) a
+   * operação segue aberta ⇒ grava o `RUN_CONFIRMED` na cauda atual com a regra dos fechos intercalados (`appendClosing`). Nunca grava fora disso.
+   */
+  async function closeRun(session: Session, intent: LedgerRecord, actor: string, nowIso: string): Promise<RunStep> {
+    const run = intent.run as LedgerRun;
+    const prefix = await rereadPrefix(session);
+    if (!prefix.ok) return prefix.step;
+    const matches = sameRunClosing(intent);
+    let outcome: 'OK' | 'ADOPTED' | LedgerRefusal;
+    if (prefix.replay.openRun?.contentSha256 !== intent.contentSha256) {
+      if (!session.records.some(matches)) return runRefused('LEDGER_UNAVAILABLE', null, [RUN_CLOSED_BEFORE_CONFIRM_MESSAGE]);
+      outcome = 'ADOPTED';
+    } else {
+      const draft: LedgerDraft = { event: 'RUN_CONFIRMED', recordedAt: nowIso, actor, run: { ...run, intentSeq: intent.ledgerSeq, anchorRef: { name: runAnchorName(run.runSeq), headSha256: run.runSha256 } } };
+      outcome = await appendClosing(session, intent, draft, nowIso, { slot: 'openRun', sameClosing: matches, texts: RUN_CLOSING, verifyReplay: true });
+    }
+    if (outcome === 'ADOPTED') {
+      // o RUN_CONFIRMED adotado foi gravado por OUTRO processo e o fsync dele pode ter falhado/não ter ocorrido: o sucesso exige sincronizar o livro AGORA (R7-04)
+      const synced = await syncLedgerDirectory(options.dir, session.auditId, storeOptions);
+      if (!synced.ok) return asRun(refusal('LEDGER_UNAVAILABLE', null, null, [...synced.issues]));
+    } else if (outcome !== 'OK') return asRun(outcome);
+    await publishGuard(session);
+    return { kind: 'OK' };
   }
 
   /** `RUN_ABORTED` de uma operação de resultado aberta em fase A: repete o `RUN_INTENT` e grava o observado (resultado e recibo ausentes, idade). */
@@ -514,6 +594,7 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
     async view(input) {
       const session = input.session as Session;
       session.grant = null; // somente leitura: nunca vale como preparação (`junin-02`)
+      session.concludeIntent = null;
       return (await evaluateSandwich(session, input)).view;
     },
 
@@ -732,23 +813,13 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
       // autêntico de outro operador (código que deixasse um não autor concluir a fase C) não é adotado; cai no caso (iii) e o dono recusa sem gravar.
       const sameClosing = (record: LedgerRecord): boolean =>
         record.event === 'CONFIRMED' && isEntryAuthor(record.actor, intentOp.author) && record.op?.opId === intentOp.opId && record.op.intentSeq === intent.ledgerSeq && record.op.anchorRef?.headSha256 === input.entry.sha256;
-      for (let reappends = 0; ; reappends += 1) {
-        // CAPACIDADE: cada tentativa passa pelo teto duro de `append` (R7-02: nenhum registro além de `policy.max`; recusa sem gravar). O fecho já estava reservado — a INTENT só
-        // entrou com espaço para ela e para o fecho, e o CHECKPOINT do `RECOVER` com operação aberta deixa 1 registro livre — então a regravação cabe enquanto a regra valer.
-        const written = await append(session, draft, input.nowIso);
-        if (written === 'OK') break;
-        if (written !== 'CONFLICT') return { kind: 'REFUSED', refusal: written };
-        const next = await reconcileClosing(session, intent, sameClosing);
-        if (next === 'ADOPTED') {
-          // R7-04: o CONFIRMED adotado foi gravado por OUTRO processo e o fsync dele pode ter falhado/não ter ocorrido: o sucesso do dono exige sincronizar o livro AGORA
-          const adopted = await syncLedgerDirectory(options.dir, session.auditId, storeOptions);
-          if (!adopted.ok) return refused('LEDGER_UNAVAILABLE', null, null, [...adopted.issues]);
-          break;
-        }
-        if (next !== 'REAPPEND') return { kind: 'REFUSED', refusal: next };
-        // (i) a própria operação segue aberta atrás de um CHECKPOINT alheio: regrava o MESMO fecho na nova cauda (publicação estrita, como toda gravação do livro), limitado.
-        if (reappends >= WRITE_RETRIES) return refused('LEDGER_UNAVAILABLE', null, null, [CLOSING_RETRIES_MESSAGE]);
-      }
+      // (i) a própria operação segue aberta atrás de um registro alheio (CHECKPOINT ou o fecho de um resultado aberto): regrava o MESMO fecho na nova cauda, limitado; (ii) adota
+      const written = await appendClosing(session, intent, draft, input.nowIso, { slot: 'open', sameClosing, texts: DECISION_CLOSING, verifyReplay: false });
+      if (written === 'ADOPTED') {
+        // R7-04: o CONFIRMED adotado foi gravado por OUTRO processo e o fsync dele pode ter falhado/não ter ocorrido: o sucesso do dono exige sincronizar o livro AGORA
+        const adopted = await syncLedgerDirectory(options.dir, session.auditId, storeOptions);
+        if (!adopted.ok) return refused('LEDGER_UNAVAILABLE', null, null, [...adopted.issues]);
+      } else if (written !== 'OK') return { kind: 'REFUSED', refusal: written };
       await publishGuard(session);
       return { kind: 'OK', pendingKind: null };
     },
@@ -758,6 +829,7 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
       session.grant = null;
       session.runIntent = null;
       session.runMark = null;
+      session.concludeIntent = null;
       // leitura "sanduíche" (§16.17.8): R1 → guarda → livro → decisões → R2 só se a avaliação pedir
       let evaluation = await evaluateSandwich(session, input);
       // passo 1: `runs` não resolvido ⇒ RESULT_INTEGRITY. Estado que não é `PROTECTED`: nenhuma receita e NENHUMA autorização de RUN_INTENT — a avaliação da própria finalização o
@@ -778,7 +850,15 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
       if (open !== null && open.phase === 'A') return runRefused('LEDGER_OPERATION_IN_PROGRESS', null, [RUN_OPEN_NO_RECIPE_MESSAGE]);
       // sem resultado aberto: autoriza UM RUN_INTENT nesta sessão (a testemunha das decisões resolvida também é condição; a finalização a confere de novo na barreira)
       if (open === null && !input.decisionsWitness) session.grant = 'RUN_INTENT';
-      return { kind: 'OK', view: evaluation.view };
+      // R1.4 (§16.17.4): fase B/C COM RECEITA (`CONCLUDE_RUN`: origem comprovada pela testemunha, PROTECTED, runs OK) e quem pede é o AUTOR do resultado aberto (e-mail da sessão
+      // normalizado na fronteira === `run.author`), com a testemunha das decisões resolvida ⇒ autoriza UMA conclusão nesta sessão. Os demais recebem a vista, sem autorização: o
+      // serviço de resultados recusa ANTES de gravar (RESULT_PENDING_UNCONFIRMED / RESULT_PENDING_ORIGIN_UNPROVEN). O `RECOVER` nunca passa por aqui (D-12).
+      const plan = evaluation.runPlan;
+      if (open !== null && plan.kind === 'CONCLUDE_RUN' && plan.intent.run && !input.decisionsWitness && isEntryAuthor(input.actor, plan.intent.run.author)) {
+        session.grant = 'RUN_CONCLUDE';
+        session.concludeIntent = plan.intent;
+      }
+      return { kind: 'OK', view: evaluation.view, concludable: session.grant === 'RUN_CONCLUDE' };
     },
 
     async runIntent(input: LedgerRunWriteInput): Promise<RunStep> {
@@ -831,9 +911,11 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
       const elapsed = monotonic() - mark;
       if (!(elapsed <= staleMs / 2)) {
         session.runIntent = null;
-        const written = await append(session, runAbortDraft(intent, Number.isFinite(elapsed) ? elapsed : 0, input.actor, input.nowIso), input.nowIso, true);
+        // o próprio RUN_ABORTED é fecho: num EEXIST segue a regra dos fechos intercalados (R1.4; a operação é dele e nada foi publicado — o dono não chega ao link() do resultado).
+        // Fechada de outro modo, ou regravações esgotadas, a fase A fica aberta até vencer (qualquer operador a aborta). A resposta é sempre RUN_DEADLINE, salvo durabilidade.
+        const written = await appendClosing(session, intent, runAbortDraft(intent, Number.isFinite(elapsed) ? elapsed : 0, input.actor, input.nowIso), input.nowIso, { slot: 'openRun', sameClosing: () => false, texts: RUN_CLOSING, verifyReplay: true });
         if (written === 'OK') await publishGuard(session);
-        else if (written !== 'CONFLICT' && asRun(written).refusal.code === 'DURABILITY_UNKNOWN') return asRun(written);
+        else if (written !== 'ADOPTED' && asRun(written).refusal.code === 'DURABILITY_UNKNOWN') return asRun(written);
         return runRefused('RUN_DEADLINE', null, [RUN_DEADLINE_MESSAGE]);
       }
       return { kind: 'OK' };
@@ -846,18 +928,24 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
       if (!intent || !run || !sameDraft(run, input.run)) return runRefused('LEDGER_UNAVAILABLE', null, [RUN_NO_INTENT_MESSAGE]);
       // D-R1-1: só o AUTOR confirma (o replay também recusa o fecho de quem não é o autor)
       if (!isEntryAuthor(input.actor, run.author)) return runRefused('LEDGER_UNAVAILABLE', null, [RUN_AUTHOR_MESSAGE]);
-      // o fecho entra na cauda ATUAL e só se a própria operação continua aberta (um RUN_CONFIRMED depois de um RUN_ABORTED alheio deixaria o livro não confiável)
-      const prefix = await rereadPrefix(session);
-      if (!prefix.ok) return prefix.step;
-      if (prefix.replay.openRun?.contentSha256 !== intent.contentSha256) return runRefused('LEDGER_UNAVAILABLE', null, [RUN_CLOSED_BEFORE_CONFIRM_MESSAGE]);
-      const written = await append(session, { event: 'RUN_CONFIRMED', recordedAt: input.nowIso, actor: input.actor, run: { ...run, intentSeq: intent.ledgerSeq, anchorRef: { name: runAnchorName(run.runSeq), headSha256: run.runSha256 } } }, input.nowIso, true);
-      // EEXIST: outro registro ocupou a posição entre a releitura e o link(). A regravação na nova cauda (fechos intercalados da família RUN_*) é da R1.4: aqui a operação fica em
-      // fase C e o autor a conclui quando a conclusão existir.
-      if (written === 'CONFLICT') return runRefused('LEDGER_UNAVAILABLE', null, [RUN_CLOSING_CONFLICT_MESSAGE]);
-      if (written !== 'OK') return asRun(written);
-      session.runIntent = null;
-      await publishGuard(session);
-      return { kind: 'OK' };
+      // o fecho entra na cauda ATUAL, só se a própria operação continua aberta, com a regra dos fechos intercalados; fechada antes pelo RUN_CONFIRMED idêntico do autor ⇒ sucesso (R6-04)
+      const closed = await closeRun(session, intent, input.actor, input.nowIso);
+      if (closed.kind === 'OK') session.runIntent = null;
+      return closed;
+    },
+
+    async runConclude(input: LedgerRunWriteInput): Promise<RunStep> {
+      const session = input.session as Session;
+      // autorização de uso ÚNICO do `runPrepare` desta sessão (B/C com receita, pedida pelo autor), consumida já na primeira chamada, qualquer que seja o desfecho
+      const granted = takeGrant(session, 'RUN_CONCLUDE');
+      const intent = session.concludeIntent;
+      session.concludeIntent = null;
+      if (!granted || !intent?.run) return runRefused('LEDGER_UNAVAILABLE', null, [NOT_PREPARED_MESSAGE]);
+      // §16.17.4: SÓ O AUTOR conclui (e-mail da sessão normalizado === run.author); quem não é recebe PENDING_UNCONFIRMED e nada é gravado
+      if (!isEntryAuthor(input.actor, intent.run.author)) return runRefused('PENDING_UNCONFIRMED', null, [RUN_CONCLUDE_NOT_AUTHOR_MESSAGE]);
+      // o resultado a confirmar é EXATAMENTE o que o RUN_INTENT aberto amarra (número, encadeamento, hash, autor e citações)
+      if (!sameDraft(intent.run, input.run)) return runRefused('LEDGER_UNAVAILABLE', null, [RUN_NO_INTENT_MESSAGE]);
+      return closeRun(session, intent, input.actor, input.nowIso);
     },
 
     async sync(auditId: string) {
@@ -928,6 +1016,9 @@ export function createUnconfiguredLedger(): LedgerPort {
       return runStep;
     },
     async runConfirmed() {
+      return runStep;
+    },
+    async runConclude() {
       return runStep;
     },
     async sync() {

@@ -1121,7 +1121,7 @@ export function createDecisionService(options: DecisionServiceOptions) {
         rechecks,
         decisionsWitness: isUnresolved(witness.status) ? witness.status : null,
       });
-      if (step.kind === 'OK') return { kind: 'OK', session, view: step.view };
+      if (step.kind === 'OK') return { kind: 'OK', session, view: step.view, concludable: step.concludable === true };
       if (step.kind === 'REFUSED') return step;
       if (step.kind === 'WAIT') {
         if (++waits > RESULTS_LEDGER_WAITS) return refused('LEDGER_OPERATION_IN_PROGRESS', ['Há uma finalização de outro processo em andamento nesta auditoria; tente novamente em instantes. Nada foi gravado.']);
@@ -1141,6 +1141,8 @@ export function createDecisionService(options: DecisionServiceOptions) {
           intent: (input) => ledgerPort.runIntent(input),
           gate: (input) => ledgerPort.runGate(input),
           confirmed: (input) => ledgerPort.runConfirmed(input),
+          // R1.4: conclusão B/C pelo autor (a autorização vem do `runPrepare` desta sessão; o RECOVER nunca conclui, D-12)
+          conclude: (input) => ledgerPort.runConclude(input),
         }
       : null;
 

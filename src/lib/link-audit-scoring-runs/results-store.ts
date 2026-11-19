@@ -4,6 +4,7 @@ import { canonicalJson } from '../link-audit/canonical';
 import { judgeOrigin, type OriginAuthenticator, type OriginVerdict } from '../link-audit-origin';
 import { describeError, nodeFsOps, publishExclusive, withLock, type FsOps } from '../link-audit/snapshot-store';
 import {
+  adoptReceipt,
   assertBase,
   atomicOnly,
   ATOMIC_UNAVAILABLE_ERRNO,
@@ -247,6 +248,11 @@ export interface BuildContext {
   readonly seq: number;
   /** Hora do servidor, monotônica dentro da trava (nunca anterior ao último resultado). */
   readonly finalizedAt: string;
+  /**
+   * Com o livro (R1.4): a pendente EFETIVA (a da operação aberta em B/C, conferida no passo 1b) JÁ tem recibo — fase C. O recibo nunca é confirmação: ela continua pendente, e o
+   * DTO da pendente (`receipt: 'MISSING'`) não a descreve (o `'PRESENT'` é da R1.5).
+   */
+  readonly pendingReceipt?: boolean;
 }
 export type BuildOutcome<F> =
   | { readonly ok: true; readonly draft: ScoreRunDraft }
@@ -281,15 +287,22 @@ const confirmedSummary = (count: number): RunAnchorSummary => ({ count, lastSeq:
  * liga os passos à porta de escrita do livro. `RESTART` = recomeça do passo 0 (relê resultados e recibos), consumindo tentativa; `REFUSED` = nada mais é feito.
  */
 export type RunLedgerGate<F> = { readonly kind: 'OK' } | { readonly kind: 'RESTART' } | { readonly kind: 'REFUSED'; readonly failure: F };
+/**
+ * Passo 1/1b com operação de resultado ABERTA em B/C (R1.4): `run` é a pendente EFETIVA — o `sNNNN` de R0 cujo hash é o `runSha256` do `RUN_INTENT` aberto (conferido em 1b) —, com
+ * ou sem recibo (`receipt`). É ela, e não a "cauda sem recibo" do armazenamento, que o `build` recebe como pendente.
+ */
+export type RunLedgerContextGate<F> = RunLedgerGate<F> | { readonly kind: 'OPEN'; readonly run: ScoreRun; readonly receipt: boolean };
 export interface RunLedgerHooks<F> {
   /** Passo 1 (contexto do livro) e 1b (conferência objeto × livro) sobre a leitura R0 desta tentativa. */
-  context(read: { readonly runs: readonly ScoreRun[]; readonly pending: ScoreRun | null; readonly all: readonly ScoreRun[] }): Promise<RunLedgerGate<F>>;
+  context(read: { readonly runs: readonly ScoreRun[]; readonly pending: ScoreRun | null; readonly all: readonly ScoreRun[] }): Promise<RunLedgerContextGate<F>>;
   /** Passo 6: `RUN_INTENT` do resultado JÁ SELADO, antes de publicá-lo. */
   intent(sealed: ScoreRun): Promise<RunLedgerGate<F>>;
   /** Passo 7: prazo do dono e operação ainda aberta, imediatamente antes do `link()` do resultado. */
   gate(sealed: ScoreRun): Promise<RunLedgerGate<F>>;
   /** Passo 11: `RUN_CONFIRMED`, depois do recibo durável. */
   confirmed(sealed: ScoreRun): Promise<RunLedgerGate<F>>;
+  /** Conclusão B/C (R1.4): `RUN_CONFIRMED` da operação aberta, pelo autor, depois do recibo (gravado na B, adotado na C) e do sync estrito. */
+  conclude(sealed: ScoreRun): Promise<RunLedgerGate<F>>;
 }
 /** A falha é de durabilidade NÃO comprovada (fsync estrito): nunca sucesso, as bases travaram (R6-07, D-15). */
 export const isDurabilityUnknown = (failure: { readonly code: string; readonly issues: readonly string[] }): boolean => failure.code === 'STORAGE_FATAL' && failure.issues.includes(DURABILITY_UNPROVEN_MESSAGE);
@@ -360,37 +373,62 @@ export async function appendRun<F>(baseDir: unknown, auditId: unknown, build: (c
       if (!read.ok) return read;
       const { runs: confirmed, pending, anchorFiles, all } = read.value;
       const seq = all.length + 1;
-      const atLimit = pending === null && seq > MAX_RUNS; // só impede GRAVAÇÃO nova: o reenvio idempotente do último continua 200
       const finalizedAt = laterOf(options.now(), all[all.length - 1]?.finalizedAt);
 
-      // passos 1 e 1b: contexto do livro e conferência objeto × livro sobre R0 (antes de qualquer avaliação ou montagem)
+      // passos 1 e 1b: contexto do livro e conferência objeto × livro sobre R0 (antes de qualquer avaliação ou montagem). Com operação de resultado aberta em B/C, a PENDENTE
+      // EFETIVA é a que o RUN_INTENT amarra (conferida em 1b), tenha ou não recibo: um recibo nunca é confirmação (R1.4; §16.17.3 passo 2). Os demais são os que o livro confirma.
+      let effective: ScoreRun | null = pending;
+      let settled: readonly ScoreRun[] = confirmed;
+      let receiptPresent = false;
       if (ledger) {
         const gate = await ledger.context({ runs: confirmed, pending, all });
         if (gate.kind === 'RESTART') continue;
         if (gate.kind === 'REFUSED') return { ok: false, code: 'REJECTED', failure: gate.failure };
+        if (gate.kind === 'OPEN') {
+          // 1b já exigiu R0 = confirmados do livro + a pendente efetiva como cauda; qualquer outra forma aqui é erro de montagem (falha fechada, nada gravado)
+          if (gate.run !== all[all.length - 1]) return fail('INTERNAL', 'A pendente efetiva do livro não é a cauda lida (erro interno): nada foi gravado.');
+          effective = gate.run;
+          settled = all.slice(0, -1);
+          receiptPresent = gate.receipt;
+        }
       }
+      const atLimit = effective === null && seq > MAX_RUNS; // só impede GRAVAÇÃO nova: o reenvio idempotente do último continua 200
 
-      const built = await build({ runs: confirmed, pending, all, seq, finalizedAt });
+      const built = await build({ runs: settled, pending: effective, all, seq, finalizedAt, ...(receiptPresent ? { pendingReceipt: true } : {}) });
       if (!built.ok) return { ok: false, code: 'REJECTED', failure: built.failure };
 
       if ('replayOf' in built) {
         const target = all[built.replayOf - 1];
         if (!target) return fail('INTERNAL', 'Reenvio aponta para um resultado que não existe (erro interno).');
-        if (target !== pending) return { ok: true, run: target, runs: confirmed, anchored: true, replayed: true, anchors: confirmedSummary(confirmed.length) };
-        // com o livro, a conclusão de uma pendente (fases B/C) é da R1.4: o contexto já recusou; chegar aqui é erro interno (falha fechada, nenhum recibo)
-        if (ledger) return fail('INTERNAL', 'Conclusão de pendente sem o protocolo do livro (erro interno): nenhum recibo foi gravado.');
+        if (target !== effective) return { ok: true, run: target, runs: settled, anchored: true, replayed: true, anchors: confirmedSummary(settled.length) };
         // Reenvio da PENDENTE: antes de dar o RECIBO, exige a PROVA DE ORIGEM (o arquivo vive numa pasta que quem escreve nela controla
         // por inteiro: autor, conteúdo e selo são afirmações dele). Sem prova válida o recibo NÃO é dado e nada é gravado.
-        const verdict = judgeOrigin(options.origin, 'RUN', pending);
-        if (verdict !== 'PROVEN') return { ok: false, code: 'ORIGIN_UNPROVEN', issues: ['A origem desta pendência não pôde ser comprovada pelo servidor; nenhum recibo foi gravado.'], pending, runs: confirmed, verdict };
+        const verdict = judgeOrigin(options.origin, 'RUN', target);
+        if (verdict !== 'PROVEN') return { ok: false, code: 'ORIGIN_UNPROVEN', issues: ['A origem desta pendência não pôde ser comprovada pelo servidor; nenhum recibo foi gravado.'], pending: target, runs: settled, verdict };
+        if (ledger) {
+          // CONCLUSÃO B/C PELO LIVRO (R1.4; §16.17.4): o `build` já exigiu o AUTOR, a origem e TODAS as reconferências (nenhuma dispensada por haver recibo). Recibo GRAVADO na fase
+          // B; na fase C o existente é ADOTADO (relido e conferido), NUNCA regravado. Depois, sync ESTRITO das pastas da auditoria em resultados e em recibos e dos diretórios-pai
+          // (R7-04 (2) e (6)) — só então o RUN_CONFIRMED pelo autor. Falha de fsync ⇒ durabilidade desconhecida (bases travadas); outra falha ⇒ continua pendente.
+          if (!receiptPresent) {
+            const anchorReady = await prepareReceiptDirectory(RUN_ANCHORS, ops, anchorLocated.value);
+            if (anchorReady) return anchorReady;
+          }
+          const receipt = receiptPresent ? await adoptReceipt(RUN_ANCHORS, io, anchorLocated.value, target) : await confirmReceipt(RUN_ANCHORS, io, anchorLocated.value, target, anchorFiles[anchorFiles.length - 1], laterOf(options.now(), target.finalizedAt));
+          if (!receipt.ok) return unproven() ?? (receiptPresent ? receipt : { ok: false, code: 'ANCHOR_PENDING', issues: receipt.issues, pending: target, runs: settled });
+          const durable = await syncStrict([dir, anchorLocated.value.dir, root, anchorLocated.value.root]);
+          if (durable) return durable;
+          const concluded = await ledger.conclude(target);
+          if (concluded.kind !== 'OK') return concluded.kind === 'REFUSED' ? { ok: false, code: 'REJECTED', failure: concluded.failure } : fail('INTERNAL', 'Passo do livro inesperado na conclusão (erro interno).');
+          return { ok: true, run: target, runs: all, anchored: true, replayed: true, anchors: confirmedSummary(all.length) };
+        }
         // Se o recibo falhar de novo, continua pendente (e o operador pode reenviar outra vez).
-        const concluded = await confirmReceipt(RUN_ANCHORS, ops, anchorLocated.value, pending, anchorFiles[anchorFiles.length - 1], laterOf(options.now(), pending.finalizedAt));
-        if (!concluded.ok) return { ok: false, code: 'ANCHOR_PENDING', issues: concluded.issues, pending, runs: confirmed };
-        return { ok: true, run: pending, runs: all, anchored: true, replayed: true, anchors: confirmedSummary(all.length) };
+        const concluded = await confirmReceipt(RUN_ANCHORS, ops, anchorLocated.value, target, anchorFiles[anchorFiles.length - 1], laterOf(options.now(), target.finalizedAt));
+        if (!concluded.ok) return { ok: false, code: 'ANCHOR_PENDING', issues: concluded.issues, pending: target, runs: settled };
+        return { ok: true, run: target, runs: all, anchored: true, replayed: true, anchors: confirmedSummary(all.length) };
       }
       if (atLimit) return fail('LIMIT_REACHED', `A auditoria atingiu o limite de ${MAX_RUNS} resultados.`);
-      if (pending) {
-        return { ok: false, code: 'PENDING_UNCONFIRMED', issues: ['Há um resultado publicado ainda sem recibo na pasta de recibos; nada novo é gravado sobre ele.'], pending, runs: confirmed };
+      if (effective) {
+        return { ok: false, code: 'PENDING_UNCONFIRMED', issues: ['Há um resultado publicado e ainda não confirmado; nada novo é gravado sobre ele.'], pending: effective, runs: settled };
       }
 
       // A primitiva NUNCA grava um resultado sem etiqueta de origem (defesa em profundidade: as rotas e o serviço já recusam sem chave)
