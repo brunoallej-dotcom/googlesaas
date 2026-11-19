@@ -1,5 +1,20 @@
 # Fase 5: análise dos 9 avisos do `npm audit`
 
+## Atualização 17/11/2026: picomatch (GHSA-fc5q-39xc-vjpf)
+O job `sca (npm audit)` passou a falhar em todos os PRs com um aviso **alto** novo: **GHSA-fc5q-39xc-vjpf**, ReDoS no `picomatch` até 4.0.7 (CVSS 7.5). Padrões extglob de um só ramo repetido, como `+(*)`, causam backtracking exponencial e bloqueiam o event loop. **Não há versão corrigida** (`first_patched_version: null` no banco de avisos do GitHub).
+
+| Pacote (instalado) | Como entra | Em execução no servidor? |
+|---|---|---|
+| `picomatch` 2.3.2 e 4.0.7 | origem do aviso | **Não** |
+| `anymatch` 3.1.3, `chokidar` 3.6.0, `readdirp` 3.6.0, `micromatch` 4.0.8, `fast-glob` 3.3.3 | Tailwind 3 (watch e varredura dos arquivos de conteúdo) | **Não** |
+| `sucrase` 3.35.1, `tinyglobby` 0.2.17, `fdir` 6.5.0 | Tailwind 3 (leitura do `tailwind.config`) | **Não** |
+| `tailwindcss` 3.4.19 | `devDependencies` | **Não** |
+
+- **Só build e desenvolvimento.** Os 11 pacotes estão marcados `dev` no lockfile. Nenhum entra nas imagens de produção: a web copia só a saída *standalone* do Next, e o worker instala com `npm ci --omit=dev`.
+- **O ataque exige que o atacante forneça o padrão glob.** Aqui os padrões são os de `content` no nosso `tailwind.config`, versionados por nós. Nenhuma rota, fila ou arquivo de entrada vira padrão glob.
+- **Decisão:** exceção com prazo curto (`review_by` 17/12/2026, 30 dias), uma entrada por pacote e versão, **todas presas ao GHSA**. Para isso, o gate passou a seguir a cadeia `via` dos pacotes que só herdam o aviso (`docs/how-to/ci-security-scans.md`). Um aviso novo em qualquer desses pacotes volta a bloquear.
+- **Ao reavaliar:** remover as exceções quando sair versão corrigida do `picomatch` (atualizar pelo Dependabot); se não sair, avaliar a opção C abaixo (Tailwind 4, PR #8), conferindo antes se a cadeia nova ainda depende do `picomatch`.
+
 ## Atualização 16/11/2026 (o quadro abaixo é o registro histórico de 16/10/2026)
 `npm audit --json` sobre o `package-lock.json` atual: **1 aviso moderado, 0 alto, 0 crítico**.
 

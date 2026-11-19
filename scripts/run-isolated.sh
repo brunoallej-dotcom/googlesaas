@@ -20,7 +20,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 # Guarda: nenhum arquivo .env* além dos modelos (somente marcadores de exemplo).
-FOUND="$(find . \( -path ./node_modules -o -path ./.next -o -path ./.git \) -prune -o -name '.env*' -print | grep -v -E '^\./(deploy/hostinger/\.env\.production\.example|\.env\.example)$' || true)"
+# `.claude/worktrees/` (worktrees criados por agentes) fica de fora: cada worktree é um checkout próprio, com os
+# mesmos modelos versionados, e o Next/Worker só leem os .env* da raiz onde rodam. Rodado DENTRO de um worktree,
+# este script resolve ROOT para a raiz daquele worktree e a guarda vale para a árvore dele.
+FOUND="$(find . \( -path ./node_modules -o -path ./.next -o -path ./.git -o -path ./.claude/worktrees \) -prune -o -name '.env*' -print | grep -v -E '^\./(deploy/hostinger/\.env\.production\.example|\.env\.example)$' || true)"
 if [ -n "$FOUND" ]; then
   echo "RECUSADO: há arquivos de ambiente na árvore do projeto (só os nomes; valores NÃO lidos):" >&2
   echo "$FOUND" >&2

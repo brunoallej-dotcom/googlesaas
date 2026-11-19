@@ -89,29 +89,32 @@ jobs:
       - name: Gate com exceções versionadas
         run: node .github/scripts/npm-audit-gate.mjs "$RUNNER_TEMP/npm-audit.json"
 
-  # SAST: Semgrep OSS. INICIALMENTE NÃO BLOQUEANTE (continue-on-error): só relatório no log.
-  # Critério para tornar bloqueante: docs/how-to/ci-security-scans.md.
+  # SAST: Semgrep OSS. BLOQUEANTE desde 16/11/2026: qualquer achado (todas as severidades) falha o job.
+  # Critério cumprido e como tratar achados: docs/how-to/ci-security-scans.md.
   sast:
-    name: sast (semgrep, não bloqueante)
+    name: sast (semgrep)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    continue-on-error: true
     permissions:
       contents: read
     env:
-      SEMGREP_VERSION: '1.185.0'
+      # semgrep/semgrep:1.185.0, fixada pelo digest do índice multi-arquitetura (conferido no Docker Hub em
+      # 16/11/2026; config da imagem: release-1.185.0, revisão 7c70dec4). Atualizar: how-to acima.
+      SEMGREP_IMAGE: semgrep/semgrep@sha256:67518c174185a2043fdbed16c70631b79209499b3671178e7194379b48295a0d
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { persist-credentials: false }
-      - name: Instalar Semgrep (versão fixada)
+      - name: Semgrep (falha com qualquer achado)
+        # Checkout montado só para leitura. A imagem roda como root e o checkout é do usuário do runner:
+        # safe.directory (escopo de linha de comando via GIT_CONFIG_*) deixa o Semgrep listar os arquivos pelo git.
         run: |
-          python3 -m venv "$RUNNER_TEMP/semgrep-venv"
-          "$RUNNER_TEMP/semgrep-venv/bin/pip" install --quiet "semgrep==${SEMGREP_VERSION}"
-      - name: Semgrep (relatório no log, sem falhar por achados)
-        run: |
-          "$RUNNER_TEMP/semgrep-venv/bin/semgrep" scan \
-            --metrics=off \
-            --config p/typescript --config p/javascript --config p/react --config p/nodejs \
-            --config p/github-actions \
-            --exclude node_modules --exclude .next --exclude tests --exclude docs \
-            src scripts deploy .github
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/src:ro" -w /src \
+            -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/src \
+            "$SEMGREP_IMAGE" \
+            semgrep scan \
+              --metrics=off --disable-version-check --error \
+              --config p/typescript --config p/javascript --config p/react --config p/nodejs \
+              --config p/github-actions \
+              --exclude node_modules --exclude .next --exclude tests --exclude docs \
+              src scripts deploy .github

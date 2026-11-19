@@ -168,4 +168,41 @@ describe('npm-audit-gate', () => {
     const r = run(audit({ foo: vuln({ severity: 'moderate' }) }, 0), []);
     assert.equal(r.code, 0, r.out);
   });
+
+  describe('transitive advisories (via lists package names)', () => {
+    const GHSA = 'GHSA-aaaa-bbbb-cccc';
+    const lock2 = (): Json => ({
+      packages: { '': {}, 'node_modules/foo': { version: '1.2.3' }, 'node_modules/bar': { version: '4.5.6' } },
+    });
+    const bar = (extra: Json = {}): Json => ({ name: 'bar', severity: 'high', via: ['foo'], nodes: ['node_modules/bar'], ...extra });
+    const barException = (extra: Json = {}): Json => exception({ name: 'bar', version: '4.5.6', ...extra });
+
+    it('should resolve the chain so an "advisory" exception covers a package that only inherits it', () => {
+      const r = run(audit({ foo: vuln(), bar: bar() }, 2), [exception({ advisory: GHSA }), barException({ advisory: GHSA })], lock2());
+      assert.equal(r.code, 0, r.out);
+      assert.match(r.out, /aceito bar@4\.5\.6 \[high\] .*GHSA-aaaa-bbbb-cccc/);
+    });
+
+    it('should fail when the inherited chain also carries another advisory', () => {
+      const other = { url: 'https://github.com/advisories/GHSA-dddd-eeee-ffff' };
+      const r = run(
+        audit({ foo: vuln(), bar: bar({ via: ['foo', other] }) }, 2),
+        [exception({ advisory: GHSA }), barException({ advisory: GHSA })],
+        lock2(),
+      );
+      assert.equal(r.code, 1);
+      assert.match(r.out, /aviso SEM exceção: bar@4\.5\.6/);
+    });
+
+    it('should fail when an inherited name is not in the audit (chain cannot be proven)', () => {
+      const r = run(audit({ bar: bar({ via: ['ghost'] }) }, 1), [barException({ advisory: GHSA })], lock2());
+      assert.equal(r.code, 1);
+    });
+
+    it('should fail closed on a cycle without any advisory URL', () => {
+      const a = audit({ foo: vuln({ via: ['bar'] }), bar: bar({ via: ['foo'] }) }, 2);
+      const r = run(a, [exception({ advisory: GHSA }), barException({ advisory: GHSA })], lock2());
+      assert.equal(r.code, 1);
+    });
+  });
 });

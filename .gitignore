@@ -5,6 +5,8 @@
 
 # Dependências e build
 node_modules/
+# symlink para o node_modules da árvore principal (worktrees fora do repositório); `node_modules/` só casa com diretório
+/node_modules
 .next/
 *.tsbuildinfo
 next-env.d.ts
@@ -57,6 +59,7 @@ notes/
 .session/
 .claude/settings.local.json
 .claude/agent-memory-local/
+.claude/worktrees/
 secrets/
 *.p12
 *.pfx
