@@ -184,6 +184,27 @@ const BAD_KEY_ID: SignRefusal = { ok: false, code: 'USAGE', message: '--key-id i
 export function signingKeyStatus(trustKeys: string, keyId: string): SigningKeyStatus {
   return parseTrustKeyring(trustKeys)?.get(keyId)?.status ?? 'absent';
 }
+
+const KEY_MISMATCH: SignRefusal = {
+  ok: false,
+  code: 'SIGN_KEY_MISMATCH',
+  message: 'A chave aberta não corresponde à chave pública de --key-id na lista --trust-keys (outra chave, outro arquivo ou outro tipo). Nada foi assinado.',
+};
+const spkiOf = (key: KeyObject): Buffer => key.export({ format: 'der', type: 'spki' });
+
+/**
+ * §5.5.1 item 2, logo depois do passo 12 (chave aberta) e antes da assinatura (13): a pública DERIVADA da chave aberta tem de ser, byte a byte (SPKI),
+ * a pública de `--key-id` na lista, e não a de outra chave da lista. Qualquer falha (lista, id, chave que nem deriva pública) é recusa. Nunca lança e
+ * nunca repassa o objeto de erro (pode carregar material da chave, RS-13).
+ */
+export function keyMismatchRefusal(trustKeys: string, keyId: string, privateKey: KeyObject): SignRefusal | null {
+  try {
+    const listed = parseTrustKeyring(trustKeys)?.get(keyId);
+    return listed !== undefined && spkiOf(createPublicKey(privateKey)).equals(spkiOf(listed.key)) ? null : KEY_MISMATCH;
+  } catch {
+    return KEY_MISMATCH;
+  }
+}
 export interface SignWithChainDeps<K> extends SignCoreDeps<K> {
   /** Leitura da cópia da estação (nunca escreve). */
   readonly fs: FsOps;

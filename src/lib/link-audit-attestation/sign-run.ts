@@ -2,7 +2,7 @@ import { randomBytes, type KeyObject } from 'node:crypto';
 import path from 'node:path';
 import { errorCode, type BytesFsOps, type FileInfo, type FsOps } from '../link-audit/snapshot-store';
 import { auditId as auditIdSchema } from './schemas';
-import { runSignWithChain, sealFileName, serializeSealFile, signSealManifest, type SealManifest, type SignWithChainDeps } from './sign-chain';
+import { keyMismatchRefusal, runSignWithChain, sealFileName, serializeSealFile, signSealManifest, type SealManifest, type SignWithChainDeps } from './sign-chain';
 import type { SignCoreResult, SignPlan, SignRefusal, SignRefusalCode } from './sign-core';
 
 /*
@@ -123,7 +123,10 @@ async function pinnedRoot(fs: FsOps, sealsDir: string): Promise<string> {
   }
 }
 
-/** Leitura única → cadeia + núcleo (passos 1–10, confirmação humana no 11, chave só no fim) → corpo e assinatura (13) → gravação (15). Devolve o gravado ou a recusa. */
+/**
+ * Leitura única → cadeia + núcleo (passos 1–10, `--key-id` ativo, confirmação humana no 11, chave no 12) → chave aberta = pública de `--key-id` na lista
+ * (`SIGN_KEY_MISMATCH`) → corpo e assinatura (13) → gravação (15). Devolve o gravado ou a recusa.
+ */
 export async function runSign(input: SignRunInput, deps: SignRunDeps): Promise<SignRunResult> {
   const bytes = await readInputs(deps.fs, input);
   if ('ok' in bytes) return bytes;
@@ -136,6 +139,8 @@ export async function runSign(input: SignRunInput, deps: SignRunDeps): Promise<S
     return BEFORE_WRITE; // o objeto de erro nunca sai daqui (pode vir do leitor de chave, RS-13)
   }
   if (!decided.ok) return decided;
+  const mismatch = keyMismatchRefusal(input.trustKeys, input.keyId, decided.key); // §5.5.1 item 2: depois do passo 12, antes de assinar
+  if (mismatch) return mismatch;
   const signed = signSealManifest(decided.plan, input.keyId, decided.key);
   if (!signed.ok) return signed;
   const written = await publishSeal(deps.fs, { sealsDir: root, auditId: input.auditId, seal: signed.seal }, deps.tempSuffix ? { tempSuffix: deps.tempSuffix } : {});

@@ -29,6 +29,8 @@ export const SIGN_REFUSAL_CODES = [
   'SIGN_ROLE_SEPARATION',
   'SIGN_CLOCK_REGRESSION',
   'SIGN_KEY_NOT_ACTIVE',
+  // emitido logo depois do passo 12 (`keyMismatchRefusal`, `sign-chain.ts`, chamado por `sign-run.ts`), nunca por este núcleo: precisa da chave aberta
+  'SIGN_KEY_MISMATCH',
   'SIGN_CONFIRMATION_FAILED',
   // emitidos pelo adaptador de disco (`sign-run.ts`, W4.3), nunca por este núcleo: entrada ilegível, manifesto grande demais (§7.1) e gravação (passo 15)
   'SIGN_INPUT_UNREADABLE',
