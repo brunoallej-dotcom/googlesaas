@@ -184,6 +184,13 @@ test('confirmação da revisão da W4.1: nos arquivos do sign, nenhum import() c
   for (const name of SIGN_FILES) assert.deepEqual(dynamicLoads(strip(fs.readFileSync(path.join(LIB, name), 'utf8'))), [], `${name}: carregamento dinâmico`);
 });
 
+test('confirmação da revisão da W4.2: nenhum arquivo ALCANÇÁVEL a partir dos arquivos do sign (dependências transitivas, inclusive o verificador) usa import() com nome calculado ou require', () => {
+  const reached = new Set<string>();
+  for (const name of SIGN_FILES) for (const file of reachableFrom(path.join(LIB, name)).keys()) reached.add(file);
+  assert.ok(reached.size > SIGN_FILES.length, 'o grafo percorrido vai além dos próprios arquivos do sign');
+  for (const file of reached) assert.deepEqual(dynamicLoads(strip(fs.readFileSync(file, 'utf8'))), [], `${path.relative(ROOT, file)}: carregamento dinâmico`);
+});
+
 /** P1 W2: o CLI `scripts/link-audit-seal.ts` é o ÚNICO consumidor (o `sign` chega na W4), e só destes arquivos. */
 const CLI_FILE = path.join(ROOT, 'scripts', 'link-audit-seal.ts');
 const CLI_ALLOWED: ReadonlySet<string> = new Set(['@/lib/link-audit-attestation/export', '@/lib/link-audit-attestation/export-run', '@/lib/link-audit-attestation/schemas']);
