@@ -7,7 +7,8 @@ import { APPROVAL_KIND, approvalSchema, auditId as auditIdSchema, candidatePacka
  * da aprovação, do dossiê e do aceite formal de risco, e o que a leitura da cadeia achou (`sign-chain.ts` a lê e verifica com o verificador v2 real
  * ANTES; este arquivo só julga o resultado, na posição do passo 7); decide: plano do manifesto (com `seq` e `prevSealSha256`), ou recusa com `code`
  * estável. Sem disco, rede, ambiente nem relógio implícito: o instante vem do relógio injetado, lido no passo 10. Depois de TODAS as recusas dos
- * passos 1–10, a confirmação humana (passo 11) pela porta injetada `confirm`; só então, uma única vez, o leitor de chave injetado (passo 12;
+ * passos 1–10, o `--key-id` tem de estar `active` na lista (§5.5.1 item 2, fato vindo de `sign-chain.ts`); então a confirmação humana (passo 11)
+ * pela porta injetada `confirm`; só então, uma única vez, o leitor de chave injetado (passo 12;
  * IA-01). A tela da confirmação (TTY) e a chave real (12) são da W4.4, o autoteste (14) e o recibo (16) da W4.5, a gravação (15) da W4.3; o corpo
  * e a assinatura (13) estão em `sign-chain.ts`.
  */
@@ -27,6 +28,7 @@ export const SIGN_REFUSAL_CODES = [
   'SIGN_EVIDENCE_CHANGED',
   'SIGN_ROLE_SEPARATION',
   'SIGN_CLOCK_REGRESSION',
+  'SIGN_KEY_NOT_ACTIVE',
   'SIGN_CONFIRMATION_FAILED',
   'UNEXPECTED',
 ] as const;
@@ -85,7 +87,15 @@ export interface SignCoreInput {
   readonly expectSeq: number;
   /** `--first`: obrigatório se e somente se `--expect-seq = 1` (o "só se" é USAGE; o "se", com a pasta vazia, é recusa da cadeia, §7.1). */
   readonly first: boolean;
+  /** Estado de `--key-id` na lista `--trust-keys` já parseada (`sign-chain.ts`); só `active` assina (§5.5.1 item 2). */
+  readonly signingKeyStatus: SigningKeyStatus;
 }
+
+/**
+ * Estado de `--key-id` na lista com estado do contrato v2 (§5), ou `absent` se o id não está nela. Estrutural, para este arquivo não importar o
+ * verificador (§5.5.1 item 7).
+ */
+export type SigningKeyStatus = 'active' | 'retired' | 'revoked' | 'absent';
 
 /**
  * O que a tela da confirmação humana (passo 11) pode mostrar. NUNCA o hash do pacote, nem parte dele: o custodiante lê os 12 caracteres no
@@ -330,6 +340,22 @@ function decide(input: SignCoreInput, now: () => Date): Decision {
   return { ok: true, plan };
 }
 
+const KEY_NOT_ACTIVE: Readonly<Record<string, string>> = {
+  absent: 'não está na lista --trust-keys',
+  retired: 'está aposentada (retired) na lista --trust-keys e não assina mais',
+  revoked: 'está revogada (revoked) na lista --trust-keys',
+};
+
+/**
+ * §5.5.1 item 2, imediatamente antes do passo 11: `--key-id` presente e `active` na lista. Precisa só do id e da lista (não da chave aberta): o
+ * custodiante nunca é chamado a confirmar, nem a chave é aberta, para uma chave que não assina. Qualquer estado que não seja `active` é recusa.
+ */
+function signingKeyRefusal(status: unknown): SignRefusal | null {
+  if (status === 'active') return null;
+  const why = typeof status === 'string' && Object.hasOwn(KEY_NOT_ACTIVE, status) ? KEY_NOT_ACTIVE[status] : 'tem estado desconhecido na lista --trust-keys';
+  return refuse('SIGN_KEY_NOT_ACTIVE', `A chave de --key-id ${why}. ${NOTHING_SIGNED}`);
+}
+
 const CONFIRMATION_MISMATCH = `O texto digitado não confere com os ${CONFIRM_PREFIX_LENGTH} primeiros caracteres de packageSha256 do dossiê. ${NOTHING_SIGNED}`;
 const CONFIRMATION_UNAVAILABLE = `A confirmação humana não foi obtida (sem terminal interativo, entrada interrompida ou falha da tela). ${NOTHING_SIGNED}`;
 
@@ -349,12 +375,14 @@ async function confirmationRefusal(plan: SignPlan, confirm: SignCoreDeps<unknown
 }
 
 /**
- * Núcleo do `sign`: todas as recusas que não precisam da chave (passos 1–10), a confirmação humana (11) e só então, uma única vez, o leitor de
- * chave injetado (12). Nunca lança pelo conteúdo lido nem pela confirmação.
+ * Núcleo do `sign`: todas as recusas que não precisam da chave (passos 1–10), `--key-id` ativo na lista (§5.5.1 item 2), a confirmação humana (11)
+ * e só então, uma única vez, o leitor de chave injetado (12). Nunca lança pelo conteúdo lido nem pela confirmação.
  */
 export async function runSignCore<K>(input: SignCoreInput, deps: SignCoreDeps<K>): Promise<SignCoreResult<K>> {
   const decision = decide(input, deps.now);
   if (!decision.ok) return decision;
+  const inactive = signingKeyRefusal(input.signingKeyStatus);
+  if (inactive) return inactive;
   const unconfirmed = await confirmationRefusal(decision.plan, deps.confirm);
   if (unconfirmed) return unconfirmed;
   return { ok: true, plan: decision.plan, key: deps.openKey() };

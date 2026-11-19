@@ -15,7 +15,7 @@ import {
   type EvidenceToProve,
 } from '../link-audit-evidence/provenance';
 import { auditId as auditIdSchema } from './schemas';
-import { runSignCore, type SealChainFacts, type SignCoreDeps, type SignCoreInput, type SignCoreResult, type SignPlan, type SignRefusal } from './sign-core';
+import { runSignCore, type SealChainFacts, type SignCoreDeps, type SignCoreInput, type SignCoreResult, type SigningKeyStatus, type SignPlan, type SignRefusal } from './sign-core';
 
 /*
  * P1 W4.2 — a CADEIA e o MANIFESTO do `sign` (spec §5.5 passos 7 e 13; §5.5.1 item 2; §7.1; contrato do verificador v2 §2–§6). Único arquivo do
@@ -165,9 +165,23 @@ function readOnceSnapshot(ops: FsOps): FsOps {
 
 /* ------------------------------------------------------------------------------------------------------------------- passos 1–10 com a cadeia */
 
-export interface SignWithChainInput extends Omit<SignCoreInput, 'chain'> {
+export interface SignWithChainInput extends Omit<SignCoreInput, 'chain' | 'signingKeyStatus'> {
   readonly sealsDir: string;
   readonly trustKeys: string;
+  /** `--key-id`: tem de estar `active` em `--trust-keys` (§5.5.1 item 2), conferido antes da confirmação humana e da chave. */
+  readonly keyId: string;
+}
+
+/**
+ * `--key-id` (spec §5.5, tabela de argumentos): o MESMO padrão de id de chave do verificador v2 (`TRUST_KEY_ID`, não exportado). Cópia deliberada,
+ * para não mudar o verificador; a paridade é travada por teste contra `parseTrustKeyring`.
+ */
+export const SIGN_KEY_ID_PATTERN = /^[a-z0-9][a-z0-9-]{3,31}$/;
+const BAD_KEY_ID: SignRefusal = { ok: false, code: 'USAGE', message: '--key-id inválido (minúsculas, dígitos e "-", 4 a 32 caracteres, começando por letra ou dígito). Nada foi lido nem assinado.' };
+
+/** Estado de `--key-id` na lista com estado já parseada pelo verificador (contrato v2 §5). Lista inválida ⇒ `absent` (a cadeia já a recusa no passo 7). */
+export function signingKeyStatus(trustKeys: string, keyId: string): SigningKeyStatus {
+  return parseTrustKeyring(trustKeys)?.get(keyId)?.status ?? 'absent';
 }
 export interface SignWithChainDeps<K> extends SignCoreDeps<K> {
   /** Leitura da cópia da estação (nunca escreve). */
@@ -175,13 +189,15 @@ export interface SignWithChainDeps<K> extends SignCoreDeps<K> {
 }
 
 /**
- * A cadeia é lida e verificada ANTES, e julgada pelo núcleo na posição do passo 7: as recusas dos passos 1–6 continuam vindo primeiro. Depois de
- * todas as recusas (1–10), a confirmação humana (11, porta `confirm`) e, por último, a chave (12); os bytes do aceite de risco seguem ao núcleo.
+ * `--key-id` fora do padrão ⇒ USAGE, antes de ler qualquer coisa. A cadeia é lida e verificada ANTES, e julgada pelo núcleo na posição do passo 7:
+ * as recusas dos passos 1–6 continuam vindo primeiro. Depois de todas as recusas (1–10), o `--key-id` ativo na lista (§5.5.1 item 2), a
+ * confirmação humana (11, porta `confirm`) e, por último, a chave (12); os bytes do aceite de risco seguem ao núcleo.
  */
 export async function runSignWithChain<K>(input: SignWithChainInput, deps: SignWithChainDeps<K>): Promise<SignCoreResult<K>> {
-  const { sealsDir, trustKeys, ...core } = input;
+  const { sealsDir, trustKeys, keyId, ...core } = input;
+  if (typeof keyId !== 'string' || !SIGN_KEY_ID_PATTERN.test(keyId)) return BAD_KEY_ID;
   const chain = await readSealChain({ sealsDir, auditId: core.auditId, trustKeys }, { fs: deps.fs });
-  return runSignCore({ ...core, chain }, { now: deps.now, confirm: deps.confirm, openKey: deps.openKey });
+  return runSignCore({ ...core, chain, signingKeyStatus: signingKeyStatus(trustKeys, keyId) }, { now: deps.now, confirm: deps.confirm, openKey: deps.openKey });
 }
 
 /* ------------------------------------------------------------------------------------------------------------------- passo 13: corpo e assinatura */
