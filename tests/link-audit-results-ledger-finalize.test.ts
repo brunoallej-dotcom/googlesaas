@@ -425,6 +425,20 @@ test('passo 6 (b): outra finalização abriu um RUN_INTENT depois do passo 1 ⇒
   assert.deepEqual(await eventsOf(w), before);
 });
 
+test('testemunha das DECISÕES não resolvida: o passo 1 não autoriza RUN_INTENT (a finalização é recusada pela avaliação; a porta, sozinha, também recusa)', async () => {
+  const { w } = await protectedWorld();
+  // cabeça de decisões que um resultado selado afirma e o histórico de hoje NÃO tem (outra entrada na posição 1): testemunha HISTORY_DIVERGES
+  const lying = async () => ({ ok: true as const, heads: [{ seq: 1, sha256: hashOf('outra-entrada') }], unverifiedHeads: [], hasResults: false, ledgerHeads: [], unverifiedLedgerHeads: [] });
+  const port = decisionsOver(w, { ledger: ledgerFor(w, { guard: null }), knownHeads: lying }).resultsLedger;
+  assert.ok(port);
+  const ctx = await port.context({ auditId: w.auditId, actor: 'ana@empresa.com', nowIso: clock() });
+  assert.ok(ctx.kind === 'OK' && ctx.view.state === 'PROTECTED', show(ctx));
+  const records = await ledgerRecords(w);
+  const step = await port.intent({ session: ctx.session, auditId: w.auditId, actor: 'ana@empresa.com', nowIso: clock(), run: { runSeq: 1, prevRunSha256: null, runSha256: hashOf('r'), author: 'ana@empresa.com', citedLedgerHead: at(records, 3), decisionsHead: decisionsHeadOf(records) } });
+  assert.ok(step.kind === 'REFUSED', show(step));
+  assert.deepEqual(await eventsOf(w), ['GENESIS', 'INTENT', 'CONFIRMED']);
+});
+
 test('passo 1b / M-R22 (na finalização): R0 vê X (coerente, encadeado, com recibo) onde o livro confirma G ⇒ relê e o reenvio idêntico devolve G, nunca X; troca persistente ⇒ RESULT_INTEGRITY; X no lugar da pendente efetiva (fase B) ⇒ RESULT_INTEGRITY', async () => {
   const { w, e } = await protectedWorld();
   const f = finalizerOver(w, e);
