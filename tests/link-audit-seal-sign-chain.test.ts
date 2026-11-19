@@ -8,7 +8,7 @@ import { nodeFsOps, type FsOps } from '../src/lib/link-audit/snapshot-store';
 import { CHECK_IDS, computePackageSha256, type Approval, type CandidatePackage } from '../src/lib/link-audit-attestation';
 import { exportCandidatePackage } from '../src/lib/link-audit-attestation/export-run';
 import { buildSealManifestBody, readSealChain, runSignWithChain, sealFileName, signSealManifest, type SignWithChainInput } from '../src/lib/link-audit-attestation/sign-chain';
-import { MAX_SEAL_SEQ, runSignCore, type SignPlan, type SignRefusal } from '../src/lib/link-audit-attestation/sign-core';
+import { MAX_SEAL_SEQ, runSignCore, type ConfirmationFacts, type SignCoreDeps, type SignPlan, type SignRefusal } from '../src/lib/link-audit-attestation/sign-core';
 import { evidenceToProveFromBasis } from '../src/lib/link-audit-evidence/evidence-to-prove';
 import {
   createEvidenceSeal,
@@ -35,7 +35,9 @@ import { GOLDEN } from './helpers/link-audit-seal-v2-golden';
  * P1 W4.2 — cadeia e manifesto do `sign` (spec §5.5 passos 7 e 13; §5.5.1 item 2; §7.1; contrato do verificador v2 §2, §3, §5, §6). A cadeia é lida
  * e verificada pelo VERIFICADOR v2 REAL (lista com estado e fechos, `acceptedVersions: [2]`), o núcleo decide `seq`/`--expect-seq`/`--first` na
  * posição do passo 7, e o corpo v2 sai do plano. Dados 100% FICTÍCIOS em pastas temporárias; chaves de TESTE geradas em memória (ou as sementes
- * de teste dos vetores-ouro); a assinatura aqui existe só para a ida e volta (a chave real, a gravação e o autoteste são W4.3–W4.5).
+ * de teste dos vetores-ouro); a assinatura aqui existe só para a ida e volta (a chave real, a gravação e o autoteste são W4.3–W4.5). Revisão da
+ * W4.1: a confirmação humana (passo 11) é a porta injetada `confirm`, chamada depois da cadeia julgada e antes da chave; o espião digita os 12
+ * primeiros caracteres certos, salvo instrução.
  */
 registerCleanup();
 
@@ -118,6 +120,7 @@ interface Scenario {
   readonly dossier?: Uint8Array;
   readonly trustKeys?: string;
   readonly custodian?: string;
+  readonly riskAcceptance?: Uint8Array | null;
 }
 function inputOf(scenario: Scenario): SignWithChainInput {
   const pkg = scenario.pkg ?? makePackage(scenario.entries ?? E3);
@@ -131,40 +134,66 @@ function inputOf(scenario: Scenario): SignWithChainInput {
     trustKeys: scenario.trustKeys ?? RING,
     expectSeq: scenario.expectSeq,
     first: scenario.first ?? false,
+    riskAcceptanceBytes: scenario.riskAcceptance ?? null,
   };
 }
 
 /** O leitor de chave é um espião: devolve um valor-sentinela (nenhuma chave real) e conta as chamadas (IA-01: zero em toda recusa). */
 const KEY_SENTINEL = Symbol('chave-de-teste-nao-aberta');
-async function run(input: SignWithChainInput, options: { readonly now?: string; readonly fs?: FsOps } = {}) {
-  let keyCalls = 0;
+const CONFIRM_LENGTH = 12;
+type Confirm = SignCoreDeps<unknown>['confirm'];
+interface RunOptions {
+  readonly now?: string;
+  readonly fs?: FsOps;
+  /** O que o custodiante "digita"; sem isto, os 12 primeiros caracteres certos do `packageSha256` dos bytes do pacote. */
+  readonly confirm?: Confirm;
+}
+/** O que um custodiante que leu o dossiê digitaria ('' se os bytes nem são JSON). */
+function rightPrefix(input: SignWithChainInput): string {
+  try {
+    return String((JSON.parse(Buffer.from(input.packageBytes).toString('utf8')) as { packageSha256?: unknown }).packageSha256).slice(0, CONFIRM_LENGTH);
+  } catch {
+    return '';
+  }
+}
+async function run(input: SignWithChainInput, options: RunOptions = {}) {
+  const calls: string[] = [];
+  const facts: ConfirmationFacts[] = [];
   const result = await runSignWithChain(input, {
     fs: options.fs ?? nodeFsOps,
     now: () => new Date(options.now ?? NOW),
+    confirm: (seen) => {
+      calls.push('confirm');
+      facts.push(seen);
+      return options.confirm ? options.confirm(seen) : Promise.resolve(rightPrefix(input));
+    },
     openKey: () => {
-      keyCalls += 1;
+      calls.push('openKey');
       return KEY_SENTINEL;
     },
   });
-  return { result, keyCalls };
+  const count = (name: string): number => calls.filter((call) => call === name).length;
+  return { result, calls, facts, keyCalls: count('openKey'), confirmCalls: count('confirm') };
 }
-async function refusedWith(input: SignWithChainInput, code: string, options: { readonly now?: string; readonly fs?: FsOps } = {}): Promise<SignRefusal> {
-  const { result, keyCalls } = await run(input, options);
+async function refusedWith(input: SignWithChainInput, code: string, options: RunOptions = {}): Promise<SignRefusal> {
+  const { result, keyCalls, confirmCalls } = await run(input, options);
   assert.equal(result.ok ? 'OK' : result.code, code);
   assert.equal(keyCalls, 0, 'a chave nunca é aberta numa recusa');
+  assert.equal(confirmCalls, code === 'SIGN_CONFIRMATION_FAILED' ? 1 : 0, 'a confirmação humana só depois de todas as recusas dos passos 1–10 (cadeia inclusive)');
   if (result.ok) assert.fail('esperava recusa');
   assert.ok(result.message.length > 0 && !result.message.includes(input.sealsDir) && !result.message.includes('FICTÍCIO'), 'mensagem sem caminho de disco nem conteúdo de arquivo');
   return result;
 }
-async function chainRefused(input: SignWithChainInput, chainReason: string, label: string, options: { readonly now?: string; readonly fs?: FsOps } = {}): Promise<SignRefusal> {
+async function chainRefused(input: SignWithChainInput, chainReason: string, label: string, options: RunOptions = {}): Promise<SignRefusal> {
   const refusal = await refusedWith(input, 'SIGN_SEAL_CHAIN_INVALID', options);
   assert.equal(refusal.chainReason, chainReason, label);
   return refusal;
 }
-async function planned(input: SignWithChainInput, options: { readonly now?: string; readonly fs?: FsOps } = {}): Promise<SignPlan> {
-  const { result, keyCalls } = await run(input, options);
+async function planned(input: SignWithChainInput, options: RunOptions = {}): Promise<SignPlan> {
+  const { result, calls, facts } = await run(input, options);
   if (!result.ok) assert.fail(`esperava plano, veio ${result.code} (${result.chainReason ?? '-'})`);
-  assert.equal(keyCalls, 1, 'a chave é aberta uma única vez, depois de todas as recusas');
+  assert.deepEqual(calls, ['confirm', 'openKey'], 'confirmação humana uma vez, depois de todas as recusas; a chave uma vez, depois dela');
+  assert.deepEqual(facts, [{ auditId: result.plan.auditId, seq: result.plan.seq, entries: result.plan.entries.length }], 'a tela recebe auditId, seq e o número de entradas, nunca o hash');
   assert.equal(result.key, KEY_SENTINEL);
   return result.plan;
 }
@@ -407,8 +436,8 @@ test('TOCTOU: o verificador julga os MESMOS bytes de onde saem entries, sealedAt
 
 /* =============================================================================================================== ordem do §5.5 */
 
-type ChainFault = 'DOSSIER' | 'CHAIN_INVALID' | 'SEQ' | 'EVIDENCE_CHANGED' | 'ROLE' | 'CLOCK';
-/** Passos 6, 7 (cadeia inválida antes do seq), 7 (seq), 8, 9 e 10. */
+type ChainFault = 'DOSSIER' | 'CHAIN_INVALID' | 'SEQ' | 'EVIDENCE_CHANGED' | 'ROLE' | 'CLOCK' | 'CONFIRM';
+/** Passos 6, 7 (cadeia inválida antes do seq), 7 (seq), 8, 9, 10 e 11 (confirmação humana, revisão da W4.1). */
 const CHAIN_LADDER: ReadonlyArray<readonly [ChainFault, string]> = [
   ['DOSSIER', 'SIGN_DOSSIER_MISMATCH'],
   ['CHAIN_INVALID', 'SIGN_SEAL_CHAIN_INVALID'],
@@ -416,8 +445,9 @@ const CHAIN_LADDER: ReadonlyArray<readonly [ChainFault, string]> = [
   ['EVIDENCE_CHANGED', 'SIGN_EVIDENCE_CHANGED'],
   ['ROLE', 'SIGN_ROLE_SEPARATION'],
   ['CLOCK', 'SIGN_CLOCK_REGRESSION'],
+  ['CONFIRM', 'SIGN_CONFIRMATION_FAILED'],
 ];
-function ladder(sealsDir: string, faults: ReadonlySet<ChainFault>): { readonly input: SignWithChainInput; readonly now: string } {
+function ladder(sealsDir: string, faults: ReadonlySet<ChainFault>): { readonly input: SignWithChainInput; readonly now: string; readonly confirm?: Confirm } {
   const has = (fault: ChainFault): boolean => faults.has(fault);
   const pkg = makePackage(has('EVIDENCE_CHANGED') ? E3.filter((entry) => entry.ref !== 'capture:c0002') : E3);
   const input = inputOf({
@@ -428,21 +458,23 @@ function ladder(sealsDir: string, faults: ReadonlySet<ChainFault>): { readonly i
     expectSeq: has('SEQ') ? 4 : 3,
     custodian: has('ROLE') ? 'CONF-01' : 'CUST-01',
   });
-  return { input, now: has('CLOCK') ? '2026-11-18T10:30:00.000Z' : NOW }; // antes do último manifesto (11:00), depois da coleta (09:00)
+  const wrong = has('CONFIRM') ? { confirm: async (): Promise<string> => rightPrefix(input).toUpperCase() } : {};
+  return { input, now: has('CLOCK') ? '2026-11-18T10:30:00.000Z' : NOW, ...wrong }; // antes do último manifesto (11:00), depois da coleta (09:00)
 }
 
-test('ordem do §5.5: com todas as falhas juntas, corrigir uma por vez revela 6 → 7 (cadeia) → 7 (seq) → 8 → 9 → 10; a chave só no fim', async () => {
+test('ordem do §5.5: com todas as falhas juntas, corrigir uma por vez revela 6 → 7 (cadeia) → 7 (seq) → 8 → 9 → 10 → 11; a confirmação e a chave só no fim', async () => {
   const sealsDir = tmpDir('lass-');
   chain(sealsDir, [{ entries: E1 }, { entries: E2 }]);
   for (let rung = 0; rung <= CHAIN_LADDER.length; rung += 1) {
-    const { input, now } = ladder(sealsDir, new Set(CHAIN_LADDER.slice(rung).map(([fault]) => fault)));
-    const { result, keyCalls } = await run(input, { now });
+    const { input, now, confirm } = ladder(sealsDir, new Set(CHAIN_LADDER.slice(rung).map(([fault]) => fault)));
+    const { result, keyCalls, confirmCalls } = await run(input, { now, ...(confirm ? { confirm } : {}) });
     assert.equal(result.ok ? 'OK' : result.code, CHAIN_LADDER[rung]?.[1] ?? 'OK', `degrau ${rung} (${CHAIN_LADDER[rung]?.[0] ?? 'nenhuma falha'})`);
     assert.equal(keyCalls, rung < CHAIN_LADDER.length ? 0 : 1, `degrau ${rung}: chave`);
+    assert.equal(confirmCalls, rung < CHAIN_LADDER.length - 1 ? 0 : 1, `degrau ${rung}: confirmação`);
   }
   for (const [fault, code] of CHAIN_LADDER) {
-    const { input, now } = ladder(sealsDir, new Set([fault]));
-    await refusedWith(input, code, { now });
+    const { input, now, confirm } = ladder(sealsDir, new Set([fault]));
+    await refusedWith(input, code, { now, ...(confirm ? { confirm } : {}) });
   }
 });
 
@@ -684,24 +716,24 @@ test('§5.5.1 item 2 (lista completa com estado e fechos): G1–G2 da chave apos
 
 /* =============================================================================================================== guarda do passo 7 no núcleo */
 
-test('passo 7 no núcleo: fato de cadeia fora de forma (seq, sealSha256) ⇒ SIGN_SEAL_CHAIN_INVALID; o código da cadeia só é repassado se for código fixo', () => {
+test('passo 7 no núcleo: fato de cadeia fora de forma (seq, sealSha256) ⇒ SIGN_SEAL_CHAIN_INVALID; o código da cadeia só é repassado se for código fixo', async () => {
   const pkg = makePackage(E3);
   const core = (chain: unknown, expectSeq = 2) =>
     runSignCore(
-      { auditId: AUD, custodian: 'CUST-01', packageBytes: bytes(pkg), approvalBytes: bytes(makeApproval(pkg)), dossierBytes: DOSSIER, chain: chain as never, expectSeq, first: false },
-      { now: () => new Date(NOW), openKey: () => KEY_SENTINEL },
+      { auditId: AUD, custodian: 'CUST-01', packageBytes: bytes(pkg), approvalBytes: bytes(makeApproval(pkg)), dossierBytes: DOSSIER, riskAcceptanceBytes: null, chain: chain as never, expectSeq, first: false },
+      { now: () => new Date(NOW), confirm: async () => pkg.packageSha256.slice(0, CONFIRM_LENGTH), openKey: () => KEY_SENTINEL },
     );
   const last = { auditId: AUD, seq: 1, sealSha256: h('7'), sealedAt: '2026-11-18T10:00:00.000Z', entries: plain(E1) };
-  assert.ok(core({ status: 'VERIFIED', last }).ok);
+  assert.ok((await core({ status: 'VERIFIED', last })).ok);
   for (const malformed of [{ ...last, seq: 0 }, { ...last, seq: 1.5 }, { ...last, seq: MAX_CHAIN_SEALS + 1 }, { ...last, sealSha256: 'A'.repeat(64) }, { ...last, sealSha256: null }]) {
-    const result = core({ status: 'VERIFIED', last: malformed });
+    const result = await core({ status: 'VERIFIED', last: malformed });
     assert.equal(result.ok ? 'OK' : result.code, 'SIGN_SEAL_CHAIN_INVALID', JSON.stringify(malformed));
   }
-  const coded = core({ status: 'INVALID', reason: 'SEAL_CHAIN_BROKEN' });
+  const coded = await core({ status: 'INVALID', reason: 'SEAL_CHAIN_BROKEN' });
   assert.ok(!coded.ok && coded.code === 'SIGN_SEAL_CHAIN_INVALID' && coded.chainReason === 'SEAL_CHAIN_BROKEN');
-  const free = core({ status: 'INVALID', reason: 'texto livre /tmp/x' });
+  const free = await core({ status: 'INVALID', reason: 'texto livre /tmp/x' });
   assert.ok(!free.ok && free.code === 'SIGN_SEAL_CHAIN_INVALID' && free.chainReason === undefined && !free.message.includes('/tmp/x'));
-  const unknown = core({ status: 'OUTRO' });
+  const unknown = await core({ status: 'OUTRO' });
   assert.equal(unknown.ok ? 'OK' : unknown.code, 'SIGN_SEAL_CHAIN_INVALID');
 });
 
@@ -719,4 +751,62 @@ test('§7.1 (revisão W4.2): erro de E/S na RAIZ --seals-dir (realpath ou lstat)
   }
   const enotdir = faulty({ realpath: async (target) => (path.resolve(target) === path.resolve(sealsDir) ? Promise.reject(errno('ENOTDIR')) : nodeFsOps.realpath(target)) });
   await chainRefused(inputOf({ sealsDir, expectSeq: 1, first: true }), 'SEALS_DIR_UNREADABLE', 'ENOTDIR na raiz', { fs: enotdir });
+});
+
+/* =============================================================================================================== revisão da W4.1: passos 9 e 11 pela cadeia */
+
+/** Fotografia da cópia da estação: nomes e bytes de cada arquivo (para provar que nada foi escrito nem apagado). */
+function snapshotTree(dir: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const walk = (current: string): void => {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else out[path.relative(dir, full)] = sha256(fs.readFileSync(full));
+    }
+  };
+  walk(dir);
+  return out;
+}
+
+test('passo 11 pela cadeia (revisão da W4.1): confirmação errada ⇒ SIGN_CONFIRMATION_FAILED, nada assinado, chave não aberta; a cadeia foi lida e julgada antes', async () => {
+  const sealsDir = tmpDir('lass-');
+  chain(sealsDir, [{ entries: E1 }, { entries: E2 }]);
+  const before = snapshotTree(sealsDir);
+  const input = inputOf({ sealsDir, expectSeq: 3 });
+  const right = rightPrefix(input);
+  for (const typed of [right.toUpperCase(), right.slice(0, CONFIRM_LENGTH - 1), `${right}\n`, makePackage(E3).packageSha256]) {
+    const { result, calls, facts } = await run(input, { confirm: async () => typed });
+    assert.equal(result.ok ? 'OK' : result.code, 'SIGN_CONFIRMATION_FAILED', JSON.stringify(typed));
+    assert.ok(!('plan' in result) && !('key' in result), 'nada para assinar');
+    assert.deepEqual(calls, ['confirm'], 'a chave não é aberta');
+    assert.deepEqual(facts, [{ auditId: AUD, seq: 3, entries: E3.length }], 'a confirmação vem depois da cadeia julgada (seq calculado) e não mostra o hash');
+  }
+  for (const failing of [async (): Promise<string> => Promise.reject(new Error('SENTINELA sem TTY')), (): Promise<string> => { throw new Error('SENTINELA EOF'); }]) {
+    const refusal = await refusedWith(input, 'SIGN_CONFIRMATION_FAILED', { confirm: failing });
+    assert.ok(!JSON.stringify(refusal).includes('SENTINELA'));
+  }
+  assert.equal(right, makePackage(E3).packageSha256.slice(0, CONFIRM_LENGTH));
+  assert.equal((await planned(input)).seq, 3, 'com os 12 caracteres certos, o mesmo cenário dá plano');
+  assert.deepEqual(snapshotTree(sealsDir), before, 'a cópia da estação não muda');
+});
+
+test('passo 11 pela cadeia: recusa da cadeia (passo 7) nunca chega à confirmação humana', async () => {
+  const sealsDir = tmpDir('lass-');
+  chain(sealsDir, [{ entries: E1 }, { entries: E2 }]);
+  await chainRefused(inputOf({ sealsDir, expectSeq: 3, trustKeys: KEYS_B.trustKeys }), 'SEAL_INVALID', 'cadeia fora da lista');
+  await refusedWith(inputOf({ sealsDir, expectSeq: 4 }), 'SIGN_SEQ_MISMATCH');
+});
+
+test('passo 9 pela cadeia (revisão da W4.1): runSignWithChain repassa os bytes do aceite de risco ao núcleo (existência e hash)', async () => {
+  const sealsDir = tmpDir('lass-');
+  chain(sealsDir, [{ entries: E1 }, { entries: E2 }]);
+  const risk = Buffer.from('Aceite formal de risco FICTÍCIO da cadeia.\n', 'utf8');
+  const pkg = makePackage(E3);
+  const approval = { ...makeApproval(pkg), riskAcceptance: { id: 'aceite-cadeia-0001', sha256: sha256(risk) } };
+  const same = { sealsDir, expectSeq: 3, pkg, approval, custodian: 'conf 01' } as const;
+  const plan = await planned(inputOf({ ...same, riskAcceptance: risk }));
+  assert.deepEqual([plan.roleException, plan.requiresLaterReview], [true, true]);
+  await refusedWith(inputOf({ ...same, riskAcceptance: null }), 'SIGN_ROLE_SEPARATION');
+  await refusedWith(inputOf({ ...same, riskAcceptance: Buffer.concat([risk, Buffer.from('x')]) }), 'SIGN_ROLE_SEPARATION');
 });

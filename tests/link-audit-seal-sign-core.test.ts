@@ -549,12 +549,13 @@ test('passo 10: relógio inválido ou fora do formato do manifesto ⇒ UNEXPECTE
 
 /* --------------------------------------------------------------------------------------------------------------- passo 11 (revisão da W4.1) */
 
-test('passo 11: a confirmação humana vem depois de todas as recusas e antes da chave, uma vez; a tela recebe só auditId e o número de entradas (nunca o hash)', async () => {
+test('passo 11: a confirmação humana vem depois de todas as recusas e antes da chave, uma vez; a tela recebe só auditId, seq (W4.2) e o número de entradas (nunca o hash)', async () => {
   const pkg = makePackage();
   const { result, calls, facts } = await run(inputFor(pkg, makeApproval(pkg)));
   assert.equal(result.ok, true);
   assert.deepEqual(calls, ['now', 'confirm', 'openKey']);
-  assert.deepEqual(facts, [{ auditId: AUDIT, entries: ENTRIES.length }]);
+  assert.deepEqual(facts, [{ auditId: AUDIT, seq: 2, entries: ENTRIES.length }]);
+  assert.deepEqual((await run(validInput(chainAfter(null)))).facts, [{ auditId: AUDIT, seq: 1, entries: ENTRIES.length }]);
   const shown = JSON.stringify(facts);
   assert.ok(!shown.includes(pkg.packageSha256.slice(0, CONFIRM_LENGTH)) && !shown.includes(sha256(DOSSIER)), 'o custodiante lê os 12 caracteres no dossiê, não na tela');
 });
