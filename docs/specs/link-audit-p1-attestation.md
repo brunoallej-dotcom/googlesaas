@@ -349,6 +349,8 @@ Fecham lacunas apontadas no mapa da W4; prevalecem sobre o texto acima onde houv
   - **Onde fica o código:** a conferência fica em `keyMismatchRefusal` (`sign-chain.ts`, o único arquivo do `sign` que lê a lista pelo verificador), chamada por `sign-run.ts`, que continua sem importar o verificador.
   - **Comportamento anterior:** antes desta mudança, uma chave trocada assinava e gravava um manifesto em nome do `--key-id`; o autoteste da W4.5 o recusaria, mas só depois.
 
+- **Confirmação da W4.2 pelo `junin-03` (19/11/2026, aprovar com mudanças):** (i) a guarda contra `import()` com nome calculado e `require` passou a valer para todos os arquivos alcançáveis a partir dos arquivos do `sign`, inclusive o verificador e suas dependências, e não só para os `sign-*`; (ii) a mensagem de `--key-id` fora do formato diz "nada foi assinado nem gravado", porque na W4.3 as entradas já foram lidas quando ela sai; (iii) o achado de que `$` aceitaria um `\n` final foi conferido e não procede em JavaScript (sem a flag `m`, `/^…$/.test('abcd\n')` é falso).
+
 ### 5.6 Manifesto `v2` e verificador `v2` (onda W3, contrato próprio)
 
 **Decisão de 16/11:** `v2` **antes do primeiro resultado de produção**, com `dossier.sha256` e `prevSealSha256` **dentro da parte assinada**.
