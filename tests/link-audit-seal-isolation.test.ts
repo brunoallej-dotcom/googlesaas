@@ -18,7 +18,7 @@ const importsOf = (source: string): string[] => {
     ...[...code.matchAll(/\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1] ?? ''),
   ];
 };
-const FILES = ['export-run.ts', 'export.ts', 'index.ts', 'package-hash.ts', 'schemas.ts'];
+const FILES = ['export-run.ts', 'export.ts', 'index.ts', 'package-hash.ts', 'schemas.ts', 'sign-core.ts'];
 const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   'index.ts': new Set(['../link-audit-evidence/evidence-to-prove', './package-hash', './schemas']),
   'package-hash.ts': new Set(['../link-audit/canonical', './schemas']),
@@ -27,12 +27,15 @@ const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   'export.ts': new Set(['../link-audit-evidence/evidence-to-prove', '../link-audit-evidence/types', './package-hash', './schemas']),
   // P1 W2: o ÚNICO arquivo do módulo com disco: lê pelos leitores existentes (FsOps injetado) e cria só o --out; fora do índice público
   'export-run.ts': new Set(['node:path', 'zod', '../link-audit/snapshot-store', '../link-audit-evidence/provenance', '../link-audit-evidence/reader', '../link-audit-evidence/scoring-basis', '../link-audit-evidence/store', './export', './schemas']),
+  // P1 W4.1: núcleo PURO das recusas do `sign` (só o hash do dossiê vem de node:crypto); nunca o verificador, o leitor nem disco
+  'sign-core.ts': new Set(['node:crypto', '../link-audit-evidence/types', './package-hash', './schemas']),
 };
 /** Exceções por arquivo às proibições abaixo, cada uma trocada por uma regra mais estreita (P1 W2). */
 const NO_IMPLICIT_CLOCK: readonly [RegExp, string] = [/Date\.now|new Date\s*\(\s*\)|performance\.now/, 'relógio implícito'];
 const EXCEPTIONS: Readonly<Record<string, ReadonlySet<string>>> = {
   'export.ts': new Set(['Date']), // Date.parse/toISOString de datas recebidas (normalização); o instante vem de quem chama
   'export-run.ts': new Set(['Date', 'módulo node']), // só node:path (lista acima); o instante vem de quem chama
+  'sign-core.ts': new Set(['Date', 'módulo node']), // relógio INJETADO (tipo Date); só createHash de node:crypto (teste abaixo)
 };
 
 test('importsOf enxerga import de efeito colateral, import() dinâmico, require e export from', () => {
@@ -74,6 +77,13 @@ test('P1 W2: export-run.ts só escreve por UMA criação exclusiva (o --out) e n
   assert.equal([...code.matchAll(/\.writeExclusive\s*\(/g)].length, 1);
   assert.ok(!/\.(?:mkdir|link|unlink|chmod|syncDirectory|rename|rm|truncate)\s*\(|publishExclusive|withLock|node:fs/.test(code));
   assert.equal(strip(fs.readFileSync(path.join(LIB, 'index.ts'), 'utf8')).includes('export-run'), false, 'o adaptador de disco fica fora do índice público');
+});
+
+test('P1 W4.1: sign-core.ts usa de node:crypto SÓ createHash (hash do dossiê): nunca assina, abre, gera nem deriva chave', () => {
+  const code = strip(fs.readFileSync(path.join(LIB, 'sign-core.ts'), 'utf8'));
+  assert.deepEqual([...code.matchAll(/import\s*\{([^}]*)\}\s*from\s*'node:crypto'/g)].map((m) => (m[1] ?? '').trim()), ['createHash']);
+  assert.ok(!/\b(?:sign|verify|createPrivateKey|createPublicKey|generateKeyPair\w*|randomBytes|scrypt\w*|pbkdf2\w*)\s*\(/.test(code) && !/\bKeyObject\b/.test(code), 'operação de chave no núcleo');
+  assert.ok(!/node:(?!crypto')/.test(code), 'outro módulo node');
 });
 
 /** P1 W2: o CLI `scripts/link-audit-seal.ts` é o ÚNICO consumidor (o `sign` chega na W4), e só destes arquivos. */
