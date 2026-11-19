@@ -377,7 +377,7 @@ test('provedor de cabeças: resultados selados ⇒ uma cabeça por resultado; se
   const heads = await createResultsKnownHeads({ otherDirs: [], baseDir: e.base, anchorDir: e.anchors })(w.auditId);
   assert.ok(heads.ok && heads.heads.length === 1 && heads.heads[0]?.seq === 2 && /^[0-9a-f]{64}$/.test(heads.heads[0]?.sha256 ?? ''), JSON.stringify(heads));
   const none = await createResultsKnownHeads({ otherDirs: [], baseDir: resultsEnv().base, anchorDir: resultsEnv().anchors })(w.auditId);
-  assert.deepEqual(none, { ok: true, heads: [], unverifiedHeads: [], hasResults: false, ledgerHeads: [], unverifiedLedgerHeads: [] }, 'sem resultados: o livro também sabe que NÃO há resultado algum');
+  assert.deepEqual(none, { ok: true, heads: [], unverifiedHeads: [], hasResults: false, ledgerHeads: [], unverifiedLedgerHeads: [], runs: { anchored: [], pending: null } }, 'sem resultados: o livro também sabe que NÃO há resultado algum (nem resultado a conferir contra o RUN_CONFIRMED, §16.17.8)');
   const e2 = resultsEnv();
   const failing: FsOps = faulty({ async writeExclusive(target, data, mode) { if (target.startsWith(e2.anchors)) throw errno('ENOSPC'); return nodeFsOps.writeExclusive(target, data, mode); } });
   const w2 = await confirmedThenRevoked();
