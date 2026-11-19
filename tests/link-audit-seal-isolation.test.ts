@@ -155,6 +155,35 @@ test('P1 W4.1 (revisão): o núcleo sign-core.ts, por TODO import local alcanç�
   assert.deepEqual([...external].sort(), ['node:crypto', 'zod'], 'de fora do repositório, só node:crypto e zod');
 });
 
+/**
+ * Carregamento dinâmico que a lista fechada de imports não enxerga: `import(` cujo argumento não é UMA string literal simples (concatenação,
+ * template, variável), e qualquer `require` (`require(`, `require.resolve`, `module.require`, `createRequire`). Devolve o que achou.
+ */
+function dynamicLoads(code: string): string[] {
+  const found: string[] = [];
+  for (const match of code.matchAll(/\bimport\s*\(/g)) {
+    const rest = code.slice(match.index);
+    if (!/^import\s*\(\s*(['"])[^'"`$\\\n]*\1\s*\)/.test(rest)) found.push(rest.slice(0, 40));
+  }
+  for (const match of code.matchAll(/\brequire\s*[.(]|\bcreateRequire\b|\bmodule\s*\.\s*require\b/g)) found.push(match[0]);
+  return found;
+}
+
+test('dynamicLoads enxerga import() com nome calculado e require; import() com string literal passa', () => {
+  assert.deepEqual(dynamicLoads("const a = await import('./x');\nconst b = await import(\"node:crypto\");"), []);
+  for (const code of ["import('./' + 'x')", 'import(`./${name}`)', 'import(name)', "import( './x' + y)", "require('x')", "require.resolve('x')", "module.require('x')", "createRequire(url)"]) {
+    assert.equal(dynamicLoads(code).length > 0, true, code);
+  }
+});
+
+/** Arquivos do `sign` (`sign-*.ts`); arquivo novo do `sign` exige revisão desta lista. */
+const SIGN_FILES = FILES.filter((name) => name.startsWith('sign-'));
+
+test('confirmação da revisão da W4.1: nos arquivos do sign, nenhum import() com nome calculado e nenhum require (o grafo de imports fica todo visível)', () => {
+  assert.deepEqual(SIGN_FILES, ['sign-chain.ts', 'sign-core.ts']);
+  for (const name of SIGN_FILES) assert.deepEqual(dynamicLoads(strip(fs.readFileSync(path.join(LIB, name), 'utf8'))), [], `${name}: carregamento dinâmico`);
+});
+
 /** P1 W2: o CLI `scripts/link-audit-seal.ts` é o ÚNICO consumidor (o `sign` chega na W4), e só destes arquivos. */
 const CLI_FILE = path.join(ROOT, 'scripts', 'link-audit-seal.ts');
 const CLI_ALLOWED: ReadonlySet<string> = new Set(['@/lib/link-audit-attestation/export', '@/lib/link-audit-attestation/export-run', '@/lib/link-audit-attestation/schemas']);
