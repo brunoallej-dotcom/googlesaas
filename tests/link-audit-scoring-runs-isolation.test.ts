@@ -182,7 +182,8 @@ test('I4: só results-store.ts toca o disco/mecanismo de gravação; só ele usa
   // results-store: o único uso de escrita é publishExclusive (resultado) e confirmReceipt (recibo, protocolo do I0)
   const store = codeOf('results-store.ts');
   // `lstat` (R4-MINOR-1/INFO-1, 5ª revisão): sonda SOMENTE LEITURA das pastas da testemunha, para separar "não consigo ler" de "não é um diretório comum"
-  assert.deepEqual([...new Set([...store.matchAll(/\bops\.([a-zA-Z]+)\s*\(/g)].map((m) => m[1]))].sort(), ['lstat', 'readdir']);
+  // `syncDirectory` (R1.3, D-15 da spec do livro §16.17.12): fsync ESTRITO das pastas de resultados e de recibos na finalização pelo livro; só sincroniza, não cria, altera nem apaga
+  assert.deepEqual([...new Set([...store.matchAll(/\bops\.([a-zA-Z]+)\s*\(/g)].map((m) => m[1]))].sort(), ['lstat', 'readdir', 'syncDirectory']);
   assert.ok(/publishExclusive\(/.test(store) && /confirmReceipt\(/.test(store) && /withLock\(/.test(store) && /atomicOnly\(/.test(store));
   // results.ts: só consulta o caminho real das pastas (configuração); o relógio vem injetado
   assert.deepEqual([...new Set([...codeOf('results.ts').matchAll(/\bops\.([a-zA-Z]+)\s*\(/g)].map((m) => m[1]))].sort(), ['realpath']);

@@ -15,7 +15,13 @@ export interface OpenObservations {
 
 export const MAX_OBSERVATIONS = 256;
 
-export function createOpenObservations(monotonicMs: () => number = () => performance.now(), max: number = MAX_OBSERVATIONS): OpenObservations {
+/**
+ * Relógio MONOTÔNICO do processo (milissegundos). Este arquivo é o ÚNICO do livro que o lê (teste de isolamento); o serviço o usa também para o PRAZO DO DONO de uma finalização
+ * (spec §16.17.3, passo 7, D-22): o instante é anotado antes de publicar o `RUN_INTENT` e conferido antes de publicar o resultado. Testes injetam outro.
+ */
+export const monotonicNow = (): number => performance.now();
+
+export function createOpenObservations(monotonicMs: () => number = monotonicNow, max: number = MAX_OBSERVATIONS): OpenObservations {
   const firstSeen = new Map<string, number>();
   return {
     ageOf(key: string): number {

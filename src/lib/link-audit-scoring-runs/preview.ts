@@ -13,6 +13,9 @@ import { classifyOperatorRecord, CRITERIA_SOURCES, decisionTargets } from './cri
 import { deriveOutcome, obtainedPointsOfCriterion, obtainedPointsOfSubcriterion, toPublicView, type OutcomePreview } from './outcome';
 import type { AssembleResult, CriterionSourceView } from './types';
 
+/** Porta de escrita do livro que a FINALIZAÇÃO recebe (R1.3, D-R1-3): os tipos moram na porta do livro das decisões; os resultados os alcançam por aqui (lista fechada de imports). */
+export type { LedgerView, ResultsLedgerPort, RunDraft, RunRefusal, RunStep } from '../link-audit-decisions';
+
 /*
  * Serviço de PRÉVIA da pontuação Lumos (Onda 6C, I3). Lê a base verificada (I1) e as decisões CONFIRMADAS (6B), monta a entrada
  * SOMENTE pelo mapeador (I2), executa o motor existente e devolve uma prévia. NUNCA grava, NUNCA gera recibo, NUNCA é definitiva
