@@ -243,35 +243,102 @@ function walk(dir: string): string[] {
     return /\.(?:ts|tsx|js|cjs|mjs)$/.test(entry.name) ? [full] : [];
   });
 }
-/** The argument text of each CALL (not the definition) of `name`, up to the matching parenthesis. */
-function callArguments(code: string, name: string): string[] {
-  const found: string[] = [];
-  for (const match of code.matchAll(new RegExp(`(?<!function\\s)\\b${name}\\s*\\(`, 'g'))) {
-    let depth = 0;
-    const start = (match.index ?? 0) + match[0].length - 1;
-    for (let i = start; i < code.length; i += 1) {
-      if (code[i] === '(') depth += 1;
-      else if (code[i] === ')' && (depth -= 1) === 0) {
-        found.push(code.slice(start + 1, i));
-        break;
-      }
-    }
-  }
-  return found;
+const FACTORIES = ['createSealedEvidenceProvenance', 'evidenceProvenanceFromConfig'] as const;
+const FACTORY = new RegExp(`\\b(?:${FACTORIES.join('|')})\\b`, 'g');
+const PROVENANCE_FILE = path.join('src', 'lib', 'link-audit-evidence', 'provenance.ts');
+const PROVENANCE_MODULE = path.join(ROOT, 'src', 'lib', 'link-audit-evidence', 'provenance');
+/** Every way a file can reference another module: `import/export … from`, dynamic `import()`, `require()` and side-effect `import '…'`. */
+const MODULE_REFERENCE = /\b(?<keyword>import|export)\s*(?<clause>[^'";]*?)\s*\bfrom\s*['"](?<from>[^'"]+)['"]|\bimport\s*\(\s*['"](?<dynamic>[^'"]+)['"]\s*\)|\brequire\s*\(\s*['"](?<required>[^'"]+)['"]\s*\)|\bimport\s*['"](?<bare>[^'"]+)['"]/g;
+
+function resolvesToProvenance(file: string, specifier: string): boolean {
+  const target = specifier.startsWith('@/') ? path.join(ROOT, 'src', specifier.slice(2)) : specifier.startsWith('.') ? path.resolve(path.dirname(path.join(ROOT, file)), specifier) : null;
+  return target !== null && target.replace(/\.(?:ts|js)$/, '') === PROVENANCE_MODULE;
 }
+/** The text between the parenthesis at `open` and its match (`null` if unbalanced). */
+function balancedArguments(code: string, open: number): string | null {
+  let depth = 0;
+  for (let i = open; i < code.length; i += 1) {
+    if (code[i] === '(') depth += 1;
+    else if (code[i] === ')' && (depth -= 1) === 0) return code.slice(open + 1, i);
+  }
+  return null;
+}
+
+/**
+ * Static guard of V2-19 over ONE source file (comments already stripped). Each mention of a factory must be (a) a plain, non-aliased `import { … }`
+ * specifier, (b) a DIRECT call whose argument is an object literal containing `acceptedVersions:`, or (c) its definition in provenance.ts. Anything
+ * else (alias, assignment, value, re-export, member access) is a violation, and so is any reference to the provenance module that is not a named
+ * `import { … } from` (namespace, default, `export … from`, `require`, dynamic or side-effect import): those could reach a factory without its name.
+ */
+function scanFactoryUse(file: string, code: string): { readonly violations: string[]; readonly calls: string[] } {
+  const violations: string[] = [];
+  const calls: string[] = [];
+  const allowed: Array<readonly [number, number]> = [];
+  for (const match of code.matchAll(MODULE_REFERENCE)) {
+    const groups = match.groups ?? {};
+    const clause = groups.clause ?? '';
+    const specifier = groups.from ?? groups.dynamic ?? groups.required ?? groups.bare ?? '';
+    const isNamedImport = groups.keyword === 'import' && /^(?:type\s+)?\{[^}]*\}$/.test(clause.trim());
+    if (resolvesToProvenance(file, specifier) && !isNamedImport) violations.push(`${file}: non-named reference to the provenance module (${match[0].slice(0, 60)})`);
+    if (new RegExp(`\\b(?:${FACTORIES.join('|')})\\s+as\\b|\\bas\\s+(?:${FACTORIES.join('|')})\\b`).test(clause)) violations.push(`${file}: aliased factory (${clause.trim().slice(0, 60)})`);
+    else if (isNamedImport) allowed.push([match.index ?? 0, (match.index ?? 0) + match[0].length]);
+  }
+  for (const match of code.matchAll(FACTORY)) {
+    const at = match.index ?? 0;
+    if (allowed.some(([from, to]) => at >= from && at < to)) continue;
+    const before = code.slice(0, at);
+    const after = code.slice(at + match[0].length);
+    if (/\bfunction\s+$/.test(before) && file === PROVENANCE_FILE) continue;
+    const isDirectCall = !before.trimEnd().endsWith('.') && /^\s*\(/.test(after); // `.name(` / `?.name(` is member access, never direct
+    const args = isDirectCall ? balancedArguments(code, at + match[0].length + (after.length - after.trimStart().length)) : null;
+    if (args !== null && /^\s*\{[\s\S]*\bacceptedVersions\s*:/.test(args)) calls.push(args);
+    else violations.push(`${file}: ${match[0]} ${isDirectCall ? 'called without an object argument with acceptedVersions' : 'used as a value (alias, assignment, argument, re-export or member access)'}`);
+  }
+  return { violations, calls };
+}
+
+test('V2-19 (M3, static guard) an aliased import, an assignment, a namespace call and every other indirect use are reported; a plain call is not', () => {
+  const file = path.join('src', 'app', 'api', 'exemplo', 'route.ts');
+  const plainImport = "import { evidenceProvenanceFromConfig } from '@/lib/link-audit-evidence/provenance';\n";
+  const fine = scanFactoryUse(file, strip(`${plainImport}// evidenceProvenanceFromConfig(options) in a comment does not count\nconst p = evidenceProvenanceFromConfig({ sealsDir: d, trustKeys: k, acceptedVersions: [2] });`));
+  assert.deepEqual(fine, { violations: [], calls: ['{ sealsDir: d, trustKeys: k, acceptedVersions: [2] }'] });
+  const fixtures: ReadonlyArray<readonly [string, string]> = [
+    ['aliased import', "import { evidenceProvenanceFromConfig as mk } from '@/lib/link-audit-evidence/provenance';\nconst p = mk({ sealsDir: d, trustKeys: k });"],
+    ['assignment', `${plainImport}const f = evidenceProvenanceFromConfig;\nconst p = f({ sealsDir: d, trustKeys: k });`],
+    ['namespace call (even with acceptedVersions)', "import * as prov from '../../../lib/link-audit-evidence/provenance';\nconst p = prov.evidenceProvenanceFromConfig({ sealsDir: d, trustKeys: k, acceptedVersions: [2] });"],
+    ['member call through another module', "import * as shim from './shim';\nconst p = shim.evidenceProvenanceFromConfig({ sealsDir: d, trustKeys: k, acceptedVersions: [2] });"],
+    ['namespace destructured', "import * as prov from '@/lib/link-audit-evidence/provenance';\nconst { createSealedEvidenceProvenance: mk } = prov;"],
+    ['another name imported AS a factory name', "import { somethingElse as createSealedEvidenceProvenance } from './outro';\ncreateSealedEvidenceProvenance({ acceptedVersions: [2] });"],
+    ['call without acceptedVersions', `${plainImport}const p = evidenceProvenanceFromConfig({ sealsDir: d, trustKeys: k });`],
+    ['options built elsewhere', `${plainImport}const p = evidenceProvenanceFromConfig(options);`],
+    ['passed as a value', `${plainImport}register(evidenceProvenanceFromConfig);`],
+    ['re-export', "export { createSealedEvidenceProvenance } from '@/lib/link-audit-evidence/provenance';"],
+    ['re-export of a local import', `${plainImport}export { evidenceProvenanceFromConfig };`],
+    ['star re-export', "export * from '../../../lib/link-audit-evidence/provenance';"],
+    ['require', "const prov = require('../../../lib/link-audit-evidence/provenance');"],
+    ['dynamic import', "const prov = await import('@/lib/link-audit-evidence/provenance');"],
+    ['definition outside provenance.ts', 'function createSealedEvidenceProvenance(options) { return options; }'],
+    ['string-keyed access', "import * as prov from '@/lib/link-audit-evidence/provenance';\nprov['evidenceProvenanceFromConfig']({ acceptedVersions: [2] });"],
+  ];
+  for (const [label, source] of fixtures) assert.ok(scanFactoryUse(file, strip(source)).violations.length > 0, `the guard must report: ${label}`);
+});
 
 test('V2-19 (M3, static) every caller outside tests/ passes acceptedVersions explicitly, production passes [2], and only provenance.ts still builds trustedKeys', () => {
   const files = [...walk(path.join(ROOT, 'src')), ...walk(path.join(ROOT, 'scripts'))];
   const calls: Array<readonly [string, string]> = [];
+  const violations: string[] = [];
   for (const file of files) {
+    const relative = path.relative(ROOT, file);
     const code = strip(fs.readFileSync(file, 'utf8'));
-    for (const name of ['createSealedEvidenceProvenance', 'evidenceProvenanceFromConfig']) for (const args of callArguments(code, name)) calls.push([path.relative(ROOT, file), args]);
+    const scanned = scanFactoryUse(relative, code);
+    violations.push(...scanned.violations);
+    calls.push(...scanned.calls.map((args) => [relative, args] as const));
     // `trustedKeys` (every key active) is test-only (contract §5). Narrow, per-file allowance: provenance.ts itself, until W3.4 moves
     // `evidenceProvenanceFromConfig` to `parseTrustKeyring`.
-    if (/\btrustedKeys\s*:/.test(code)) assert.equal(path.relative(ROOT, file), path.join('src', 'lib', 'link-audit-evidence', 'provenance.ts'), `${path.relative(ROOT, file)} passes trustedKeys`);
+    if (/\btrustedKeys\s*:/.test(code)) assert.equal(relative, PROVENANCE_FILE, `${relative} passes trustedKeys`);
   }
+  assert.deepEqual(violations, []);
   assert.ok(calls.length >= 2, `callers found: ${calls.map(([file]) => file).join(', ')}`);
-  for (const [file, args] of calls) assert.match(args, /\bacceptedVersions\s*:/, `${file} must pass acceptedVersions explicitly`);
   const production = calls.filter(([file]) => file === path.join('src', 'app', 'api', 'link-audit', 'scoring', 'shared.ts'));
   assert.equal(production.length, 1);
   assert.match((production[0] as readonly [string, string])[1], /\bacceptedVersions\s*:\s*\[\s*2\s*\]/, 'production accepts only v2');
