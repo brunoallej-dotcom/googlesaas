@@ -204,21 +204,83 @@ export type AcceptedSealVersion = 1 | 2;
  */
 export const DEFAULT_ACCEPTED_VERSIONS: readonly AcceptedSealVersion[] = Object.freeze([1, 2] as const);
 
-/** Trust-list item with its state (contract §5; `parseTrustKeyring` and the states' semantics arrive in W3.4). */
+/** Trust-list item with its state (contract §5). `active` signs; `retired` only verifies what its pinned closure covers (§6); `revoked` never counts. */
 export interface TrustKeyringEntry {
   readonly key: KeyObject;
   readonly status: 'active' | 'retired' | 'revoked';
-  /** Pinned SHA-256 of the retirement closure bytes (`retired:<hash>`), or null. */
+  /** Pinned SHA-256 of the DELIVERED bytes of the retirement closure (`retired:<hash>`), or null. Only a `retired` item may carry one. */
   readonly closureSha256: string | null;
 }
 export type TrustKeyring = ReadonlyMap<string, TrustKeyringEntry>;
+
+/** Most items in the trust list; retired items stay listed (contract §5, O2). */
+export const MAX_TRUST_KEYS = 16;
+/** Most keys signing at the same time: holder and deputy, each with its own pair (D10, D12). */
+const MAX_ACTIVE_KEYS = 2;
+const KEY_STATUSES: ReadonlySet<string> = new Set(['active', 'retired', 'revoked']);
+
+/**
+ * `<id>:<pub>` (active) | `<id>:<pub>:active|retired|revoked` | `<id>:<pub>:retired:<closureSha256>` → keyring (contract §5). ANY malformed item,
+ * repeated id, public key under two ids (RS-16), more than 2 `active` or more than 16 items ⇒ null (closed policy). Zero `active` is valid.
+ * `parseTrustKeys` stays as it was.
+ */
+export function parseTrustKeyring(raw: string | undefined): TrustKeyring | null {
+  if (raw === undefined || raw === '') return null;
+  const items = raw.split(',');
+  if (items.length > MAX_TRUST_KEYS) return null;
+  const ring = new Map<string, TrustKeyringEntry>();
+  const materials = new Set<string>();
+  for (const item of items) {
+    const parsed = parseKeyringItem(item);
+    if (!parsed || ring.has(parsed.id) || materials.has(parsed.material)) return null;
+    ring.set(parsed.id, parsed.entry);
+    materials.add(parsed.material);
+  }
+  return [...ring.values()].filter((entry) => entry.status === 'active').length <= MAX_ACTIVE_KEYS ? ring : null;
+}
+
+function parseKeyringItem(item: string): { readonly id: string; readonly material: string; readonly entry: TrustKeyringEntry } | null {
+  const parts = item.split(':');
+  if (parts.length < 2 || parts.length > 4) return null;
+  const [id, material, status = 'active', pinned] = parts as [string, string, string?, string?];
+  // 4 parts ONLY as `retired:<64 lowercase hex>`; the status is exact (no case folding, no blanks)
+  if (!KEY_STATUSES.has(status) || (parts.length === 4 && !(status === 'retired' && HEX64.test(pinned ?? '')))) return null;
+  const key = TRUST_KEY_ID.test(id) ? publicKeyFromRaw(material) : null;
+  return key ? { id, material, entry: { key, status: status as TrustKeyringEntry['status'], closureSha256: parts.length === 4 ? (pinned as string) : null } } : null;
+}
+
+/** A keyring built in code is held to the same rules as a parsed one (fail-closed). */
+function isValidKeyring(ring: unknown): ring is TrustKeyring {
+  if (!(ring instanceof Map) || ring.size > MAX_TRUST_KEYS) return false;
+  const materials = new Set<string>();
+  let active = 0;
+  for (const [id, entry] of ring as Map<unknown, TrustKeyringEntry>) {
+    const shapeOk = typeof id === 'string' && TRUST_KEY_ID.test(id) && typeof entry === 'object' && entry !== null && isEd25519PublicKey(entry.key) && KEY_STATUSES.has(entry.status);
+    if (!shapeOk || !(entry.closureSha256 === null || (entry.status === 'retired' && HEX64.test(entry.closureSha256)))) return false;
+    const spki = entry.key.export({ format: 'der', type: 'spki' });
+    // Same rule as the parser (publicKeyFromRaw): a small-order or non-canonical point lets anyone forge signatures.
+    if (spki.length < 32 || isWeakEd25519PublicKey(spki.subarray(spki.length - 32))) return false;
+    const material = spki.toString('base64');
+    if (materials.has(material)) return false;
+    materials.add(material);
+    if (entry.status === 'active') active += 1;
+  }
+  return active <= MAX_ACTIVE_KEYS;
+}
+
+/** The one trust list the verifier uses: `keyring` (validated), or the TEST-ONLY `trustedKeys` as all `active`. Both, neither or invalid ⇒ null. */
+function keyringOf(options: SealedEvidenceOptions): TrustKeyring | null {
+  if (options.keyring !== undefined) return options.trustedKeys === undefined && isValidKeyring(options.keyring) ? options.keyring : null;
+  if (options.trustedKeys === undefined) return null;
+  return new Map([...options.trustedKeys].map(([id, key]) => [id, { key, status: 'active' as const, closureSha256: null }]));
+}
 
 export interface SealedEvidenceOptions {
   /** Pasta DOS MANIFESTOS (somente leitura para o web; NUNCA a pasta de evidências nem aninhada nela). */
   readonly sealsDir: string;
   /** TEST-ONLY trust list, every key `active` (contract §5). Together with `keyring` ⇒ closed policy. */
   readonly trustedKeys?: ReadonlyMap<string, KeyObject>;
-  /** Production trust list with key states (contract §5). W3.2 hook: verified from W3.4 on; until then the policy is CLOSED (fail-closed). */
+  /** Production trust list with key states (contract §5), e.g. from `parseTrustKeyring`. Held to the same limits when built in code. */
   readonly keyring?: TrustKeyring;
   /** Versions accepted at every position; absent ⇒ library default `[1,2]`. Empty, unknown or repeated ⇒ closed policy (contract §4.2). */
   readonly acceptedVersions?: readonly AcceptedSealVersion[];
@@ -237,9 +299,9 @@ function acceptedVersionsOf(value: unknown): readonly AcceptedSealVersion[] | nu
 /** Política que só autentica o que um manifesto ASSINADO por uma chave de confiança cobre, com os MESMOS hashes. */
 export function createSealedEvidenceProvenance(options: SealedEvidenceOptions): EvidenceProvenancePolicy {
   const versions = acceptedVersionsOf(options.acceptedVersions);
-  const { trustedKeys } = options;
-  // keyring + trustedKeys together, neither, or a keyring before W3.4 implements its states ⇒ nothing is authentic (contract §5, §8 row 1)
-  if (versions === null || options.keyring !== undefined || trustedKeys === undefined) return CLOSED_EVIDENCE_PROVENANCE;
+  const ring = keyringOf(options);
+  // keyring + trustedKeys together, neither, or an invalid keyring ⇒ nothing is authentic (contract §5, §8 row 1)
+  if (versions === null || ring === null) return CLOSED_EVIDENCE_PROVENANCE;
   const ops = options.fs ?? nodeFsOps;
   const real = async (target: string): Promise<string> => {
     try {
@@ -277,15 +339,16 @@ export function createSealedEvidenceProvenance(options: SealedEvidenceOptions): 
         // o de MAIOR seq: se ele não valer, não se recua para um mais antigo (o atacante escolheria qual versão do passado vale)
         const latest = sealed.reduce((best, item) => (item.seq > best.seq ? item : best));
         // `[2]` always walks: rows 4–5 decide before (and without) reading the latest separately
-        if (!versions.includes(1)) return await classifyWalked({ ops, dir, sealed, auditId, evidences, trustedKeys, versions, budget: { remaining: MAX_CLASSIFY_BYTES } });
+        const sealsDir = options.sealsDir;
+        if (!versions.includes(1)) return await classifyWalked({ ops, sealsDir, dir, sealed, auditId, evidences, ring, versions, budget: { remaining: MAX_CLASSIFY_BYTES } });
         const budget: ReadBudget = { remaining: MAX_CLASSIFY_BYTES };
         const latestRead = await readPosition(ops, path.join(dir, latest.name), budget); // read ONCE; reused by whichever path is taken
         const declared = latestRead.kind === 'text' ? declaredSeal(latestRead.text) : null;
         // Path choice (contract §8): `[1]` emulates the old verifier, always. `[1,2]` with a v1 latest is path A, exactly today's behavior.
         // Everything else (latest v2, or a latest that is unreadable or of another version) is the WALKED path B (fail-closed).
-        if (!versions.includes(2)) return declared ? classifyLatestV1(declared.json, latest.seq, auditId, evidences, trustedKeys) : unauthenticated('VERIFICATION_ERROR');
-        if (declared?.schemaVersion === SEAL_SCHEMA_VERSION) return classifyLatestV1(declared.json, latest.seq, auditId, evidences, trustedKeys);
-        return await classifyWalked({ ops, dir, sealed, auditId, evidences, trustedKeys, versions, budget, alreadyRead: { seq: latest.seq, read: latestRead } });
+        if (!versions.includes(2)) return declared ? classifyLatestV1(declared.json, latest.seq, auditId, evidences, ring) : unauthenticated('VERIFICATION_ERROR');
+        if (declared?.schemaVersion === SEAL_SCHEMA_VERSION) return classifyLatestV1(declared.json, latest.seq, auditId, evidences, ring);
+        return await classifyWalked({ ops, sealsDir, dir, sealed, auditId, evidences, ring, versions, budget, alreadyRead: { seq: latest.seq, read: latestRead } });
       } catch {
         return unauthenticated('VERIFICATION_ERROR');
       }
@@ -304,15 +367,18 @@ function declaredSeal(text: string): { readonly json: unknown; readonly schemaVe
 }
 
 /** Path A (contract §8.A, §9): the v1 verifier of before W3, unchanged: only the latest manifest, answer EXACTLY `{status:'AUTHENTICATED'}`. */
-function classifyLatestV1(json: unknown, latestSeq: number, auditId: string, evidences: readonly EvidenceToProve[], trustedKeys: ReadonlyMap<string, KeyObject>): EvidenceTrust {
+function classifyLatestV1(json: unknown, latestSeq: number, auditId: string, evidences: readonly EvidenceToProve[], ring: TrustKeyring): EvidenceTrust {
   const parsed = sealFileSchema.safeParse(json);
   if (!parsed.success) return unauthenticated('SEAL_INVALID');
   const { signature, ...body } = parsed.data;
-  const key = trustedKeys.get(body.keyId);
-  if (!key || body.auditId !== auditId || body.seq !== latestSeq) return unauthenticated('SEAL_INVALID');
+  const signer = ring.get(body.keyId);
+  if (!signer || body.auditId !== auditId || body.seq !== latestSeq) return unauthenticated('SEAL_INVALID');
   const refs = body.entries.map((entry) => entry.ref);
   if (new Set(refs).size !== refs.length || refs.some((ref, index) => index > 0 && (refs[index - 1] as string) >= ref)) return unauthenticated('SEAL_INVALID'); // ordenado e sem repetição
-  if (!cryptoVerify(null, Buffer.from(canonicalJson(body), 'utf8'), key, Buffer.from(signature, 'base64url'))) return unauthenticated('SEAL_INVALID');
+  if (!cryptoVerify(null, Buffer.from(canonicalJson(body), 'utf8'), signer.key, Buffer.from(signature, 'base64url'))) return unauthenticated('SEAL_INVALID');
+  // the ONLY addition to the v1 path (contract §8.A, §9): the signer's state; a v1 is never covered by a retirement closure
+  if (signer.status === 'revoked') return unauthenticated('SEAL_KEY_REVOKED');
+  if (signer.status === 'retired') return unauthenticated('SEAL_KEY_RETIRED_UNCOVERED');
   return coverageVerdict(body.entries, evidences) ?? { status: 'AUTHENTICATED' };
 }
 
@@ -340,8 +406,8 @@ export function evidenceProvenanceFromConfig(
   config: { readonly sealsDir: string | null; readonly trustKeys: string | undefined; readonly otherDirs?: ReadonlyArray<string | null | undefined>; readonly acceptedVersions?: readonly AcceptedSealVersion[] },
   fsOps?: FsOps,
 ): EvidenceProvenancePolicy {
-  const keys = parseTrustKeys(config.trustKeys);
-  if (!config.sealsDir || !keys) return CLOSED_EVIDENCE_PROVENANCE;
+  const ring = parseTrustKeyring(config.trustKeys);
+  if (!config.sealsDir || !ring) return CLOSED_EVIDENCE_PROVENANCE;
   // os manifestos NÃO podem morar em nenhuma outra pasta de dados (nem elas dentro deles): quem escreve lá não pode tocar na prova (nem para apagá-la).
   // Duas camadas: léxica aqui (já na configuração) e por caminho REAL (links simbólicos) a cada verificação.
   const others = (config.otherDirs ?? []).filter((dir): dir is string => typeof dir === 'string' && dir !== '');
@@ -350,9 +416,9 @@ export function evidenceProvenanceFromConfig(
     const b = path.resolve(dir).toLowerCase();
     if (a === b || a.startsWith(b + path.sep) || b.startsWith(a + path.sep)) return CLOSED_EVIDENCE_PROVENANCE;
   }
-  // `acceptedVersions` is forwarded as given (absent ⇒ library default [1,2]; production passes [2], V2-19). `trustedKeys` here until W3.4
-  // moves this function to `parseTrustKeyring` (contract §5).
-  return createSealedEvidenceProvenance({ sealsDir: config.sealsDir, trustedKeys: keys, acceptedVersions: config.acceptedVersions, otherDirs: others, ...(fsOps ? { fs: fsOps } : {}) });
+  // the list in the new format (a superset of the old one) and `acceptedVersions` forwarded as given (absent ⇒ library default [1,2]; production
+  // passes [2], V2-19). Contract §5: this function uses `parseTrustKeyring` and the `keyring` option.
+  return createSealedEvidenceProvenance({ sealsDir: config.sealsDir, keyring: ring, acceptedVersions: config.acceptedVersions, otherDirs: others, ...(fsOps ? { fs: fsOps } : {}) });
 }
 
 /* ============================================================================== manifest v2 and key-retirement closure (wave W3.1) */
@@ -601,15 +667,15 @@ interface ReadBudget {
   remaining: number;
 }
 /** One position as read: its text, NOT a regular file (link, directory, FIFO…: row 8), or a read FAILURE (I/O, > 256 KiB, budget: row 7). */
-type PositionRead = { readonly kind: 'text'; readonly text: string } | { readonly kind: 'not-regular' } | { readonly kind: 'failed' };
+type PositionRead = { readonly kind: 'text'; readonly text: string } | { readonly kind: 'not-regular' } | { readonly kind: 'failed' } | { readonly kind: 'over-budget' };
 
 /**
  * Reads one file at most once, without following links and within the per-file and per-`classify` limits (contract §2, §7.2). Never throws.
  * Once the budget is exceeded nothing else is read. The text comes from `FsOps.readFile` (a lossy UTF-8 decode): an invalid byte can only become
  * U+FFFD, which no ASCII-only field or JSON token accepts, so the position is SEAL_INVALID as with a strict decode.
  */
-async function readPosition(ops: FsOps, file: string, budget: ReadBudget): Promise<PositionRead> {
-  if (budget.remaining < 0) return { kind: 'failed' };
+async function readPosition(ops: FsOps, file: string, budget: ReadBudget, maxBytes = MAX_SEAL_BYTES): Promise<PositionRead> {
+  if (budget.remaining < 0) return { kind: 'over-budget' };
   let info: FileInfo;
   try {
     info = await ops.lstat(file);
@@ -617,11 +683,11 @@ async function readPosition(ops: FsOps, file: string, budget: ReadBudget): Promi
     return { kind: 'failed' };
   }
   if (info.isSymbolicLink() || !info.isFile()) return { kind: 'not-regular' }; // checked BEFORE opening: a FIFO is never opened
-  if (info.size > MAX_SEAL_BYTES) return { kind: 'failed' };
+  if (info.size > maxBytes) return { kind: 'failed' };
   try {
-    const text = await ops.readFile(file, MAX_SEAL_BYTES);
+    const text = await ops.readFile(file, maxBytes);
     budget.remaining -= Math.max(info.size, Buffer.byteLength(text, 'utf8'));
-    return budget.remaining < 0 ? { kind: 'failed' } : { kind: 'text', text };
+    return budget.remaining < 0 ? { kind: 'over-budget' } : { kind: 'text', text };
   } catch {
     return { kind: 'failed' };
   }
@@ -648,15 +714,18 @@ function parseSealPositionText(raw: Uint8Array): SealTextParse<SealPosition> {
 interface VerifiedPosition {
   readonly seq: number;
   readonly version: AcceptedSealVersion;
+  readonly status: TrustKeyringEntry['status'];
   readonly file: EvidenceSealFile | EvidenceSealFileV2;
 }
 interface Walk {
   readonly ops: FsOps;
+  /** Root of the manifests (holds `_closures/`). */
+  readonly sealsDir: string;
   readonly dir: string;
   readonly sealed: ReadonlyArray<{ readonly name: string; readonly seq: number }>;
   readonly auditId: string;
   readonly evidences: readonly EvidenceToProve[];
-  readonly trustedKeys: ReadonlyMap<string, KeyObject>;
+  readonly ring: TrustKeyring;
   readonly versions: readonly AcceptedSealVersion[];
   readonly budget: ReadBudget;
   /** The latest, already read to choose the path (never read twice). */
@@ -664,9 +733,9 @@ interface Walk {
 }
 
 /**
- * Path B (contract §3, §4, §8 rows 4–14): EVERY `seal-0001 … seal-N` is read once and judged, in the order of the precedence table. Rows that
- * belong to later slices stay fail-closed: row 6 (revocation pre-step, W3.5) has nothing to signal while every `trustedKeys` key is active, and
- * row 13 (retired keys outside a pinned closure, W3.4) cannot occur for the same reason; a `keyring` closes the policy until W3.4.
+ * Path B (contract §3, §4, §8 rows 4–14): EVERY `seal-0001 … seal-N` is read once and judged, in the order of the precedence table. Row 6 (the
+ * revocation pre-step, W3.5) is a fail-closed PLACEHOLDER here: an authentic position of a `revoked` key gives SEAL_KEY_REVOKED right after row 8;
+ * W3.5 moves it before rows 7–8 with tolerant reads and `revokedKeyIds`. Row 13 is the retirement closure (`retiredCoverage`).
  */
 async function classifyWalked(walk: Walk): Promise<EvidenceTrust> {
   const ordered = [...walk.sealed].sort((a, b) => a.seq - b.seq);
@@ -674,29 +743,83 @@ async function classifyWalked(walk: Walk): Promise<EvidenceTrust> {
   if (!last || ordered[0]?.seq === 0 || last.seq > MAX_CHAIN_SEALS) return unauthenticated('SEAL_CHAIN_BROKEN'); // row 4 (7a): names only, no read
   const reads: Array<{ readonly seq: number; readonly read: PositionRead }> = [];
   for (const item of ordered) reads.push({ seq: item.seq, read: walk.alreadyRead?.seq === item.seq ? walk.alreadyRead.read : await readPosition(walk.ops, path.join(walk.dir, item.name), walk.budget) }); // row 5
-  if (reads.some(({ read }) => read.kind === 'failed')) return unauthenticated('VERIFICATION_ERROR'); // row 7 (row 6 is W3.5)
-  const positions = verifiedPositions(reads, walk.auditId, walk.trustedKeys);
+  if (reads.some(({ read }) => read.kind === 'failed' || read.kind === 'over-budget')) return unauthenticated('VERIFICATION_ERROR'); // row 7
+  const positions = verifiedPositions(reads, walk.auditId, walk.ring);
   if (!positions) return unauthenticated('SEAL_INVALID'); // row 8
+  if (positions.some((position) => position.status === 'revoked')) return unauthenticated('SEAL_KEY_REVOKED'); // row 6 placeholder (W3.5)
   const order = chainOrderVerdict(positions, walk.versions); // rows 9–12
   if (order) return order;
+  const retired = await retiredCoverage(walk, positions); // row 13
+  if ('verdict' in retired) return retired.verdict;
   const head = positions[positions.length - 1] as VerifiedPosition;
-  const keyIds = [...new Set(positions.map((position) => position.file.keyId))].sort();
+  // contract §7.3: distinct, sorted ids of the position keys PLUS the signers of the closures used
+  const keyIds = [...new Set([...positions.map((position) => position.file.keyId), ...retired.signers])].sort();
   return coverageVerdict(head.file.entries, walk.evidences) ?? { status: 'AUTHENTICATED', headSeq: head.seq, headSealSha256: sealSha256(head.file), keyIds }; // row 14
 }
 
+/** Name of the folder of retirement closures, `<sealsDir>/_closures/<id>.json` (no `auditId` matches it, contract §6). */
+const CLOSURES_DIR = '_closures';
+
+/**
+ * Row 13 (contract §6): a position of a `retired` key counts ONLY inside the closure pinned for that key, and only when the closure has a head for
+ * this audit, the chain CONTAINS that head with the same `sealSha256`, and the position is a v2 at or before it. A new audit, anything after the
+ * head, truncation followed by re-signing, a regression below the head, a v1 position or a key without a pinned closure ⇒ uncovered.
+ * Returns the signers of the closures used (they join `keyIds`).
+ */
+async function retiredCoverage(walk: Walk, positions: readonly VerifiedPosition[]): Promise<{ readonly signers: readonly string[] } | { readonly verdict: EvidenceTrust }> {
+  const uncovered = { verdict: unauthenticated('SEAL_KEY_RETIRED_UNCOVERED') };
+  const signers: string[] = [];
+  for (const keyId of new Set(positions.filter((position) => position.status === 'retired').map((position) => position.file.keyId))) {
+    const closure = await pinnedClosure(walk, keyId);
+    if (closure === 'over-budget') return { verdict: unauthenticated('VERIFICATION_ERROR') }; // §2: the classify budget includes closures
+    const head = closure?.heads.find((candidate) => candidate.auditId === walk.auditId);
+    const anchor = head ? positions[head.seq - 1] : undefined;
+    if (!closure || !head || !anchor || anchor.seq !== head.seq || sealSha256(anchor.file) !== head.sealSha256) return uncovered;
+    if (positions.some((position) => position.file.keyId === keyId && (position.version !== SEAL_SCHEMA_VERSION_V2 || position.seq > head.seq))) return uncovered;
+    signers.push(closure.signerKeyId);
+  }
+  return { signers };
+}
+
+/**
+ * The closure PINNED for a retired key, or null when it does not count (contract §6). `_closures` must be a real directory and the file a regular
+ * one (lstat, no link), read once within the classify budget. The AUTHORITY is the pin: SHA-256 of the delivered bytes = `closureSha256`. The
+ * text comes from a lossy UTF-8 decode, so its UTF-8 encoding equals the bytes on disk for every valid UTF-8 file; an invalid byte changes the
+ * hash and the closure is refused. After the pin: strict schema, `retiredKeyId` = file name, and the signature as DEFENSE IN DEPTH, checked only
+ * while the signer is still listed (any state): a signer removed from the list leaves the pin as the sole authority (V2-47).
+ */
+async function pinnedClosure(walk: Walk, keyId: string): Promise<KeyRetirementClosureFile | null | 'over-budget'> {
+  const pinned = walk.ring.get(keyId)?.closureSha256;
+  if (!pinned) return null;
+  const dir = path.join(walk.sealsDir, CLOSURES_DIR);
+  try {
+    const info = await walk.ops.lstat(dir);
+    if (info.isSymbolicLink() || !info.isDirectory()) return null;
+  } catch {
+    return null;
+  }
+  const read = await readPosition(walk.ops, path.join(dir, `${keyId}.json`), walk.budget, MAX_CLOSURE_BYTES);
+  if (read.kind === 'over-budget') return 'over-budget';
+  if (read.kind !== 'text' || sha256Hex(read.text) !== pinned) return null; // missing, not regular, > 256 KiB, unreadable or other bytes
+  const parsed = parseKeyRetirementClosureText(Buffer.from(read.text, 'utf8'));
+  if (!parsed.ok || parsed.value.retiredKeyId !== keyId) return null;
+  const signer = walk.ring.get(parsed.value.signerKeyId);
+  return !signer || verifyKeyRetirementClosureSignature(parsed.value, signer.key) ? parsed.value : null;
+}
+
 /** Row 8 at EVERY position: a regular file, raw text and strict schema of its version, same audit, `seq` = name, key in the list, signature. */
-function verifiedPositions(reads: ReadonlyArray<{ readonly seq: number; readonly read: PositionRead }>, auditId: string, trustedKeys: ReadonlyMap<string, KeyObject>): VerifiedPosition[] | null {
+function verifiedPositions(reads: ReadonlyArray<{ readonly seq: number; readonly read: PositionRead }>, auditId: string, ring: TrustKeyring): VerifiedPosition[] | null {
   const positions: VerifiedPosition[] = [];
   for (const { seq, read } of reads) {
     if (read.kind !== 'text') return null;
     const parsed = parseSealPositionText(Buffer.from(read.text, 'utf8'));
     if (!parsed.ok) return null;
     const { version, file } = parsed.value;
-    const key = trustedKeys.get(file.keyId);
-    if (!key || file.auditId !== auditId || file.seq !== seq) return null;
+    const signer = ring.get(file.keyId); // any state: a key absent from the list is SEAL_INVALID (V2-30); the state is judged later
+    if (!signer || file.auditId !== auditId || file.seq !== seq) return null;
     const { signature, ...body } = file;
-    if (!verifyEd25519PureSignature(signingBytesOf(body), signature, key)) return null;
-    positions.push({ seq, version, file });
+    if (!verifyEd25519PureSignature(signingBytesOf(body), signature, signer.key)) return null;
+    positions.push({ seq, version, status: signer.status, file });
   }
   return positions;
 }

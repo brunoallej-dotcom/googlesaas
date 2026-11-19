@@ -213,8 +213,8 @@ test('V2-19 (M3) invalid acceptedVersions, or keyring together with trustedKeys,
   }
   const keyring: TrustKeyring = new Map([[KEYS_A.keyId, { key: trusted(KEYS_A).get(KEYS_A.keyId) as KeyObject, status: 'active' as const, closureSha256: null }]]);
   assert.deepEqual(await createSealedEvidenceProvenance({ sealsDir, trustedKeys: trusted(KEYS_A), keyring, acceptedVersions: [2] }).classify(AUD, SAMPLE), closed, 'keyring + trustedKeys together');
-  // W3.2 hook (fail-closed): keyring states and closures arrive in W3.4; until then a keyring alone does not authenticate anything
-  assert.deepEqual(await createSealedEvidenceProvenance({ sealsDir, keyring, acceptedVersions: [2] }).classify(AUD, SAMPLE), closed, 'keyring alone (until W3.4)');
+  // since W3.4 the keyring is the production option: alone, it verifies (its states are covered in the keyring test file)
+  assert.deepEqual(await createSealedEvidenceProvenance({ sealsDir, keyring, acceptedVersions: [2] }).classify(AUD, SAMPLE), { status: 'AUTHENTICATED', headSeq: 1, headSealSha256: sealSha256(v2Of(KEYS_A)), keyIds: [KEYS_A.keyId] }, 'keyring alone');
   assert.deepEqual(await createSealedEvidenceProvenance({ sealsDir, acceptedVersions: [2] }).classify(AUD, SAMPLE), closed, 'no keys at all');
   assert.equal((await policy(sealsDir, [2, 1]).classify(AUD, SAMPLE)).status, 'AUTHENTICATED', '[2,1] is the same set as [1,2]');
 });
@@ -323,7 +323,7 @@ test('V2-19 (M3, static guard) an aliased import, an assignment, a namespace cal
   for (const [label, source] of fixtures) assert.ok(scanFactoryUse(file, strip(source)).violations.length > 0, `the guard must report: ${label}`);
 });
 
-test('V2-19 (M3, static) every caller outside tests/ passes acceptedVersions explicitly, production passes [2], and only provenance.ts still builds trustedKeys', () => {
+test('V2-19 (M3, static) every caller outside tests/ passes acceptedVersions explicitly, production passes [2], and nobody outside tests/ passes trustedKeys', () => {
   const files = [...walk(path.join(ROOT, 'src')), ...walk(path.join(ROOT, 'scripts'))];
   const calls: Array<readonly [string, string]> = [];
   const violations: string[] = [];
@@ -333,9 +333,8 @@ test('V2-19 (M3, static) every caller outside tests/ passes acceptedVersions exp
     const scanned = scanFactoryUse(relative, code);
     violations.push(...scanned.violations);
     calls.push(...scanned.calls.map((args) => [relative, args] as const));
-    // `trustedKeys` (every key active) is test-only (contract §5). Narrow, per-file allowance: provenance.ts itself, until W3.4 moves
-    // `evidenceProvenanceFromConfig` to `parseTrustKeyring`.
-    if (/\btrustedKeys\s*:/.test(code)) assert.equal(relative, PROVENANCE_FILE, `${relative} passes trustedKeys`);
+    // `trustedKeys` (every key active) is test-only (contract §5): production goes through `parseTrustKeyring` and the `keyring` option (W3.4)
+    assert.ok(!/\btrustedKeys\s*:/.test(code), `${relative} passes trustedKeys`);
   }
   assert.deepEqual(violations, []);
   assert.ok(calls.length >= 2, `callers found: ${calls.map(([file]) => file).join(', ')}`);
