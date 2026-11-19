@@ -50,9 +50,13 @@ test('só o próprio módulo de evidências importa scoring-basis, derive-url e 
     // Onda 6C (I2): o mapeador é o único consumidor externo, e SÓ de tipos (apagados na compilação; verificado abaixo)
     // Onda 6C (I3): o serviço de prévia também só importa TIPOS; a ÚNICA importação de valor é a rota da prévia (monta o leitor)
     // Onda 6C (I4): a finalização só importa o TIPO da conferência do website (a releitura bruta é feita pelo leitor, injetado)
-    'src/lib/link-audit-evidence/scoring-basis.ts': ['src/app/api/link-audit/scoring/shared.ts', 'src/lib/link-audit-scoring-runs/assemble.ts', 'src/lib/link-audit-scoring-runs/preview.ts', 'src/lib/link-audit-scoring-runs/results.ts', 'src/lib/link-audit-scoring-runs/types.ts'],
+    // P1 W2: o adaptador de disco do `export` monta o leitor (como a rota da prévia), com FsOps injetado e só leitura (verificado abaixo)
+    'src/lib/link-audit-evidence/scoring-basis.ts': ['src/app/api/link-audit/scoring/shared.ts', 'src/lib/link-audit-attestation/export-run.ts', 'src/lib/link-audit-scoring-runs/assemble.ts', 'src/lib/link-audit-scoring-runs/preview.ts', 'src/lib/link-audit-scoring-runs/results.ts', 'src/lib/link-audit-scoring-runs/types.ts'],
   });
-  for (const importer of (importers['src/lib/link-audit-evidence/scoring-basis.ts'] ?? []).filter((name) => name.startsWith('src/lib/'))) {
+  const exportRun = 'src/lib/link-audit-attestation/export-run.ts';
+  const exportRunImports = [...strip(fs.readFileSync(path.join(ROOT, exportRun), 'utf8')).matchAll(/(?:^|\n)\s*import\s+(type\s+)?\{([^}]*)\}\s*from\s+['"][^'"]*scoring-basis['"]/g)];
+  assert.deepEqual(exportRunImports.map((match) => match[2]?.trim()), ['createScoringBasisReader'], 'o export só monta o leitor (nenhum outro valor de scoring-basis)');
+  for (const importer of (importers['src/lib/link-audit-evidence/scoring-basis.ts'] ?? []).filter((name) => name.startsWith('src/lib/') && name !== exportRun)) {
     const code = strip(fs.readFileSync(path.join(ROOT, importer), 'utf8'));
     const statements = [...code.matchAll(/(?:^|\n)\s*import\s+(type\s+)?[^;]*?from\s+['"][^'"]*scoring-basis['"]/g)];
     assert.ok(statements.length > 0 && statements.every((match) => match[1] !== undefined), `${importer} deve importar scoring-basis apenas como tipo`);
