@@ -322,6 +322,13 @@ Fecham lacunas apontadas no mapa da W4; prevalecem sobre o texto acima onde houv
 - **IA-01 (d):** o texto do critério foi ajustado para dizer que integridade ≠ `OK` sai como `SIGN_PACKAGE_INVALID` no passo 1. O esquema não muda.
 - **Isolamento:** o teste do `sign-core.ts` percorre todos os imports locais alcançáveis a partir dele (`package-hash → canonical`, `schemas → types`), fixa esse conjunto e os módulos externos (`node:crypto`, `zod`) e proíbe o verificador, disco, rede, processos e `snapshot-store` em qualquer ponto do grafo.
 - **Propagação na W4.2:** `runSignWithChain` repassa `confirm` e `riskAcceptanceBytes` ao núcleo, e a ordem continua: cadeia lida antes do passo 1 e julgada no passo 7, confirmação depois do passo 10, chave por último. Os fatos da tela ganham `seq` (último verificado + 1, igual a `--expect-seq`), ficando `{auditId, seq, entries}`. Uma recusa da cadeia nunca chega à confirmação; confirmação errada ou porta que falha não assina nada, não abre a chave e não muda a cópia da estação.
+- **Propagação na W4.3:** `runSign` pede `confirm` (repassada à cadeia e ao núcleo) e ganha `riskAcceptancePath` (`null` se não indicado). Decisões:
+  - quando indicado, o arquivo do aceite é lido uma vez, depois do dossiê, pelo mesmo `readFileBytes` do `FsOps` injetado, sem seguir link;
+  - o limite é `MAX_RISK_ACCEPTANCE_BYTES` = 16 MiB, o mesmo do dossiê, porque também é documento humano, só existência e hash;
+  - arquivo indicado e ilegível ⇒ `SIGN_INPUT_UNREADABLE` nomeando `--risk-acceptance`, mesmo com os papéis distintos (argumento dado e não lido é recusa);
+  - o critério IA-02 (5) passa a admitir também o arquivo do aceite entre os caminhos permitidos.
+
+  Confirmação errada ou porta que falha ⇒ nenhuma escrita (nem subpasta, temporário, `link()` ou fsync) e a chave não é aberta, também sobre uma cadeia existente.
 
 ### 5.6 Manifesto `v2` e verificador `v2` (onda W3, contrato próprio)
 
