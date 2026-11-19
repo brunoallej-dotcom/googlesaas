@@ -278,7 +278,16 @@ function isValidKeyring(ring: unknown): ring is TrustKeyring {
 function keyringOf(options: SealedEvidenceOptions): TrustKeyring | null {
   if (options.keyring !== undefined) return options.trustedKeys === undefined && isValidKeyring(options.keyring) ? options.keyring : null;
   if (options.trustedKeys === undefined) return null;
-  return new Map([...options.trustedKeys].map(([id, key]) => [id, { key, status: 'active' as const, closureSha256: null }]));
+  const listed = [...options.trustedKeys];
+  if (!listed.every(([, key]) => isUsablePublicKey(key))) return null; // same point rule as the parsers and `isValidKeyring` (fail-closed)
+  return new Map(listed.map(([id, key]) => [id, { key, status: 'active' as const, closureSha256: null }]));
+}
+
+/** An Ed25519 public key whose point is neither small-order nor non-canonical: the rule of `publicKeyFromRaw`, for keys handed over in code. */
+function isUsablePublicKey(key: KeyObject): boolean {
+  if (!isEd25519PublicKey(key)) return false;
+  const spki = key.export({ format: 'der', type: 'spki' });
+  return spki.length >= 32 && !isWeakEd25519PublicKey(spki.subarray(spki.length - 32));
 }
 
 export interface SealedEvidenceOptions {
@@ -836,21 +845,40 @@ interface ParsedRead {
 const MAX_REVOKED_KEY_IDS = 2;
 
 /**
- * Row 6, the revocation PRE-STEP (contract §7.2): each position that was read and parses is checked ON ITS OWN; it signals when its signature
- * VERIFIES under a key listed as `revoked`, its body names THIS audit and its `seq` is the one of its FILE NAME (a copy of another audit's or
- * position's manifest never fabricates the signal). Read failures elsewhere do not suppress it. Distinct, sorted, at most 2 ids.
+ * Row 6, the revocation PRE-STEP (contract §7.2): every position that was read is checked ON ITS OWN, on a LENIENT parse (so a representation the
+ * strict raw-text rules refuse, such as an escape or a duplicate key, cannot hide an authentic revoked signature; row 8 still refuses the chain).
+ * It signals when the signature VERIFIES under a key listed as `revoked`, the body names THIS audit and its `seq` is the one of its FILE NAME (a
+ * copy of another audit's or position's manifest never fabricates the signal). No signal is possible without the revoked private key. Read
+ * failures elsewhere do not suppress it. Distinct ids, the first 2 in lexicographic order.
  */
 function revocationSignal(reads: readonly ParsedRead[], auditId: string, ring: TrustKeyring): string[] {
   const revoked = new Set<string>();
-  for (const { seq, parsed } of reads) {
-    if (!parsed?.ok) continue;
-    const { file } = parsed.value;
-    const signer = ring.get(file.keyId);
-    if (signer?.status !== 'revoked' || file.auditId !== auditId || file.seq !== seq) continue;
-    const { signature, ...body } = file;
-    if (verifyEd25519PureSignature(signingBytesOf(body), signature, signer.key)) revoked.add(file.keyId);
+  for (const { seq, read } of reads) {
+    const position = read.kind === 'text' ? leniently(read.text) : null;
+    const signer = position ? ring.get(position.keyId) : undefined;
+    if (!position || signer?.status !== 'revoked' || position.auditId !== auditId || position.seq !== seq) continue;
+    if (verifyEd25519PureSignature(position.signingBytes, position.signature, signer.key)) revoked.add(position.keyId);
   }
   return [...revoked].sort().slice(0, MAX_REVOKED_KEY_IDS);
+}
+
+/**
+ * The minimum the pre-step needs from a read file, by plain `JSON.parse` (never used to authenticate): an object with string `keyId`, `auditId`
+ * and `signature`, an integer `seq` and `schemaVersion` 1 or 2. Both versions sign the same input, UTF-8(canonicalJson(file without `signature`)),
+ * exactly as the strict path verifies it (contract §2; `createEvidenceSeal`). Never throws.
+ */
+function leniently(text: string): { readonly keyId: string; readonly auditId: string; readonly seq: number; readonly signature: string; readonly signingBytes: Buffer } | null {
+  try {
+    const json = JSON.parse(text) as unknown;
+    if (typeof json !== 'object' || json === null || Array.isArray(json)) return null;
+    const { signature, ...body } = json as Record<string, unknown>;
+    const { keyId, auditId, seq, schemaVersion } = body;
+    if (typeof signature !== 'string' || typeof keyId !== 'string' || typeof auditId !== 'string' || typeof seq !== 'number' || !Number.isInteger(seq)) return null;
+    if (schemaVersion !== SEAL_SCHEMA_VERSION && schemaVersion !== SEAL_SCHEMA_VERSION_V2) return null;
+    return { keyId, auditId, seq, signature, signingBytes: signingBytesOf(body) };
+  } catch {
+    return null;
+  }
 }
 
 function verifiedPositions(reads: readonly ParsedRead[], auditId: string, ring: TrustKeyring): VerifiedPosition[] | null {
