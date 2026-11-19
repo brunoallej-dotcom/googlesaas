@@ -15,9 +15,9 @@
 | W1 | Função única `basis → EvidenceToProve[]` + teste de equivalência; esquemas do pacote e da aprovação; `packageSha256` determinístico | W0 | W3 | ✅ mergeada (PR #24, `bd07e35`) |
 | W2 | CLI `export` (somente leitura) | W1 | W3, R1 | ✅ mergeada (PR #29) |
 | W3 | Verificador `v2` (aditivo em `provenance.ts`) + contrato próprio | W0 + contrato aprovado | W1, W2 | ✅ concluída em 19/11/2026 (W3.1–W3.5: PRs #30, #32, #33, #34, #35) |
-| R1 | ADR-0002: confirmação de resultados pelo livro de cabeças (fase C do resultado só pelo autor) | W0 (§16.17 revisada), W1, W3 | W2 | ⬜ |
+| R1 | ADR-0002: confirmação de resultados pelo livro de cabeças (fase C do resultado só pelo autor) | W0 (§16.17 revisada), W1, W3 | W2 | 🟡 R1.1 (#39) e R1.2 (#41) mergeadas; R1.3 em andamento |
 | R2 | Resultado confirmado registra a proveniência que o atestou (`headSeq`, `headSealSha256`, `keyIds`); `UNAUTHENTICATED` na releitura ⇒ revisão humana | W3, R1 | W4 | ⬜ |
-| W4 | CLI `sign` (manifesto `v2`) | W1, W3, decisões §13.2 itens 1, 2 e 4 (tomadas: D10, D11, D12/D14) | — | ⬜ desbloqueada |
+| W4 | CLI `sign` (manifesto `v2`) | W1, W3, decisões §13.2 itens 1, 2 e 4 (tomadas: D10, D11, D12/D14) | — | 🟡 W4.1 (#38), W4.2 (#40) e W4.3 (#42) mergeadas; W4.4 em andamento |
 | W5 | Procedimento, dossiê e ensaio ponta a ponta em homologação com chave descartável | W4, R1, R2 | — | ⬜ |
 | W6 | Coleta LIVE nova da TUVAPLAST (fora do código) | W5 + autorização escrita específica | — | ⬜ |
 
@@ -157,7 +157,7 @@ interface (`audit-page/validators.ts`).
   |---|---|---|---|
   | R1.1 | Esquema, replay e capacidade: registros `RUN_*` v2 (S-1…S-7), slot `openRun` e I-1…I-6 com o autor no fecho (D-R1-1, inclusive o `CONFIRMED` das decisões), `RUN_CLOSING_ALLOWANCE` e `runsAvailable`, `CHECKPOINT`/`RECEIPT_REISSUED` contando `openRun`, cópia congelada do leitor pré-R1 | RL-21, RL-22, RL-23, RL-30, RL-36; M-R39 | médio |
   | R1.2 | Vista e leitura em sanduíche: `decisionHead` separado do `head`, `runs` na vista, testemunhas antes das receitas, R2 condicional no `revalidate` e no serviço de decisões | RL-13, RL-14, RL-16, RL-17, RL-24, RL-34 | alto |
-  | R1.3 | Finalização pelo livro, caminho feliz e fase A: porta de escrita (D-R1-3), guarda conferida antes do `RUN_INTENT`, resultado → recibo → `RUN_CONFIRMED`, prazo do dono, aborto da fase A vencida com releitura TOCTOU, concorrência entre processos, sync estrito | RL-04 (caminho feliz), RL-11, RL-15, RL-18, RL-19, RL-20, RL-25, RL-37 | alto |
+  | R1.3 | Finalização pelo livro, caminho feliz e fase A: porta de escrita (D-R1-3), guarda conferida antes do `RUN_INTENT`, resultado → recibo → `RUN_CONFIRMED`, prazo do dono, aborto da fase A vencida com releitura TOCTOU, concorrência entre processos, sync estrito; autorização de uso único emitida pelo `prepare()` e exigida por `reissue()`/`intent()`/`RUN_INTENT` (revisão da R1.2) | RL-04 (caminho feliz), RL-11, RL-15, RL-18, RL-19, RL-20, RL-25, RL-37 | alto |
   | R1.4 | Conclusão B/C só pelo autor, fechos intercalados da família `RUN_*`, portão do runbook da chave de origem (D-R1-6) | RL-01, RL-02, RL-04 (B/C), RL-05, RL-06, RL-07, RL-32 (`RUN_*`) | **muito alto** |
   | R1.5 | Leituras pelo livro: `list`/`get` conferem o hash do objeto devolvido contra o `runSha256`, razões novas, `RECEIPT_ONLY` no legado e sem livro, 503/409, DTOs e validadores da interface | RL-03, RL-08, RL-10, RL-12, RL-26, RL-27, RL-29, RL-31, RL-35, RL-38, RL-39 | **muito alto** |
   | R1.6 | Reemissão do recibo: `POST …/results {"action":"REISSUE_RECEIPT"}` com a resposta da D-R1-2, sync estrito do reenvio confirmado, botão no painel do livro | RL-09, RL-28, RL-33 | alto |

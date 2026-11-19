@@ -18,7 +18,7 @@ const importsOf = (source: string): string[] => {
     ...[...code.matchAll(/\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1] ?? ''),
   ];
 };
-const FILES = ['export-run.ts', 'export.ts', 'index.ts', 'package-hash.ts', 'schemas.ts', 'sign-core.ts'];
+const FILES = ['export-run.ts', 'export.ts', 'index.ts', 'package-hash.ts', 'schemas.ts', 'sign-chain.ts', 'sign-core.ts', 'sign-run.ts'];
 const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   'index.ts': new Set(['../link-audit-evidence/evidence-to-prove', './package-hash', './schemas']),
   'package-hash.ts': new Set(['../link-audit/canonical', './schemas']),
@@ -29,6 +29,12 @@ const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   'export-run.ts': new Set(['node:path', 'zod', '../link-audit/snapshot-store', '../link-audit-evidence/provenance', '../link-audit-evidence/reader', '../link-audit-evidence/scoring-basis', '../link-audit-evidence/store', './export', './schemas']),
   // P1 W4.1: núcleo PURO das recusas do `sign` (só o hash do dossiê vem de node:crypto); nunca o verificador, o leitor nem disco
   'sign-core.ts': new Set(['node:crypto', './package-hash', './schemas']),
+  // P1 W4.2: o ÚNICO arquivo do `sign` que importa o verificador v2 (leitura e verificação da cadeia, corpo e assinatura); disco só pelo FsOps
+  // injetado (tipo), nunca o leitor de evidências nem o armazenamento. O artefato único separa o núcleo do verificador na W4.6 (§5.5.1 item 7).
+  'sign-chain.ts': new Set(['node:crypto', 'node:path', '../link-audit/snapshot-store', '../link-audit-evidence/provenance', './schemas', './sign-core']),
+  // P1 W4.3: o ÚNICO arquivo do `sign` que escreve (leitura única das entradas e gravação temporário + link() exclusivo), pelo FsOps injetado;
+  // nunca o verificador (o texto gravado vem conferido de sign-chain.ts), o leitor de evidências nem o armazenamento
+  'sign-run.ts': new Set(['node:crypto', 'node:path', '../link-audit/snapshot-store', './schemas', './sign-chain', './sign-core']),
 };
 /** Exceções por arquivo às proibições abaixo, cada uma trocada por uma regra mais estreita (P1 W2). */
 const NO_IMPLICIT_CLOCK: readonly [RegExp, string] = [/Date\.now|new Date\s*\(\s*\)|performance\.now/, 'relógio implícito'];
@@ -36,6 +42,8 @@ const EXCEPTIONS: Readonly<Record<string, ReadonlySet<string>>> = {
   'export.ts': new Set(['Date']), // Date.parse/toISOString de datas recebidas (normalização); o instante vem de quem chama
   'export-run.ts': new Set(['Date', 'módulo node']), // só node:path (lista acima); o instante vem de quem chama
   'sign-core.ts': new Set(['Date', 'módulo node']), // relógio INJETADO (tipo Date); só createHash de node:crypto (teste abaixo)
+  'sign-chain.ts': new Set(['módulo node']), // só node:crypto (assinar/derivar a pública) e node:path (lista acima); sem relógio
+  'sign-run.ts': new Set(['módulo node', 'escrita']), // node:crypto (só randomBytes do nome do temporário) e node:path; escrita SÓ pela regra estreita abaixo
 };
 
 test('importsOf enxerga import de efeito colateral, import() dinâmico, require e export from', () => {
@@ -84,6 +92,27 @@ test('P1 W4.1: sign-core.ts usa de node:crypto SÓ createHash (hash do dossiê):
   assert.deepEqual([...code.matchAll(/import\s*\{([^}]*)\}\s*from\s*'node:crypto'/g)].map((m) => (m[1] ?? '').trim()), ['createHash']);
   assert.ok(!/\b(?:sign|verify|createPrivateKey|createPublicKey|generateKeyPair\w*|randomBytes|scrypt\w*|pbkdf2\w*)\s*\(/.test(code) && !/\bKeyObject\b/.test(code), 'operação de chave no núcleo');
   assert.ok(!/node:(?!crypto')/.test(code), 'outro módulo node');
+});
+
+test('P1 W4.2: sign-chain.ts verifica a cadeia com o verificador REAL em modo produção (keyring, acceptedVersions [2]), só lê pelo FsOps injetado e nunca escreve', () => {
+  const code = strip(fs.readFileSync(path.join(LIB, 'sign-chain.ts'), 'utf8'));
+  assert.ok(/createSealedEvidenceProvenance\(\{[^}]*\bkeyring\b[^}]*\bacceptedVersions:\s*\[2\]/.test(code), 'verificador com keyring e acceptedVersions: [2]');
+  assert.ok(!/\btrustedKeys\b/.test(code), 'trustedKeys é só de teste');
+  assert.ok(!/\.(?:mkdir|writeExclusive|link|unlink|chmod|syncDirectory|rename|rm|truncate)\s*\(|publishExclusive|withLock|nodeFsOps|node:fs/.test(code), 'escrita ou disco implícito');
+  for (const name of FILES.filter((file) => file !== 'sign-chain.ts' && file !== 'export-run.ts')) {
+    assert.ok(!importsOf(fs.readFileSync(path.join(LIB, name), 'utf8')).includes('../link-audit-evidence/provenance'), `${name} não importa o verificador (§5.5.1 item 7)`);
+  }
+});
+
+test('P1 W4.3: sign-run.ts escreve SÓ pelo FsOps injetado: uma subpasta, um temporário exclusivo, um link() para o nome final, remove só o próprio temporário e sincroniza; nunca apaga um manifesto, renomeia, muda permissão nem usa o disco padrão', () => {
+  const code = strip(fs.readFileSync(path.join(LIB, 'sign-run.ts'), 'utf8'));
+  const count = (pattern: RegExp): number => [...code.matchAll(pattern)].length;
+  assert.deepEqual([count(/\.mkdir\s*\(/g), count(/\.writeExclusive\s*\(/g), count(/\.link\s*\(/g), count(/\.syncDirectory\s*\(/g)], [1, 1, 1, 2], 'mkdir da subpasta, temporário, link() e fsync da raiz nova e da pasta');
+  assert.ok(count(/\.unlink\s*\(/g) > 0 && count(/\.unlink\s*\(/g) === count(/\.unlink\s*\(\s*temp\s*\)/g), 'unlink só do temporário');
+  assert.ok(/\.writeExclusive\s*\(\s*temp\s*,/.test(code) && /\.link\s*\(\s*temp\s*,/.test(code), 'o nome final só nasce por link() do temporário');
+  assert.ok(!/\.(?:rename|rm|rmdir|truncate|chmod|appendFile|writeFile|copyFile)\s*\(|publishExclusive|withLock|nodeFsOps|node:fs/.test(code), 'escrita fora da regra ou disco implícito');
+  assert.deepEqual([...code.matchAll(/import\s*\{([^}]*)\}\s*from\s*'node:crypto'/g)].map((m) => (m[1] ?? '').trim()), ['randomBytes, type KeyObject'], 'de node:crypto só o aleatório do temporário (e o tipo da chave)');
+  assert.ok(!/\b(?:sign|verify|createPrivateKey|createPublicKey|generateKeyPair\w*)\s*\(/.test(code), 'operação de chave fora de sign-chain.ts');
 });
 
 /** Arquivo `.ts` de um import relativo ou `@/` (= `src/`); `null` para pacote externo ou módulo `node:`. Import local que não resolve falha o teste. */
@@ -139,6 +168,43 @@ test('P1 W4.1 (revisão): o núcleo sign-core.ts, por TODO import local alcanç�
   }
   const external = new Set([...graph].flatMap(([file, specifiers]) => specifiers.filter((specifier) => resolveLocal(file, specifier) === null)));
   assert.deepEqual([...external].sort(), ['node:crypto', 'zod'], 'de fora do repositório, só node:crypto e zod');
+});
+
+/**
+ * Carregamento dinâmico que a lista fechada de imports não enxerga: `import(` cujo argumento não é UMA string literal simples (concatenação,
+ * template, variável), e qualquer `require` (`require(`, `require.resolve`, `module.require`, `createRequire`). Devolve o que achou.
+ */
+function dynamicLoads(code: string): string[] {
+  const found: string[] = [];
+  for (const match of code.matchAll(/\bimport\s*\(/g)) {
+    const rest = code.slice(match.index);
+    if (!/^import\s*\(\s*(['"])[^'"`$\\\n]*\1\s*\)/.test(rest)) found.push(rest.slice(0, 40));
+  }
+  // qualquer ocorrência solta do identificador (`require(`, `(require)(…)`, `const r = require`…), não só a chamada direta (confirmação da W4.2)
+  for (const match of code.matchAll(/\brequire\b|\bcreateRequire\b/g)) found.push(match[0]);
+  return found;
+}
+
+test('dynamicLoads enxerga import() com nome calculado e require; import() com string literal passa', () => {
+  assert.deepEqual(dynamicLoads("const a = await import('./x');\nconst b = await import(\"node:crypto\");"), []);
+  for (const code of ["import('./' + 'x')", 'import(`./${name}`)', 'import(name)', "import( './x' + y)", "require('x')", "require.resolve('x')", "module.require('x')", "createRequire(url)", "(require)('node:' + 'fs')", "const r = require; r('fs')"]) {
+    assert.equal(dynamicLoads(code).length > 0, true, code);
+  }
+});
+
+/** Arquivos do `sign` (`sign-*.ts`); arquivo novo do `sign` exige revisão desta lista. */
+const SIGN_FILES = FILES.filter((name) => name.startsWith('sign-'));
+
+test('confirmação da revisão da W4.1: nos arquivos do sign, nenhum import() com nome calculado e nenhum require (o grafo de imports fica todo visível)', () => {
+  assert.deepEqual(SIGN_FILES, ['sign-chain.ts', 'sign-core.ts', 'sign-run.ts']);
+  for (const name of SIGN_FILES) assert.deepEqual(dynamicLoads(strip(fs.readFileSync(path.join(LIB, name), 'utf8'))), [], `${name}: carregamento dinâmico`);
+});
+
+test('confirmação da revisão da W4.2: nenhum arquivo ALCANÇÁVEL a partir dos arquivos do sign (dependências transitivas, inclusive o verificador) usa import() com nome calculado ou require', () => {
+  const reached = new Set<string>();
+  for (const name of SIGN_FILES) for (const file of reachableFrom(path.join(LIB, name)).keys()) reached.add(file);
+  assert.ok(reached.size > SIGN_FILES.length, 'o grafo percorrido vai além dos próprios arquivos do sign');
+  for (const file of reached) assert.deepEqual(dynamicLoads(strip(fs.readFileSync(file, 'utf8'))), [], `${path.relative(ROOT, file)}: carregamento dinâmico`);
 });
 
 /** P1 W2: o CLI `scripts/link-audit-seal.ts` é o ÚNICO consumidor (o `sign` chega na W4), e só destes arquivos. */
