@@ -7,9 +7,12 @@ import type { SignRefusal, SignRefusalCode } from './sign-core';
  * P1 W4.4 — a CHAVE K1 do `sign` (spec §8 K1, decisão D11; §5.5 passo 12; §5.5.1 itens 1 e 2; IA-04, IA-22; RS-11, RS-12, RS-13). O arquivo de
  * `--key-source file:<caminho>` é uma chave PKCS#8 CIFRADA (PEM `ENCRYPTED PRIVATE KEY`, PBES2) aberta com a frase digitada no terminal (porta
  * injetada `passphrase`, nunca argv nem ambiente). Antes de pedir a frase, a CUSTÓDIA do arquivo (IA-22): fora de qualquer árvore com `.git`, fora
- * do projeto, fora das pastas temporárias, sem link simbólico, arquivo 0600 numa pasta 0700, e cifrado. Só LEITURA do disco: um `open` sem seguir
- * link e sem travar em FIFO; tipo, permissão e tamanho conferidos no descritor. Qualquer falha é recusa com código e mensagem FIXOS (sem caminho,
- * sem conteúdo, sem o objeto de erro: RS-13). Limite declarado: o Node não zera um `KeyObject`; os buffers da frase e do arquivo são zerados.
+ * do projeto, fora das pastas temporárias, sem link simbólico, arquivo 0600 com um só nome numa pasta 0700, e cifrado. Só LEITURA do disco.
+ * Revisão da W4.4: a custódia vale para o arquivo ABERTO, não para um caminho conferido antes. O arquivo é aberto UMA vez (sem seguir link no último
+ * componente, sem travar em FIFO); tipo, permissão, número de nomes e tamanho vêm do `fstat` do descritor; o lugar vem do caminho REAL do próprio
+ * descritor (`/proc/self/fd/<fd>`), e a leitura é feita pelo MESMO descritor. Sem esse caminho (sistema sem `/proc`), recusa fechada.
+ * Qualquer falha é recusa com código e mensagem FIXOS (sem caminho, sem conteúdo, sem o objeto de erro: RS-13). Limite declarado: o Node não zera
+ * um `KeyObject`; os buffers da frase e do arquivo são zerados em todo caminho.
  */
 
 export type KeySource = { readonly kind: 'file'; readonly path: string } | { readonly kind: 'external'; readonly id: string };
@@ -34,53 +37,43 @@ export interface KeyFileInfo {
   isSymbolicLink(): boolean;
   readonly mode: number;
 }
-export interface KeyFileRead {
-  readonly bytes: Buffer;
+/** `fstat` do descritor aberto: o que a custódia confere do arquivo que será LIDO. */
+export interface KeyFileStat {
+  isFile(): boolean;
   readonly mode: number;
+  readonly nlink: number;
+  readonly size: number;
+}
+/** O arquivo de chave ABERTO: tudo o que se confere dele e a leitura saem deste descritor (revisão da W4.4). */
+export interface OpenedKeyFile {
+  stat(): Promise<KeyFileStat>;
+  /** Caminho real do descritor aberto (Linux: `readlink('/proc/self/fd/<fd>')`); rejeita onde não há `/proc`. */
+  realPath(): Promise<string>;
+  read(buffer: Buffer, offset: number, length: number, position: number): Promise<{ readonly bytesRead: number }>;
+  close(): Promise<void>;
 }
 /** O que a custódia e a abertura usam do disco. Injetável nos testes; nada aqui escreve. */
 export interface KeyFileOps {
+  /** Metadados das pastas (os `.git` acima do arquivo e a pasta dele, pelo caminho real); nunca do arquivo de chave. */
   lstat(target: string): Promise<KeyFileInfo>;
+  /** Caminho real das raízes proibidas (projeto e pastas temporárias). */
   realpath(target: string): Promise<string>;
-  /** Lê o arquivo sem seguir link e sem travar em FIFO; tipo, permissão e tamanho do DESCRITOR; recusa acima de `maxBytes`. */
-  readKeyFile(target: string, maxBytes: number): Promise<KeyFileRead>;
-}
-
-class KeyFileError extends Error {
-  readonly code: 'ENOTFILE' | 'ETOOBIG' | 'ECHANGED';
-  constructor(code: 'ENOTFILE' | 'ETOOBIG' | 'ECHANGED') {
-    super(`arquivo de chave recusado (${code})`);
-    this.name = 'KeyFileError';
-    this.code = code;
-  }
+  /** Abre o arquivo de chave UMA vez: só leitura, sem seguir link no último componente e sem travar em FIFO. */
+  openKeyFile(target: string): Promise<OpenedKeyFile>;
 }
 
 export const nodeKeyFileOps: KeyFileOps = {
   lstat: (target) => fsPromises.lstat(target),
   realpath: (target) => fsPromises.realpath(target),
-  async readKeyFile(target, maxBytes) {
+  async openKeyFile(target) {
     const { constants } = fsPromises;
     const handle = await fsPromises.open(target, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
-    try {
-      const info = await handle.stat();
-      if (!info.isFile()) throw new KeyFileError('ENOTFILE');
-      if (info.size > maxBytes) throw new KeyFileError('ETOOBIG');
-      // `size + 1`: um byte a mais denuncia um arquivo que cresceu depois do fstat (falha fechada); Buffer.alloc (zerado, fora do pool)
-      const buffer = Buffer.alloc(info.size + 1);
-      let length = 0;
-      while (length < buffer.length) {
-        const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
-        if (bytesRead === 0) break;
-        length += bytesRead;
-      }
-      if (length > info.size) {
-        buffer.fill(0);
-        throw new KeyFileError('ECHANGED');
-      }
-      return { bytes: buffer.subarray(0, length), mode: info.mode };
-    } finally {
-      await handle.close();
-    }
+    return {
+      stat: () => handle.stat(),
+      realPath: () => fsPromises.readlink(`/proc/self/fd/${handle.fd}`),
+      read: (buffer, offset, length, position) => handle.read(buffer, offset, length, position),
+      close: () => handle.close(),
+    };
   },
 };
 
@@ -96,12 +89,16 @@ const UNSAFE_GIT = unsafe('está numa árvore com .git (repositório) em alguma 
 const UNSAFE_SYMLINK = unsafe('o caminho é um link simbólico');
 const UNSAFE_FILE_MODE = unsafe('o arquivo não tem permissão exatamente 0600');
 const UNSAFE_DIR_MODE = unsafe('a pasta do arquivo não tem permissão exatamente 0700');
+const UNSAFE_HARDLINK = unsafe('o arquivo tem mais de um nome (hardlink): outro nome do mesmo arquivo pode estar num lugar proibido');
+const UNSAFE_NO_DESCRIPTOR_PATH = unsafe('não foi possível obter o caminho real do arquivo ABERTO (/proc/self/fd indisponível: sistema sem /proc ou fora do Linux); sem ele a custódia não é provada');
+const UNSAFE_MOVED = unsafe('o arquivo mudou de lugar durante a conferência (o caminho real do descritor mudou)');
 const UNPROVABLE = unsafe('não foi possível conferir o caminho (erro ao inspecionar uma pasta acima do arquivo)');
 const NOT_ENCRYPTED = refuse('SECRET_NOT_ENCRYPTED', 'O arquivo da chave está em TEXTO CLARO (chave privada sem cifra): trate-a como exposta, gere/cifre outra numa estação limpa (PKCS#8 com frase) e destrua a cópia em claro.');
 const UNPROTECTED_EMPTY = refuse('SIGN_KEY_UNPROTECTED', 'A chave cifrada abre com frase VAZIA: está sem proteção.');
 const UNPROTECTED_LEGACY = refuse('SIGN_KEY_UNPROTECTED', 'A chave usa cifra legada (não PBES2): proteção insuficiente; recifre-a em PKCS#8 com PBES2.');
 const REJECTED_UNREADABLE = refuse('SIGN_KEY_REJECTED', 'O arquivo da chave não pôde ser lido como arquivo comum (inexistente, diretório, especial ou ilegível).');
 const REJECTED_TOO_BIG = refuse('SIGN_KEY_REJECTED', 'O arquivo da chave é grande demais para uma chave Ed25519 cifrada.');
+const REJECTED_CHANGED = refuse('SIGN_KEY_REJECTED', 'O arquivo da chave mudou durante a leitura.');
 const REJECTED_FORMAT = refuse('SIGN_KEY_REJECTED', 'Formato de chave não suportado: o sign aceita só PKCS#8 cifrado em PEM (BEGIN ENCRYPTED PRIVATE KEY).');
 const REJECTED_PASSPHRASE = refuse('SIGN_KEY_REJECTED', 'A frase não abre a chave (frase errada ou arquivo corrompido). Rode o sign de novo para tentar outra vez.');
 const REJECTED_EMPTY_PASSPHRASE = refuse('SIGN_KEY_REJECTED', 'Frase vazia.');
@@ -169,7 +166,7 @@ async function gitAncestorRefusal(fs: KeyFileOps, file: string): Promise<SignRef
   }
 }
 
-async function locationRefusal(fs: KeyFileOps, file: string, roots: { readonly project: readonly string[]; readonly temp: readonly string[] }): Promise<SignRefusal | null> {
+async function locationRefusal(fs: KeyFileOps, file: string, roots: Roots): Promise<SignRefusal | null> {
   if (roots.project.some((root) => isInside(file, root))) return UNSAFE_PROJECT;
   if (roots.temp.some((root) => isInside(file, root))) return UNSAFE_TEMP;
   return gitAncestorRefusal(fs, file);
@@ -184,47 +181,82 @@ async function dirModeRefusal(fs: KeyFileOps, dir: string): Promise<SignRefusal 
   }
 }
 
-/**
- * Custódia (IA-22), ANTES de ler o conteúdo: lugar pelo caminho dado (projeto, temporárias, `.git`), depois o próprio arquivo (não pode ser link
- * simbólico; tem de ser arquivo comum), o lugar pelo caminho REAL (um link numa pasta do caminho não esconde nada) e a pasta real com 0700.
- */
-async function custodyRefusal(fs: KeyFileOps, file: string, custody: KeyCustody): Promise<SignRefusal | null> {
-  const roots = { project: await bothForms(fs, [custody.projectRoot]), temp: await bothForms(fs, custody.tempRoots) };
-  const byGivenPath = await locationRefusal(fs, file, roots);
-  if (byGivenPath) return byGivenPath;
-  let info: KeyFileInfo;
+type Roots = { readonly project: readonly string[]; readonly temp: readonly string[] };
+const DELETED_SUFFIX = ' (deleted)';
+
+/** Caminho real do DESCRITOR: absoluto, normalizado, de arquivo não apagado; senão `null` (a custódia não é provada). */
+async function descriptorPath(opened: OpenedKeyFile): Promise<string | null> {
   try {
-    info = await fs.lstat(file);
+    const real = await opened.realPath();
+    const usable = typeof real === 'string' && path.isAbsolute(real) && path.normalize(real) === real && !real.includes('\0') && !real.endsWith(DELETED_SUFFIX);
+    return usable ? real : null;
   } catch {
-    return REJECTED_UNREADABLE;
+    return null;
   }
-  if (info.isSymbolicLink()) return UNSAFE_SYMLINK;
-  if (!info.isFile()) return REJECTED_UNREADABLE;
-  let real: string;
-  try {
-    real = await fs.realpath(file);
-  } catch {
-    return UNPROVABLE;
-  }
-  const byRealPath = real === file ? null : await locationRefusal(fs, real, roots);
-  return byRealPath ?? dirModeRefusal(fs, path.dirname(real));
 }
 
-/** Uma leitura do arquivo (sem seguir link), com a permissão do DESCRITOR: exatamente 0600. */
-async function readKeyBytes(fs: KeyFileOps, file: string): Promise<Buffer | SignRefusal> {
-  let read: KeyFileRead;
+/** Lê pelo descritor até o fim; um byte a mais que o `fstat` declarou denuncia um arquivo que cresceu (quem chama recusa). */
+async function readAll(opened: OpenedKeyFile, buffer: Buffer): Promise<number> {
+  let length = 0;
+  while (length < buffer.length) {
+    const { bytesRead } = await opened.read(buffer, length, buffer.length - length, length);
+    if (bytesRead === 0) break;
+    length += bytesRead;
+  }
+  return length;
+}
+
+/**
+ * Custódia e leitura sobre o MESMO descritor (IA-22, revisão da W4.4): `fstat` (arquivo comum, exatamente 0600, UM nome, tamanho limitado) → caminho
+ * REAL do descritor → lugar (projeto, temporárias, `.git` acima) e pasta real 0700 → leitura pelo descritor → o caminho do descritor não mudou.
+ * O buffer alocado vai para `keep` antes de qualquer byte lido, para quem chama zerá-lo em toda saída que não seja sucesso.
+ */
+async function checkedRead(fs: KeyFileOps, opened: OpenedKeyFile, roots: Roots, keep: (buffer: Buffer) => void): Promise<Buffer | SignRefusal> {
+  const info = await opened.stat();
+  if (!info.isFile()) return REJECTED_UNREADABLE;
+  if ((info.mode & PERMISSION_BITS) !== FILE_MODE) return UNSAFE_FILE_MODE;
+  if (info.nlink !== 1) return UNSAFE_HARDLINK;
+  if (info.size > MAX_KEY_FILE_BYTES) return REJECTED_TOO_BIG;
+  const real = await descriptorPath(opened);
+  if (real === null) return UNSAFE_NO_DESCRIPTOR_PATH;
+  const placed = (await locationRefusal(fs, real, roots)) ?? (await dirModeRefusal(fs, path.dirname(real)));
+  if (placed) return placed;
+  // `size + 1`: o byte a mais denuncia crescimento depois do fstat; Buffer.alloc (zerado, fora do pool)
+  const buffer = Buffer.alloc(info.size + 1);
+  keep(buffer);
+  const length = await readAll(opened, buffer);
+  if (length > info.size) return REJECTED_CHANGED;
+  if ((await descriptorPath(opened)) !== real) return UNSAFE_MOVED;
+  return buffer.subarray(0, length);
+}
+
+/**
+ * Abre UMA vez e confere/lê pelo descritor; fecha sempre. Falha de leitura (inclusive depois de leitura parcial), falha no `close` ou qualquer
+ * recusa ⇒ o buffer é ZERADO antes de devolver a recusa. Link simbólico no último componente ⇒ `ELOOP` (`O_NOFOLLOW`).
+ */
+async function readThroughDescriptor(fs: KeyFileOps, file: string, roots: Roots): Promise<Buffer | SignRefusal> {
+  let opened: OpenedKeyFile;
   try {
-    read = await fs.readKeyFile(file, MAX_KEY_FILE_BYTES);
+    opened = await fs.openKeyFile(file);
   } catch (error) {
-    const code = errorCode(error);
-    if (code === 'ETOOBIG') return REJECTED_TOO_BIG;
-    return code === 'ELOOP' ? UNSAFE_SYMLINK : REJECTED_UNREADABLE;
+    return errorCode(error) === 'ELOOP' ? UNSAFE_SYMLINK : REJECTED_UNREADABLE;
   }
-  if ((read.mode & PERMISSION_BITS) !== FILE_MODE) {
-    read.bytes.fill(0);
-    return UNSAFE_FILE_MODE;
+  const held: { buffer: Buffer | null } = { buffer: null };
+  let outcome: Buffer | SignRefusal;
+  try {
+    outcome = await checkedRead(fs, opened, roots, (buffer) => {
+      held.buffer = buffer;
+    });
+  } catch {
+    outcome = REJECTED_UNREADABLE;
   }
-  return read.bytes;
+  try {
+    await opened.close();
+  } catch {
+    outcome = REJECTED_UNREADABLE;
+  }
+  if ('ok' in outcome) held.buffer?.fill(0);
+  return outcome;
 }
 
 /* ------------------------------------------------------------------------------------------------------------------- formato e abertura */
@@ -262,6 +294,61 @@ function isPbes2(der: Buffer): boolean {
   return der.subarray(algorithm.start, algorithm.start + PBES2_OID.length).equals(PBES2_OID);
 }
 
+/* KDF do PBES2 (aviso, não recusa; decisão do manager na revisão da W4.4): o runbook da W5 fixa os parâmetros; até lá, mínimos PROVISÓRIOS. */
+
+/** PBKDF2-HMAC-SHA256: recomendação atual da OWASP. Provisório até o runbook da W5. */
+export const MIN_PBKDF2_ITERATIONS = 600_000;
+/** scrypt (N, com r = 8 e p = 1): recomendação atual da OWASP. Provisório até o runbook da W5. */
+export const MIN_SCRYPT_COST = 2 ** 17;
+const PBKDF2_OID = Buffer.from('06092a864886f70d01050c', 'hex');
+const SCRYPT_OID = Buffer.from('06092b06010401da47040b', 'hex');
+const DER_INTEGER = 0x02;
+const DER_OCTET_STRING = 0x04;
+const DER_OID = 0x06;
+const MAX_INTEGER_BYTES = 6;
+
+type KdfParams = { readonly kind: 'PBKDF2'; readonly iterations: number } | { readonly kind: 'SCRYPT'; readonly cost: number } | null;
+
+/** O valor de um INTEGER DER em `offset` (até 6 bytes, cabe num número seguro); `null` fora disso. */
+function derInteger(der: Buffer, offset: number): number | null {
+  const node = derAt(der, offset);
+  if (node?.tag !== DER_INTEGER || node.end - node.start < 1 || node.end - node.start > MAX_INTEGER_BYTES) return null;
+  let value = 0;
+  for (let index = node.start; index < node.end; index += 1) value = value * BYTE + (der[index] as number);
+  return value;
+}
+
+/**
+ * `PBES2-params ::= SEQUENCE { keyDerivationFunc AlgorithmIdentifier, encryptionScheme AlgorithmIdentifier }`; nos parâmetros do PBKDF2 (RFC 8018)
+ * e do scrypt (RFC 7914), o primeiro INTEGER depois do sal é o custo (iterações ou N). `null` se não reconhecido.
+ */
+function kdfOf(der: Buffer): KdfParams {
+  const outer = derAt(der, 0);
+  const algorithm = outer?.tag === DER_SEQUENCE ? derAt(der, outer.start) : null;
+  const pbes2Oid = algorithm?.tag === DER_SEQUENCE ? derAt(der, algorithm.start) : null;
+  const params = pbes2Oid?.tag === DER_OID ? derAt(der, pbes2Oid.end) : null;
+  const kdf = params?.tag === DER_SEQUENCE ? derAt(der, params.start) : null;
+  const kdfOid = kdf?.tag === DER_SEQUENCE ? derAt(der, kdf.start) : null;
+  const kdfParams = kdfOid?.tag === DER_OID ? derAt(der, kdfOid.end) : null;
+  const salt = kdfParams?.tag === DER_SEQUENCE ? derAt(der, kdfParams.start) : null;
+  if (!kdf || !kdfOid || salt?.tag !== DER_OCTET_STRING) return null;
+  const cost = derInteger(der, salt.end);
+  if (cost === null) return null;
+  const id = der.subarray(kdf.start, kdfOid.end);
+  if (id.equals(PBKDF2_OID)) return { kind: 'PBKDF2', iterations: cost };
+  return id.equals(SCRYPT_OID) ? { kind: 'SCRYPT', cost } : null;
+}
+
+const KDF_NOTICE_TAIL = 'o runbook da W5 fixa os parâmetros; nenhuma chave real antes disso. Recifre a chave antes de usá-la de verdade.';
+
+/** O aviso (na saída de erro, antes da frase) quando o KDF está abaixo do mínimo provisório ou não pôde ser conferido; `null` se está bom. */
+function kdfNotice(kdf: KdfParams): string | null {
+  if (kdf === null) return `Aviso (KDF): os parâmetros do KDF da chave (PBES2) não puderam ser conferidos; ${KDF_NOTICE_TAIL}`;
+  if (kdf.kind === 'PBKDF2' && kdf.iterations < MIN_PBKDF2_ITERATIONS) return `Aviso (KDF): a chave usa PBKDF2 com ${kdf.iterations} iterações, abaixo do mínimo provisório de ${MIN_PBKDF2_ITERATIONS}; ${KDF_NOTICE_TAIL}`;
+  if (kdf.kind === 'SCRYPT' && kdf.cost < MIN_SCRYPT_COST) return `Aviso (KDF): a chave usa scrypt com custo N=${kdf.cost}, abaixo do mínimo provisório de N=${MIN_SCRYPT_COST}; ${KDF_NOTICE_TAIL}`;
+  return null;
+}
+
 /** Uma chave privada que o Node abre SEM frase (PEM, DER PKCS#8/SEC1/PKCS#1 ou JWK) está em texto claro. */
 function opensWithoutPassphrase(bytes: Buffer): boolean {
   const text = bytes.toString('utf8');
@@ -294,18 +381,21 @@ const opensWith = (pem: string, passphrase: string | Buffer): KeyObject | null =
  * Do conteúdo à chave: PEM `ENCRYPTED PRIVATE KEY` com PBES2 que NÃO abre com frase vazia; só então a frase é pedida (uma vez) e a chave aberta.
  * Texto claro ⇒ `SECRET_NOT_ENCRYPTED`; outro formato ⇒ `SIGN_KEY_REJECTED`; frase vazia que abre ou cifra legada ⇒ `SIGN_KEY_UNPROTECTED`.
  */
-async function decryptKey(bytes: Buffer, keyId: string, passphrase: (keyId: string) => Promise<Buffer>): Promise<KeyObject | SignRefusal> {
+async function decryptKey(bytes: Buffer, keyId: string, deps: Pick<OpenK1Deps, 'passphrase' | 'warn'>): Promise<KeyObject | SignRefusal> {
   const match = ENCRYPTED_PEM.exec(bytes.toString('latin1'));
   if (!match) return opensWithoutPassphrase(bytes) ? NOT_ENCRYPTED : REJECTED_FORMAT;
   const pem = match[0];
   const der = Buffer.from((match[1] ?? '').replace(/[\r\n]/g, ''), 'base64');
   const pbes2 = isPbes2(der);
+  const kdf = pbes2 ? kdfOf(der) : null;
   der.fill(0);
   if (!pbes2) return UNPROTECTED_LEGACY;
   if (opensWith(pem, '') !== null) return UNPROTECTED_EMPTY;
+  const notice = kdfNotice(kdf);
+  if (notice !== null) deps.warn?.(notice);
   let secret: Buffer;
   try {
-    secret = await passphrase(keyId);
+    secret = await deps.passphrase(keyId);
   } catch {
     return REJECTED_NO_PASSPHRASE;
   }
@@ -324,21 +414,24 @@ export interface OpenK1Deps {
   readonly custody: KeyCustody;
   /** A frase, digitada no terminal sem eco (passo 12); os bytes devolvidos são zerados depois de abrir a chave. */
   readonly passphrase: (keyId: string) => Promise<Buffer>;
+  /** Avisos não secretos (KDF abaixo do mínimo provisório), na saída de erro, antes de pedir a frase. */
+  readonly warn?: (line: string) => void;
 }
 
 /**
- * Passo 12 com K1: custódia (IA-22) → uma leitura do arquivo (0600) → formato cifrado (PBES2, não vazio) → frase → chave Ed25519. Devolve a chave
- * ou a recusa; nunca lança e nunca repassa um objeto de erro (pode carregar material, RS-13).
+ * Passo 12 com K1: lugar pelo caminho DADO (antecipa a recusa; não é a prova) → custódia e leitura pelo DESCRITOR aberto (IA-22) → formato cifrado
+ * (PBES2, não vazio; aviso de KDF) → frase → chave Ed25519. Devolve a chave ou a recusa; nunca lança e nunca repassa um objeto de erro (RS-13).
  */
 export async function openK1Key(keyPath: string, keyId: string, deps: OpenK1Deps): Promise<KeyObject | SignRefusal> {
   try {
     const file = path.resolve(keyPath);
-    const unsafeCustody = await custodyRefusal(deps.fs, file, deps.custody);
-    if (unsafeCustody) return unsafeCustody;
-    const bytes = await readKeyBytes(deps.fs, file);
+    const roots: Roots = { project: await bothForms(deps.fs, [deps.custody.projectRoot]), temp: await bothForms(deps.fs, deps.custody.tempRoots) };
+    const byGivenPath = await locationRefusal(deps.fs, file, roots);
+    if (byGivenPath) return byGivenPath;
+    const bytes = await readThroughDescriptor(deps.fs, file, roots);
     if ('ok' in bytes) return bytes;
     try {
-      return await decryptKey(bytes, keyId, deps.passphrase);
+      return await decryptKey(bytes, keyId, deps);
     } finally {
       bytes.fill(0);
     }

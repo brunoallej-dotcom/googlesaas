@@ -41,7 +41,13 @@ const KEY_MATERIAL: readonly RegExp[] = [/-----BEGIN/i, /PRIVATE KEY/i, /MC4CAQA
  * estação do custodiante não tem ambiente do projeto), qualquer nome com PASSPHRASE/PASSWORD/PASSWD/SENHA e nomes do próprio fluxo (LINK_AUDIT,
  * SEAL, SIGN, ATTEST) com KEY/PASS/PIN/SECRET. Barreira de higiene, não prova de ausência.
  */
-const SECRET_ENV_NAME: readonly RegExp[] = [/^GMN_.*(?:KEY|PASS|PIN|SECRET|TOKEN)/i, /PASSPHRASE|PASSWORD|PASSWD|SENHA/i, /^(?:LINK_AUDIT|SEAL|SIGN|ATTEST)\w*(?:KEY|PASS|PIN|SECRET)/i];
+const SECRET_ENV_NAME: readonly RegExp[] = [
+  /^GMN_.*(?:KEY|PASS|PIN|SECRET|TOKEN)/i,
+  /PASSPHRASE|PASSWORD|PASSWD|SENHA/i,
+  /^(?:LINK_AUDIT|SEAL|SIGN|ATTEST)\w*(?:KEY|PASS|PIN|SECRET)/i,
+  // revisão da W4.4: nomes GENÉRICOS de segredo em qualquer posição (AWS_SECRET_ACCESS_KEY, GITHUB_TOKEN, PRIVATE_KEY, SERVICE_API_KEY…)
+  /SECRET|PRIVATE_?KEY|CREDENTIAL|API_?KEY|TOKEN/i,
+];
 /** Só nomes com cara de variável são citados na mensagem (para o custodiante limpar o ambiente); nunca valores. */
 const ECHOABLE_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 const MAX_ECHOED_ENV_NAMES = 3;
@@ -56,7 +62,7 @@ const secretArgv = (message: string): SignRefusal => ({ ok: false, code: 'SECRET
 
 const ARGV_SECRET_NAME = secretArgv('Opção com nome de segredo (senha, frase, chave, PIN, token): segredo NUNCA por argumento (fica no histórico do shell e em /proc). A frase da chave é pedida só no terminal, sem eco; se um segredo foi digitado aqui, trate-o como exposto.');
 const ARGV_KEY_MATERIAL = secretArgv('Um argumento parece conter material de chave privada (PEM ou PKCS#8): segredo NUNCA por argumento. Trate essa chave como exposta.');
-const ARGV_KEY_SOURCE = secretArgv('--key-source aceita só file:<caminho> (chave PKCS#8 cifrada) ou external:<id>; o valor recebido não é ecoado. Se ele era o material da chave, trate-a como exposta.');
+const ARGV_KEY_SOURCE = secretArgv('--key-source aceita só file:<caminho> (chave PKCS#8 cifrada) ou external:<id> (id público: minúsculas, dígitos e "-", 4 a 32 caracteres); o valor recebido não é ecoado. Se ele era um segredo (frase, chave, PIN), trate-o como exposto (histórico do shell, /proc) e troque-o.');
 
 /** Passo 1 (RS-11): opção com nome de segredo ou material de chave em qualquer argumento ⇒ recusa, antes de qualquer outra análise. */
 export function secretArgvRefusal(tokens: readonly string[]): SignRefusal | null {
@@ -143,7 +149,8 @@ function keyArgs(values: ReadonlyMap<string, string>): Pick<SignArgs, 'keyId' | 
   if (rawSource === undefined) return usage('Informe --key-source file:<caminho> (chave PKCS#8 cifrada; a frase é pedida no terminal).');
   const keySource = parseKeySource(rawSource);
   if (keySource === 'BAD_FILE_PATH') return usage('--key-source file:<caminho> exige um caminho.');
-  if (keySource === null) return ARGV_KEY_SOURCE;
+  // revisão da W4.4: `external:` só com id público estrito (o mesmo padrão do `--key-id`); qualquer outro sufixo pode ser segredo colado
+  if (keySource === null || (keySource.kind === 'external' && !SIGN_KEY_ID_PATTERN.test(keySource.id))) return ARGV_KEY_SOURCE;
   const trustKeys = values.get('trust-keys');
   if (trustKeys === undefined || !isTrustKeyringText(trustKeys)) return usage('Informe --trust-keys com a lista de chaves PÚBLICAS com estado (<id>:<pública base64url>[:active|:retired[:<hash>]|:revoked], separadas por vírgula).');
   return { keyId, keySource, trustKeys };

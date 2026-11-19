@@ -151,7 +151,7 @@ function keyOpener(args: SignArgs, input: HiddenInput, deps: SignCliDeps, env: R
   return async (): Promise<Awaited<ReturnType<SignRunDeps['openKey']>>> => {
     if (args.keySource.kind !== 'file') return KEY_SOURCE_UNSUPPORTED;
     const custody = { projectRoot: deps.projectRoot, tempRoots: deps.tempRoots ?? defaultTempRoots(env) };
-    const opened = await openK1Key(args.keySource.path, args.keyId, { fs: deps.keyFs ?? nodeKeyFileOps, custody, passphrase: terminalPassphrase(input, show.err) });
+    const opened = await openK1Key(args.keySource.path, args.keyId, { fs: deps.keyFs ?? nodeKeyFileOps, custody, passphrase: terminalPassphrase(input, show.err), warn: show.err });
     if ('ok' in opened) return opened;
     (args.json ? show.err : show.out)(`Chave aberta; pública derivada (não secreta): ${publicKeyText(args.keyId, opened)}`);
     return opened;
