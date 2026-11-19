@@ -14,7 +14,7 @@ import {
   REVOCATION_RESERVE_RECORDS,
   rotationCheckpointDue,
   REVOCATIONS_RESERVED,
-  replayLedger,
+  replayLedger, RUN_CLOSING_ALLOWANCE,
   simulateOperations,
   verifyTags,
   type LedgerRecord,
@@ -71,13 +71,13 @@ function normalFit(records: readonly LedgerRecord[], limit: number, every: numbe
 const fakeRecords = (events: Array<[string, string]>): LedgerRecord[] => events.map(([event, kid], index) => ({ ledgerSeq: index + 1, event, origin: { kid } }) as unknown as LedgerRecord);
 
 test('política: os números, o alinhamento com a 6B e a conta das reservas', () => {
-  assert.deepEqual([MAX_LEDGER_RECORDS, LEDGER_CAPACITY_POLICY.max, LEDGER_CAPACITY_POLICY.RECORD, LEDGER_CAPACITY_POLICY.REVOKE, LEDGER_CAPACITY_POLICY.MAINTENANCE], [4000, 4000, 3685, 3992, 4000]);
+  assert.deepEqual([MAX_LEDGER_RECORDS, LEDGER_CAPACITY_POLICY.max, LEDGER_CAPACITY_POLICY.RECORD, LEDGER_CAPACITY_POLICY.REVOKE, LEDGER_CAPACITY_POLICY.MAINTENANCE], [4000, 4000, 3684, 3992, 4000]);
   assert.equal(REVOCATIONS_RESERVED, RESERVED_FOR_REVOCATIONS, 'a mesma contagem de OPERAÇÕES COMPLETAS da 6B (100), nunca 100 registros');
   assert.equal(RECORDS_PER_OPERATION, 2);
   assert.equal(REISSUE_ALLOWANCE, 1, 'até 1 reemissão de recibo por entrada confirmada');
   assert.equal(REVOCATION_RESERVE_RECORDS, REVOCATIONS_RESERVED * (RECORDS_PER_OPERATION + REISSUE_ALLOWANCE) + Math.ceil((REVOCATIONS_RESERVED * (RECORDS_PER_OPERATION + REISSUE_ALLOWANCE)) / CHECKPOINT_EVERY) + 2, 'cada revogação reservada conta INTENT + CONFIRMED + reemissão (D3)');
   assert.equal(REVOCATION_RESERVE_RECORDS, 307);
-  assert.equal(LEDGER_CAPACITY_POLICY.RECORD, MAX_LEDGER_RECORDS - MAINTENANCE_RESERVE - REVOCATION_RESERVE_RECORDS);
+  assert.equal(LEDGER_CAPACITY_POLICY.RECORD, MAX_LEDGER_RECORDS - MAINTENANCE_RESERVE - REVOCATION_RESERVE_RECORDS - RUN_CLOSING_ALLOWANCE);
   assert.equal(LEDGER_CAPACITY_POLICY.REVOKE, MAX_LEDGER_RECORDS - MAINTENANCE_RESERVE);
   assert.ok(LEDGER_CAPACITY_POLICY.RECORD < LEDGER_CAPACITY_POLICY.REVOKE && LEDGER_CAPACITY_POLICY.REVOKE < LEDGER_CAPACITY_POLICY.MAINTENANCE, 'criação < revogação < manutenção');
 });
@@ -227,7 +227,7 @@ test('falha no limite (3990): a revogação publica a INTENT e a entrada não é
 });
 
 test('falha no limite (fronteira da revogação, política pequena): o CONFIRMED não consegue ser gravado — a entrada e o recibo existem e a recuperação grava o CONFIRMED que faltou (reservado, além do limite de decisões), concluindo a revogação', async () => {
-  const policy = deriveCapacityPolicy(60, 3, 8);
+  const policy = deriveCapacityPolicy(61, 3, 8); // §16.17.6: com RUN_CLOSING_ALLOWANCE, 61 mantém RECORD = 39 e o alinhamento do CHECKPOINT deste cenário (com 60, o CHECKPOINT devido cairia sobre a revogação)
   // preenche com decisões novas até restar só revogação, para a INTENT cair a 1 registro do limite da classe
   const probe = await ledgerWorld({ capacityPolicy: policy, checkpointEvery: 8 });
   await must(probe.protectedService.create(ANA, probe.auditId, { record: rec.c2() }, clock()));
@@ -420,7 +420,7 @@ test('UMA OPERAÇÃO INICIADA SEMPRE TERMINA: com a decisão publicada e a INTEN
 test('R7-01/D3: o que a vista anuncia desde o PRIMEIRO dia é um PISO do que o livro comporta — ≥ 1311 entradas no total (não o MAX_SEQ de 9999 da 6B) e as 100 revogações reservadas; cada entrada custa 2 registros e reserva 1 para a reemissão do recibo', async () => {
   const w = await ledgerWorld();
   const view = await must(w.rawProtected.list(BIA, w.auditId, clock()));
-  assert.deepEqual([view.ledger.capacity?.usedRecords, view.ledger.capacity?.decisionsAvailable, view.ledger.capacity?.revocationsAvailable], [1, 1210, 1311]);
+  assert.deepEqual([view.ledger.capacity?.usedRecords, view.ledger.capacity?.decisionsAvailable, view.ledger.capacity?.revocationsAvailable], [1, 1209, 1311]);
   assert.deepEqual([view.limits.maxEntries, view.limits.reservedForRevocations], [1311, 100]);
   // depois de uma decisão, o total de entradas continua o mesmo (a entrada gasta 1 das 1965 possíveis)
   await must(w.protectedService.create(ANA, w.auditId, { record: rec.c2() }, clock()));

@@ -10,10 +10,10 @@ import { ledgerEvents, ledgerWorld, refOf } from './helpers/link-audit-ledger-fi
  */
 registerCleanup();
 const REASON = 'Revogada porque o juízo estava errado e foi refeito pelo operador.';
-const POLICY = deriveCapacityPolicy(16, 1, 64, 2); // MAX 16, manutenção 2, reserva de 1 revogação (3 registros: INTENT + CONFIRMED + reemissão; +1 checkpoint +2 folga = 6) ⇒ RECORD ≤ 8, REVOKE ≤ 14
+const POLICY = deriveCapacityPolicy(16, 1, 64, 2); // MAX 16, manutenção 2, reserva de 1 revogação (3 registros: INTENT + CONFIRMED + reemissão; +1 checkpoint +2 folga = 6), folga do fecho de resultado 1 (§16.17.6) ⇒ RECORD ≤ 7, REVOKE ≤ 14
 
 test('porta: `intent` recusa por CLASSE e exige espaço para o fecho, sem depender de `prepare` (nada é gravado ao recusar)', async () => {
-  assert.deepEqual([POLICY.RECORD, POLICY.REVOKE, POLICY.max], [8, 14, 16]);
+  assert.deepEqual([POLICY.RECORD, POLICY.REVOKE, POLICY.max], [7, 14, 16]);
   const w = await ledgerWorld({ capacityPolicy: POLICY });
   for (const record of [rec.c2(), rec.c3(), rec.p3(5)]) await must(w.protectedService.create(ANA, w.auditId, { record }, clock()));
   assert.equal((await ledgerEvents(w)).length, 7, 'no limite da classe RECORD');

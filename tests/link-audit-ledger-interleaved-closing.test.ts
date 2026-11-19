@@ -171,7 +171,7 @@ test('caso (iii): a operação do dono foi ABORTADA por outro processo antes do 
   assert.deepEqual([view.ledger.state, view.ledger.reason], ['HISTORY_UNRESOLVED', 'PUBLISHED_AFTER_ABORT']);
 });
 
-test('caso (iii), §16.16: um CONFIRMED autêntico (etiqueta e replay válidos, mesma operação, INTENT e hash) gravado por QUEM NÃO É O AUTOR não é adotado; o dono recusa com LEDGER_UNAVAILABLE e não grava nada', async () => {
+test('caso (iii), §16.16 + D-R1-1: um CONFIRMED com etiqueta autêntica (mesma operação, INTENT e hash) gravado por QUEM NÃO É O AUTOR não é adotado — o replay já o recusa (fecho de não autor) — e o dono recusa com LEDGER_UNAVAILABLE e não grava nada', async () => {
   const w = await ledgerWorld();
   const byOtherOperator = (_tail: LedgerRecord, all: readonly LedgerRecord[]) => {
     const intent = openIntentOf(all);
@@ -181,7 +181,10 @@ test('caso (iii), §16.16: um CONFIRMED autêntico (etiqueta e replay válidos, 
   const refused = await serviceOver(w, { fs: hook.ops }).create(ANA, w.auditId, { record: rec.c2(), expectedHead: null }, clock);
   assert.equal(hook.state.mismatch, null);
   const records = await ledgerRecords(w);
-  assert.ok(replayLedger(records, w.auditId).ok && verifyTags(records, LEDGER_AUTH_A) === null, 'controle: o intruso é autêntico');
+  assert.equal(verifyTags(records, LEDGER_AUTH_A), null, 'controle: a etiqueta do intruso é autêntica (quem o gravou tem a chave do livro)');
+  assert.equal(replayLedger(records, w.auditId).ok, false, 'D-R1-1 (§16.17.13): o replay recusa o CONFIRMED cujo actor não é o autor da INTENT');
+  const view = await must(serviceOver(w).list(BIA, w.auditId, clock()));
+  assert.deepEqual([view.ledger.state, view.ledger.reason], ['HISTORY_UNRESOLVED', 'UNTRUSTED'], 'livro autêntico com fecho de não autor ⇒ não confiável (falha fechada)');
   assert.equal(codeOf(refused), 'LEDGER_UNAVAILABLE', `o fecho de outro operador não vale como o do autor: ${JSON.stringify(refused).slice(0, 200)}`);
   assert.deepEqual(ledgerFiles(w), ['l000001.json', 'l000002.json', 'l000003.json'], 'o dono não gravou nada');
   assert.deepEqual(records.map((r) => `${r.event}:${r.actor}`), ['GENESIS:ana@empresa.com', 'INTENT:ana@empresa.com', 'CONFIRMED:bia@empresa.com']);

@@ -101,6 +101,11 @@ export interface LedgerCapacity {
   readonly decisionsAvailable: number;
   /** Revogações completas que ainda cabem em sequência (nunca anuncia o que o livro não executa). */
   readonly revocationsAvailable: number;
+  /**
+   * Resultados completos (`RUN_INTENT` + fecho) que ainda cabem na classe RUN (spec §16.17.6): `⌊(RUN − registros − fechos devidos) / 2⌋`. Não entra no nível
+   * (`level` é só de decisões e revogações); o teto de 500 resultados é do armazenamento.
+   */
+  readonly runsAvailable: number;
   readonly level: CapacityLevel;
 }
 /** Cobertura da rotação de chave (R7-03): `covered` = nenhum registro de OUTRA chave fica sem ponto de verificação da chave ATUAL (id público, nunca material). */
