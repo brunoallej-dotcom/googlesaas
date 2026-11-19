@@ -773,6 +773,7 @@ test('§5.5.1 item 2 (W4.3): a pública derivada da chave ABERTA difere da públ
     ['chave Ed25519 aleatória', () => generateKeyPairSync('ed25519').privateKey, RING],
     ['b também ativa na lista, mas --key-id é a', () => testKey('b'), bothActive],
     ['chave X25519 (não Ed25519)', () => generateKeyPairSync('x25519').privateKey, RING],
+    ['leitor de chave que devolve algo que não é chave (a conferência lança por dentro: recusa, nunca sucesso)', () => ({}) as KeyObject, RING],
   ];
   for (const [label, openKey, trustKeys] of cases) {
     const { station, sealsDir } = world();
