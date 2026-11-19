@@ -296,6 +296,8 @@ export interface SignCliRun {
   readonly stderr: string;
   readonly terminal: FakeTerminal;
   readonly report: { reportOnFatalError: boolean; reportOnSignal: boolean; reportOnUncaughtException: boolean };
+  /** Para cada linha da saída de erro, se o terminal estava em modo bruto (eco desligado) quando ela foi escrita. */
+  readonly rawAtErr: readonly boolean[];
 }
 
 export interface SignCliOptions {
@@ -316,6 +318,7 @@ export interface SignCliOptions {
 export async function runSign(argv: readonly string[], options: SignCliOptions = {}): Promise<SignCliRun> {
   const out: string[] = [];
   const err: string[] = [];
+  const rawAtErr: boolean[] = [];
   const screen = (): string => [...err, ...out].join('\n');
   const terminal = options.terminal ?? new FakeTerminal(options.typed ?? [], screen);
   const report = { reportOnFatalError: true, reportOnSignal: true, reportOnUncaughtException: true };
@@ -333,11 +336,14 @@ export async function runSign(argv: readonly string[], options: SignCliOptions =
       out.push(line);
       options.out?.(line);
     },
-    (line) => err.push(line),
+    (line) => {
+      err.push(line);
+      rawAtErr.push(terminal.isRaw);
+    },
     () => new Date((options.now ?? new Date(NOW)).getTime()),
     { ...(options.projectRoot === null ? {} : { projectRoot: options.projectRoot ?? ROOT }), sign },
   );
-  return { code, out, err, stdout: out.join('\n'), stderr: err.join('\n'), terminal, report };
+  return { code, out, err, stdout: out.join('\n'), stderr: err.join('\n'), terminal, report, rawAtErr };
 }
 
 /** O único objeto JSON da saída padrão (`--json`). */

@@ -304,6 +304,16 @@ test('IA-23: prefixo certo ⇒ prossegue: a frase é pedida DEPOIS (passo 12), t
   terminalRestored(run, 'sucesso');
 });
 
+test('IA-23 (revisão da W4.4, achado no pseudo-terminal sob carga): o eco é desligado ANTES de mostrar as telas da confirmação e da frase; o que for digitado assim que a tela aparece nunca ecoa', async () => {
+  const world = cliWorld();
+  const run = await runSign(world.argv(), { typed: world.typed() });
+  assert.equal(run.code, 0, run.stderr);
+  const prompts = run.err.map((line, index) => [line, run.rawAtErr[index]] as const).filter(([line]) => /^(Confirmação humana|Digite os|Frase-senha)/.test(line));
+  assert.equal(prompts.length, 3, 'as duas linhas da confirmação e a da frase');
+  for (const [line, raw] of prompts) assert.equal(raw, true, `eco ainda ligado quando a tela foi mostrada: ${line}`);
+  assert.equal(run.terminal.isRaw, false, 'e restaurado no fim');
+});
+
 test('IA-23: Ctrl-C, Ctrl-D, fim de entrada, erro do terminal, texto longo demais ou tecla de controle na confirmação ⇒ SIGN_CONFIRMATION_FAILED, eco restaurado, chave fechada', async () => {
   const world = cliWorld();
   const cases: Array<[string, Typed[]]> = [
