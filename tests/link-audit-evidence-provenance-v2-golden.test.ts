@@ -159,9 +159,10 @@ test('V2-38 (IA-21) through the verifier: G1 gives the golden head metadata; G4 
 
 test('V2-38 (IA-21, W3.3) G1 → G2 → G3 through the chain verifier: the golden head metadata, and one changed byte in G2 or G3 never authenticates', async () => {
   const auditId = GOLDEN.g1.body.auditId;
+  const chain: ReadonlyArray<readonly [number, SealVector<V2Body>]> = [[1, GOLDEN.g1], [2, GOLDEN.g2], [3, GOLDEN.g3]];
   const writeGoldenChain = (): string => {
     const sealsDir = tmpDir('lepg-');
-    for (const [seq, vector] of [[1, GOLDEN.g1], [2, GOLDEN.g2], [3, GOLDEN.g3]] as const) writeSealFile(sealsDir, auditId, seq, fileOf(vector));
+    for (const [seq, vector] of chain) writeSealFile(sealsDir, auditId, seq, fileOf(vector));
     return sealsDir;
   };
   const sealsDir = writeGoldenChain();
@@ -169,7 +170,7 @@ test('V2-38 (IA-21, W3.3) G1 → G2 → G3 through the chain verifier: the golde
     const verdict = await createSealedEvidenceProvenance({ sealsDir, trustedKeys: TRUST, acceptedVersions }).classify(auditId, evidencesOf(GOLDEN.g3.body));
     assert.deepEqual(verdict, { status: 'AUTHENTICATED', headSeq: 3, headSealSha256: GOLDEN.g3.sealSha256, keyIds: [KEY_A.keyId, KEY_B.keyId] }, JSON.stringify(acceptedVersions));
   }
-  for (const [seq, vector] of [[2, GOLDEN.g2], [3, GOLDEN.g3]] as const) {
+  for (const [seq, vector] of chain.slice(1)) {
     for (const [where, text] of oneByteTexts(fileOf(vector), (value) => JSON.stringify(value))) {
       const dir = writeGoldenChain();
       const file = path.join(dir, auditId, `seal-000${seq}.json`);
