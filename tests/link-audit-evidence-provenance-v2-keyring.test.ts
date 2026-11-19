@@ -313,9 +313,9 @@ test('V2-26 (N1, N6) a closure signer revoked LATER keeps the history authentica
   assert.deepEqual(await classify(fileClosures, listOf(item(R, 'retired', pin), item(S)), E2), UNCOVERED, '_closures is a file');
 });
 
-test('V2-26 / W3.5 placeholder: a position signed by a REVOKED key never authenticates (the pre-step, its precedence and revokedKeyIds are W3.5)', async () => {
+test('V2-26 / V2-27 a position signed by a REVOKED key never authenticates and carries revokedKeyIds (precedence: revocation test file)', async () => {
   const seals = buildChain([{ keys: H, entries: E1 }, { keys: S, entries: E2 }]);
-  assert.deepEqual(await classify(writeChain(seals), listOf(item(H), item(S, 'revoked')), E2), UNAUTH('SEAL_KEY_REVOKED'));
+  assert.deepEqual(await classify(writeChain(seals), listOf(item(H), item(S, 'revoked')), E2), { status: 'UNAUTHENTICATED', reason: 'SEAL_KEY_REVOKED', revokedKeyIds: [S.keyId] }); // the full pre-step: revocation test file (W3.5)
 });
 
 /* ============================================================================================ V2-42, V2-47 */
@@ -369,6 +369,6 @@ test('V2-18 (keyring part) a v1 last on the compatible path [1,2]: retired signe
   const sealsDir = writeChain(seals);
   const pin = putClosure(sealsDir, `${R.keyId}.json`, closureText(R, S, [headOf(seals[0] as AnySeal)]));
   assert.deepEqual(await classify(sealsDir, listOf(item(R, 'retired', pin), item(S)), E1, [1, 2]), UNCOVERED, 'retired: a v1 is never covered');
-  assert.deepEqual(await classify(sealsDir, listOf(item(R, 'revoked'), item(S)), E1, [1, 2]), UNAUTH('SEAL_KEY_REVOKED'), 'revoked');
+  assert.deepEqual(await classify(sealsDir, listOf(item(R, 'revoked'), item(S)), E1, [1, 2]), { status: 'UNAUTHENTICATED', reason: 'SEAL_KEY_REVOKED', revokedKeyIds: [R.keyId] }, 'revoked (the signal travels with the reason, contract §7.2)');
   assert.deepEqual(await classify(sealsDir, listOf(item(R), item(S)), E1, [1, 2]), { status: 'AUTHENTICATED' }, 'active: today\'s answer');
 });
