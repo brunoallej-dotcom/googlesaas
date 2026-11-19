@@ -314,7 +314,10 @@ test('passo 1b (falha fechada): resultado anterior à R1.3 numa auditoria inscri
   assert.deepEqual(await footprintOf(w, e), before);
 });
 
-test('fases B e C abertas (nesta fatia ninguém conclui; a conclusão pelo autor é da R1.4) ⇒ RESULT_PENDING_UNCONFIRMED para o autor e para outro operador, nada gravado', async () => {
+// R1.4 (spec §16.17.4, tabela das fases): este teste fixava, na R1.3, que NINGUÉM concluía B/C (nem o autor). Agora só o AUTOR conclui, pelo reenvio idêntico; outro operador
+// continua recebendo RESULT_PENDING_UNCONFIRMED sem gravar nada. Os detalhes (reconferências, recibo adotado, identidade normalizada, R6-04) estão em
+// `link-audit-results-ledger-author-close`.
+test('fases B e C abertas ⇒ RESULT_PENDING_UNCONFIRMED para OUTRO operador, nada gravado; o AUTOR conclui pelo reenvio idêntico (R1.4)', async () => {
   for (const phase of ['B', 'C'] as const) {
     const { w, e } = await protectedWorld();
     // o dono cai depois do recibo (C) ou antes dele (B): o resultado existe, o RUN_CONFIRMED não
@@ -334,11 +337,12 @@ test('fases B e C abertas (nesta fatia ninguém conclui; a conclusão pelo autor
     const view = await must(servicesOver(w, e).list(BIA, w.auditId, clock()));
     assert.deepEqual([view.ledger.state, view.ledger.runs?.open?.phase], ['PROTECTED', phase], phase);
     const before = await footprintOf(w, e);
-    for (const actor of [OP_A, OP_B]) {
-      const again = await finalizerOver(w, e).results.finalize(actor, w.auditId, body);
-      assert.ok(!again.ok && again.code === 'RESULT_PENDING_UNCONFIRMED', `${phase}/${actor.email}: ${show(again)}`);
-    }
-    assert.deepEqual(await footprintOf(w, e), before, `${phase}: nada gravado`);
+    const other = await finalizerOver(w, e).results.finalize(OP_B, w.auditId, body);
+    assert.ok(!other.ok && other.code === 'RESULT_PENDING_UNCONFIRMED', `${phase}/${OP_B.email}: ${show(other)}`);
+    assert.deepEqual(await footprintOf(w, e), before, `${phase}: nada gravado pelo não autor`);
+    const own = await finalizerOver(w, e).results.finalize(OP_A, w.auditId, body);
+    assert.ok(own.ok && own.value.recoveredPending, `${phase}/${OP_A.email}: ${show(own)}`);
+    assert.deepEqual((await eventsOf(w)).slice(-2), ['RUN_INTENT', 'RUN_CONFIRMED'], `${phase}: o autor concluiu`);
   }
 });
 

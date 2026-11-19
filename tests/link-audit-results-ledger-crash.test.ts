@@ -14,8 +14,8 @@ import type { LedgerWorld } from './helpers/link-audit-ledger-fixtures';
  * leitor vê (sempre PROTECTED), a INVARIANTE "nunca resultado sem RUN_INTENT" (`UNLEDGERED_RESULT` impossível: o RUN_INTENT é durável antes de `sk` existir) e a recuperação:
  *  - antes do RUN_INTENT (passo 5 e 6 antes do link): nada no livro ⇒ o reenvio do autor conclui exatamente um resultado;
  *  - fase A (RUN_INTENT sem `sk`): vencida, o reenvio do autor aborta (RUN_ABORTED) e conclui exatamente um resultado;
- *  - fases B e C (`sk` publicado, RUN_CONFIRMED ausente): a operação fica aberta e PROTECTED; NINGUÉM conclui nesta fatia (a conclusão pelo autor é da R1.4) — o autor e outro
- *    operador recebem RESULT_PENDING_UNCONFIRMED e nada é gravado;
+ *  - fases B e C (`sk` publicado, RUN_CONFIRMED ausente): a operação fica aberta e PROTECTED; OUTRO operador recebe RESULT_PENDING_UNCONFIRMED e nada é gravado; o reenvio do
+ *    AUTOR conclui exatamente um resultado (R1.4, §16.17.4: na R1.3 ninguém concluía e este teste fixava a recusa também para o autor);
  *  - depois do RUN_CONFIRMED: o reenvio é 200 `replayed`, sem duplicar.
  */
 registerCleanup();
@@ -70,16 +70,14 @@ for (const point of POINTS) {
     // 3) recuperação
     if (point.after === 'B' || point.after === 'C') {
       const before = await footprintOf(w, e);
-      for (const actor of [OP_A, OP_B]) {
-        const again = await finalizerOver(w, e, { ledger: AGED_OTHERS }).results.finalize(actor, w.auditId, body);
-        assert.ok(!again.ok && again.code === 'RESULT_PENDING_UNCONFIRMED', `${actor.email}: ${JSON.stringify(again).slice(0, 240)}`);
-      }
-      assert.deepEqual(await footprintOf(w, e), before, 'ninguém conclui nesta fatia (R1.4); nada gravado');
-      return;
+      const other = await finalizerOver(w, e, { ledger: AGED_OTHERS }).results.finalize(OP_B, w.auditId, body);
+      assert.ok(!other.ok && other.code === 'RESULT_PENDING_UNCONFIRMED', `${OP_B.email}: ${JSON.stringify(other).slice(0, 240)}`);
+      assert.deepEqual(await footprintOf(w, e), before, 'outro operador nunca conclui; nada gravado');
     }
     const again = await finalizerOver(w, e, { ledger: AGED_OTHERS }).results.finalize(OP_A, w.auditId, body);
     assert.ok(again.ok, JSON.stringify(again).slice(0, 240));
-    assert.equal(again.value.replayed, point.after === 'CONFIRMED');
+    assert.equal(again.value.replayed, point.after === 'CONFIRMED' || point.after === 'B' || point.after === 'C', 'B/C: o reenvio do autor conclui a pendente (replayed + recoveredPending)');
+    assert.equal(again.value.recoveredPending, point.after === 'B' || point.after === 'C');
     const final = await ledgerRecords(w);
     const expected = point.after === 'A' ? [...BASE, 'RUN_INTENT', 'RUN_ABORTED', 'RUN_INTENT', 'RUN_CONFIRMED'] : [...BASE, 'RUN_INTENT', 'RUN_CONFIRMED'];
     assert.deepEqual(final.map((r) => r.event), expected, 'exatamente um par confirmado (o abortado não conta)');
