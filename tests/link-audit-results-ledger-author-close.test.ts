@@ -182,6 +182,8 @@ for (const phase of ['B', 'C'] as const) {
       const before = await everythingOf(w, e);
       const done = await finalizerOver(w, e, item.over({ evaluate: 0, barrier: 0 })).results.finalize(OP_A, w.auditId, body);
       assert.equal(codeOf(done), item.code, show(done));
+      // a recusa vem do SERVIÇO, antes do armazenamento: na fase C a pendente não vai no corpo (o DTO diria "sem recibo"; R1.3 nota (5))
+      if (phase === 'C') assert.equal((done as { pending?: unknown }).pending, undefined, 'fase C: sem pendente no corpo');
       await assertUntouched(w, e, before, phase, `${phase}/${item.label}`);
       // a recusa não é permanente: com tudo em ordem o autor conclui depois
       const own = await finalizerOver(w, e).results.finalize(OP_A, w.auditId, body);
@@ -348,6 +350,13 @@ test('porta: a conclusão exige a autorização do passo 1 desta sessão, emitid
   assert.ok(hijack.kind === 'REFUSED' && hijack.refusal.code === 'PENDING_UNCONFIRMED', `a porta recusa quem não é o autor ANTES de gravar (não depende do replay): ${show(hijack)}`);
   const afterHijack = await port.conclude({ session: ana.session, auditId: w.auditId, actor: 'ana@empresa.com', nowIso: clock(), run: draft });
   assert.ok(afterHijack.kind === 'REFUSED', `a autorização foi consumida pela tentativa recusada: ${show(afterHijack)}`);
+  // a autorização da conclusão não sobrevive a outra gravação pedida na mesma sessão (uso único: qualquer gravação a consome)
+  const reused = await port.context({ auditId: w.auditId, actor: 'ana@empresa.com', nowIso: clock() });
+  assert.ok(reused.kind === 'OK' && reused.concludable);
+  const stray = await port.intent({ session: reused.session, auditId: w.auditId, actor: 'ana@empresa.com', nowIso: clock(), run: { ...draft, runSeq: 2, prevRunSha256: run.contentSha256, runSha256: hashOf('outro') } });
+  assert.ok(stray.kind === 'REFUSED', show(stray));
+  const afterStray = await port.conclude({ session: reused.session, auditId: w.auditId, actor: 'ana@empresa.com', nowIso: clock(), run: draft });
+  assert.ok(afterStray.kind === 'REFUSED', `autorização consumida por outra gravação: ${show(afterStray)}`);
   // rascunho que não é o do RUN_INTENT aberto
   const other = await port.context({ auditId: w.auditId, actor: 'ana@empresa.com', nowIso: clock() });
   assert.ok(other.kind === 'OK');
