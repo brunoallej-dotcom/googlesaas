@@ -45,6 +45,8 @@ interface Config {
   readonly crash?: { readonly at: 'before' | 'after' | 'after-temp'; readonly match: string };
   readonly worker?: number;
   readonly rounds?: number;
+  /** `recover-retry`: limite de novas tentativas (padrão `RECOVER_RETRIES`); os testes do próprio filho o reduzem para provar que ele é respeitado. */
+  readonly recoverRetries?: number;
   readonly staleOperationMs?: number;
   /** Testemunha dos RESULTADOS (pastas dos resultados e dos recibos deles): sem isso o filho não enxerga resultado algum (`NO_RESULTS`). */
   readonly resultsDir?: string;
@@ -142,9 +144,10 @@ const RECOVER_RETRIES = 200;
   // §16.16: quem NÃO é o autor e lê a fase C de um dono VIVO (recibo gravado, CONFIRMED ainda não) recebe o 409 transitório `PENDING_UNCONFIRMED`; o cliente real tenta de novo
   // pelo `Retry-After`. Só esse código é repetido (limitado): qualquer outra recusa — inclusive `LEDGER_UNAVAILABLE` — volta como veio, para não esconder defeito do livro.
   if (config.task === 'recover-retry') {
+    const bound = config.recoverRetries ?? RECOVER_RETRIES;
     let result = await service.ledgerAction(actor, config.auditId, { action: 'RECOVER' }, clock);
     let retries = 0;
-    while (!result.ok && result.code === 'PENDING_UNCONFIRMED' && retries < RECOVER_RETRIES) {
+    while (!result.ok && result.code === 'PENDING_UNCONFIRMED' && retries < bound) {
       retries += 1;
       await sleep(3 + Math.floor(Math.random() * 12));
       result = await service.ledgerAction(actor, config.auditId, { action: 'RECOVER' }, clock);

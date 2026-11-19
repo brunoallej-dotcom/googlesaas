@@ -208,6 +208,33 @@ test('§16.16 na rotação concorrente (o contrato em que o teste de CONCORRÊNC
   assert.deepEqual(await kids(w), final, 'a rotação já estava coberta: nada novo');
 });
 
+test('`recover-retry` (filho dos testes) repete SÓ o 409 transitório da §16.16 e respeita o limite: recusa de outro tipo volta na hora (0 repetições); fase C parada de outro autor esgota exatamente o limite e devolve o próprio PENDING_UNCONFIRMED', async () => {
+  // recusa NÃO transitória: auditoria sem inscrição no livro
+  const notEnrolled = await ledgerWorld({ enroll: false });
+  // fase C PARADA (o dono não está vivo): entrada e recibo publicados, a publicação do CONFIRMED falhou (ENOSPC, não fatal)
+  const stalled = await ledgerWorld();
+  let failedOnce = false;
+  const noClosing = faulty({
+    async link(from, to) {
+      if (!failedOnce && path.dirname(to) === path.join(stalled.ledgerDir, stalled.auditId) && (JSON.parse(fs.readFileSync(from, 'utf8')) as { event?: string }).event === 'CONFIRMED') {
+        failedOnce = true;
+        throw errno('ENOSPC');
+      }
+      return nodeFsOps.link(from, to);
+    },
+  });
+  const stuck = await decisionsOver(stalled, { ledger: ledgerFor(stalled, { guard: null, fs: noClosing }), knownHeads: NO_RESULTS }).create(ANA, stalled.auditId, { record: rec.c2(), expectedHead: null }, clock);
+  assert.ok(!stuck.ok && stuck.code === 'LEDGER_UNAVAILABLE', JSON.stringify(stuck).slice(0, 200));
+  const before = await ledgerEvents(stalled);
+  const [immediate, bounded] = await Promise.all([
+    runChild(notEnrolled, null, { task: 'recover-retry', actor: 'bia@empresa.com', recoverRetries: 50 }),
+    runChild(stalled, null, { task: 'recover-retry', actor: 'bia@empresa.com', recoverRetries: 3 }),
+  ]);
+  assert.deepEqual(immediate.line, { ok: false, code: 'LEDGER_ENROLLMENT_REQUIRED', retries: 0 }, `não transitória: sem repetição ${immediate.stderr.slice(0, 200)}`);
+  assert.deepEqual(bounded.line, { ok: false, code: 'PENDING_UNCONFIRMED', retries: 3 }, `o limite é respeitado ${bounded.stderr.slice(0, 200)}`);
+  assert.deepEqual(await ledgerEvents(stalled), before, 'quem não é o autor não gravou nada em nenhuma tentativa');
+});
+
 test('DURABILIDADE da rotação: se o fsync do diretório do livro falha, o RECOVER NÃO é sucesso; depois do reinício o CHECKPOINT já existe, mas o sucesso só vem DEPOIS de sincronizar o diretório de novo', async () => {
   const w = await worldWithOneDecision();
   const log = path.join(tmpDir('lad-synclog-'), 'sync.log');
