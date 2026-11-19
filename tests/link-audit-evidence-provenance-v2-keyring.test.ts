@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHash, createPublicKey, sign as cryptoSign } from 'node:crypto';
+import { createHash, createPublicKey, generateKeyPairSync, sign as cryptoSign, type KeyObject } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
@@ -177,6 +177,24 @@ test('V2-20 (RS-16) a keyring built in code rejects small-order (forgeable) publ
     }
   }
   assert.equal((await createSealedEvidenceProvenance({ sealsDir, keyring: valid, acceptedVersions: [2] }).classify(AUD, E1)).status, 'AUTHENTICATED', 'control');
+});
+
+test('V2-20 (W3.4 review MINOR) the TEST-ONLY trustedKeys option refuses small-order or non-Ed25519 public keys as well (fail closed)', async () => {
+  const sealsDir = writeChain(buildChain([{ keys: H, entries: E1 }]));
+  const spki = (rawHex: string) => createPublicKey({ key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), Buffer.from(rawHex, 'hex')]), format: 'der', type: 'spki' });
+  const holder = parseTrustKeys(item(H))?.get(H.keyId);
+  assert.ok(holder);
+  const bad: Array<[string, KeyObject]> = [
+    ['identity (order 1)', spki('0100000000000000000000000000000000000000000000000000000000000000')],
+    ['y = -1 (order 2)', spki('ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f')],
+    ['order 8', spki('c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a')],
+    ['an Ed448 key', generateKeyPairSync('ed448').publicKey],
+  ];
+  for (const [label, key] of bad) {
+    const listed: ReadonlyMap<string, KeyObject> = new Map([[H.keyId, holder], ['ek-anel-fraca', key]]);
+    assert.deepEqual(await createSealedEvidenceProvenance({ sealsDir, trustedKeys: listed, acceptedVersions: [2] }).classify(AUD, E1), UNAUTH('PROOF_NOT_CONFIGURED'), label);
+  }
+  assert.equal((await createSealedEvidenceProvenance({ sealsDir, trustedKeys: new Map([[H.keyId, holder]]), acceptedVersions: [2] }).classify(AUD, E1)).status, 'AUTHENTICATED', 'control');
 });
 
 /* ============================================================================================ V2-21, V2-22 */

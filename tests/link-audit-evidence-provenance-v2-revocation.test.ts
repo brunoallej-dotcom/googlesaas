@@ -149,6 +149,41 @@ test('V2-27 (D12, question 12) an AUTHENTIC signature of a revoked key at any po
   await expectFor(forged, E2, UNAUTH('SEAL_INVALID'), 'revoked keyId, signature of another key');
 });
 
+test('V2-27 (review MAJOR) the pre-step verifies on a LENIENT parse: a revoked seal with an escape or a duplicate key still signals; active-key or badly signed copies do not', async () => {
+  const escape = (text: string): string => text.replace('"LINK_AUDIT_EVIDENCE_SEAL"', '"LINK\\u005fAUDIT_EVIDENCE_SEAL"');
+  const representations: ReadonlyArray<readonly [string, (text: string) => string]> = [
+    ['escaped character', escape],
+    ['duplicate key (the last one carries the signed value)', (text) => text.replace(/^\{/, '{"seq":99,')],
+  ];
+  for (const [label, rewrite] of representations) {
+    const revoked = buildChain([{ keys: A, entries: E1 }, { keys: K, entries: E2 }]);
+    const original = JSON.stringify(revoked[1]);
+    assert.notEqual(rewrite(original), original, label);
+    assert.deepEqual(JSON.parse(rewrite(original)), JSON.parse(original), `${label}: JSON.parse sees the very same seal`);
+    const dir = writeChain(revoked);
+    replaceWith(dir, 2, rewrite(original));
+    await expectFor(dir, E2, REVOKED(K.keyId), `revoked key, ${label}`);
+    // the same representation signed by an ACTIVE key: the strict rules refuse it at row 8, and there is nothing to signal
+    const active = buildChain([{ keys: A, entries: E1 }, { keys: B, entries: E2 }]);
+    const activeDir = writeChain(active);
+    replaceWith(activeDir, 2, rewrite(JSON.stringify(active[1])));
+    await expectFor(activeDir, E2, UNAUTH('SEAL_INVALID'), `active key, ${label}`);
+    // lenient-parsable, claims the revoked key, signed by another key: no signal
+    const forgedDir = writeChain(revoked);
+    replaceWith(forgedDir, 2, rewrite(JSON.stringify(signedBy(bodyOf(revoked[1] as AnySeal), A))));
+    await expectFor(forgedDir, E2, UNAUTH('SEAL_INVALID'), `invalid signature, ${label}`);
+  }
+  // the v1 signing rule too, under production [2]
+  const v1 = buildChain([{ keys: K, entries: E1, version: 1 }]);
+  const v1Dir = writeChain(v1);
+  replaceWith(v1Dir, 1, escape(JSON.stringify(v1[0])));
+  assert.deepEqual(await classify(v1Dir, E1, [2]), REVOKED(K.keyId), 'escaped v1 of the revoked key');
+  // still bound to THIS audit: an escaped copy of another audit's revoked seal never signals
+  const crossDir = tmpDir('lep5-');
+  replaceWith(crossDir, 1, escape(JSON.stringify(buildChain([{ keys: K, entries: E1 }], OTHER)[0])));
+  await expectFor(crossDir, E1, UNAUTH('SEAL_INVALID'), "escaped copy of another audit's revoked seal");
+});
+
 test('V2-28 (M1) the revocation signal WINS over a corrupted last seal, a gap, non-cumulativity, a broken link, a downgrade, an unknown or uncovered key; a deleted folder gives NO_SEAL', async () => {
   const base = (): AnySeal[] => buildChain([{ keys: K, entries: E1 }, { keys: A, entries: E2 }, { keys: A, entries: E3 }]);
   const corrupted = writeChain(base());
