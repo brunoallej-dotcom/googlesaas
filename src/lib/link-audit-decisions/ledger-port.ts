@@ -30,6 +30,26 @@ export interface DecisionsSnapshot {
   readonly pending: DecisionRef | null;
 }
 
+/**
+ * Um resultado como as pastas de resultados o mostram (spec §16.17.8, "O que a testemunha entrega"). `originProven` = a etiqueta de origem do resultado é comprovada (`RUN`).
+ * `finalizedBy` (e-mail) só circula entre os módulos do servidor: a vista do livro NUNCA o expõe.
+ */
+export interface RunRef {
+  readonly seq: number;
+  /** `contentSha256` do resultado (é o que o `RUN_INTENT`/`RUN_CONFIRMED` do livro cita como `runSha256`). */
+  readonly sha256: string;
+  readonly prevSha256: string | null;
+  readonly schemaVersion: 1 | 2;
+  readonly ledgerHead: LedgerHead | null;
+  readonly finalizedBy: string;
+  readonly originProven: boolean;
+}
+/** Resultados ANCORADOS (com recibo), em ordem 1..n, e o pendente (a cauda sem recibo, no máximo 1). */
+export interface ResultsRuns {
+  readonly anchored: readonly RunRef[];
+  readonly pending: RunRef | null;
+}
+
 /** O que as pastas de resultados dizem sobre a auditoria (testemunha independente do livro). */
 export type ResultsEvidence =
   | {
@@ -40,6 +60,8 @@ export type ResultsEvidence =
       readonly ledgerHeads: readonly LedgerHead[];
       /** `ledgerHead` de pendente SEM origem comprovada: só indício (nunca testemunha). */
       readonly unverifiedLedgerHeads: readonly LedgerHead[];
+      /** Os resultados em si (R1.2). Ausente = nenhum resultado conhecido (como as listas acima; a testemunha real sempre informa). */
+      readonly runs?: ResultsRuns;
     }
   | { readonly ok: false };
 
@@ -115,11 +137,40 @@ export interface LedgerKeyCoverage {
   readonly otherKeyRecords: number;
 }
 
+/** Razões da família de RESULTADOS que fecham só os resultados (spec §16.17.5, D-21): o livro autêntico continua provando as decisões. */
+export type RunsReason = 'RESULT_RECEIPT_REMOVED' | 'RESULT_REGRESSED';
+/** Operação de RESULTADO aberta (`RUN_INTENT` sem fecho). A fase vem da leitura de resultados mais recente (R2 se houve, senão R1; §16.17.8). */
+export interface OpenRun {
+  readonly runOpId: string;
+  readonly runSeq: number;
+  readonly runSha256: string;
+  readonly phase: OperationPhase;
+  readonly ageMs: number;
+  readonly stale: boolean;
+  /** Há receita segura agora: fase A vencida (qualquer operador aborta) ou B/C com origem comprovada (só o autor conclui). Só em `PROTECTED` e com `runs.state = OK`. */
+  readonly recoverable: boolean;
+}
+/** Família de resultados no livro (spec §16.17.2): só hashes e posições, nunca identidade. */
+export interface LedgerRuns {
+  readonly state: 'OK' | 'UNRESOLVED';
+  readonly reason: RunsReason | null;
+  readonly confirmed: ReadonlyArray<{ readonly runSeq: number; readonly runSha256: string }>;
+  readonly open: OpenRun | null;
+  /** O recibo de um resultado já confirmado pelo livro foi removido (`RESULT_RECEIPT_REMOVED`): qualquer operador pode reemiti-lo (R1.6). */
+  readonly receiptReissuable: boolean;
+}
+
 /** Vista pública do livro (sem etiquetas, chaves, caminhos nem identidades de terceiros). */
 export interface LedgerView {
   readonly state: LedgerState;
   readonly reason: LedgerReason | null;
+  /** Cabeça do LIVRO: o último registro, de qualquer tipo (exibição, guarda, pontos de verificação). */
   readonly head: LedgerHead | null;
+  /**
+   * Cabeça de DECISÕES do livro (spec §16.17.7, D-6): o último registro que NÃO é `RUN_*` (decisão, GENESIS, ABORTED, RECEIPT_REISSUED, CHECKPOINT). É a que o resultado cita
+   * (`ledgerHead`) e a que a barreira compara: uma finalização nunca a move, logo nunca muda a entrada de outra.
+   */
+  readonly decisionHead: LedgerHead | null;
   /** Quantas entradas de decisão o livro confirma. */
   readonly confirmedDecisions: number;
   readonly openOperation: OpenOperation | null;
@@ -131,12 +182,18 @@ export interface LedgerView {
   /** Só o livro real informa (ausente com `NOT_REQUIRED` e quando o livro ainda não tem registros). */
   readonly capacity?: LedgerCapacity;
   readonly keyCoverage?: LedgerKeyCoverage;
+  /**
+   * Família de RESULTADOS (spec §16.17.2). Existe sempre que o livro foi lido, autenticado (etiquetas + replay) e passou as TESTEMUNHAS (citações dos resultados e guarda; R6-05):
+   * inclusive com `HISTORY_UNRESOLVED` por razão de DECISÃO (16.17.9). `openOperation`, `recoverable` e `receiptReissuable` de topo continuam SÓ de decisão.
+   */
+  readonly runs?: LedgerRuns;
 }
 
 export const NOT_REQUIRED_VIEW: LedgerView = Object.freeze({
   state: 'NOT_REQUIRED',
   reason: null,
   head: null,
+  decisionHead: null,
   confirmedDecisions: 0,
   openOperation: null,
   recoverable: false,
@@ -181,10 +238,16 @@ export interface LedgerViewInput {
   readonly session: unknown;
   readonly auditId: string;
   readonly snapshot: DecisionsSnapshot;
+  /** R1: a testemunha dos resultados lida ANTES do livro (§16.17.8). */
   readonly results: ResultsEvidence;
   /** A etiqueta de origem da entrada `seq` está comprovada (autor genuíno). */
   readonly entryOriginProven: (seq: number) => boolean;
   readonly nowIso: string;
+  /**
+   * R2 (§16.17.8, D-13): relê a testemunha dos RESULTADOS agora, DEPOIS do livro e das decisões. Na vista, só é chamada quando o modelo pede (`RUN_CONFIRMED` que R1 não mostra
+   * ancorado); na gravação, imediatamente antes de qualquer gravação do livro (R7-06). O que só ela mostra nunca é acusado (pode ter sido gravado depois da leitura do livro).
+   */
+  readonly freshResults?: () => Promise<ResultsEvidence>;
 }
 export interface LedgerPrepareInput extends LedgerViewInput {
   readonly actor: string | null;
@@ -192,8 +255,6 @@ export interface LedgerPrepareInput extends LedgerViewInput {
   readonly rechecks: number;
   /** O que o chamador pretende gravar: decide a RESERVA de capacidade (`RECORD` ⇐ reserva de revogação e de manutenção; `REVOKE` ⇐ reserva de manutenção; `NONE` = manutenção, p.ex. `RECOVER`). Ausente = `RECORD`. */
   readonly intended?: 'RECORD' | 'REVOKE' | 'NONE';
-  /** Relê a testemunha dos RESULTADOS agora (R7-06): chamada depois da leitura do livro e imediatamente antes de qualquer gravação de recuperação/manutenção. */
-  readonly freshResults?: () => Promise<ResultsEvidence>;
   /** Se a testemunha das DECISÕES (6B) não está resolvida, o status dela (nenhuma recuperação é gravada); senão `null`. */
   readonly decisionsWitness?: string | null;
   /** Sincroniza (fsync) as pastas de decisões e de recibos da auditoria; `false` = durabilidade não comprovada (R7-04: antes de completar um `CONFIRMED`). */
