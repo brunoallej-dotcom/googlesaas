@@ -5,8 +5,8 @@ import { CONFIRM_PREFIX_LENGTH, type ConfirmationFacts } from './sign-core';
  * custodiante com o eco DESLIGADO (modo bruto do TTY herdado), sem nunca mostrar o que foi digitado. Usado para a confirmação dos 12 caracteres
  * (passo 11) e para a frase da chave (passo 12). Regras:
  *  - stdin que não é TTY, sem `setRawMode` ou cujo modo bruto não liga ⇒ recusa ANTES de ler qualquer byte (nada seria lido com eco);
- *  - o modo bruto é ligado uma vez por sessão (confirmação e frase na MESMA sessão: o que o custodiante digitar adiantado entre as duas também
- *    não ecoa) e restaurado ao modo de antes em `close()`, que quem usa chama em `finally`;
+ *  - o modo bruto é ligado uma vez por sessão, ANTES de cada tela ser mostrada (revisão da W4.4), e fica ligado entre a confirmação e a frase (o
+ *    que o custodiante digitar adiantado também não ecoa); é restaurado ao modo de antes em `close()`, que quem usa chama em `finally`;
  *  - Enter (CR, LF ou CRLF) termina; Backspace apaga um caractere (UTF-8 inteiro); Ctrl-U apaga a linha; Ctrl-C, Ctrl-D, fim de entrada, erro do
  *    terminal, outra tecla de controle (setas, Esc) ou texto acima do limite ⇒ recusa tipada, sem o que foi digitado;
  *  - os buffers do que foi digitado são zerados depois do uso (quem recebe a linha zera a sua cópia). Limite declarado: o Node pode manter cópias
@@ -40,6 +40,11 @@ export class TerminalInputError extends Error {
 }
 
 export interface HiddenInput {
+  /**
+   * Desliga o eco JÁ (modo bruto), antes de mostrar uma tela: o que o custodiante digitar assim que a tela aparece não ecoa. Lança
+   * `TerminalInputError` (`NO_TTY`) se o terminal não aceita. Idempotente na sessão.
+   */
+  hideEcho(): void;
   /** Uma linha digitada SEM eco, sem o fim de linha. Quem recebe zera o buffer depois de usar. */
   readLine(maxBytes: number): Promise<Buffer>;
   /** Restaura o modo do terminal (eco) se esta sessão o mudou e zera o que sobrou digitado. Idempotente; chamar em `finally`. */
@@ -139,6 +144,7 @@ export function openHiddenInput(terminal: SignTerminal): HiddenInput {
   };
 
   return {
+    hideEcho: ensureRaw,
     async readLine(maxBytes) {
       ensureRaw();
       const state: LineState = { line: Buffer.alloc(maxBytes), length: 0 };
@@ -217,6 +223,7 @@ function readUntilLine(terminal: SignTerminal, state: LineState, first: Buffer, 
  */
 export function terminalConfirm(input: HiddenInput, say: (line: string) => void): (facts: ConfirmationFacts) => Promise<string> {
   return async (facts) => {
+    input.hideEcho(); // revisão da W4.4: o eco sai ANTES da tela (sob carga, uma digitação rápida chegou antes do modo bruto e ecoou)
     say(`Confirmação humana (passo 11): auditoria ${facts.auditId}, manifesto seq ${facts.seq}, ${facts.entries} entradas a atestar.`);
     say(`Digite os ${CONFIRM_PREFIX_LENGTH} primeiros caracteres de packageSha256 conforme o DOSSIÊ de aprovação (a digitação não aparece na tela) e tecle Enter:`);
     const typed = await input.readLine(MAX_CONFIRMATION_BYTES);
@@ -231,6 +238,7 @@ export function terminalConfirm(input: HiddenInput, say: (line: string) => void)
 /** Pedido da frase da chave (passo 12): só o `--key-id` (público). Devolve os BYTES digitados; quem recebe os zera depois de abrir a chave. */
 export function terminalPassphrase(input: HiddenInput, say: (line: string) => void): (keyId: string) => Promise<Buffer> {
   return async (keyId) => {
+    input.hideEcho();
     say(`Frase-senha da chave ${keyId} (passo 12; a digitação não aparece na tela), e Enter:`);
     return input.readLine(MAX_PASSPHRASE_BYTES);
   };
