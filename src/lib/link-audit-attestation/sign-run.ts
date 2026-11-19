@@ -17,7 +17,7 @@ import type { SignCoreResult, SignPlan, SignRefusal, SignRefusalCode } from './s
 
 /**
  * Limites de leitura (nenhum definido na spec nem nos esquemas; escolhidos de forma conservadora, notas da W4.3 no §5.5.1). Pacote: o maior válido
- * (2000 entradas, delta cheio, textos no máximo) tem cerca de 0,6 MiB; 2 MiB deixa folga para outra identação sem aceitar um arquivo arbitrário.
+ * (2000 entradas, delta cheio, textos no máximo) tem menos de 0,5 MiB; 2 MiB deixa folga para outra identação sem aceitar um arquivo arbitrário.
  * Aprovação: a maior válida tem menos de 8 KiB. Dossiê: só existência e hash, conteúdo humano (pode ser um PDF); o mesmo teto de 16 MiB do
  * orçamento de bytes do verificador v2 (`MAX_CLASSIFY_BYTES`). Acima disso: recusa, nunca leitura parcial.
  */

@@ -288,6 +288,21 @@ Fecham lacunas apontadas no mapa da W4; prevalecem sobre o texto acima onde houv
 
 - **Revisão independente da W4.2 (19/11/2026, `junin-02`, aprovar com mudanças):** (i) erro de E/S na própria raiz `--seals-dir` (EACCES, EIO em `realpath` ou `lstat`) passou a ser `VERIFICATION_ERROR`; só ENOENT/ENOTDIR ou "não é diretório" continuam `SEALS_DIR_UNREADABLE` (antes, toda falha da raiz virava "inexistente"; a recusa já era fechada, o motivo é que estava errado). (ii) Limite declarado: a leitura da cabeça feita pelo `sign` antes do verificador fica fora do orçamento de 16 MiB dele quando o verificador recusa antes de lê-la; o acréscimo é de no máximo 256 KiB (um manifesto), e em todos os outros casos a fotografia somente leitura faz o verificador contar os mesmos bytes.
 
+**Notas da W4.3 (19/11/2026, disco e concorrência, `sign-run.ts`; onde a spec era ambígua, valeu o lado que falha fechado):**
+
+- **Leitura única (RS-04, IA-18):** `--package`, `--approval` e `--dossier` são lidos uma vez cada, nesta ordem, por `readFileBytes` do `FsOps` injetado (`BytesFsOps`, em `snapshot-store.ts`, com o mesmo código do `readFile`: sem seguir link, sem travar em FIFO, tipo e tamanho conferidos no descritor). Os bytes não são decodificados, porque o dossiê pode ser binário, e o `sign` guarda uma cópia deles. Falha de leitura ⇒ `SIGN_INPUT_UNREADABLE` (código novo), que nomeia o argumento e nunca o caminho.
+- **Limites de leitura** (nem a spec nem os esquemas definem): pacote 2 MiB (o maior pacote válido tem menos de 0,5 MiB); aprovação 64 KiB (a maior válida tem menos de 8 KiB); dossiê 16 MiB, o mesmo teto do `MAX_CLASSIFY_BYTES`. Acima disso, recusa. O limite do dossiê pode ser revisto na W4.4/W5 se um dossiê real (PDF com capturas) passar dele.
+- **"1 byte do pacote" (IA-18):** `packageSha256` cobre o corpo canônico, não os bytes do arquivo (§5.3). Toda troca dentro do corpo é recusada, e o teste varre todas as posições. Uma troca só em `generatedAt`, em `delta` ou em espaços não muda o que é assinado e não é recusada.
+- **Raiz fixada:** o caminho real de `--seals-dir` é resolvido uma vez, e a cadeia é lida e o manifesto gravado nessa mesma raiz; trocar um link no meio não desvia a gravação. A gravação recusa uma raiz que não seja o próprio caminho real.
+- **Temporário:** `.seal-NNNN.json.tmp-<32 hex>` na pasta da auditoria. `.<seal-NNNN>` foi lido como o nome do arquivo, como no teste da W4.2. O arquivo nasce em 0444 e o `link()` leva esse modo. A subpasta é criada se ausente, com fsync da raiz (a spec só pede o fsync da pasta da auditoria).
+- **Sem `link()` (EPERM, EXDEV, ENOSYS, ENOTSUP)** ⇒ `SIGN_WRITE_FAILED`. O `sign` nunca grava o nome final direto, que é o recurso não atômico do `publishExclusive`. Por isso, e porque lá o fsync da pasta é só tentativa, o `publishExclusive` não foi reaproveitado.
+- **Códigos novos da gravação:**
+  - `SIGN_WRITE_FAILED`: falha antes do `link()`. Nada é gravado como manifesto; o temporário deste processo é removido, mas um temporário alheio com o mesmo nome (EEXIST) nunca é tocado.
+  - `SIGN_WRITE_UNCONFIRMED`: falha depois do `link()` (na remoção do temporário ou no fsync da pasta). O manifesto existe e nunca é apagado, mas isso não é sucesso: não se entrega nem se emite recibo, e o caso vai para o runbook como incidente.
+  - `SIGN_TOO_MANY_ENTRIES`: conferido sobre os bytes a gravar (mais de 2000 entradas ou mais de 256 KiB), antes de tocar o disco. Esses bytes também têm de voltar, pelo parser estrito do verificador, ao mesmo `sealSha256`.
+- **Concorrência (IA-12):** numa corrida pelo mesmo `seq`, exatamente um grava. Quem perde no `link()` recebe `SIGN_SEQ_CONFLICT`; quem já vê o manifesto vencedor ao ler a cadeia recebe `SIGN_SEQ_MISMATCH`. Testado com processos filhos e com 8 gravações simultâneas no mesmo processo.
+- **Limites declarados:** o fsync do arquivo é o de `FsOps.writeExclusive`, conferido no disco real. Um componente do caminho trocado depois da última conferência e antes do `link()` não é detectado (o mesmo resíduo do `--out` do `export`). **Para a W4.4:** o CLI não imprime o caminho gravado, só `seq` e o nome do arquivo (IA-14).
+
 ### 5.6 Manifesto `v2` e verificador `v2` (onda W3, contrato próprio)
 
 **Decisão de 16/11:** `v2` **antes do primeiro resultado de produção**, com `dossier.sha256` e `prevSealSha256` **dentro da parte assinada**.
