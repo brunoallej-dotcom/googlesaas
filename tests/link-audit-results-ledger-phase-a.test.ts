@@ -112,7 +112,8 @@ function appearingResult(intent: LedgerRecord, from: number): { provider: KnownH
 test('RL-18 / M-R16 (TOCTOU): o sk aparece entre a avaliação e o RUN_ABORTED ⇒ nenhum RUN_ABORTED (nem pela finalização, nem pelo RECOVER); a releitura seguinte vê a fase B', async () => {
   for (const via of ['finalização', 'RECOVER'] as const) {
     const { w, intent } = await staleIntentWorld();
-    const witness = appearingResult(intent, 2);
+    // leituras da testemunha ANTES da releitura R2 do RUN_ABORTED: a finalização lê R1 uma vez; o RECOVER lê a inicial do serviço e a R1 do laço de gravação
+    const witness = appearingResult(intent, via === 'finalização' ? 2 : 3);
     const decisions = decisionsOver(w, { ledger: ledgerFor(w, { guard: null, pollMs: 1 }), knownHeads: witness.provider });
     if (via === 'finalização') {
       const port = decisions.resultsLedger;
@@ -123,7 +124,7 @@ test('RL-18 / M-R16 (TOCTOU): o sk aparece entre a avaliação e o RUN_ABORTED �
       const recovered = await must(decisions.ledgerAction(BIA, w.auditId, { action: 'RECOVER' }, () => FAR));
       assert.equal(recovered.ledger.runs?.open?.phase, 'B', `${via}: ${show(recovered.ledger.runs)}`);
     }
-    assert.ok(witness.calls() >= 2, `${via}: os resultados foram RELIDOS antes de gravar`);
+    assert.ok(witness.calls() >= (via === 'finalização' ? 3 : 4), `${via}: os resultados foram RELIDOS antes de gravar e de novo na tentativa seguinte (${witness.calls()})`);
     assert.deepEqual(await eventsOf(w), [...BASE, 'RUN_INTENT'], `${via}: nenhum RUN_ABORTED`);
   }
 });

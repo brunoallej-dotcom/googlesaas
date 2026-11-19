@@ -415,6 +415,18 @@ test('passo 6 / 7 / 11 pela porta: rascunho válido grava RUN_INTENT; a autoriza
   assert.deepEqual((await eventsOf(w)).slice(-2), ['RUN_INTENT', 'RUN_CONFIRMED']);
 });
 
+test('passo 6 (c) / M-R12: operação de DECISÃO aberta cuja INTENT é a própria cabeça citada ⇒ o RUN_INTENT é recusado (STALE_INPUT ⇒ INPUT_CHANGED); nunca um RUN_INTENT com decisão aberta (I-1)', async () => {
+  const { w, e } = await protectedWorld();
+  const head = decisionsHeadOf(await ledgerRecords(w));
+  await appendLedger(w, LEDGER_AUTH_A, () => ({ event: 'INTENT', actor: 'bia@empresa.com', op: opOf(refOf(2, head?.sha256 ?? null, 'aberta', { author: 'bia@empresa.com' }), 'd'.repeat(32)) }));
+  const { port, session, draft, view } = await contextOf(w, e);
+  assert.equal(view.decisionHead?.ledgerSeq, 4, 'a cabeça de decisões é a própria INTENT aberta (o passo 6 (d) sozinho não a recusaria)');
+  const before = await eventsOf(w);
+  const step = await port.intent({ session, auditId: w.auditId, actor: 'ana@empresa.com', nowIso: clock(), run: draft });
+  assert.ok(step.kind === 'REFUSED' && step.refusal.code === 'STALE_INPUT', show(step));
+  assert.deepEqual(await eventsOf(w), before, 'nada gravado');
+});
+
 test('passo 6 (b): outra finalização abriu um RUN_INTENT depois do passo 1 ⇒ RESTART (recomeça do passo 0), nada gravado por esta', async () => {
   const { w, e } = await protectedWorld();
   const { port, session, draft } = await contextOf(w, e);
