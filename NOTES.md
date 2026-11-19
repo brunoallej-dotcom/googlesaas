@@ -1,6 +1,6 @@
 # GMN Intelligence Platform: notas do projeto
 
-Uso **interno** (não é SaaS). Documentação detalhada por fase em `docs/`. Última atualização: 17/11/2026 (**Onda 6C ENCERRADA** em 16/11/2026; **P1 em andamento**: W0 (decisões D9–D13, PR #26) e W1 (PR #24) mergeadas; contrato da W3 no PR #25 aguardando a aprovação do responsável; repositório **público** desde 17/11/2026; plano em `docs/plan/implementation-waves.md`; ver o fim do arquivo).
+Uso **interno** (não é SaaS). Documentação detalhada por fase em `docs/`. Última atualização: 19/11/2026 (**Onda 6C ENCERRADA** em 16/11/2026; **P1 em andamento**: W0, W1 e W2 mergeadas; contrato da W3 aprovado (D14) e fatia W3.1 mergeada, W3.2 em andamento; correção antecipada do defeito RL-32 do livro; repositório **público** desde 17/11/2026, com proteções; plano em `docs/plan/implementation-waves.md`; ver o fim do arquivo).
 
 ## Baseline Git local e versão (28/10/2026)
 - **Atualização 07/11/2026:** o repositório agora tem o remoto `origin` (`https://github.com/brunoallej-dotcom/googlesaas.git`); os PRs #1 (`765a93a`, Onda 6B), #2 (`24c19e9`, Onda 6C) e #3 (`7013b2a`, bootstrap/CI/Node 22) estão mergeados na `main`; tag `v1.0.1` mantida. O texto abaixo ("sem remote") é o registro histórico de 28/10/2026.
@@ -224,7 +224,7 @@ Endurecimento de código (antes de expor): bypass `GMN_AUTH_DISABLED` desligado 
   - **onda R2 nova:** o resultado registra a proveniência que o atestou, um portão antes do primeiro resultado de produção, exigido pela revisão do contrato;
   - a R1 passa a esperar a W3, porque as duas mexem nos validadores da interface;
   - nomes de teste no padrão `link-audit-seal-*`.
-- **Defeito que já existe na `main`, achado pela revisão da §16.17:** um `CHECKPOINT` do `RECOVER`, permitido com operação aberta (`ledger/service.ts:350-365`), faz o `CONFIRMED` de uma decisão falhar com `LEDGER_UNAVAILABLE`. A decisão fica em fase C até o autor reenviar. É disponibilidade, não integridade. Será corrigido na R1, regra dos "fechos intercalados", com o teste RL-32 reproduzindo o caso.
+- **Defeito que já existe na `main`, achado pela revisão da §16.17:** um `CHECKPOINT` do `RECOVER`, permitido com operação aberta (`ledger/service.ts:350-365`), faz o `CONFIRMED` de uma decisão falhar com `LEDGER_UNAVAILABLE`. A decisão fica em fase C até o autor reenviar. É disponibilidade, não integridade. **Corrigido em 19/11/2026, antecipado da R1** (branch `fix/link-audit-ledger-interleaved-closing`; ver a rodada de 18–19/11 abaixo).
 - **Achado de ambiente:** com o Node v24 local, 1 teste de `link-audit-evidence-provenance` falha também na `main` limpa ("ORDEM PEQUENA"). O teste exige que o `crypto.verify` aceite a assinatura universal da chave identidade, e o Node 24 passou a recusá-la. CI e produção (Node 22) passam. Ajustar o teste quando o projeto migrar para o Node 24.
 - **CI PARADO POR COBRANÇA (17/11/2026, 04:52 UTC):** desde os PRs #25 e #26, o GitHub recusa iniciar os jobs ("recent account payments have failed or your spending limit needs to be increased"). Os checks aparecem como `failure` em 1–2 s, sem rodar. O #24 passou 6/6 antes disso. Sem CI não há merge (regra da rodada) nem verificação no servidor. A W2 **não** foi iniciada por isso (onda seguinte possível; empilhada sobre a W1). A cobrança é decisão do responsável; nada foi alterado. Na madrugada de 16–17/11 houve cerca de 40 execuções do CI (31 com sucesso), o que pode ter contribuído para atingir o limite de minutos do plano.
   - **Resolvido no mesmo dia:** o responsável tornou o repositório **público**, e repositório público não consome a cota de Actions. Causa medida pela API: a cota é da conta, e novembro somava ~2.489 min em 12 repositórios privados, acima dos 2.000 do plano gratuito; no googlesaas, o job `test` (~14 min) responde por ~74% dos minutos. A recomendação do manager era não publicar (e-mail pessoal nos commits, dados de cliente e documentos de segurança no histórico); a decisão foi do responsável. Daqui em diante, nada de dado real de cliente, e-mail ou endereço de servidor em commit novo.
@@ -233,7 +233,18 @@ Endurecimento de código (antes de expor): bypass `GMN_AUTH_DISABLED` desligado 
 - **Pendências do responsável:**
   - reavaliar a exceção do `picomatch` até 17/12/2026 (removê-la quando sair versão corrigida);
   - nomes de titular, suplente e conferente e o local dos backups (runbook da W5);
-  - `entries[].source`, aprovação assinada pelo conferente e revisão amostral de dossiês (spec §13.3).
+  - `entries[].source`, aprovação assinada pelo conferente e revisão amostral de dossiês (spec §13.3);
+  - ligar o e-mail privado nos commits (configuração da conta, *Settings → Emails*);
+  - PR #14 (G5) e os PRs do Dependabot que exigem migração (#8 Tailwind 4, #9 @types/node 26, #10 bullmq 6, #11 TypeScript 7) e o #13 (grupo de atualizações pequenas).
+
+## Rodada de 18–19/11/2026 — W2, W3.1, Actions e correção do livro (Claude como manager)
+
+- **Autonomia:** em 19/11/2026 o responsável deu **autonomia total** ao manager (inclusive merge) e delegou a ele as aprovações dos workers Codex da sala. Continuam com o responsável: deploy e produção, consultas pagas (coleta LIVE), custódia de chaves, push forçado e gasto novo.
+- **Workers da sala (método AISAC):** três workers Codex só de leitura (`junin-01..03`) fizeram as revisões independentes (outro modelo, sem as conclusões do manager): a correção do livro (bloqueou na 1ª leitura com 1 MAJOR real; aprovou na 2ª), o mapa V2-01…V2-48 da W3 e a revisão dela (W3.1), e a cadeia de suprimento dos PRs das Actions. A implementação ficou com subagentes Claude com escrita, em worktrees.
+- **Merges, cada um com o CI verde no próprio commit:** #25 contrato da W3 aprovado (`2c4e268`); #29 W2 `export` (`a5bd321`, revisão independente em duas rodadas); #28 Dependabot `postcss-selector-parser` 6.1.6, fecha o alerta moderado (`62becba`); Actions #4 setup-node v7 (`38647ee`), #6 checkout v7 (`15d11a2`) e #5 gitleaks-action v3 (`06e8c58`, varredura conferida no log), que tiram o aviso de Node 20 descontinuado; #30 W3.1 primitivas puras do `v2` (`b68df4a`), com os valores esperados recalculados pelo manager com OpenSSL/Python.
+- **Teste intermitente de rotação (diagnóstico corrigido):** o manager atribuiu primeiro a falha de "CONCORRÊNCIA: a rotação…" ao defeito RL-32; **estava errado**. Um teste determinístico mostrou a causa: a janela da §16.16 (o `RECOVER` de quem não é autor recebe `PENDING_UNCONFIRMED`, transitório, entre o recibo e o `CONFIRMED` do dono). O teste passou a tentar de novo só nesse código, com limite (50/50 execuções verdes); a janela virou teste permanente. O comentário errado no PR #29 foi corrigido lá.
+- **Defeito RL-32 corrigido (antecipado da R1):** o fecho de uma decisão que colide com um `CHECKPOINT` intercalado é regravado na nova cauda (releitura com etiquetas, replay e extensão da sessão conferidos; até 5 tentativas; teto de capacidade); a adoção de um `CONFIRMED` concorrente idêntico só vale se quem o gravou é o autor (§16.16). O `ABORTED` e o `CONFIRMED` da fase C gravados no `prepare()` não são regravados: o EEXIST deles volta como nova tentativa e o laço relê e reavalia (divergência deliberada da letra da spec, mais fechada). Fixtures pré-§16.16 de MB2b/MA15/MA16 passaram a gravar como o autor.
+- **Risco residual registrado:** o replay/modelo não confere `actor === autor` num `CONFIRMED` já gravado; um fecho autêntico de não autor, gravado por quem tem a chave do livro, aparece como confirmado. Fora da cobertura declarada no ADR-0002 (quem tem a chave do livro); correção mínima entrou no escopo da R1.
 
 ## Roadmap P1 (espelho de `docs/plan/implementation-waves.md`, que é a fonte da verdade)
 
@@ -241,8 +252,8 @@ Endurecimento de código (antes de expor): bypass `GMN_AUTH_DISABLED` desligado 
 |---|---|---|
 | W0 | Fundação documental (spec e ameaças aprovadas, contrato P1, ADR-0002 aceito, emenda §16.17 do livro) | ✅ mergeada (PR #26; D9–D13; §16.17 revisada) |
 | W1 | Função única `basis → EvidenceToProve[]`, esquemas e `packageSha256` | ✅ mergeada (PR #24, `bd07e35`) |
-| W2 | CLI `export` (somente leitura) | ⬜ |
-| W3 | Verificador `v2` + contrato próprio | 🟡 contrato aprovado (PR #25, D14); código a fazer |
+| W2 | CLI `export` (somente leitura) | ✅ mergeada (PR #29, `a5bd321`) |
+| W3 | Verificador `v2` + contrato próprio | 🟡 contrato aprovado (PR #25, D14); W3.1 mergeada (PR #30, `b68df4a`); W3.2 em andamento |
 | R1 | Confirmação de resultados pelo livro (ADR-0002) | ⬜ |
 | R2 | Proveniência registrada no resultado (portão antes do primeiro resultado de produção) | ⬜ |
 | W4 | CLI `sign` (manifesto `v2`) | ⬜ |

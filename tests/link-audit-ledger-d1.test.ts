@@ -142,7 +142,7 @@ test('MB2b/ADOÇÃO de CONFIRMED de outro processo: a falha de fsync do próprio
             const records = await ledgerRecords(w);
             const intent = records[records.length - 1] as LedgerRecord;
             const op = intent.op as NonNullable<LedgerRecord['op']>;
-            const concurrent = makeRecord(LEDGER_AUTH_A, w.auditId, intent, { event: 'CONFIRMED', recordedAt: intent.recordedAt, actor: 'bia@empresa.com', op: { ...op, intentSeq: intent.ledgerSeq, anchorRef: { name: 'a0001.json', headSha256: op.newDecisionsHead.sha256 } } });
+            const concurrent = makeRecord(LEDGER_AUTH_A, w.auditId, intent, { event: 'CONFIRMED', recordedAt: intent.recordedAt, actor: op.author /* §16.16: outro processo do MESMO autor */, op: { ...op, intentSeq: intent.ledgerSeq, anchorRef: { name: 'a0001.json', headSha256: op.newDecisionsHead.sha256 } } });
             assert.ok((await publishLedgerRecord(w.ledgerDir, concurrent)).ok); // "outro processo" conclui o MESMO CONFIRMED
             state.armed = true;
             return target.confirmed(input);

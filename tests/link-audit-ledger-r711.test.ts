@@ -118,7 +118,8 @@ const concurrentConfirmed = (auth: typeof LEDGER_AUTH_A, opIdOverride?: string) 
   return makeRecord(auth, w.auditId, intent, {
     event: 'CONFIRMED',
     recordedAt: intent.recordedAt,
-    actor: 'bia@empresa.com',
+    // §16.16: o CONFIRMED concorrente legítimo (outro processo do MESMO autor) é gravado pelo autor; o de outro operador não é adotado
+    actor: op.author,
     op: { ...op, ...(opIdOverride ? { opId: opIdOverride } : {}), intentSeq: intent.ledgerSeq, anchorRef: { name: 'a0001.json', headSha256: op.newDecisionsHead.sha256 } },
   });
 };
