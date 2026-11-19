@@ -20,9 +20,9 @@ export const KEY_ID = GOLDEN.keys.a.keyId;
 export const RING = `${KEY_ID}:${GOLDEN.keys.a.publicRaw}:active`;
 const PKCS8_ED25519_PREFIX = Buffer.from('302e020100300506032b657004220420', 'hex');
 
-/** Chave PRIVADA de TESTE (semente fabricada dos vetores-ouro), só em memória. */
-export function testKey(): KeyObject {
-  return createPrivateKey({ key: Buffer.concat([PKCS8_ED25519_PREFIX, Buffer.from(GOLDEN.keys.a.seedHex, 'hex')]), format: 'der', type: 'pkcs8' });
+/** Chave PRIVADA de TESTE (semente fabricada dos vetores-ouro), só em memória; `a` por padrão (a de `RING`), `b` para os testes de chave trocada. */
+export function testKey(which: 'a' | 'b' = 'a'): KeyObject {
+  return createPrivateKey({ key: Buffer.concat([PKCS8_ED25519_PREFIX, Buffer.from(GOLDEN.keys[which].seedHex, 'hex')]), format: 'der', type: 'pkcs8' });
 }
 
 export const LAST_COLLECTED_AT = '2026-11-18T09:00:00.000Z';

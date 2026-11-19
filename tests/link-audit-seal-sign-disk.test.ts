@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
+import { generateKeyPairSync, type KeyObject } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -760,4 +761,31 @@ test('§5.5.1 item 2 no disco: --key-id fora do padrão ⇒ USAGE, nada gravado 
     assert.match(refusal.message, /--key-id/);
     assert.deepEqual([deps.order(), writesOf(spy.calls), listing(sealsDir)], [[], [], []], keyId);
   }
+});
+
+/* =============================================================================================================== §5.5.1 item 2: SIGN_KEY_MISMATCH (W4.3) */
+
+test('§5.5.1 item 2 (W4.3): a pública derivada da chave ABERTA difere da pública de --key-id na lista ⇒ SIGN_KEY_MISMATCH logo depois de openKey; nada assinado nem gravado', async () => {
+  const B = GOLDEN.keys.b;
+  const bothActive = `${RING},${B.keyId}:${B.publicRaw}:active`;
+  const cases: ReadonlyArray<readonly [string, () => KeyObject, string]> = [
+    ['chave de teste b (outra semente) aberta para --key-id a', () => testKey('b'), RING],
+    ['chave Ed25519 aleatória', () => generateKeyPairSync('ed25519').privateKey, RING],
+    ['b também ativa na lista, mas --key-id é a', () => testKey('b'), bothActive],
+    ['chave X25519 (não Ed25519)', () => generateKeyPairSync('x25519').privateKey, RING],
+  ];
+  for (const [label, openKey, trustKeys] of cases) {
+    const { station, sealsDir } = world();
+    const spy = spyFs();
+    const deps = signDeps({ fs: spy.fs, openKey });
+    const refusal = refused(await runSign(signInput(station, sealsDir, { trustKeys, keyId: KEY_ID }), deps), 'SIGN_KEY_MISMATCH', label);
+    assert.deepEqual(deps.order(), ['confirm', 'openKey'], `${label}: depois da confirmação e da abertura da chave`);
+    assert.deepEqual(writesOf(spy.calls), [], `${label}: nenhuma escrita`);
+    assert.deepEqual(listing(sealsDir), [], `${label}: nada gravado`);
+    assert.ok(!refusal.message.includes(PUBLIC_A) && !refusal.message.includes(B.publicRaw), `${label}: sem material de chave na mensagem`);
+  }
+  // controle: a chave b aberta para --key-id b (ativa) grava, assinada por b
+  const { station, sealsDir } = world();
+  const result = await signed(signInput(station, sealsDir, { trustKeys: bothActive, keyId: B.keyId }), signDeps({ openKey: () => testKey('b') }));
+  assert.equal(result.seal.keyId, B.keyId);
 });
