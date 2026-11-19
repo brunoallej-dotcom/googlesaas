@@ -1,6 +1,6 @@
 # GMN Intelligence Platform: notas do projeto
 
-Uso **interno** (não é SaaS). Documentação detalhada por fase em `docs/`. Última atualização: 19/11/2026 (**Onda 6C ENCERRADA** em 16/11/2026; **P1 em andamento**: W0, W1, W2 e **W3 (verificador `v2`, cinco fatias) concluídas**; R1 e W4 desbloqueadas; correção antecipada do defeito RL-32 do livro; repositório **público** desde 17/11/2026, com proteções; plano em `docs/plan/implementation-waves.md`; ver o fim do arquivo).
+Uso **interno** (não é SaaS). Documentação detalhada por fase em `docs/`. Última atualização: 19/11/2026 (**Onda 6C ENCERRADA** em 16/11/2026; **P1 em andamento**: W0–W3 concluídas; **R1 e W4 em fatias** (R1.1, R1.2, W4.1, W4.2 e W4.3 na `main`; R1.3 e W4.4 em andamento); correção antecipada do defeito RL-32 do livro; repositório **público** desde 17/11/2026, com proteções; plano em `docs/plan/implementation-waves.md`; ver o fim do arquivo).
 
 ## Baseline Git local e versão (28/10/2026)
 - **Atualização 07/11/2026:** o repositório agora tem o remoto `origin` (`https://github.com/brunoallej-dotcom/googlesaas.git`); os PRs #1 (`765a93a`, Onda 6B), #2 (`24c19e9`, Onda 6C) e #3 (`7013b2a`, bootstrap/CI/Node 22) estão mergeados na `main`; tag `v1.0.1` mantida. O texto abaixo ("sem remote") é o registro histórico de 28/10/2026.
@@ -255,6 +255,19 @@ Endurecimento de código (antes de expor): bypass `GMN_AUTH_DISABLED` desligado 
 - **Produção:** o código agora aceita só manifestos `v2` e a lista de chaves com estado. **Nada foi implantado** (deploy só pelo CI e sob decisão do responsável); o primeiro resultado de produção continua bloqueado até R1, R2 e W5.
 - **Próximas ondas:** R1 (confirmação de resultados pelo livro, ADR-0002) e W4 (comando `sign`) estão desbloqueadas e mexem em arquivos disjuntos; R2 depende da R1.
 
+## Rodada de 19/11/2026 (noite) — R1 e W4 em fatias
+
+- **Planejamento (PR #37, `3b64d48`):** decisões de implementação da W4 na spec do P1 (§5.5.1) e da R1 na spec do livro (§16.17.13, D-R1-1 a D-R1-7), com as fatias W4.1–W4.6 e R1.1–R1.6 no plano. Ordem da R1: escrita antes da leitura estrita (D-R1-5).
+- **Na `main`, cada fatia com testes antes do código, revisão independente por worker Codex só de leitura e CI verde no próprio commit:**
+  - **R1.1** (#39, `975c2d7`): o livro aceita e conta `RUN_INTENT`/`RUN_CONFIRMED`/`RUN_ABORTED`; o fecho que confirma só vale gravado pelo autor, nas duas famílias (D-R1-1); capacidade `RECORD` = limite dos resultados = 3684 (a revisão tirou um segundo campo de limite que podia divergir).
+  - **R1.2** (#41, `c7bd6e7`): cabeça de decisões separada da cauda, `runs` na vista e leitura "sanduíche" com R2 condicional. A referência de conformidade da 6B foi regenerada pela 5ª vez (só 7 acréscimos de `decisionHead: null`). A revisão achou um desvio que vinha da 6C: a reemissão de recibo gravava sem a testemunha das decisões nem a releitura dos resultados. Corrigido com testes.
+  - **W4.1** (#38, `c7667f3`): núcleo puro do `sign`. A revisão **bloqueou**, e as correções foram: confirmação humana dos 12 caracteres antes de abrir a chave, aceite de risco com bytes e hash, papéis comparados com as equivalências de caixa do Unicode (sigma), telefone com `_` e `/` recusado.
+  - **W4.2** (#40, `13a64ae`): cadeia lida pelo verificador v2 real, manifesto que reproduz os vetores-ouro byte a byte, `SIGN_KEY_NOT_ACTIVE` antes da confirmação, guarda contra carregamento dinâmico em todo o grafo do `sign` (limite declarado: defesa contra erro próprio; o controle forte é o da W4.6).
+  - **W4.3** (#42, `960e54e`): leitura única das entradas, gravação temporário + `link()` exclusivo + `fsync`, corrida pelo mesmo `seq` com processos reais (10/10), `SIGN_KEY_MISMATCH` depois de abrir a chave.
+- **Revisões:** três workers Codex (`junin-01`, `-02`, `-03`) revisaram e confirmaram cada correção. Dois ficaram parados em pedidos de permissão no próprio terminal até o responsável responder; o manager não repassou a tarefa a outro worker (regra de não contornar aprovação). Uma resposta que repetia outra tarefa foi detectada e o pedido reenviado.
+- **Em andamento:** R1.3 (a finalização grava pelo livro: intent, resultado, recibo e fecho pelo autor, fase A, concorrência) e W4.4 (CLI `sign`, chave K1 com frase sem eco, custódia, recibo, `--risk-acceptance`).
+- **Pergunta nova para o responsável (junto da §13.3):** operador = custodiante não marca `requiresLaterReview`; a spec não trata o caso.
+
 ## Roadmap P1 (espelho de `docs/plan/implementation-waves.md`, que é a fonte da verdade)
 
 | Onda | Entrega | Status |
@@ -263,8 +276,8 @@ Endurecimento de código (antes de expor): bypass `GMN_AUTH_DISABLED` desligado 
 | W1 | Função única `basis → EvidenceToProve[]`, esquemas e `packageSha256` | ✅ mergeada (PR #24, `bd07e35`) |
 | W2 | CLI `export` (somente leitura) | ✅ mergeada (PR #29, `a5bd321`) |
 | W3 | Verificador `v2` + contrato próprio | ✅ concluída (contrato PR #25; W3.1–W3.5: #30, #32, #33, #34, #35; `16ff609`) |
-| R1 | Confirmação de resultados pelo livro (ADR-0002) | ⬜ |
+| R1 | Confirmação de resultados pelo livro (ADR-0002) | 🟡 R1.1 (#39) e R1.2 (#41) mergeadas; R1.3 em andamento |
 | R2 | Proveniência registrada no resultado (portão antes do primeiro resultado de produção) | ⬜ |
-| W4 | CLI `sign` (manifesto `v2`) | ⬜ desbloqueada |
+| W4 | CLI `sign` (manifesto `v2`) | 🟡 W4.1 (#38), W4.2 (#40) e W4.3 (#42) mergeadas; W4.4 em andamento |
 | W5 | Procedimento, dossiê e ensaio em homologação | ⬜ |
 | W6 | Coleta LIVE nova da TUVAPLAST (autorização escrita específica) | ⬜ |
