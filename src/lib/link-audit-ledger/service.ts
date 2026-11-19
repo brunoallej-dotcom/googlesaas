@@ -4,7 +4,7 @@ import type { OriginAuthenticator } from '../link-audit-origin';
 import { DURABILITY_UNPROVEN_MESSAGE, seal } from '../link-audit-storage';
 import { nodeFsOps, type FsOps } from '../link-audit/snapshot-store';
 import type { ExternalGuardPort } from './guard';
-import { evaluateProtection, ledgerCapacity, operationCost, replayLedger, rotationCheckpointDue, verifyTags, type Evaluation, type GuardEvidence, type LedgerReadState, type TagFailure } from './model';
+import { evaluateProtection, ledgerCapacity, operationCost, pendingClosings, replayLedger, rotationCheckpointDue, verifyTags, type Evaluation, type GuardEvidence, type LedgerReadState, type TagFailure } from './model';
 import { PROCESS_OBSERVATIONS, type OpenObservations } from './observed';
 import { ensureLedgerProven, ledgerDurabilityTripped, publishLedgerRecord, readLedgerFiles, newOpId, syncLedgerDirectory, type PublishLedgerResult } from './store';
 import { CHECKPOINT_EVERY, LEDGER_CAPACITY_POLICY, LEDGER_KIND, LEDGER_SCHEMA_VERSION, ledgerRecordSchema, type DecisionRef, type LedgerCapacityPolicy, type ResultsEvidence, type LedgerDraft, type LedgerHead, type LedgerOp, type LedgerReason, type LedgerRecord } from './types';
@@ -201,7 +201,7 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
       : level === 'REVOKE_ONLY'
         ? 'Capacidade do livro: decisões novas encerradas; só cabem revogações (reserva de revogação). Nada foi gravado.'
         : 'Capacidade do livro ESGOTADA: nem revogações cabem. A auditoria precisa de INTERVENÇÃO (a reabertura administrativa ainda não existe). Nada foi gravado.';
-  const capacityLevelOf = (session: Session): CapacityLevel => ledgerCapacity(session.records, auth.keyId, every, policy).level;
+  const capacityLevelOf = (session: Session): CapacityLevel => ledgerCapacity(session.records, auth.keyId, every, policy, pendingClosings(session.records)).level;
   const refused = (code: LedgerFailureCode, view: LedgerView | null, reason?: LedgerReason | null, extra?: string[]): LedgerStep => ({ kind: 'REFUSED', refusal: refusal(code, view, reason, extra) });
   const refusedForState = (view: LedgerView): LedgerStep =>
     view.state === 'ENROLLMENT_PENDING'
@@ -282,7 +282,8 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
   /**
    * FECHOS INTERCALADOS (spec §16.17.3, MAJOR-2; D-20), família das DECISÕES. O `link()` do fecho do dono achou a posição ocupada. Relê o livro INTEIRO e exige etiquetas e
    * replay válidos e que a releitura ESTENDA o que esta sessão leu (o livro só cresce; a INTENT da operação é a mesma). Então: (ii) fecho idêntico gravado por outro processo
-   * (R6-04) ⇒ `ADOPTED`; (i) a PRÓPRIA operação segue aberta (antes da R1 o intruso só pode ser `CHECKPOINT`: é o único registro que o replay admite ali) ⇒ `REAPPEND`;
+   * (R6-04) ⇒ `ADOPTED`; (i) a PRÓPRIA operação segue aberta (o intruso só pode ser `CHECKPOINT` ou o fecho de um resultado aberto ANTES da INTENT — `RUN_CONFIRMED`/
+   * `RUN_ABORTED`, D-8: são os únicos registros que o replay admite ali) ⇒ `REAPPEND`;
    * (iii) qualquer outra coisa (operação abortada por outro processo, cadeia que não confere) ⇒ recusa. Nunca grava nada.
    */
   async function reconcileClosing(session: Session, intent: LedgerRecord, sameClosing: (record: LedgerRecord) => boolean): Promise<'REAPPEND' | 'ADOPTED' | LedgerRefusal> {
@@ -295,7 +296,7 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
     const extendsRead = known !== undefined && records.length > session.records.length && records[known.ledgerSeq - 1]?.contentSha256 === known.contentSha256 && records[intent.ledgerSeq - 1]?.contentSha256 === intent.contentSha256;
     if (!extendsRead) return refusal('LEDGER_UNAVAILABLE', null, null, [CLOSING_UNTRUSTED_MESSAGE]);
     const adopted = records.some(sameClosing);
-    // a INTENT aberta no replay é a desta operação (mesmo hash ⇒ mesmo opId e mesma cadeia até ela); o replay só admite CHECKPOINT entre ela e o fecho
+    // a INTENT aberta no replay é a desta operação (mesmo hash ⇒ mesmo opId e mesma cadeia até ela); entre ela e o fecho o replay só admite CHECKPOINT e o fecho de resultado
     const ownOpen = replayed.value.open?.contentSha256 === intent.contentSha256;
     if (!adopted && !ownOpen) return refusal('LEDGER_UNAVAILABLE', null, null, [CLOSING_CLOSED_MESSAGE]);
     session.records = [...records];
@@ -396,10 +397,11 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
       }
 
       // MANUTENÇÃO pedida (`RECOVER`): grava o ponto de verificação da chave ATUAL quando a rotação ainda não está coberta — também COM operação aberta (R7-03: o replay aceita o
-      // CHECKPOINT entre a INTENT e o fecho). Deixa sempre 1 registro livre para fechar a operação aberta (uma operação iniciada nunca fica sem como terminar).
+      // CHECKPOINT entre a INTENT e o fecho). Deixa sempre 1 registro livre para fechar CADA operação aberta, de decisão e de resultado (§16.17.6, MINOR-2: `len + 1 + closing ≤ MAX`;
+      // uma operação iniciada nunca fica sem como terminar).
       if (intended === 'NONE') {
         if (rotationCheckpointDue(session.records, auth.keyId)) {
-          const closing = view.openOperation ? 1 : 0;
+          const closing = pendingClosings(session.records);
           if (session.records.length + 1 + closing > policy.max) return refused('LEDGER_CAPACITY_EXHAUSTED', view, 'LIMIT_REACHED', [capacityMessage('EXHAUSTED')]);
           const blocked = witnessBlock();
           if (blocked) return blocked;
@@ -447,9 +449,10 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
     async intent(input: LedgerEntryInput): Promise<LedgerStep> {
       const session = input.session as Session;
       // PONTO AUTORITATIVO da capacidade (R7-01): vale para a posição que esta INTENT vai ocupar. Se outro processo ocupar a posição o `link()` exclusivo falha (CONFLICT) e
-      // a reavaliação recomeça com o livro novo — a verificação é coordenada entre processos pelo próprio disco. A INTENT só entra se ela e o registro que a fecha cabem na classe.
+      // a reavaliação recomeça com o livro novo — a verificação é coordenada entre processos pelo próprio disco. A INTENT só entra se ela e o registro que a fecha cabem na classe,
+      // sem tomar o fecho reservado de um resultado aberto (§16.17.6: `len + 2 + openRun ≤ classe`).
       const cls = input.entry.action === 'REVOKE' ? 'REVOKE' : 'RECORD';
-      if (session.records.length + 2 > policy[cls]) return refused('LEDGER_CAPACITY_EXHAUSTED', null, 'LIMIT_REACHED', [capacityMessage(capacityLevelOf(session))]);
+      if (session.records.length + 2 + pendingClosings(session.records) > policy[cls]) return refused('LEDGER_CAPACITY_EXHAUSTED', null, 'LIMIT_REACHED', [capacityMessage(capacityLevelOf(session))]);
       const written = await append(session, { event: 'INTENT', recordedAt: input.nowIso, actor: input.actor, op: opFor(input.entry) }, input.nowIso);
       const stop = stepFromAppend(written);
       if (stop) return stop;
@@ -471,6 +474,8 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
         if (!synced.ok) return refused('LEDGER_UNAVAILABLE', null, null, [...synced.issues]);
         return { kind: 'OK', pendingKind: null };
       }
+      // §16.17.6 (MINOR-2): a reemissão não fecha operação — só entra deixando o fecho de toda operação aberta (o RUN_CONFIRMED/RUN_ABORTED de um resultado aberto).
+      if (session.records.length + 1 + pendingClosings(session.records) > policy.max) return refused('LEDGER_CAPACITY_EXHAUSTED', null, 'LIMIT_REACHED', [capacityMessage('EXHAUSTED')]);
       const written = await append(session, { event: 'RECEIPT_REISSUED', recordedAt: input.nowIso, actor: input.actor, op: { ...confirmed.op, intentSeq: confirmed.intentSeq, anchorRef: { name: anchorName(input.entry.seq), headSha256: input.entry.sha256 } } }, input.nowIso);
       const stop = stepFromAppend(written);
       if (stop) return stop;
