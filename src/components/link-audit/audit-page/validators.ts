@@ -94,7 +94,23 @@ export function isPreviewPayload(value: unknown, auditId?: string): value is Pre
 
 const decisionDtoOk = (d: unknown): boolean =>
   isObj(d) && str(d.decisionId) && /^op-\d{4}$/.test(d.decisionId) && int(d.seq) && str(d.kind) && isObj(d.record) && str(d.recordedAt) && str(d.recordedBy) && strN(d.supersedes) && strN(d.supersededBy) && oneOf(d.status, ['ACTIVE', 'SUPERSEDED', 'REVOKED', 'AMBIGUOUS']) && bool(d.siteDependent);
-const PROVENANCE_REASONS = ['PROOF_NOT_CONFIGURED', 'NO_SEAL', 'LEGACY_NO_SEAL', 'SEAL_INVALID', 'EVIDENCE_NOT_SEALED', 'EVIDENCE_MISSING', 'EVIDENCE_HASH_MISMATCH', 'VERIFICATION_ERROR'] as const;
+const PROVENANCE_REASONS = [
+  'PROOF_NOT_CONFIGURED',
+  'NO_SEAL',
+  'LEGACY_NO_SEAL',
+  'SEAL_INVALID',
+  'EVIDENCE_NOT_SEALED',
+  'EVIDENCE_MISSING',
+  'EVIDENCE_HASH_MISMATCH',
+  'VERIFICATION_ERROR',
+  // manifest v2 (contract of the v2 verifier, §8): additive, the server may send any of them
+  'SEAL_CHAIN_BROKEN',
+  'SEAL_NOT_CUMULATIVE',
+  'SEAL_DOWNGRADE',
+  'SEAL_VERSION_NOT_ALLOWED',
+  'SEAL_KEY_RETIRED_UNCOVERED',
+  'SEAL_KEY_REVOKED',
+] as const;
 const WITNESS_STATUSES = ['NOT_REQUIRED', 'UNWITNESSED', 'CONSISTENT', 'RECEIPT_LOST_WITNESSED', 'HISTORY_REGRESSED', 'HISTORY_DIVERGES', 'UNTRUSTED', 'UNAVAILABLE', 'NOT_CONFIGURED'] as const;
 const witnessOk = (w: unknown): boolean =>
   isObj(w) &&
