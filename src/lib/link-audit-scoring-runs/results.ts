@@ -88,7 +88,7 @@ export const RESULTS_MESSAGE: Readonly<Record<ResultsFailureCode, string>> = Obj
   RESULT_PENDING_UNCONFIRMED: 'Há um resultado gravado e ainda não confirmado nesta auditoria (sem recibo ou sem a confirmação do livro de cabeças); só o autor, reenviando o mesmo pedido, o conclui. Nada foi gravado.',
   RESULT_PENDING_ORIGIN_UNPROVEN: 'A origem deste resultado pendente NÃO pôde ser comprovada pelo servidor (arquivo adulterado, forjado, anterior à proteção ou de outra chave). Ele NÃO pode ser concluído por esta tela e nenhum recibo foi gravado; siga o procedimento de quarentena.',
   ORIGIN_KEY_NOT_CONFIGURED: 'A chave de comprovação de origem dos resultados não está configurada (ou é fraca) neste servidor; nenhum resultado é gravado ou concluído.',
-  RESULT_ANCHOR_PENDING: 'O resultado foi gravado, mas o recibo NÃO foi confirmado: ele ainda NÃO vale. Reenvie o MESMO pedido (é seguro repetir) para concluir.',
+  RESULT_ANCHOR_PENDING: 'O resultado foi gravado, mas o recibo ou a confirmação no livro de cabeças NÃO foi concluído: ele ainda NÃO vale e bloqueia novas finalizações. Só o autor, reenviando o MESMO pedido (é seguro repetir), o conclui.',
   RESULTS_NOT_CONFIGURED: 'O armazenamento de resultados não está configurado neste servidor.',
   RESULT_ANCHOR_NOT_CONFIGURED: 'O armazenamento de recibos de resultados não está configurado neste servidor; nenhum resultado é gravado.',
   RESULTS_MISCONFIGURED: 'O armazenamento de resultados ou de recibos está configurado de forma insegura (pastas iguais, aninhadas ou em área pública).',
