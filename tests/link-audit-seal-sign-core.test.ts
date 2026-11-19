@@ -9,7 +9,8 @@ import { buildEvidenceSealBodyV2, createEvidenceSealV2 } from '../src/lib/link-a
 
 /*
  * P1 W4.1 — núcleo PURO do `sign` (spec §5.5 passos 1–6 e 8–10; §5.5.1 item 3). Dados 100% FICTÍCIOS; a chave é de teste, gerada em memória,
- * e só aparece como o valor devolvido pelo espião do leitor de chave (IA-01: 0 chamadas em toda recusa).
+ * e só aparece como o valor devolvido pelo espião do leitor de chave (IA-01: 0 chamadas em toda recusa). Desde a W4.2 o último manifesto chega como
+ * fato da cadeia verificada (`chain`, com `--expect-seq`/`--first`); a leitura e a verificação reais estão em `link-audit-seal-sign-chain.test.ts`.
  */
 const h = (c: string): string => c.repeat(64);
 const sha256 = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
@@ -111,6 +112,14 @@ const makeLastSeal = (over: { readonly auditId?: string; readonly entries?: Read
     privateKey: TEST_KEY,
   });
 
+/**
+ * Passo 7 (W4.2): o núcleo recebe a cadeia JÁ lida e verificada pelo verificador v2 real (`sign-chain.ts`, testes em
+ * `link-audit-seal-sign-chain.test.ts`); aqui, os fatos estruturais. `null` = pasta sem manifesto, primeira assinatura (`--first --expect-seq 1`).
+ */
+const LAST_SEAL_SHA256 = h('7');
+const chainAfter = (last: LastSealFacts | null): Pick<SignCoreInput, 'chain' | 'expectSeq' | 'first'> =>
+  last === null ? { chain: { status: 'EMPTY' }, expectSeq: 1, first: true } : { chain: { status: 'VERIFIED', last: { seq: 1, sealSha256: LAST_SEAL_SHA256, ...last } }, expectSeq: 2, first: false };
+
 const bytes = (value: unknown): Uint8Array => Buffer.from(JSON.stringify(value, null, 2), 'utf8');
 const inputFor = (pkg: unknown, approval: unknown, over: Partial<SignCoreInput> = {}): SignCoreInput => ({
   auditId: AUDIT,
@@ -118,7 +127,7 @@ const inputFor = (pkg: unknown, approval: unknown, over: Partial<SignCoreInput> 
   packageBytes: bytes(pkg),
   approvalBytes: bytes(approval),
   dossierBytes: DOSSIER,
-  lastSeal: makeLastSeal(),
+  ...chainAfter(makeLastSeal()),
   ...over,
 });
 const validInput = (over: Partial<SignCoreInput> = {}): SignCoreInput => {
@@ -168,6 +177,8 @@ test('IA-01 caminho feliz: tudo válido ⇒ plano com o conjunto exato do pacote
   assert.deepEqual(plan, {
     auditId: AUDIT,
     sealedAt: NOW,
+    seq: 2,
+    prevSealSha256: LAST_SEAL_SHA256,
     packageSha256: pkg.packageSha256,
     entries: ENTRIES.map((entry) => ({ ref: entry.ref, contentSha256: entry.contentSha256 })),
     dossier: { id: 'dossie-2026-0001', sha256: sha256(DOSSIER) },
@@ -179,38 +190,39 @@ test('IA-01 caminho feliz: tudo válido ⇒ plano com o conjunto exato do pacote
   });
 });
 
-test('IA-01 primeiro manifesto (sem último manifesto): sem o passo 8, o plano sai igual', () => {
-  const plan = assertSigned(validInput({ lastSeal: null }));
+test('IA-01 primeiro manifesto (sem último manifesto): sem o passo 8, o plano sai igual, com seq 1 e prev null', () => {
+  const plan = assertSigned(validInput(chainAfter(null)));
   assert.equal(plan.entries.length, ENTRIES.length);
+  assert.deepEqual([plan.seq, plan.prevSealSha256], [1, null]);
 });
 
 /* --------------------------------------------------------------------------------------------------------------- IA-01 (a)–(d) */
 
 test('IA-01 (a): hash de entrada já atestada mudou ⇒ SIGN_EVIDENCE_CHANGED (informa a ref); chave não aberta', () => {
   const changed = ENTRIES.slice(0, 3).map((entry) => (entry.ref === 'capture:c0002' ? { ...entry, contentSha256: h('e') } : entry));
-  const refusal = assertRefused(validInput({ lastSeal: makeLastSeal({ entries: changed }) }), 'SIGN_EVIDENCE_CHANGED');
+  const refusal = assertRefused(validInput(chainAfter(makeLastSeal({ entries: changed }))), 'SIGN_EVIDENCE_CHANGED');
   assert.deepEqual(refusal.refs, ['capture:c0002']);
   assert.match(refusal.message, /capture:c0002/);
 });
 
 test('IA-01 (a): entrada do último manifesto sumiu do pacote ⇒ SIGN_EVIDENCE_CHANGED; no máximo 5 refs informadas', () => {
   const extra = ['capture:c0010', 'capture:c0011', 'capture:c0012', 'capture:c0013', 'capture:c0014', 'capture:c0015'].map((ref) => ({ ref, contentSha256: h('f') }));
-  const one = assertRefused(validInput({ lastSeal: makeLastSeal({ entries: [...ENTRIES.slice(0, 3), extra[0]!] }) }), 'SIGN_EVIDENCE_CHANGED');
+  const one = assertRefused(validInput(chainAfter(makeLastSeal({ entries: [...ENTRIES.slice(0, 3), extra[0]!] }))), 'SIGN_EVIDENCE_CHANGED');
   assert.deepEqual(one.refs, ['capture:c0010']);
-  const many = assertRefused(validInput({ lastSeal: makeLastSeal({ entries: [...ENTRIES.slice(0, 3), ...extra] }) }), 'SIGN_EVIDENCE_CHANGED');
+  const many = assertRefused(validInput(chainAfter(makeLastSeal({ entries: [...ENTRIES.slice(0, 3), ...extra] }))), 'SIGN_EVIDENCE_CHANGED');
   assert.deepEqual(many.refs, extra.slice(0, 5).map((entry) => entry.ref));
 });
 
 test('IA-01 (a): entradas novas no pacote são permitidas; o mesmo conjunto do último manifesto também', () => {
-  assertSigned(validInput({ lastSeal: makeLastSeal({ entries: ENTRIES.slice(0, 1) }) }));
-  assertSigned(validInput({ lastSeal: makeLastSeal({ entries: [...ENTRIES] }) }));
+  assertSigned(validInput(chainAfter(makeLastSeal({ entries: ENTRIES.slice(0, 1) }))));
+  assertSigned(validInput(chainAfter(makeLastSeal({ entries: [...ENTRIES] }))));
 });
 
 test('IA-01 (b): pacote legado (como o export o produz) ⇒ SIGN_LEGACY_NOT_ATTESTABLE, inclusive com dossiê e aprovação válidos', () => {
   const allNotExecuted = Object.fromEntries(CHECK_IDS.map((id) => [id, 'NOT_EXECUTED'])) as Record<CheckId, CheckStatus>;
   const legacy = makePackage({ legacy: true, checks: allNotExecuted });
   assert.equal(legacy.attestable, false);
-  const refusal = assertRefused(inputFor(legacy, makeApproval(legacy), { lastSeal: null }), 'SIGN_LEGACY_NOT_ATTESTABLE');
+  const refusal = assertRefused(inputFor(legacy, makeApproval(legacy), chainAfter(null)), 'SIGN_LEGACY_NOT_ATTESTABLE');
   assert.match(refusal.message, /legada não é atestável/);
 });
 
@@ -297,7 +309,7 @@ test('IA-06 (2): --audit diferente do auditId do pacote ou da aprovação ⇒ SI
 });
 
 test('IA-06 (3): último manifesto (válido e assinado) de outra auditoria ⇒ SIGN_SEAL_CHAIN_INVALID', () => {
-  assertRefused(validInput({ lastSeal: makeLastSeal({ auditId: OTHER_AUDIT }) }), 'SIGN_SEAL_CHAIN_INVALID');
+  assertRefused(validInput(chainAfter(makeLastSeal({ auditId: OTHER_AUDIT }))), 'SIGN_SEAL_CHAIN_INVALID');
 });
 
 test('IA-06 (3): último manifesto fora de forma (data, entradas vazias, ref ou hash inválidos) ⇒ SIGN_SEAL_CHAIN_INVALID', () => {
@@ -309,8 +321,8 @@ test('IA-06 (3): último manifesto fora de forma (data, entradas vazias, ref ou 
     { ...base, entries: [{ ref: 'site:c0001', contentSha256: h('a') }] },
     { ...base, entries: [{ ref: 'capture:c0001', contentSha256: 'A'.repeat(64) }] },
   ];
-  assertSigned(validInput({ lastSeal: base }));
-  for (const lastSeal of malformed) assertRefused(validInput({ lastSeal }), 'SIGN_SEAL_CHAIN_INVALID');
+  assertSigned(validInput(chainAfter(base)));
+  for (const last of malformed) assertRefused(validInput(chainAfter(last)), 'SIGN_SEAL_CHAIN_INVALID');
 });
 
 /* --------------------------------------------------------------------------------------------------------------- IA-17 (herdado) */
@@ -415,9 +427,9 @@ test('passo 9 (RS-01): com aceite formal ⇒ prossegue com roleException e requi
 test('passo 10: relógio antes do último manifesto ou da última coleta ⇒ SIGN_CLOCK_REGRESSION; instante igual é aceito', () => {
   assertRefused(validInput(), 'SIGN_CLOCK_REGRESSION', '2026-11-18T11:59:59.999Z');
   assert.equal(assertSigned(validInput(), LAST_SEALED_AT).sealedAt, LAST_SEALED_AT);
-  assertRefused(validInput({ lastSeal: null }), 'SIGN_CLOCK_REGRESSION', '2026-11-18T09:59:59.999Z');
-  assert.equal(assertSigned(validInput({ lastSeal: null }), LAST_COLLECTED_AT).sealedAt, LAST_COLLECTED_AT);
-  assertRefused(validInput({ lastSeal: makeLastSeal({ sealedAt: '2026-11-18T08:00:00.000Z' }) }), 'SIGN_CLOCK_REGRESSION', '2026-11-18T09:30:00.000Z');
+  assertRefused(validInput(chainAfter(null)), 'SIGN_CLOCK_REGRESSION', '2026-11-18T09:59:59.999Z');
+  assert.equal(assertSigned(validInput(chainAfter(null)), LAST_COLLECTED_AT).sealedAt, LAST_COLLECTED_AT);
+  assertRefused(validInput(chainAfter(makeLastSeal({ sealedAt: '2026-11-18T08:00:00.000Z' }))), 'SIGN_CLOCK_REGRESSION', '2026-11-18T09:30:00.000Z');
 });
 
 test('passo 10: relógio inválido ou fora do formato do manifesto ⇒ UNEXPECTED, sem abrir a chave', () => {
@@ -428,7 +440,7 @@ test('passo 10: relógio inválido ou fora do formato do manifesto ⇒ UNEXPECTE
 /* --------------------------------------------------------------------------------------------------------------- ordem do §5.5 */
 
 type Fault = 'PACKAGE_SCHEMA' | 'APPROVAL_SCHEMA' | 'AUDIT' | 'PACKAGE_HASH' | 'NOT_APPROVED' | 'CHECK_FAIL' | 'LEGACY' | 'HUMAN_MISSING' | 'HUMAN_EXTRA' | 'DOSSIER' | 'CHAIN_AUDIT' | 'EVIDENCE_CHANGED' | 'ROLE' | 'CLOCK';
-/** Falhas na ordem do §5.5 (1, 1, 1, 2, 3, 4a, 4/5, 4b, 4b, 6, 7*, 8, 9, 10); 7* = guarda mínima do último manifesto (a cadeia é da W4.2). */
+/** Falhas na ordem do §5.5 (1, 1, 1, 2, 3, 4a, 4/5, 4b, 4b, 6, 7*, 8, 9, 10); 7* = guarda do último manifesto recebido (a leitura da cadeia é da W4.2). */
 const LADDER: ReadonlyArray<readonly [Fault, string]> = [
   ['PACKAGE_SCHEMA', 'SIGN_PACKAGE_INVALID'],
   ['APPROVAL_SCHEMA', 'SIGN_APPROVAL_INVALID'],
@@ -464,7 +476,7 @@ function build(faults: ReadonlySet<Fault>): { readonly input: SignCoreInput; rea
     auditId: has('AUDIT') ? OTHER_AUDIT : AUDIT,
     custodian: has('ROLE') ? 'CONF-01' : 'CUST-01',
     dossierBytes: has('DOSSIER') ? Buffer.concat([DOSSIER, Buffer.from([0x0a])]) : DOSSIER,
-    lastSeal: makeLastSeal({ auditId: has('CHAIN_AUDIT') ? OTHER_AUDIT : AUDIT, entries: sealed }),
+    ...chainAfter(makeLastSeal({ auditId: has('CHAIN_AUDIT') ? OTHER_AUDIT : AUDIT, entries: sealed })),
   });
   return { input, now: has('CLOCK') ? '2026-11-18T11:00:00.000Z' : NOW };
 }

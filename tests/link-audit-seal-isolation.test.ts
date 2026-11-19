@@ -18,7 +18,7 @@ const importsOf = (source: string): string[] => {
     ...[...code.matchAll(/\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1] ?? ''),
   ];
 };
-const FILES = ['export-run.ts', 'export.ts', 'index.ts', 'package-hash.ts', 'schemas.ts', 'sign-core.ts'];
+const FILES = ['export-run.ts', 'export.ts', 'index.ts', 'package-hash.ts', 'schemas.ts', 'sign-chain.ts', 'sign-core.ts'];
 const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   'index.ts': new Set(['../link-audit-evidence/evidence-to-prove', './package-hash', './schemas']),
   'package-hash.ts': new Set(['../link-audit/canonical', './schemas']),
@@ -29,6 +29,9 @@ const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   'export-run.ts': new Set(['node:path', 'zod', '../link-audit/snapshot-store', '../link-audit-evidence/provenance', '../link-audit-evidence/reader', '../link-audit-evidence/scoring-basis', '../link-audit-evidence/store', './export', './schemas']),
   // P1 W4.1: núcleo PURO das recusas do `sign` (só o hash do dossiê vem de node:crypto); nunca o verificador, o leitor nem disco
   'sign-core.ts': new Set(['node:crypto', './package-hash', './schemas']),
+  // P1 W4.2: o ÚNICO arquivo do `sign` que importa o verificador v2 (leitura e verificação da cadeia, corpo e assinatura); disco só pelo FsOps
+  // injetado (tipo), nunca o leitor de evidências nem o armazenamento. O artefato único separa o núcleo do verificador na W4.6 (§5.5.1 item 7).
+  'sign-chain.ts': new Set(['node:crypto', 'node:path', '../link-audit/snapshot-store', '../link-audit-evidence/provenance', './schemas', './sign-core']),
 };
 /** Exceções por arquivo às proibições abaixo, cada uma trocada por uma regra mais estreita (P1 W2). */
 const NO_IMPLICIT_CLOCK: readonly [RegExp, string] = [/Date\.now|new Date\s*\(\s*\)|performance\.now/, 'relógio implícito'];
@@ -36,6 +39,7 @@ const EXCEPTIONS: Readonly<Record<string, ReadonlySet<string>>> = {
   'export.ts': new Set(['Date']), // Date.parse/toISOString de datas recebidas (normalização); o instante vem de quem chama
   'export-run.ts': new Set(['Date', 'módulo node']), // só node:path (lista acima); o instante vem de quem chama
   'sign-core.ts': new Set(['Date', 'módulo node']), // relógio INJETADO (tipo Date); só createHash de node:crypto (teste abaixo)
+  'sign-chain.ts': new Set(['módulo node']), // só node:crypto (assinar/derivar a pública) e node:path (lista acima); sem relógio
 };
 
 test('importsOf enxerga import de efeito colateral, import() dinâmico, require e export from', () => {
@@ -84,6 +88,16 @@ test('P1 W4.1: sign-core.ts usa de node:crypto SÓ createHash (hash do dossiê):
   assert.deepEqual([...code.matchAll(/import\s*\{([^}]*)\}\s*from\s*'node:crypto'/g)].map((m) => (m[1] ?? '').trim()), ['createHash']);
   assert.ok(!/\b(?:sign|verify|createPrivateKey|createPublicKey|generateKeyPair\w*|randomBytes|scrypt\w*|pbkdf2\w*)\s*\(/.test(code) && !/\bKeyObject\b/.test(code), 'operação de chave no núcleo');
   assert.ok(!/node:(?!crypto')/.test(code), 'outro módulo node');
+});
+
+test('P1 W4.2: sign-chain.ts verifica a cadeia com o verificador REAL em modo produção (keyring, acceptedVersions [2]), só lê pelo FsOps injetado e nunca escreve', () => {
+  const code = strip(fs.readFileSync(path.join(LIB, 'sign-chain.ts'), 'utf8'));
+  assert.ok(/createSealedEvidenceProvenance\(\{[^}]*\bkeyring\b[^}]*\bacceptedVersions:\s*\[2\]/.test(code), 'verificador com keyring e acceptedVersions: [2]');
+  assert.ok(!/\btrustedKeys\b/.test(code), 'trustedKeys é só de teste');
+  assert.ok(!/\.(?:mkdir|writeExclusive|link|unlink|chmod|syncDirectory|rename|rm|truncate)\s*\(|publishExclusive|withLock|nodeFsOps|node:fs/.test(code), 'escrita ou disco implícito');
+  for (const name of FILES.filter((file) => file !== 'sign-chain.ts' && file !== 'export-run.ts')) {
+    assert.ok(!importsOf(fs.readFileSync(path.join(LIB, name), 'utf8')).includes('../link-audit-evidence/provenance'), `${name} não importa o verificador (§5.5.1 item 7)`);
+  }
 });
 
 /** P1 W2: o CLI `scripts/link-audit-seal.ts` é o ÚNICO consumidor (o `sign` chega na W4), e só destes arquivos. */
