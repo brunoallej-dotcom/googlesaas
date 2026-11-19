@@ -115,6 +115,61 @@ test('P1 W4.3: sign-run.ts escreve SÓ pelo FsOps injetado: uma subpasta, um tem
   assert.ok(!/\b(?:sign|verify|createPrivateKey|createPublicKey|generateKeyPair\w*)\s*\(/.test(code), 'operação de chave fora de sign-chain.ts');
 });
 
+/** Arquivo `.ts` de um import relativo ou `@/` (= `src/`); `null` para pacote externo ou módulo `node:`. Import local que não resolve falha o teste. */
+function resolveLocal(from: string, specifier: string): string | null {
+  const base = specifier.startsWith('@/') ? path.join(ROOT, 'src', specifier.slice(2)) : specifier.startsWith('.') ? path.resolve(path.dirname(from), specifier) : null;
+  if (base === null) return null;
+  const found = [`${base}.ts`, `${base}.tsx`, path.join(base, 'index.ts'), base].find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile());
+  return found ?? assert.fail(`import local não resolvido: "${specifier}" em ${path.relative(ROOT, from)}`);
+}
+
+/** Todos os arquivos locais alcançáveis a partir de `entry` (imports relativos, inclusive `import type`, que só deixam o teste mais estrito). */
+function reachableFrom(entry: string): ReadonlyMap<string, readonly string[]> {
+  const seen = new Map<string, readonly string[]>();
+  const pending = [entry];
+  for (let file = pending.pop(); file !== undefined; file = pending.pop()) {
+    if (seen.has(file)) continue;
+    const specifiers = importsOf(fs.readFileSync(file, 'utf8'));
+    seen.set(file, specifiers);
+    for (const specifier of specifiers) {
+      const local = resolveLocal(file, specifier);
+      if (local !== null) pending.push(local);
+    }
+  }
+  return seen;
+}
+
+/** O que nenhum arquivo alcançável pelo núcleo do `sign` pode importar: o verificador, disco, rede, processos ou o armazenamento. */
+const SIGN_CORE_FORBIDDEN: ReadonlyArray<readonly [RegExp, string]> = [
+  [/link-audit-evidence\/provenance$/, 'o verificador'],
+  [/^(?:node:)?fs(?:\/promises)?$/, 'disco'],
+  [/^(?:node:)?(?:net|dns|http|https|http2|tls|dgram)(?:\/|$)|^(?:undici|ioredis|bullmq|@supabase\/)/, 'rede'],
+  [/^(?:node:)?(?:child_process|worker_threads|cluster)$/, 'processo'],
+  [/snapshot-store$/, 'o armazenamento (snapshot-store)'],
+];
+
+test('P1 W4.1 (revisão): o núcleo sign-core.ts, por TODO import local alcançável (não só os diretos), nunca chega ao verificador, a disco, rede nem ao snapshot-store', () => {
+  const graph = reachableFrom(path.join(LIB, 'sign-core.ts'));
+  const files = [...graph.keys()].map((file) => path.relative(ROOT, file).split(path.sep).join('/')).sort();
+  assert.deepEqual(files, [
+    'src/lib/link-audit-attestation/package-hash.ts',
+    'src/lib/link-audit-attestation/schemas.ts',
+    'src/lib/link-audit-attestation/sign-core.ts',
+    'src/lib/link-audit-evidence/types.ts',
+    'src/lib/link-audit/canonical.ts',
+  ], 'arquivo novo no grafo do núcleo exige decisão e revisão deste teste');
+  for (const [file, specifiers] of graph) {
+    const where = path.relative(ROOT, file);
+    for (const specifier of specifiers) {
+      for (const [pattern, label] of SIGN_CORE_FORBIDDEN) assert.ok(!pattern.test(specifier), `${where} importa ${label} ("${specifier}")`);
+      const local = resolveLocal(file, specifier);
+      if (local !== null) assert.ok(!/(?:provenance|snapshot-store)\.ts$/.test(local), `${where} alcança ${path.relative(ROOT, local)}`);
+    }
+  }
+  const external = new Set([...graph].flatMap(([file, specifiers]) => specifiers.filter((specifier) => resolveLocal(file, specifier) === null)));
+  assert.deepEqual([...external].sort(), ['node:crypto', 'zod'], 'de fora do repositório, só node:crypto e zod');
+});
+
 /** P1 W2: o CLI `scripts/link-audit-seal.ts` é o ÚNICO consumidor (o `sign` chega na W4), e só destes arquivos. */
 const CLI_FILE = path.join(ROOT, 'scripts', 'link-audit-seal.ts');
 const CLI_ALLOWED: ReadonlySet<string> = new Set(['@/lib/link-audit-attestation/export', '@/lib/link-audit-attestation/export-run', '@/lib/link-audit-attestation/schemas']);

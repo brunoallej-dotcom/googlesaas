@@ -175,11 +175,14 @@ export interface SignWithChainDeps<K> extends SignCoreDeps<K> {
   readonly fs: FsOps;
 }
 
-/** A cadeia é lida e verificada ANTES, e julgada pelo núcleo na posição do passo 7: as recusas dos passos 1–6 continuam vindo primeiro. */
+/**
+ * A cadeia é lida e verificada ANTES, e julgada pelo núcleo na posição do passo 7: as recusas dos passos 1–6 continuam vindo primeiro. Depois de
+ * todas as recusas (1–10), a confirmação humana (11, porta `confirm`) e, por último, a chave (12); os bytes do aceite de risco seguem ao núcleo.
+ */
 export async function runSignWithChain<K>(input: SignWithChainInput, deps: SignWithChainDeps<K>): Promise<SignCoreResult<K>> {
   const { sealsDir, trustKeys, ...core } = input;
   const chain = await readSealChain({ sealsDir, auditId: core.auditId, trustKeys }, { fs: deps.fs });
-  return runSignCore({ ...core, chain }, { now: deps.now, openKey: deps.openKey });
+  return runSignCore({ ...core, chain }, { now: deps.now, confirm: deps.confirm, openKey: deps.openKey });
 }
 
 /* ------------------------------------------------------------------------------------------------------------------- passo 13: corpo e assinatura */

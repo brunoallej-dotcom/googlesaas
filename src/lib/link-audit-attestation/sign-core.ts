@@ -3,12 +3,13 @@ import { isPackageHashConsistent } from './package-hash';
 import { APPROVAL_KIND, approvalSchema, auditId as auditIdSchema, candidatePackageSchema, entryRef, hex64, isoInstant, PACKAGE_KIND, shortLabel, type Approval, type CandidatePackage } from './schemas';
 
 /*
- * P1 W4.1/W4.2 — núcleo PURO do `sign` (spec §5.5 passos 1–10; decisões §5.5.1). Recebe os BYTES já lidos (uma vez, por quem chama) do pacote,
- * da aprovação e do dossiê, e o que a leitura da cadeia achou (`sign-chain.ts` a lê e verifica com o verificador v2 real ANTES; este arquivo só
- * julga o resultado, na posição do passo 7); decide: plano do manifesto (com `seq` e `prevSealSha256`), ou recusa com `code` estável.
- * Sem disco, rede, ambiente nem relógio implícito: o instante vem do relógio injetado, lido no passo 10. A chave vem de um leitor injetado,
- * chamado no máximo uma vez e só depois de TODAS as recusas (IA-01). Confirmação (11), chave (12), autoteste (14), gravação (15) e recibo (16)
- * são das fatias W4.3–W4.5; o corpo e a assinatura (13) estão em `sign-chain.ts`.
+ * P1 W4.1/W4.2 — núcleo PURO do `sign` (spec §5.5 passos 1–11; decisões §5.5.1). Recebe os BYTES já lidos (uma vez, por quem chama) do pacote,
+ * da aprovação, do dossiê e do aceite formal de risco, e o que a leitura da cadeia achou (`sign-chain.ts` a lê e verifica com o verificador v2 real
+ * ANTES; este arquivo só julga o resultado, na posição do passo 7); decide: plano do manifesto (com `seq` e `prevSealSha256`), ou recusa com `code`
+ * estável. Sem disco, rede, ambiente nem relógio implícito: o instante vem do relógio injetado, lido no passo 10. Depois de TODAS as recusas dos
+ * passos 1–10, a confirmação humana (passo 11) pela porta injetada `confirm`; só então, uma única vez, o leitor de chave injetado (passo 12;
+ * IA-01). A tela da confirmação (TTY) e a chave real (12) são da W4.4, o autoteste (14) e o recibo (16) da W4.5, a gravação (15) da W4.3; o corpo
+ * e a assinatura (13) estão em `sign-chain.ts`.
  */
 
 export const SIGN_REFUSAL_CODES = [
@@ -26,6 +27,7 @@ export const SIGN_REFUSAL_CODES = [
   'SIGN_EVIDENCE_CHANGED',
   'SIGN_ROLE_SEPARATION',
   'SIGN_CLOCK_REGRESSION',
+  'SIGN_CONFIRMATION_FAILED',
   // emitidos pelo adaptador de disco (`sign-run.ts`, W4.3), nunca por este núcleo: entrada ilegível, manifesto grande demais (§7.1) e gravação (passo 15)
   'SIGN_INPUT_UNREADABLE',
   'SIGN_TOO_MANY_ENTRIES',
@@ -78,6 +80,11 @@ export interface SignCoreInput {
   readonly packageBytes: Uint8Array;
   readonly approvalBytes: Uint8Array;
   readonly dossierBytes: Uint8Array;
+  /**
+   * Bytes do arquivo do aceite formal de risco citado em `approval.riskAcceptance`, lidos UMA vez por quem chama; `null` se não foi indicado. Só
+   * contam quando conferente e custodiante coincidem (passo 9: existência e hash; o conteúdo é humano); senão, são ignorados.
+   */
+  readonly riskAcceptanceBytes: Uint8Array | null;
   /** A cadeia de `<seals-dir>/<auditId>/`, já lida e verificada por `sign-chain.ts` (W4.2). */
   readonly chain: SealChainFacts;
   /** `--expect-seq`: o `seq` esperado, do registro EXTERNO (dossiê/cofre), nunca da pasta. Inteiro de 1 a 256. */
@@ -86,10 +93,28 @@ export interface SignCoreInput {
   readonly first: boolean;
 }
 
+/**
+ * O que a tela da confirmação humana (passo 11) pode mostrar. NUNCA o hash do pacote, nem parte dele: o custodiante lê os 12 caracteres no
+ * dossiê, fora desta tela, e os digita; uma tela que os mostrasse viraria um "copie o que está escrito".
+ */
+export interface ConfirmationFacts {
+  readonly auditId: string;
+  /** O `seq` do manifesto a assinar (último verificado + 1, igual a `--expect-seq`; W4.2). */
+  readonly seq: number;
+  /** Quantas entradas o manifesto vai atestar (o conjunto exato do pacote). */
+  readonly entries: number;
+}
+
 export interface SignCoreDeps<K> {
   /** Relógio injetado; lido uma vez, no passo 10. */
   readonly now: () => Date;
-  /** Leitor de chave (W4.4). Chamado no máximo uma vez e SÓ depois de todas as recusas que não precisam dela (§5.5; IA-01). */
+  /**
+   * Confirmação humana (passo 11; a tela TTY é da W4.4): devolve o texto que o custodiante DIGITOU, comparado sem nenhuma normalização com os
+   * 12 primeiros caracteres de `packageSha256` (quem implementa a tela tira só o fim de linha). Chamada no máximo uma vez, depois de todas as
+   * recusas dos passos 1–10 e antes de `openKey`. Lançar ou rejeitar é recusa (`SIGN_CONFIRMATION_FAILED`), nunca sucesso.
+   */
+  readonly confirm: (facts: ConfirmationFacts) => Promise<string>;
+  /** Leitor de chave (W4.4). Chamado no máximo uma vez e SÓ depois de todas as recusas e da confirmação humana (§5.5 passo 12; IA-01). */
   readonly openKey: () => K;
 }
 
@@ -121,6 +146,8 @@ type ChainStep = { readonly ok: true; readonly seq: number; readonly prevSealSha
 type Decision = { readonly ok: true; readonly plan: SignPlan } | SignRefusal;
 
 const MAX_REPORTED_REFS = 5;
+/** Passo 11: quantos caracteres iniciais de `packageSha256` o custodiante digita. */
+const CONFIRM_PREFIX_LENGTH = 12;
 const NOTHING_SIGNED = 'Nada foi assinado.';
 /** UTF-8 estrito; `ignoreBOM` MANTÉM o BOM no texto, e o `JSON.parse` o recusa. */
 const STRICT_UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
@@ -238,14 +265,41 @@ function evidenceChangedRefusal(pkg: CandidatePackage, last: LastSealFacts | nul
   return { ...refuse('SIGN_EVIDENCE_CHANGED', `Evidência já atestada mudou de hash ou sumiu (${refs.join(', ')}). ${NOTHING_SIGNED}`), refs };
 }
 
-/** Rótulo comparável: NFKC, sem caixa e sem separadores (`CONF-01` ≡ `conf 01` ≡ `ＣＯＮＦ.01`). Erra para o lado de "coincide" (falha fechada). */
-const roleKey = (label: string): string => label.normalize('NFKC').toLowerCase().replace(/[\s._-]+/gu, '');
+/** Todo grupo de separadores (espaço, `.`, `_`, `-`) sai da chave do rótulo, não só o primeiro. */
+const ROLE_SEPARATORS = /[\s._-]+/gu;
+/** Rótulo comparável: NFKC e sem separadores (`CONF-01` ≡ `conf 01` ≡ `ＣＯＮＦ.01`); a caixa é tratada em `sameRole`. */
+const roleKey = (label: string): string => label.normalize('NFKC').replace(ROLE_SEPARATORS, '');
 
-/** Passo 9 (RS-01, D4): conferente ≠ custodiante, ou aceite formal (`riskAcceptance`); operador = conferente não bloqueia, só marca revisão. */
-function roleDecision(approval: Approval, custodian: string): Roles {
-  const roleException = roleKey(approval.approvedBy) === roleKey(custodian);
-  if (roleException && approval.riskAcceptance === null) return refuse('SIGN_ROLE_SEPARATION', 'Conferente e custodiante coincidem sem aceite formal de risco.');
-  return { ok: true, roleException, requiresLaterReview: roleException || roleKey(approval.operator) === roleKey(approval.approvedBy) };
+/**
+ * Mesma pessoa se as chaves coincidem em minúsculas OU em maiúsculas OU na dobra maiúsculas(minúsculas): `ΟΣ` em minúsculas vira `ος` (sigma
+ * final) e não bate com `οσ`, mas em maiúsculas sim; `ß`/`SS` só batem em maiúsculas; `ẞ`/`SS` só na dobra. Cada forma a mais só AMPLIA a
+ * coincidência: erra sempre para o lado de "coincide" (falha fechada).
+ */
+function sameRole(left: string, right: string): boolean {
+  const [a, b] = [roleKey(left), roleKey(right)];
+  return a.toLowerCase() === b.toLowerCase() || a.toUpperCase() === b.toUpperCase() || a.toLowerCase().toUpperCase() === b.toLowerCase().toUpperCase();
+}
+
+/**
+ * Passo 9, aceite formal com os papéis coincidindo: a referência na aprovação, o arquivo EXISTENTE (bytes não vazios: um arquivo vazio não é aceite
+ * escrito) e o SHA-256 dos bytes igual ao citado. Cada falta tem a sua mensagem, sem caminho, hash nem conteúdo.
+ */
+function riskAcceptanceRefusal(approval: Approval, bytes: Uint8Array | null): SignRefusal | null {
+  const reference = approval.riskAcceptance;
+  if (reference === null) return refuse('SIGN_ROLE_SEPARATION', 'Conferente e custodiante coincidem sem aceite formal de risco.');
+  if (!(bytes instanceof Uint8Array) || bytes.length === 0) {
+    return refuse('SIGN_ROLE_SEPARATION', `Conferente e custodiante coincidem e a aprovação cita um aceite formal de risco, mas o arquivo do aceite formal de risco não foi fornecido (ou está vazio). ${NOTHING_SIGNED}`);
+  }
+  if (sha256OfBytes(bytes) !== reference.sha256) return refuse('SIGN_ROLE_SEPARATION', `Conferente e custodiante coincidem e o SHA-256 do arquivo do aceite formal de risco não confere com o da aprovação. ${NOTHING_SIGNED}`);
+  return null;
+}
+
+/** Passo 9 (RS-01, D4): conferente ≠ custodiante, ou aceite formal existente e com o hash citado; operador = conferente não bloqueia, só marca revisão. */
+function roleDecision(approval: Approval, input: SignCoreInput): Roles {
+  const roleException = sameRole(approval.approvedBy, input.custodian);
+  const refused = roleException ? riskAcceptanceRefusal(approval, input.riskAcceptanceBytes) : null;
+  if (refused) return refused;
+  return { ok: true, roleException, requiresLaterReview: roleException || sameRole(approval.operator, approval.approvedBy) };
 }
 
 /** Passo 10: `sealedAt` (relógio injetado) ≥ `lastCollectedAt` e ≥ `sealedAt` do último manifesto. Todas com ms em UTC: ordem lexicográfica = cronológica. */
@@ -272,7 +326,7 @@ function decide(input: SignCoreInput, now: () => Date): Decision {
   if (!chain.ok) return chain;
   const changed = evidenceChangedRefusal(pkg, chain.last);
   if (changed) return changed;
-  const roles = roleDecision(approval, input.custodian);
+  const roles = roleDecision(approval, input);
   if (!roles.ok) return roles;
   const clock = clockDecision(now, pkg, chain.last);
   if (!clock.ok) return clock;
@@ -282,9 +336,32 @@ function decide(input: SignCoreInput, now: () => Date): Decision {
   return { ok: true, plan };
 }
 
-/** Núcleo do `sign`: todas as recusas que não precisam da chave; só então, uma única vez, o leitor de chave injetado. Nunca lança pelo conteúdo lido. */
-export function runSignCore<K>(input: SignCoreInput, deps: SignCoreDeps<K>): SignCoreResult<K> {
+const CONFIRMATION_MISMATCH = `O texto digitado não confere com os ${CONFIRM_PREFIX_LENGTH} primeiros caracteres de packageSha256 do dossiê. ${NOTHING_SIGNED}`;
+const CONFIRMATION_UNAVAILABLE = `A confirmação humana não foi obtida (sem terminal interativo, entrada interrompida ou falha da tela). ${NOTHING_SIGNED}`;
+
+/**
+ * Passo 11: a tela recebe só `auditId`, `seq` e o número de entradas (nunca o hash) e devolve o texto digitado, comparado EXATAMENTE com os 12 primeiros
+ * caracteres de `packageSha256`. A porta que lança ou rejeita é recusa do mesmo código (a confirmação não existiu; lado fechado), e o objeto de
+ * erro nunca sai daqui. Nenhuma das mensagens repete o esperado nem o digitado.
+ */
+async function confirmationRefusal(plan: SignPlan, confirm: SignCoreDeps<unknown>['confirm']): Promise<SignRefusal | null> {
+  let typed: unknown;
+  try {
+    typed = await confirm({ auditId: plan.auditId, seq: plan.seq, entries: plan.entries.length });
+  } catch {
+    return refuse('SIGN_CONFIRMATION_FAILED', CONFIRMATION_UNAVAILABLE);
+  }
+  return typed === plan.packageSha256.slice(0, CONFIRM_PREFIX_LENGTH) ? null : refuse('SIGN_CONFIRMATION_FAILED', CONFIRMATION_MISMATCH);
+}
+
+/**
+ * Núcleo do `sign`: todas as recusas que não precisam da chave (passos 1–10), a confirmação humana (11) e só então, uma única vez, o leitor de
+ * chave injetado (12). Nunca lança pelo conteúdo lido nem pela confirmação.
+ */
+export async function runSignCore<K>(input: SignCoreInput, deps: SignCoreDeps<K>): Promise<SignCoreResult<K>> {
   const decision = decide(input, deps.now);
   if (!decision.ok) return decision;
+  const unconfirmed = await confirmationRefusal(decision.plan, deps.confirm);
+  if (unconfirmed) return unconfirmed;
   return { ok: true, plan: decision.plan, key: deps.openKey() };
 }
