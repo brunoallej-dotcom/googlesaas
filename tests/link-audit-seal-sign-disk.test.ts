@@ -714,3 +714,17 @@ test('passo 9 no disco: --risk-acceptance que é link, diretório, inexistente o
     assert.deepEqual([deps.confirmCalls(), deps.keyCalls(), listing(sealsDir)], [0, 0, []], label);
   }
 });
+
+test('IA-12 (revisão W4.3): conflito no link() com a limpeza do temporário falhando ⇒ SIGN_SEQ_CONFLICT que AVISA do temporário restante; sem falha na limpeza, o aviso não aparece', async () => {
+  for (const unlinkFails of [true, false]) {
+    const sealsDir = tmpDir('lasd-c-');
+    const dir = path.join(real(sealsDir), AUD);
+    fs.mkdirSync(dir);
+    fs.writeFileSync(sealPath(sealsDir), 'manifesto já gravado por outra execução');
+    const ops: BytesFsOps = unlinkFails ? { ...nodeFsOps, unlink: async () => { throw errno('EIO'); } } : nodeFsOps;
+    const refusal = refused(await publishSeal(ops, { sealsDir, auditId: AUD, seal: sealOf(7) }), 'SIGN_SEQ_CONFLICT', `limpeza ${unlinkFails ? 'falha' : 'funciona'}`);
+    assert.equal(fs.readFileSync(sealPath(sealsDir), 'utf8'), 'manifesto já gravado por outra execução', 'o manifesto existente nunca é alterado');
+    assert.equal(tempsIn(dir).length > 0, unlinkFails, `temporário ${unlinkFails ? 'restante' : 'removido'}`);
+    assert.equal(/temporário \.seal-NNNN\.json\.tmp-\*/.test(refusal.message), unlinkFails, `aviso do temporário ${unlinkFails ? 'presente' : 'ausente'}: ${refusal.message}`);
+  }
+});
