@@ -1,3 +1,4 @@
+import type { ResultsRuns } from './ledger-port';
 /*
  * TESTEMUNHA do histórico de decisões (R3-MINOR-2, R4-MINOR-1, INFO-1; decisões do responsável de 01/11/2026).
  *
@@ -47,6 +48,8 @@ export type KnownHeadsRead =
       readonly hasResults?: boolean;
       readonly ledgerHeads?: ReadonlyArray<{ readonly ledgerSeq: number; readonly sha256: string }>;
       readonly unverifiedLedgerHeads?: ReadonlyArray<{ readonly ledgerSeq: number; readonly sha256: string }>;
+      /** Os resultados em si, para o LIVRO (spec §16.17.8): ancorados em ordem e o pendente. Ausente = nenhum (como as listas acima). O serviço valida o formato (malformado ⇒ `UNTRUSTED`). */
+      readonly runs?: ResultsRuns;
     }
   | { readonly ok: false; readonly reason: KnownHeadsFailure };
 export type KnownHeadsProvider = (auditId: string) => Promise<KnownHeadsRead>;

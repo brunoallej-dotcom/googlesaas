@@ -233,9 +233,14 @@ export type {
   LedgerKeyCoverage,
   LedgerReason,
   LedgerState,
+  LedgerRuns,
   LedgerView,
   OpenOperation,
+  OpenRun,
   OperationPhase,
   ResultsEvidence,
+  ResultsRuns,
+  RunRef,
+  RunsReason,
 } from '../link-audit-decisions/ledger-port';
 

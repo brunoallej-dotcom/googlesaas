@@ -77,6 +77,7 @@ export interface PreviewActor {
 /** O que a finalização conferiu e vai citar (ausente = só prova a durabilidade e que o livro está protegido). */
 export interface DurabilityExpectation {
   readonly decisionsHead?: { readonly seq: number; readonly sha256: string } | null;
+  /** Cabeça de DECISÕES do livro (§16.17.7), a mesma que o resultado grava como `ledgerHead`. */
   readonly ledgerHead?: { readonly ledgerSeq: number; readonly sha256: string } | null;
 }
 export type DurabilityOutcome = { readonly ok: true } | { readonly ok: false; readonly code: 'INPUT_CHANGED' | 'DURABILITY_UNKNOWN'; readonly issues: readonly string[] };
@@ -161,8 +162,11 @@ export interface PreviewPayload {
     readonly finalizable: boolean;
     /** Testemunha do histórico de decisões (cabeças já confirmadas em resultados selados). Não resolvida ⇒ nada é finalizável. */
     readonly witness: { readonly status: WitnessStatus; readonly knownHeads: number; readonly coveredSeq: number | null; readonly unwitnessedAffecting: number };
-    /** Livro de cabeças: só `PROTECTED` (ou `NOT_REQUIRED` nos testes da 6B isolada) permite finalizar; a cabeça do livro vai no resultado novo (`ledgerHead`). */
-    readonly ledger: { readonly state: LedgerState; readonly reason: LedgerReason | null; readonly head: { readonly ledgerSeq: number; readonly sha256: string } | null; readonly confirmedDecisions: number; readonly operationOpen: boolean; readonly externalGuard: GuardStatus };
+    /**
+     * Livro de cabeças: só `PROTECTED` (ou `NOT_REQUIRED` nos testes da 6B isolada) permite finalizar. `head` = cauda do livro (exibição); `decisionHead` = cabeça de DECISÕES, a que vai
+     * no resultado novo (`ledgerHead`) e a que a barreira compara (§16.17.7).
+     */
+    readonly ledger: { readonly state: LedgerState; readonly reason: LedgerReason | null; readonly head: { readonly ledgerSeq: number; readonly sha256: string } | null; readonly decisionHead: { readonly ledgerSeq: number; readonly sha256: string } | null; readonly confirmedDecisions: number; readonly operationOpen: boolean; readonly externalGuard: GuardStatus };
     readonly applied: readonly string[];
     readonly held: readonly HeldDecision[];
   };
@@ -260,7 +264,8 @@ export function createScoringPreviewService(deps: PreviewDeps) {
     const serviceBlockers: PreviewBlocker[] = [];
     // uma pendente nunca vale; se for REVOGAÇÃO, a decisão revogada continua vigente nos registros e fica marcada como "pode estar revogada"
     const witness = { status: decisions.witness.status, knownHeads: decisions.witness.knownHeads, coveredSeq: decisions.witness.coveredSeq, unwitnessedAffecting: decisions.witness.unwitnessedAffecting };
-    const ledger = { state: decisions.ledger.state, reason: decisions.ledger.reason, head: decisions.ledger.head ? { ledgerSeq: decisions.ledger.head.ledgerSeq, sha256: decisions.ledger.head.sha256 } : null, confirmedDecisions: decisions.ledger.confirmedDecisions, operationOpen: decisions.ledger.openOperation !== null, externalGuard: decisions.ledger.externalGuard };
+    const headOf = (head: { readonly ledgerSeq: number; readonly sha256: string } | null) => (head ? { ledgerSeq: head.ledgerSeq, sha256: head.sha256 } : null);
+    const ledger = { state: decisions.ledger.state, reason: decisions.ledger.reason, head: headOf(decisions.ledger.head), decisionHead: headOf(decisions.ledger.decisionHead), confirmedDecisions: decisions.ledger.confirmedDecisions, operationOpen: decisions.ledger.openOperation !== null, externalGuard: decisions.ledger.externalGuard };
     // integridade do histórico NÃO resolvida (retrocesso/divergência/fonte ilegível): a 6B já devolve ZERO decisões vigentes; aqui o motivo é dito e a finalização bloqueada
     if (isUnresolved(witness.status)) serviceBlockers.push(previewBlocker('DECISIONS_HISTORY_UNRESOLVED', 'BLOCKING', { reasonCode: witness.status }));
     else if (isLedgerBlocking(ledger.state)) {
