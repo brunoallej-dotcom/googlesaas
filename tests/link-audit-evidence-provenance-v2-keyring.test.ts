@@ -74,7 +74,8 @@ function writeChain(seals: readonly AnySeal[], auditId = AUD, sealsDir = tmpDir(
 const headOf = (seal: AnySeal, auditId = AUD) => ({ auditId, seq: seal.seq, sealSha256: sealSha256(seal) });
 /** The delivered closure bytes (pretty JSON + LF), as an operator would copy them. */
 function closureText(retired: EvidenceKeys, signer: EvidenceKeys, heads: ReadonlyArray<{ readonly auditId: string; readonly seq: number; readonly sealSha256: string }>, sealedAt = '2026-11-20T08:00:00.000Z'): string {
-  return `${JSON.stringify(createKeyRetirementClosure({ retiredKeyId: retired.keyId, signerKeyId: signer.keyId, sealedAt, heads, privateKey: signer.privateKey }), null, 2)}\n`;
+  const { privateKey } = signer;
+  return `${JSON.stringify(createKeyRetirementClosure({ retiredKeyId: retired.keyId, signerKeyId: signer.keyId, sealedAt, heads, privateKey }), null, 2)}\n`;
 }
 const sha256 = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex');
 /** Writes `<sealsDir>/_closures/<name>` and returns the SHA-256 of the exact bytes written (what the operator pins). */
