@@ -10,7 +10,9 @@ import { buildEvidenceSealBodyV2, createEvidenceSealV2 } from '../src/lib/link-a
 /*
  * P1 W4.1 — núcleo PURO do `sign` (spec §5.5 passos 1–6 e 8–11; §5.5.1 item 3). Dados 100% FICTÍCIOS; a chave é de teste, gerada em memória,
  * e só aparece como o valor devolvido pelo espião do leitor de chave (IA-01: 0 chamadas em toda recusa). A confirmação humana (passo 11) é a
- * porta injetada `confirm`: o espião devolve o texto "digitado" e, sem outra instrução, digita os 12 primeiros caracteres certos.
+ * porta injetada `confirm`: o espião devolve o texto "digitado" e, sem outra instrução, digita os 12 primeiros caracteres certos. Desde a W4.2
+ * o último manifesto chega como fato da cadeia verificada (`chain`, com `--expect-seq`/`--first`); a leitura e a verificação reais estão em
+ * `link-audit-seal-sign-chain.test.ts`.
  */
 const h = (c: string): string => c.repeat(64);
 const sha256 = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
@@ -117,6 +119,14 @@ const makeLastSeal = (over: { readonly auditId?: string; readonly entries?: Read
     privateKey: TEST_KEY,
   });
 
+/**
+ * Passo 7 (W4.2): o núcleo recebe a cadeia JÁ lida e verificada pelo verificador v2 real (`sign-chain.ts`, testes em
+ * `link-audit-seal-sign-chain.test.ts`); aqui, os fatos estruturais. `null` = pasta sem manifesto, primeira assinatura (`--first --expect-seq 1`).
+ */
+const LAST_SEAL_SHA256 = h('7');
+const chainAfter = (last: LastSealFacts | null): Pick<SignCoreInput, 'chain' | 'expectSeq' | 'first'> =>
+  last === null ? { chain: { status: 'EMPTY' }, expectSeq: 1, first: true } : { chain: { status: 'VERIFIED', last: { seq: 1, sealSha256: LAST_SEAL_SHA256, ...last } }, expectSeq: 2, first: false };
+
 const bytes = (value: unknown): Uint8Array => Buffer.from(JSON.stringify(value, null, 2), 'utf8');
 const inputFor = (pkg: unknown, approval: unknown, over: Partial<SignCoreInput> = {}): SignCoreInput => ({
   auditId: AUDIT,
@@ -124,8 +134,9 @@ const inputFor = (pkg: unknown, approval: unknown, over: Partial<SignCoreInput> 
   packageBytes: bytes(pkg),
   approvalBytes: bytes(approval),
   dossierBytes: DOSSIER,
-  lastSeal: makeLastSeal(),
+  ...chainAfter(makeLastSeal()),
   riskAcceptanceBytes: null,
+  signingKeyStatus: 'active',
   ...over,
 });
 const validInput = (over: Partial<SignCoreInput> = {}): SignCoreInput => {
@@ -199,6 +210,8 @@ test('IA-01 caminho feliz: tudo válido ⇒ plano com o conjunto exato do pacote
   assert.deepEqual(plan, {
     auditId: AUDIT,
     sealedAt: NOW,
+    seq: 2,
+    prevSealSha256: LAST_SEAL_SHA256,
     packageSha256: pkg.packageSha256,
     entries: ENTRIES.map((entry) => ({ ref: entry.ref, contentSha256: entry.contentSha256 })),
     dossier: { id: 'dossie-2026-0001', sha256: sha256(DOSSIER) },
@@ -210,38 +223,39 @@ test('IA-01 caminho feliz: tudo válido ⇒ plano com o conjunto exato do pacote
   });
 });
 
-test('IA-01 primeiro manifesto (sem último manifesto): sem o passo 8, o plano sai igual', async () => {
-  const plan = await assertSigned(validInput({ lastSeal: null }));
+test('IA-01 primeiro manifesto (sem último manifesto): sem o passo 8, o plano sai igual, com seq 1 e prev null', async () => {
+  const plan = await assertSigned(validInput(chainAfter(null)));
   assert.equal(plan.entries.length, ENTRIES.length);
+  assert.deepEqual([plan.seq, plan.prevSealSha256], [1, null]);
 });
 
 /* --------------------------------------------------------------------------------------------------------------- IA-01 (a)–(d) */
 
 test('IA-01 (a): hash de entrada já atestada mudou ⇒ SIGN_EVIDENCE_CHANGED (informa a ref); chave não aberta', async () => {
   const changed = ENTRIES.slice(0, 3).map((entry) => (entry.ref === 'capture:c0002' ? { ...entry, contentSha256: h('e') } : entry));
-  const refusal = await assertRefused(validInput({ lastSeal: makeLastSeal({ entries: changed }) }), 'SIGN_EVIDENCE_CHANGED');
+  const refusal = await assertRefused(validInput(chainAfter(makeLastSeal({ entries: changed }))), 'SIGN_EVIDENCE_CHANGED');
   assert.deepEqual(refusal.refs, ['capture:c0002']);
   assert.match(refusal.message, /capture:c0002/);
 });
 
 test('IA-01 (a): entrada do último manifesto sumiu do pacote ⇒ SIGN_EVIDENCE_CHANGED; no máximo 5 refs informadas', async () => {
   const extra = ['capture:c0010', 'capture:c0011', 'capture:c0012', 'capture:c0013', 'capture:c0014', 'capture:c0015'].map((ref) => ({ ref, contentSha256: h('f') }));
-  const one = await assertRefused(validInput({ lastSeal: makeLastSeal({ entries: [...ENTRIES.slice(0, 3), extra[0]!] }) }), 'SIGN_EVIDENCE_CHANGED');
+  const one = await assertRefused(validInput(chainAfter(makeLastSeal({ entries: [...ENTRIES.slice(0, 3), extra[0]!] }))), 'SIGN_EVIDENCE_CHANGED');
   assert.deepEqual(one.refs, ['capture:c0010']);
-  const many = await assertRefused(validInput({ lastSeal: makeLastSeal({ entries: [...ENTRIES.slice(0, 3), ...extra] }) }), 'SIGN_EVIDENCE_CHANGED');
+  const many = await assertRefused(validInput(chainAfter(makeLastSeal({ entries: [...ENTRIES.slice(0, 3), ...extra] }))), 'SIGN_EVIDENCE_CHANGED');
   assert.deepEqual(many.refs, extra.slice(0, 5).map((entry) => entry.ref));
 });
 
 test('IA-01 (a): entradas novas no pacote são permitidas; o mesmo conjunto do último manifesto também', async () => {
-  await assertSigned(validInput({ lastSeal: makeLastSeal({ entries: ENTRIES.slice(0, 1) }) }));
-  await assertSigned(validInput({ lastSeal: makeLastSeal({ entries: [...ENTRIES] }) }));
+  await assertSigned(validInput(chainAfter(makeLastSeal({ entries: ENTRIES.slice(0, 1) }))));
+  await assertSigned(validInput(chainAfter(makeLastSeal({ entries: [...ENTRIES] }))));
 });
 
 test('IA-01 (b): pacote legado (como o export o produz) ⇒ SIGN_LEGACY_NOT_ATTESTABLE, inclusive com dossiê e aprovação válidos', async () => {
   const allNotExecuted = Object.fromEntries(CHECK_IDS.map((id) => [id, 'NOT_EXECUTED'])) as Record<CheckId, CheckStatus>;
   const legacy = makePackage({ legacy: true, checks: allNotExecuted });
   assert.equal(legacy.attestable, false);
-  const refusal = await assertRefused(inputFor(legacy, makeApproval(legacy), { lastSeal: null }), 'SIGN_LEGACY_NOT_ATTESTABLE');
+  const refusal = await assertRefused(inputFor(legacy, makeApproval(legacy), chainAfter(null)), 'SIGN_LEGACY_NOT_ATTESTABLE');
   assert.match(refusal.message, /legada não é atestável/);
 });
 
@@ -328,7 +342,7 @@ test('IA-06 (2): --audit diferente do auditId do pacote ou da aprovação ⇒ SI
 });
 
 test('IA-06 (3): último manifesto (válido e assinado) de outra auditoria ⇒ SIGN_SEAL_CHAIN_INVALID', async () => {
-  await assertRefused(validInput({ lastSeal: makeLastSeal({ auditId: OTHER_AUDIT }) }), 'SIGN_SEAL_CHAIN_INVALID');
+  await assertRefused(validInput(chainAfter(makeLastSeal({ auditId: OTHER_AUDIT }))), 'SIGN_SEAL_CHAIN_INVALID');
 });
 
 test('IA-06 (3): último manifesto fora de forma (data, entradas vazias, ref ou hash inválidos) ⇒ SIGN_SEAL_CHAIN_INVALID', async () => {
@@ -340,8 +354,8 @@ test('IA-06 (3): último manifesto fora de forma (data, entradas vazias, ref ou 
     { ...base, entries: [{ ref: 'site:c0001', contentSha256: h('a') }] },
     { ...base, entries: [{ ref: 'capture:c0001', contentSha256: 'A'.repeat(64) }] },
   ];
-  await assertSigned(validInput({ lastSeal: base }));
-  for (const lastSeal of malformed) await assertRefused(validInput({ lastSeal }), 'SIGN_SEAL_CHAIN_INVALID');
+  await assertSigned(validInput(chainAfter(base)));
+  for (const last of malformed) await assertRefused(validInput(chainAfter(last)), 'SIGN_SEAL_CHAIN_INVALID');
 });
 
 /* --------------------------------------------------------------------------------------------------------------- IA-17 (herdado) */
@@ -524,9 +538,9 @@ test('passo 9 (revisão da W4.1): papéis distintos ⇒ os bytes do aceite são 
 test('passo 10: relógio antes do último manifesto ou da última coleta ⇒ SIGN_CLOCK_REGRESSION; instante igual é aceito', async () => {
   await assertRefused(validInput(), 'SIGN_CLOCK_REGRESSION', '2026-11-18T11:59:59.999Z');
   assert.equal((await assertSigned(validInput(), LAST_SEALED_AT)).sealedAt, LAST_SEALED_AT);
-  await assertRefused(validInput({ lastSeal: null }), 'SIGN_CLOCK_REGRESSION', '2026-11-18T09:59:59.999Z');
-  assert.equal((await assertSigned(validInput({ lastSeal: null }), LAST_COLLECTED_AT)).sealedAt, LAST_COLLECTED_AT);
-  await assertRefused(validInput({ lastSeal: makeLastSeal({ sealedAt: '2026-11-18T08:00:00.000Z' }) }), 'SIGN_CLOCK_REGRESSION', '2026-11-18T09:30:00.000Z');
+  await assertRefused(validInput(chainAfter(null)), 'SIGN_CLOCK_REGRESSION', '2026-11-18T09:59:59.999Z');
+  assert.equal((await assertSigned(validInput(chainAfter(null)), LAST_COLLECTED_AT)).sealedAt, LAST_COLLECTED_AT);
+  await assertRefused(validInput(chainAfter(makeLastSeal({ sealedAt: '2026-11-18T08:00:00.000Z' }))), 'SIGN_CLOCK_REGRESSION', '2026-11-18T09:30:00.000Z');
 });
 
 test('passo 10: relógio inválido ou fora do formato do manifesto ⇒ UNEXPECTED, sem abrir a chave', async () => {
@@ -534,14 +548,29 @@ test('passo 10: relógio inválido ou fora do formato do manifesto ⇒ UNEXPECTE
   await assertRefused(validInput(), 'UNEXPECTED', '+010000-01-01T00:00:00.000Z');
 });
 
+/* --------------------------------------------------------------------------------------------------------------- §5.5.1 item 2: --key-id ativo, antes do passo 11 */
+
+test('§5.5.1 item 2 (confirmação da revisão da W4.1): --key-id ausente da lista, retired ou revoked (ou estado fora de forma) ⇒ SIGN_KEY_NOT_ACTIVE, depois das recusas 1–10 e antes da confirmação e da chave; active prossegue', async () => {
+  for (const status of ['absent', 'retired', 'revoked']) {
+    const refusal = await assertRefused(validInput({ signingKeyStatus: status as SignCoreInput['signingKeyStatus'] }), 'SIGN_KEY_NOT_ACTIVE');
+    assert.match(refusal.message, /--key-id/);
+  }
+  for (const malformed of ['ACTIVE', 'ativa', '', undefined, null]) await assertRefused(validInput({ signingKeyStatus: malformed as never }), 'SIGN_KEY_NOT_ACTIVE');
+  await assertSigned(validInput({ signingKeyStatus: 'active' }));
+  // as recusas dos passos 1–10 vêm antes, mesmo com a chave inativa
+  await assertRefused(validInput({ signingKeyStatus: 'revoked' }), 'SIGN_CLOCK_REGRESSION', '2026-11-18T11:59:59.999Z');
+  await assertRefused(validInput({ signingKeyStatus: 'retired', custodian: 'CONF-01' }), 'SIGN_ROLE_SEPARATION');
+});
+
 /* --------------------------------------------------------------------------------------------------------------- passo 11 (revisão da W4.1) */
 
-test('passo 11: a confirmação humana vem depois de todas as recusas e antes da chave, uma vez; a tela recebe só auditId e o número de entradas (nunca o hash)', async () => {
+test('passo 11: a confirmação humana vem depois de todas as recusas e antes da chave, uma vez; a tela recebe só auditId, seq (W4.2) e o número de entradas (nunca o hash)', async () => {
   const pkg = makePackage();
   const { result, calls, facts } = await run(inputFor(pkg, makeApproval(pkg)));
   assert.equal(result.ok, true);
   assert.deepEqual(calls, ['now', 'confirm', 'openKey']);
-  assert.deepEqual(facts, [{ auditId: AUDIT, entries: ENTRIES.length }]);
+  assert.deepEqual(facts, [{ auditId: AUDIT, seq: 2, entries: ENTRIES.length }]);
+  assert.deepEqual((await run(validInput(chainAfter(null)))).facts, [{ auditId: AUDIT, seq: 1, entries: ENTRIES.length }]);
   const shown = JSON.stringify(facts);
   assert.ok(!shown.includes(pkg.packageSha256.slice(0, CONFIRM_LENGTH)) && !shown.includes(sha256(DOSSIER)), 'o custodiante lê os 12 caracteres no dossiê, não na tela');
 });
@@ -597,8 +626,11 @@ test('passo 11: confirm que lança (síncrono) ou rejeita ⇒ SIGN_CONFIRMATION_
 
 /* --------------------------------------------------------------------------------------------------------------- ordem do §5.5 */
 
-type Fault = 'PACKAGE_SCHEMA' | 'APPROVAL_SCHEMA' | 'AUDIT' | 'PACKAGE_HASH' | 'NOT_APPROVED' | 'CHECK_FAIL' | 'LEGACY' | 'HUMAN_MISSING' | 'HUMAN_EXTRA' | 'DOSSIER' | 'CHAIN_AUDIT' | 'EVIDENCE_CHANGED' | 'ROLE' | 'CLOCK' | 'CONFIRM';
-/** Falhas na ordem do §5.5 (1, 1, 1, 2, 3, 4a, 4/5, 4b, 4b, 6, 7*, 8, 9, 10, 11); 7* = guarda mínima do último manifesto (a cadeia é da W4.2). */
+type Fault = 'PACKAGE_SCHEMA' | 'APPROVAL_SCHEMA' | 'AUDIT' | 'PACKAGE_HASH' | 'NOT_APPROVED' | 'CHECK_FAIL' | 'LEGACY' | 'HUMAN_MISSING' | 'HUMAN_EXTRA' | 'DOSSIER' | 'CHAIN_AUDIT' | 'EVIDENCE_CHANGED' | 'ROLE' | 'CLOCK' | 'KEY_NOT_ACTIVE' | 'CONFIRM';
+/**
+ * Falhas na ordem do §5.5 (1, 1, 1, 2, 3, 4a, 4/5, 4b, 4b, 6, 7*, 8, 9, 10, 10+, 11); 7* = guarda do último manifesto recebido (a leitura da cadeia é da
+ * W4.2); 10+ = `--key-id` ativo na lista (§5.5.1 item 2), imediatamente antes da confirmação humana.
+ */
 const LADDER: ReadonlyArray<readonly [Fault, string]> = [
   ['PACKAGE_SCHEMA', 'SIGN_PACKAGE_INVALID'],
   ['APPROVAL_SCHEMA', 'SIGN_APPROVAL_INVALID'],
@@ -614,6 +646,7 @@ const LADDER: ReadonlyArray<readonly [Fault, string]> = [
   ['EVIDENCE_CHANGED', 'SIGN_EVIDENCE_CHANGED'],
   ['ROLE', 'SIGN_ROLE_SEPARATION'],
   ['CLOCK', 'SIGN_CLOCK_REGRESSION'],
+  ['KEY_NOT_ACTIVE', 'SIGN_KEY_NOT_ACTIVE'],
   ['CONFIRM', 'SIGN_CONFIRMATION_FAILED'],
 ];
 
@@ -635,7 +668,8 @@ function build(faults: ReadonlySet<Fault>): { readonly input: SignCoreInput; rea
     auditId: has('AUDIT') ? OTHER_AUDIT : AUDIT,
     custodian: has('ROLE') ? 'CONF-01' : 'CUST-01',
     dossierBytes: has('DOSSIER') ? Buffer.concat([DOSSIER, Buffer.from([0x0a])]) : DOSSIER,
-    lastSeal: makeLastSeal({ auditId: has('CHAIN_AUDIT') ? OTHER_AUDIT : AUDIT, entries: sealed }),
+    ...chainAfter(makeLastSeal({ auditId: has('CHAIN_AUDIT') ? OTHER_AUDIT : AUDIT, entries: sealed })),
+    signingKeyStatus: has('KEY_NOT_ACTIVE') ? 'retired' : 'active',
   });
   return { input, now: has('CLOCK') ? '2026-11-18T11:00:00.000Z' : NOW, ...(has('CONFIRM') ? { confirm: typing(rightPrefix(input).toUpperCase()) } : {}) };
 }

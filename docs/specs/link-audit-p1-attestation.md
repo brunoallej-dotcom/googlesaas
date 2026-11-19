@@ -266,6 +266,28 @@ Fecham lacunas apontadas no mapa da W4; prevalecem sobre o texto acima onde houv
 - **Ficam para a W4.4:** (i) o passo 9 fala em "existência e hash" do aceite de risco, mas o CLI não tem argumento para esse arquivo; hoje só se exige a referência presente; (ii) a subpasta `<seals-dir>/<auditId>/` deriva só do `--audit` validado (quarto lugar do passo 1, por construção).
 - **Pergunta aberta (junto da §13.3):** operador = custodiante não marca `requiresLaterReview`; a spec não trata o caso.
 
+**Notas da W4.2 (19/11/2026, cadeia e manifesto, `sign-chain.ts`; onde a spec era ambígua, valeu o lado que falha fechado):**
+
+- **Verificação:** `sign-chain.ts` é o único arquivo do `sign` que importa o verificador (o núcleo recebe só fatos estruturais, item 7). Usa o verificador `v2` real em modo produção (`parseTrustKeyring(--trust-keys)`, fechos de `<seals-dir>/_closures/`, `acceptedVersions: [2]`), com evidências = entradas da própria cabeça: prova formato, cadeia, estados e fechos, não a pasta de evidências. `seq` e `prevSealSha256` vêm do que ele autenticou (`headSeq`, `headSealSha256`). Cada arquivo é lido do disco uma vez, por uma cópia somente leitura do `FsOps` em memória, compartilhada entre a leitura da cabeça e o verificador (sem corrida entre as duas leituras).
+- **Ordem:** a cadeia é **lida** antes do passo 1 (leitura sem efeito, sem chave) e **julgada** no passo 7, então as recusas dos passos 1–6 continuam vindo antes. Dentro do passo 7, cadeia que não verifica ⇒ `SIGN_SEAL_CHAIN_INVALID` **antes** da comparação de `seq` (o texto do passo cita `SIGN_SEQ_MISMATCH` primeiro, mas um `seq` calculado de cadeia não verificada não vale nada).
+- **`--expect-seq`/`--first`:** `--expect-seq` que não é inteiro de 1 a 256 (`MAX_CHAIN_SEALS`) ⇒ `USAGE`; `--first` com `--expect-seq ≠ 1` ⇒ `USAGE` (o "só se" da tabela de argumentos). Pasta sem manifesto: `--expect-seq > 1` ⇒ `SIGN_SEAL_CHAIN_INVALID` (`NO_SEAL_EXPECTED_SEQ`, manifesto apagado); `--expect-seq 1` sem `--first` ⇒ `SIGN_SEAL_CHAIN_INVALID` (`NO_SEAL_WITHOUT_FIRST`, tabela do §7.1, não `USAGE`). Com cadeia: `--first` ou `último + 1 ≠ --expect-seq` ⇒ `SIGN_SEQ_MISMATCH`. Cadeia com 256 manifestos não aceita `--expect-seq` válido (257 é `USAGE`).
+- **"Pasta sem manifesto"** é só ENOENT da subpasta `<seals-dir>/<auditId>/`, ou uma subpasta sem nenhum `seal-NNNN.json` (temporário de queda e outros nomes não contam). Recusas com `SIGN_SEAL_CHAIN_INVALID`:
+  - `--seals-dir` inexistente ou que não é diretório ⇒ `SEALS_DIR_UNREADABLE`: provável erro de digitação, como no `delta` do `export`; nunca "começar do 1";
+  - EACCES/EIO ⇒ `VERIFICATION_ERROR`;
+  - subpasta que é link ou arquivo ⇒ `SEAL_INVALID`;
+  - nome de manifesto em outra caixa (`seal-0002.JSON`, `Seal-0001.json`), mesmo sem duplicata ⇒ `SEAL_NAME_CASE_VARIANT`. É mais estrito que o verificador, que os ignora (V2-15), porque num disco que ignora a caixa eles colidiriam.
+- **`--trust-keys` fora do formato** ⇒ `SIGN_SEAL_CHAIN_INVALID` (`PROOF_NOT_CONFIGURED`), também com a pasta vazia e `--first`. **Para a W4.4:** o parser do CLI deve recusá-la antes, como `USAGE`.
+- **`chainReason`:** a recusa da cadeia leva o código fixo (razão do verificador ou do `sign`), nunca dado de arquivo; o que não tem forma de código não é repassado.
+- **Corpo (passo 13):** um plano com `entries` desordenadas ou repetidas é recusado (`UNEXPECTED`), nunca reordenado nem deduplicado em silêncio; `seq`/`prevSealSha256` incoerentes também. Nesta fatia a assinatura só usa chave de teste. `signSealManifest` confere a assinatura com a pública derivada antes de devolver e nunca repassa o objeto de erro (RS-13).
+- **Vetores-ouro:** o `sign` reproduz G1 → G2 → G3 a partir do pacote, inclusive G3 sobre o fecho G6 fixado. O dossiê dos testes é `ouro|dossie-0N`, rótulo deduzido da regra do cabeçalho dos vetores (`sha256("ouro|<rótulo>")`) e conferido contra o hash.
+- **Ficam para depois:**
+  - ~~`SIGN_KEY_NOT_ACTIVE`/`SIGN_KEY_MISMATCH` do item 2: W4.4, porque precisam de `--key-id` e da chave aberta;~~ **Corrigido na confirmação da revisão da W4.1 (nota no fim desta seção):** `SIGN_KEY_NOT_ACTIVE` precisa só do `--key-id` e da lista, não da chave aberta, e entrou na W4.2; só `SIGN_KEY_MISMATCH` precisa da chave aberta e fica para depois do passo 12 (W4.3);
+  - o autoteste: W4.5;
+  - a gravação (com o nome de `sealFileName`): W4.3;
+  - `SIGN_TOO_MANY_ENTRIES` do §7.1: hoje é inalcançável (pacote ≤ 2000 entradas ⇒ manifesto < 256 KiB); a W4.3 confere sobre os bytes gravados.
+
+- **Revisão independente da W4.2 (19/11/2026, `junin-02`, aprovar com mudanças):** (i) erro de E/S na própria raiz `--seals-dir` (EACCES, EIO em `realpath` ou `lstat`) passou a ser `VERIFICATION_ERROR`; só ENOENT/ENOTDIR ou "não é diretório" continuam `SEALS_DIR_UNREADABLE` (antes, toda falha da raiz virava "inexistente"; a recusa já era fechada, o motivo é que estava errado). (ii) Limite declarado: a leitura da cabeça feita pelo `sign` antes do verificador fica fora do orçamento de 16 MiB dele quando o verificador recusa antes de lê-la; o acréscimo é de no máximo 256 KiB (um manifesto), e em todos os outros casos a fotografia somente leitura faz o verificador contar os mesmos bytes.
+
 **Revisão independente da W4.1 (19/11/2026, `junin-03`):**
 
 - **Confirmação humana antes da chave (passo 11):** `runSignCore` passou a ser assíncrono e recebe a porta injetada `confirm(facts) → Promise<string>`; a tela TTY real é da W4.4.
@@ -284,6 +306,22 @@ Fecham lacunas apontadas no mapa da W4; prevalecem sobre o texto acima onde houv
 - **Telefone com `_` ou `/`:** `isSafeText` passou a ignorar também `_` e `/` entre dígitos. O `_` é aceito pela lista de permissão dos rótulos e pelo padrão do `dossier.id` (`119_1234_5678` passava nos dois); a `/` só cabe nas notas de texto livre. Isso endurece também os rótulos e notas da W1 e a justificativa de lacuna do CLI do `export`; os vetores existentes da W1 continuam válidos. Limite declarado: outros traços Unicode (`–`, `—`) não contam como separador; a heurística não é completa.
 - **IA-01 (d):** o texto do critério foi ajustado para dizer que integridade ≠ `OK` sai como `SIGN_PACKAGE_INVALID` no passo 1. O esquema não muda.
 - **Isolamento:** o teste do `sign-core.ts` percorre todos os imports locais alcançáveis a partir dele (`package-hash → canonical`, `schemas → types`), fixa esse conjunto e os módulos externos (`node:crypto`, `zod`) e proíbe o verificador, disco, rede, processos e `snapshot-store` em qualquer ponto do grafo.
+- **Propagação na W4.2:** `runSignWithChain` repassa `confirm` e `riskAcceptanceBytes` ao núcleo, e a ordem continua: cadeia lida antes do passo 1 e julgada no passo 7, confirmação depois do passo 10, chave por último. Os fatos da tela ganham `seq` (último verificado + 1, igual a `--expect-seq`), ficando `{auditId, seq, entries}`. Uma recusa da cadeia nunca chega à confirmação; confirmação errada ou porta que falha não assina nada, não abre a chave e não muda a cópia da estação.
+
+**Confirmação da revisão da W4.1 (19/11/2026, `junin-03`), pontos novos para a W4.2:**
+
+- **`SIGN_KEY_NOT_ACTIVE` (§5.5.1 item 2) antes da confirmação humana:**
+  - **Posição:** imediatamente antes do passo 11, isto é, depois de todas as recusas dos passos 1–10 e antes de `confirm` e de `openKey`. O custodiante nunca é chamado a confirmar, nem a chave é aberta, para uma chave que não assina.
+  - **O que se confere:** `runSignWithChain` recebe `keyId` (o `--key-id`) e consulta o estado dele na lista `--trust-keys` já parseada pelo verificador (`parseTrustKeyring`). Ausente, `retired` ou `revoked` ⇒ `SIGN_KEY_NOT_ACTIVE`; só `active` segue. A mensagem diz o estado, sem repetir o id.
+  - **Como chega ao núcleo:** o estado vai como fato estrutural (`signingKeyStatus: 'active' | 'retired' | 'revoked' | 'absent'`), e o núcleo continua sem importar o verificador. Qualquer valor diferente de `active`, inclusive fora de forma, é recusa.
+  - **Lista inválida:** o estado é `absent`, mas a cadeia já a recusa no passo 7 (`PROOF_NOT_CONFIGURED`).
+- **Formato do `--key-id`:** fora de `^[a-z0-9][a-z0-9-]{3,31}$` ⇒ `USAGE`, antes de ler qualquer coisa (nem a cadeia). O padrão é o do verificador (`TRUST_KEY_ID`, que ele não exporta). Foi copiado em `SIGN_KEY_ID_PATTERN`, sem mudar o verificador, com a paridade travada por teste contra `parseTrustKeyring`.
+- **`SIGN_KEY_MISMATCH`:** depende da chave aberta e fica para depois do passo 12, na W4.3.
+- **Isolamento:** nos arquivos do `sign` (`sign-*.ts`), nenhum `import(` cujo argumento não seja uma string literal simples e nenhuma forma de `require` (`require(`, `require.resolve`, `module.require`, `createRequire`). O código atual não tinha esse padrão; o teste pega a inserção de `import('./' + 'x')`.
+
+- **Confirmação da W4.2 pelo `junin-03` (19/11/2026, aprovar com mudanças):** (i) a guarda contra `import()` com nome calculado e `require` passou a valer para todos os arquivos alcançáveis a partir dos arquivos do `sign`, inclusive o verificador e suas dependências, e não só para os `sign-*`; (ii) a mensagem de `--key-id` fora do formato diz "nada foi assinado nem gravado", porque na W4.3 as entradas já foram lidas quando ela sai; (iii) o achado de que `$` aceitaria um `\n` final foi conferido e não procede em JavaScript (sem a flag `m`, `/^…$/.test('abcd\n')` é falso).
+
+- **Limite declarado da guarda estática (19/11/2026):** o teste de isolamento procura carregamento dinâmico por texto (qualquer `require` solto, `createRequire`, `import()` não literal) em todo o grafo alcançável. É defesa em profundidade contra erro no nosso próprio código, não contra quem escreve código malicioso no repositório: formas ainda mais indiretas de carregar módulos escapam de uma busca textual. O controle forte do artefato é o da W4.6: lista literal de imports do pacote gerado e execução sob `node --permission`.
 
 ### 5.6 Manifesto `v2` e verificador `v2` (onda W3, contrato próprio)
 
