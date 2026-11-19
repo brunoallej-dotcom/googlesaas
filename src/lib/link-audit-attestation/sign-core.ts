@@ -26,6 +26,12 @@ export const SIGN_REFUSAL_CODES = [
   'SIGN_EVIDENCE_CHANGED',
   'SIGN_ROLE_SEPARATION',
   'SIGN_CLOCK_REGRESSION',
+  // emitidos pelo adaptador de disco (`sign-run.ts`, W4.3), nunca por este núcleo: entrada ilegível, manifesto grande demais (§7.1) e gravação (passo 15)
+  'SIGN_INPUT_UNREADABLE',
+  'SIGN_TOO_MANY_ENTRIES',
+  'SIGN_SEQ_CONFLICT',
+  'SIGN_WRITE_FAILED',
+  'SIGN_WRITE_UNCONFIRMED',
   'UNEXPECTED',
 ] as const;
 export type SignRefusalCode = (typeof SIGN_REFUSAL_CODES)[number];

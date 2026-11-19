@@ -250,6 +250,8 @@ const ATTESTATION_EXTRA_TARGETS: ReadonlyMap<string, ReadonlySet<string>> = new 
   ['src/lib/link-audit-attestation/export-run.ts', new Set(['snapshot-store.ts'])],
   // P1 W4.2: só o TIPO FsOps (o disco é injetado por quem chama; a leitura da cadeia nunca escreve)
   ['src/lib/link-audit-attestation/sign-chain.ts', new Set(['snapshot-store.ts'])],
+  // P1 W4.3: o disco do `sign` (tipos BytesFsOps/FsOps e `errorCode`): leitura única das entradas e a gravação temporário + link() exclusivo
+  ['src/lib/link-audit-attestation/sign-run.ts', new Set(['snapshot-store.ts'])],
 ]);
 const CLIENT_DIRS = ['src/components/link-audit/', 'src/app/auditoria-por-link/'];
 /** Único valor (não só tipo) que o navegador pode importar: constantes puras, sem nenhum import. */

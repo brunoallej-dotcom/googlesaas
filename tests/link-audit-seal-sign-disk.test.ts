@@ -9,6 +9,7 @@ import { candidatePackageSchema, CHECK_IDS, computePackageSha256, type Approval 
 import { serializePackage } from '../src/lib/link-audit-attestation/export-run';
 import { approvalSchema } from '../src/lib/link-audit-attestation/schemas';
 import { signSealManifest, type SealManifest } from '../src/lib/link-audit-attestation/sign-chain';
+import { runSignCore } from '../src/lib/link-audit-attestation/sign-core';
 import { MAX_APPROVAL_BYTES, MAX_DOSSIER_BYTES, MAX_PACKAGE_BYTES, publishSeal, runSign, type SealWriteResult, type SignRunResult } from '../src/lib/link-audit-attestation/sign-run';
 import { createSealedEvidenceProvenance, parseEvidenceSealV2Text, parseTrustKeyring, sealSha256, type TrustKeyring } from '../src/lib/link-audit-evidence/provenance';
 import { errno, registerCleanup, tmpDir } from './helpers/link-audit-evidence-fixtures';
@@ -185,31 +186,49 @@ test('IA-18: mutar pacote, aprovação e dossiê ENTRE a leitura e a assinatura 
   await assertSealOnDisk(sealsDir, result.seal);
 });
 
-test('IA-18: trocar 1 byte do pacote depois da aprovação ⇒ recusa em TODA posição coberta pelo hash (nada gravado, chave não aberta); só generatedAt, fora do hash (§5.3), pode mudar sem mudar o que é assinado', async () => {
+test('IA-18: trocar 1 byte do pacote depois da aprovação ⇒ recusa em TODA posição coberta pelo hash (núcleo, sobre os bytes lidos) e, pelo disco, numa amostra (nada gravado, chave não aberta); só generatedAt, fora do hash (§5.3), pode mudar sem mudar o que é assinado', async () => {
   const pkg = makePackage(E1);
   const approved = jsonBytes(pkg);
   const text = approved.toString('utf8');
   const generatedAt = [text.indexOf(pkg.generatedAt), text.indexOf(pkg.generatedAt) + pkg.generatedAt.length] as const;
-  const station = writeStation(tmpDir('lasd-1b-'), { pkg });
-  let sealsDir = tmpDir('lasd-1b-seals-');
-  let refusals = 0;
-  for (let at = 0; at < approved.length; at += 1) {
+  const outsideHash = (at: number): boolean => at >= generatedAt[0] && at < generatedAt[1];
+  const flip = (at: number): Buffer => {
     const flipped = Buffer.from(approved);
     flipped[at] = (flipped[at] as number) ^ 0x01;
-    const deps = signDeps({ fs: { ...nodeFsOps, readFileBytes: async (target, maxBytes) => (target === station.packagePath ? flipped : nodeFsOps.readFileBytes(target, maxBytes)) } });
+    return flipped;
+  };
+  const REFUSED = ['SIGN_PACKAGE_INVALID', 'SIGN_PACKAGE_MISMATCH', 'SIGN_AUDIT_MISMATCH'];
+  // toda posição, pelo núcleo: é ele quem julga os bytes que a leitura única entrega (os testes acima provam que são esses bytes)
+  const approvalBytes = jsonBytes(makeApproval(pkg));
+  for (let at = 0; at < approved.length; at += 1) {
+    let keyCalls = 0;
+    const result = runSignCore({ auditId: AUD, custodian: 'CUST-01', packageBytes: flip(at), approvalBytes, dossierBytes: DOSSIER, chain: { status: 'EMPTY' }, expectSeq: 1, first: true }, { now: () => new Date(NOW), openKey: () => (keyCalls += 1) });
+    if (result.ok) {
+      assert.ok(outsideHash(at), `posição ${at} (${JSON.stringify(text[at])}) foi aceita`);
+      assert.deepEqual([result.plan.packageSha256, result.plan.entries], [pkg.packageSha256, plainEntries(E1)], 'fora do hash: o plano é o aprovado');
+      continue;
+    }
+    assert.ok(REFUSED.includes(result.code), `posição ${at}: ${result.code}`);
+    assert.equal(keyCalls, 0, `posição ${at}: chave aberta numa recusa`);
+  }
+  // amostra pelo sign inteiro, com o pacote lido do DISCO: recusa, nada gravado, chave não aberta
+  const station = writeStation(tmpDir('lasd-1b-'), { pkg });
+  let sealsDir = tmpDir('lasd-1b-seals-');
+  const sample = [...Array.from({ length: approved.length }, (_, at) => at).filter((at) => at % 29 === 0), text.indexOf(pkg.packageSha256) + 63, text.indexOf('"capture:c0001"') + 10, generatedAt[0] + 3];
+  for (const at of sample) {
+    fs.writeFileSync(station.packagePath, flip(at));
+    const deps = signDeps();
     const result = await runSign(signInput(station, sealsDir), deps);
     if (result.ok) {
-      assert.ok(at >= generatedAt[0] && at < generatedAt[1], `posição ${at} (${JSON.stringify(text[at])}) foi assinada`);
-      assert.deepEqual([result.plan.packageSha256, result.seal.entries], [pkg.packageSha256, plainEntries(E1)], 'fora do hash: o assinado é o aprovado');
+      assert.ok(outsideHash(at), `posição ${at} foi assinada`);
+      assert.deepEqual([result.plan.packageSha256, result.seal.entries], [pkg.packageSha256, plainEntries(E1)]);
       sealsDir = tmpDir('lasd-1b-seals-');
       continue;
     }
-    refusals += 1;
-    assert.ok(['SIGN_PACKAGE_INVALID', 'SIGN_PACKAGE_MISMATCH', 'SIGN_AUDIT_MISMATCH'].includes(result.code), `posição ${at}: ${result.code}`);
-    assert.equal(deps.keyCalls(), 0, `posição ${at}: chave aberta numa recusa`);
+    assert.ok(REFUSED.includes(result.code), `posição ${at}: ${result.code}`);
+    assert.equal(deps.keyCalls(), 0);
     assert.deepEqual(listing(sealsDir), [], `posição ${at}: algo foi gravado`);
   }
-  assert.ok(refusals >= approved.length - (generatedAt[1] - generatedAt[0]), 'todas as demais posições recusadas');
 });
 
 test('IA-18: entrada que é link simbólico, diretório, FIFO, inexistente ou acima do limite ⇒ SIGN_INPUT_UNREADABLE (nomeia o argumento, sem caminho), sem seguir o link nem travar; nada gravado e a chave não é aberta', async () => {
@@ -308,7 +327,7 @@ test('IA-12 (§5.5.1 item 4): grava por temporário .seal-NNNN.json.tmp-<aleató
   const temp = writes[2]?.args[0] as string;
   assert.ok(typeof temp === 'string' && path.dirname(temp) === dir && TEMP_NAME.test(path.basename(temp)), `temporário na pasta da auditoria: ${temp}`);
   assert.deepEqual(
-    writes.map((call) => [call.op, ...call.args.filter((arg, index) => !(call.op === 'writeExclusive' && index === 1))]),
+    writes.map((call) => [call.op, ...call.args.filter((_arg, index) => !(call.op === 'writeExclusive' && index === 1))]),
     [
       ['mkdir', dir],
       ['syncDirectory', root], // a subpasta nova também é durável
@@ -331,6 +350,35 @@ test('IA-12 (§5.5.1 item 4): grava por temporário .seal-NNNN.json.tmp-<aleató
   assert.notEqual(secondWrites[0]?.args[0], temp);
   assert.ok(TEMP_NAME.test(path.basename(secondWrites[0]?.args[0] as string)) && (secondWrites[0]?.args[0] as string).includes('.seal-0002.json.tmp-'));
   assert.equal(second.seq, 2);
+});
+
+test('IA-12: com o FsOps de disco real, o temporário recebe fsync (FileHandle.sync) ANTES do link(), e a pasta da auditoria DEPOIS da remoção do temporário', async () => {
+  type Open = typeof import('node:fs/promises').open;
+  const promises = require('node:fs/promises') as { open: Open };
+  const original = promises.open;
+  const events: string[] = [];
+  promises.open = (async (...args: Parameters<Open>) => {
+    const handle = await original(...args);
+    const sync = handle.sync.bind(handle);
+    handle.sync = async () => (events.push(`sync:${path.basename(String(args[0]))}`), sync());
+    return handle;
+  }) as Open;
+  let result: Written;
+  try {
+    const observed: BytesFsOps = {
+      ...nodeFsOps,
+      link: async (from, to) => (events.push(`link:${path.basename(to)}`), nodeFsOps.link(from, to)),
+      unlink: async (target) => (events.push(`unlink:${path.basename(target)}`), nodeFsOps.unlink(target)),
+    };
+    result = await signed(signInput(writeStation(tmpDir('lasd-st-')), tmpDir('lasd-seals-')), signDeps({ fs: observed }));
+  } finally {
+    promises.open = original;
+  }
+  const temp = events.find((event) => event.startsWith('sync:.seal-0001.json.tmp-'))?.slice('sync:'.length) ?? '';
+  assert.ok(TEMP_NAME.test(temp), `fsync do temporário: ${events.join(' ')}`);
+  const at = (event: string): number => events.indexOf(event);
+  assert.ok(at(`sync:${temp}`) < at('link:seal-0001.json') && at('link:seal-0001.json') < at(`unlink:${temp}`) && at(`unlink:${temp}`) < at(`sync:${AUD}`), events.join(' '));
+  assert.equal(result.seq, 1);
 });
 
 test('IA-12: a subpasta <seals-dir>/<auditId>/ deriva só do --audit validado; link simbólico, arquivo, --seals-dir ausente, auditId fora do padrão ou manifesto de outra auditoria ⇒ recusa, sem seguir o link e sem criar nada', async () => {
@@ -358,14 +406,33 @@ test('IA-12: a subpasta <seals-dir>/<auditId>/ deriva só do --audit validado; l
   assert.deepEqual(listing(clean), [], 'nada criado (nem subpasta)');
   assert.deepEqual(listing(path.dirname(clean)).filter((name) => name === 'fora-da-pasta'), []);
 
-  // --seals-dir por link simbólico (a cópia da estação) é seguido só na RAIZ: grava na pasta real, na subpasta do --audit
+  // --seals-dir por link simbólico (a cópia da estação): o sign fixa a raiz REAL uma vez, lê a cadeia e grava nela, na subpasta do --audit
   const realRoot = tmpDir('lasd-raiz-');
   const viaLink = path.join(tmpDir('lasd-w-'), 'manifestos');
   fs.symlinkSync(realRoot, viaLink);
-  const result = await publishSeal(nodeFsOps, { sealsDir: viaLink, auditId: AUD, seal });
+  refused(await publishSeal(nodeFsOps, { sealsDir: viaLink, auditId: AUD, seal }), 'SIGN_WRITE_FAILED', 'a gravação só aceita a raiz pelo caminho real');
+  assert.deepEqual(listing(realRoot), []);
+  // e trocar o link DEPOIS de fixada a raiz (entre a leitura da cadeia e a gravação) não desvia a gravação para outra pasta
+  const decoy = tmpDir('lasd-isca-');
+  let swapped = false;
+  const swapping: BytesFsOps = {
+    ...nodeFsOps,
+    readdir: async (dir) => {
+      if (!swapped) {
+        swapped = true;
+        fs.unlinkSync(viaLink);
+        fs.symlinkSync(decoy, viaLink);
+      }
+      return nodeFsOps.readdir(dir);
+    },
+  };
+  fs.mkdirSync(path.join(realRoot, AUD)); // a cadeia é listada (readdir) antes da gravação
+  const result = await runSign(signInput(writeStation(tmpDir('lasd-st-')), viaLink), signDeps({ fs: swapping }));
   written(result);
+  assert.ok(swapped, 'o link mudou no meio');
   assert.deepEqual([result.file, result.seq, result.fileName], [path.join(real(realRoot), AUD, 'seal-0001.json'), 1, 'seal-0001.json']);
-  await assertSealOnDisk(realRoot, seal);
+  assert.deepEqual(listing(decoy), [], 'nada foi para a pasta nova do link');
+  await assertSealOnDisk(realRoot, result.seal);
 });
 
 test('IA-12: seal-NNNN.json que já existe nunca é alterado ⇒ SIGN_SEQ_CONFLICT (bytes, modo e inode iguais; link simbólico no lugar não é seguido) e o temporário é removido', async () => {
