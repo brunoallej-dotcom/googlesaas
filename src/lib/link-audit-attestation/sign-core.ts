@@ -38,6 +38,15 @@ export const SIGN_REFUSAL_CODES = [
   'SIGN_SEQ_CONFLICT',
   'SIGN_WRITE_FAILED',
   'SIGN_WRITE_UNCONFIRMED',
+  // emitidos pelo CLI e pela chave K1 (W4.4: `sign-args.ts`, `sign-cli.ts`, `sign-key.ts`), nunca por este núcleo: segredo em argv ou ambiente (passo
+  // 1, §8.1), `external:` (§5.5.1 item 1), custódia e abertura da chave (passo 12, §8, IA-22)
+  'SECRET_VIA_ARGV_FORBIDDEN',
+  'SECRET_VIA_ENV_FORBIDDEN',
+  'SIGN_KEY_SOURCE_UNSUPPORTED',
+  'SECRET_PATH_UNSAFE',
+  'SECRET_NOT_ENCRYPTED',
+  'SIGN_KEY_UNPROTECTED',
+  'SIGN_KEY_REJECTED',
   'UNEXPECTED',
 ] as const;
 export type SignRefusalCode = (typeof SIGN_REFUSAL_CODES)[number];
@@ -126,8 +135,11 @@ export interface SignCoreDeps<K> {
    * recusas dos passos 1–10 e antes de `openKey`. Lançar ou rejeitar é recusa (`SIGN_CONFIRMATION_FAILED`), nunca sucesso.
    */
   readonly confirm: (facts: ConfirmationFacts) => Promise<string>;
-  /** Leitor de chave (W4.4). Chamado no máximo uma vez e SÓ depois de todas as recusas e da confirmação humana (§5.5 passo 12; IA-01). */
-  readonly openKey: () => K;
+  /**
+   * Leitor de chave (W4.4: assíncrono, porque a frase vem do terminal). Chamado no máximo uma vez e SÓ depois de todas as recusas e da confirmação
+   * humana (§5.5 passo 12; IA-01). O núcleo não interpreta o que ele devolve (a chave, ou a recusa da abertura, que quem chama repassa).
+   */
+  readonly openKey: () => K | Promise<K>;
 }
 
 /** O que os passos seguintes (13–16) precisam, decidido sem chave. */
@@ -158,8 +170,8 @@ type ChainStep = { readonly ok: true; readonly seq: number; readonly prevSealSha
 type Decision = { readonly ok: true; readonly plan: SignPlan } | SignRefusal;
 
 const MAX_REPORTED_REFS = 5;
-/** Passo 11: quantos caracteres iniciais de `packageSha256` o custodiante digita. */
-const CONFIRM_PREFIX_LENGTH = 12;
+/** Passo 11: quantos caracteres iniciais de `packageSha256` o custodiante digita (a tela da W4.4 cita o número, nunca os caracteres). */
+export const CONFIRM_PREFIX_LENGTH = 12;
 const NOTHING_SIGNED = 'Nada foi assinado.';
 /** UTF-8 estrito; `ignoreBOM` MANTÉM o BOM no texto, e o `JSON.parse` o recusa. */
 const STRICT_UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
@@ -393,5 +405,5 @@ export async function runSignCore<K>(input: SignCoreInput, deps: SignCoreDeps<K>
   if (inactive) return inactive;
   const unconfirmed = await confirmationRefusal(decision.plan, deps.confirm);
   if (unconfirmed) return unconfirmed;
-  return { ok: true, plan: decision.plan, key: deps.openKey() };
+  return { ok: true, plan: decision.plan, key: await deps.openKey() };
 }

@@ -50,7 +50,11 @@ export interface SignRunInput {
   readonly first: boolean;
   readonly keyId: string;
 }
-export interface SignRunDeps extends Omit<SignWithChainDeps<KeyObject>, 'fs'> {
+/**
+ * O leitor de chave (passo 12) devolve a chave aberta OU a recusa da abertura (W4.4: custódia, frase, formato), que `runSign` repassa sem assinar
+ * nem gravar. Lançar continua sendo falha inesperada, sem o objeto de erro (RS-13).
+ */
+export interface SignRunDeps extends Omit<SignWithChainDeps<KeyObject | SignRefusal>, 'fs'> {
   /** Leitura das entradas (bytes exatos), da cadeia, e a gravação em `<seals-dir>/<auditId>/`. Nada além disso é tocado (RS-04). */
   readonly fs: BytesFsOps;
   /** Só para teste: o sufixo aleatório do temporário (32 hex); fora disso, recusa. */
@@ -80,6 +84,9 @@ const seqConflict = (fileName: string, tempLeft = false): SignRefusal =>
   refuse('SIGN_SEQ_CONFLICT', `${fileName} já existe na pasta da auditoria (outra execução gravou este seq): nada foi sobrescrito. Confira o registro externo e refaça a partir da cadeia atualizada.${tempLeft ? TEMP_LEFT : ''}`);
 const unconfirmed = (fileName: string): SignRefusal =>
   refuse('SIGN_WRITE_UNCONFIRMED', `${fileName} foi criado, mas a confirmação em disco falhou (remoção do temporário ou fsync da pasta): a gravação NÃO está confirmada. Não entregue o manifesto nem emita recibo; o sign nunca o apaga. Confira o disco e trate como incidente (runbook).`);
+
+/** A recusa da abertura da chave (um `SignRefusal`, nunca um `KeyObject`, que não tem `ok`). */
+const isRefusal = (value: KeyObject | SignRefusal): value is SignRefusal => typeof value === 'object' && value !== null && (value as { readonly ok?: unknown }).ok === false;
 
 /* ------------------------------------------------------------------------------------------------------------------- leitura única (IA-18) */
 
@@ -131,7 +138,7 @@ export async function runSign(input: SignRunInput, deps: SignRunDeps): Promise<S
   const bytes = await readInputs(deps.fs, input);
   if ('ok' in bytes) return bytes;
   const root = await pinnedRoot(deps.fs, input.sealsDir);
-  let decided: SignCoreResult<KeyObject>;
+  let decided: SignCoreResult<KeyObject | SignRefusal>;
   try {
     const { auditId, custodian, trustKeys, expectSeq, first, keyId } = input;
     decided = await runSignWithChain({ auditId, custodian, ...bytes, sealsDir: root, trustKeys, expectSeq, first, keyId }, { fs: deps.fs, now: deps.now, confirm: deps.confirm, openKey: deps.openKey });
@@ -139,6 +146,7 @@ export async function runSign(input: SignRunInput, deps: SignRunDeps): Promise<S
     return BEFORE_WRITE; // o objeto de erro nunca sai daqui (pode vir do leitor de chave, RS-13)
   }
   if (!decided.ok) return decided;
+  if (isRefusal(decided.key)) return decided.key; // passo 12 (W4.4): a chave não abriu; nada assinado nem gravado
   const mismatch = keyMismatchRefusal(input.trustKeys, input.keyId, decided.key); // §5.5.1 item 2: depois do passo 12, antes de assinar
   if (mismatch) return mismatch;
   const signed = signSealManifest(decided.plan, input.keyId, decided.key);

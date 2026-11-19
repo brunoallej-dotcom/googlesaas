@@ -6,19 +6,25 @@
  *
  * `export` é SOMENTE LEITURA sobre a pasta de evidências; o único arquivo gravado é `--out` (criação exclusiva, fora da pasta de evidências).
  * Sem rede, sem Supabase/Serper/Redis e sem ler arquivos de ambiente. Hash não é assinatura: a conferência de procedência continua humana.
- * O subcomando `sign` chega na onda W4.
+ *
+ *   npm run link-audit:seal -- sign --audit <auditId> --package <pacote.json> --approval <approval.json> --dossier <arquivo> [--risk-acceptance <arquivo>] \
+ *       --seals-dir <pasta> --expect-seq <N> [--first] --key-id <id> --key-source file:<caminho> --custodian <rótulo> --trust-keys <lista> [--json]
+ *
+ * `sign` (spec §5.5, W4.4): todo o comando está em `src/lib/link-audit-attestation/sign-cli.ts`; aqui só a entrega do subcomando, com a raiz do
+ * projeto (a chave nunca pode estar dentro dela). A frase da chave é pedida só no terminal, sem eco.
  */
 import path from 'node:path';
 import { captureLabel, isValidAuditId, MAX_GAP_HOURS, type ExportRefusal } from '@/lib/link-audit-attestation/export';
 import { exportCandidatePackage, serializePackage, type DeltaStatus, type FsOps } from '@/lib/link-audit-attestation/export-run';
 import { isSafeText, type CandidatePackage } from '@/lib/link-audit-attestation/schemas';
+import { runSignCli, SIGN_USAGE, type SignCliDeps } from '@/lib/link-audit-attestation/sign-cli';
 
 export const USAGE = [
   'Uso: npm run link-audit:seal -- export --evidence-dir <base> --audit <auditId> --collector-hash cNNNN=<hex64> [...] --max-gap-hours <N>',
   '       [--gap-justification <texto curto>] [--seals-dir <pasta>] [--out <arquivo novo>] [--show-summary] [--json]',
   '  --collector-hash: uma por captura nova (o hash que o operador registrou do coletor em --json); é a única opção repetível.',
   '  --max-gap-hours: obrigatório para captura nova, sem valor padrão. Sem --out, o pacote só vai para a saída padrão com --show-summary.',
-  'O subcomando sign chega na onda W4 (ainda não disponível).',
+  ...SIGN_USAGE,
 ];
 const HASH_NOTICE = 'Hash não é assinatura; a conferência de procedência (contrato §4) ainda é necessária.';
 const UNEXPECTED_MESSAGE = 'Falha inesperada.';
@@ -114,6 +120,8 @@ export interface SealCliDeps {
   /** Gravação do `--out`. */
   readonly outFs?: FsOps;
   readonly projectRoot?: string;
+  /** Dependências do `sign` (terminal, ambiente, disco, pastas temporárias proibidas; testes). A raiz do projeto vem de `projectRoot`. */
+  readonly sign?: Omit<SignCliDeps, 'projectRoot'>;
 }
 
 type Line = (line: string) => void;
@@ -205,8 +213,8 @@ export async function runSealCli(argv: readonly string[], out: Line, err: Line, 
   const json = argv.includes('--json');
   try {
     const [command, ...rest] = argv;
-    if (command === 'sign') return usage('O subcomando sign chega na onda W4 (ainda não disponível).', json, out, err);
-    if (command !== 'export') return usage('Informe o subcomando: export.', json, out, err);
+    if (command === 'sign') return await runSignCli(rest, out, err, now, { ...deps.sign, projectRoot: deps.projectRoot ?? path.resolve(__dirname, '..') });
+    if (command !== 'export') return usage('Informe o subcomando: export ou sign.', json, out, err);
     const args = parseExportArgs(rest);
     if (typeof args === 'string') return usage(args, json, out, err);
     return await runExport(args, out, err, now, deps);
