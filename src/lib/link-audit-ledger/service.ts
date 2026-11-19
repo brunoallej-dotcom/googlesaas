@@ -83,6 +83,11 @@ const MESSAGES: Partial<Record<LedgerReason, string>> = {
   GUARD_UNAVAILABLE: 'A guarda externa não pôde ser consultada.',
 };
 
+/**
+ * §16.16: quem grava é o AUTOR da entrada? As duas identidades chegam já normalizadas na fronteira (`operatorOf` do serviço de decisões: sem espaços nas pontas, minúsculas;
+ * `op.author` é o `recordedBy` da entrada, gravado do mesmo jeito; o `actor` do livro não admite espaço). Comparação ÚNICA, usada na fase C e na adoção do fecho (R6-04).
+ */
+const isEntryAuthor = (actor: string, author: string): boolean => actor === author;
 /** Texto fixo da recusa da fase C a quem não é o autor (sem identidade de terceiros; §16.16). */
 const PHASE_C_NOT_AUTHOR_MESSAGE = 'A decisão já tem entrada e recibo, mas o livro ainda não a confirmou; somente o autor dela a conclui, reenviando o mesmo pedido ou pela recuperação verificável do livro. Nada foi gravado.';
 
@@ -352,7 +357,7 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
         if (plan.kind !== 'COMPLETE_CONFIRMED') return refusedForState(view);
         // Spec §16.16 (16/11/2026): a fase C só é concluída pelo AUTOR da entrada (os recibos não são autenticados: recibo forjado por quem escreve só na pasta de recibos
         // não pode promover a pendente de outro operador). Escrita ou RECOVER de quem não é o autor: recusa, nada gravado; a pendente segue bloqueando (como na fase B).
-        if (actor !== plan.entry.author) return refused('PENDING_UNCONFIRMED', view, null, [PHASE_C_NOT_AUTHOR_MESSAGE]);
+        if (!isEntryAuthor(actor, plan.entry.author)) return refused('PENDING_UNCONFIRMED', view, null, [PHASE_C_NOT_AUTHOR_MESSAGE]);
         // Fase C: o livro ficou um registro atrás (queda entre o recibo e o CONFIRMED). Conclui-se SOMENTE o verificável: origem comprovada (no modelo), testemunhas
         // frescas (resultados e decisões) e entrada + recibo comprovadamente DURÁVEIS (R7-04) antes de o CONFIRMED existir.
         const blocked = witnessBlock();
@@ -480,8 +485,10 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
       if (!intent || !intentOp || intentOp.newDecisionsHead.sha256 !== input.entry.sha256) return refused('LEDGER_UNAVAILABLE', null, null, ['Não há INTENT do livro para esta entrada; a confirmação não foi gravada.']);
       // O conteúdo do fecho não depende da posição: numa regravação só `ledgerSeq`, `prevSha256`, `recordedAt`, etiqueta e hash mudam (calculados por `append`).
       const draft: LedgerDraft = { event: 'CONFIRMED', recordedAt: input.nowIso, actor: input.actor, op: { ...intentOp, intentSeq: intent.ledgerSeq, anchorRef: { name: anchorName(input.entry.seq), headSha256: input.entry.sha256 } } };
-      // R6-04: o MESMO `CONFIRMED` desta operação gravado por outro processo (opId, posição da INTENT e entrada ancorada)
-      const sameClosing = (record: LedgerRecord): boolean => record.event === 'CONFIRMED' && record.op?.opId === intentOp.opId && record.op.intentSeq === intent.ledgerSeq && record.op.anchorRef?.headSha256 === input.entry.sha256;
+      // R6-04: o MESMO `CONFIRMED` desta operação gravado por outro processo (opId, posição da INTENT e entrada ancorada) — e, pela §16.16, gravado pelo AUTOR: um CONFIRMED
+      // autêntico de outro operador (código que deixasse um não autor concluir a fase C) não é adotado; cai no caso (iii) e o dono recusa sem gravar.
+      const sameClosing = (record: LedgerRecord): boolean =>
+        record.event === 'CONFIRMED' && isEntryAuthor(record.actor, intentOp.author) && record.op?.opId === intentOp.opId && record.op.intentSeq === intent.ledgerSeq && record.op.anchorRef?.headSha256 === input.entry.sha256;
       for (let reappends = 0; ; reappends += 1) {
         // CAPACIDADE: cada tentativa passa pelo teto duro de `append` (R7-02: nenhum registro além de `policy.max`; recusa sem gravar). O fecho já estava reservado — a INTENT só
         // entrou com espaço para ela e para o fecho, e o CHECKPOINT do `RECOVER` com operação aberta deixa 1 registro livre — então a regravação cabe enquanto a regra valer.
