@@ -266,6 +266,26 @@ Fecham lacunas apontadas no mapa da W4; prevalecem sobre o texto acima onde houv
 - **Ficam para a W4.4:** (i) o passo 9 fala em "existência e hash" do aceite de risco, mas o CLI não tem argumento para esse arquivo; hoje só se exige a referência presente; (ii) a subpasta `<seals-dir>/<auditId>/` deriva só do `--audit` validado (quarto lugar do passo 1, por construção).
 - **Pergunta aberta (junto da §13.3):** operador = custodiante não marca `requiresLaterReview`; a spec não trata o caso.
 
+**Notas da W4.2 (19/11/2026, cadeia e manifesto, `sign-chain.ts`; onde a spec era ambígua, valeu o lado que falha fechado):**
+
+- **Verificação:** `sign-chain.ts` é o único arquivo do `sign` que importa o verificador (o núcleo recebe só fatos estruturais, item 7). Usa o verificador `v2` real em modo produção (`parseTrustKeyring(--trust-keys)`, fechos de `<seals-dir>/_closures/`, `acceptedVersions: [2]`), com evidências = entradas da própria cabeça: prova formato, cadeia, estados e fechos, não a pasta de evidências. `seq` e `prevSealSha256` vêm do que ele autenticou (`headSeq`, `headSealSha256`). Cada arquivo é lido do disco uma vez, por uma cópia somente leitura do `FsOps` em memória, compartilhada entre a leitura da cabeça e o verificador (sem corrida entre as duas leituras).
+- **Ordem:** a cadeia é **lida** antes do passo 1 (leitura sem efeito, sem chave) e **julgada** no passo 7, então as recusas dos passos 1–6 continuam vindo antes. Dentro do passo 7, cadeia que não verifica ⇒ `SIGN_SEAL_CHAIN_INVALID` **antes** da comparação de `seq` (o texto do passo cita `SIGN_SEQ_MISMATCH` primeiro, mas um `seq` calculado de cadeia não verificada não vale nada).
+- **`--expect-seq`/`--first`:** `--expect-seq` que não é inteiro de 1 a 256 (`MAX_CHAIN_SEALS`) ⇒ `USAGE`; `--first` com `--expect-seq ≠ 1` ⇒ `USAGE` (o "só se" da tabela de argumentos). Pasta sem manifesto: `--expect-seq > 1` ⇒ `SIGN_SEAL_CHAIN_INVALID` (`NO_SEAL_EXPECTED_SEQ`, manifesto apagado); `--expect-seq 1` sem `--first` ⇒ `SIGN_SEAL_CHAIN_INVALID` (`NO_SEAL_WITHOUT_FIRST`, tabela do §7.1, não `USAGE`). Com cadeia: `--first` ou `último + 1 ≠ --expect-seq` ⇒ `SIGN_SEQ_MISMATCH`. Cadeia com 256 manifestos não aceita `--expect-seq` válido (257 é `USAGE`).
+- **"Pasta sem manifesto"** é só ENOENT da subpasta `<seals-dir>/<auditId>/`, ou uma subpasta sem nenhum `seal-NNNN.json` (temporário de queda e outros nomes não contam). Recusas com `SIGN_SEAL_CHAIN_INVALID`:
+  - `--seals-dir` inexistente ou que não é diretório ⇒ `SEALS_DIR_UNREADABLE`: provável erro de digitação, como no `delta` do `export`; nunca "começar do 1";
+  - EACCES/EIO ⇒ `VERIFICATION_ERROR`;
+  - subpasta que é link ou arquivo ⇒ `SEAL_INVALID`;
+  - nome de manifesto em outra caixa (`seal-0002.JSON`, `Seal-0001.json`), mesmo sem duplicata ⇒ `SEAL_NAME_CASE_VARIANT`. É mais estrito que o verificador, que os ignora (V2-15), porque num disco que ignora a caixa eles colidiriam.
+- **`--trust-keys` fora do formato** ⇒ `SIGN_SEAL_CHAIN_INVALID` (`PROOF_NOT_CONFIGURED`), também com a pasta vazia e `--first`. **Para a W4.4:** o parser do CLI deve recusá-la antes, como `USAGE`.
+- **`chainReason`:** a recusa da cadeia leva o código fixo (razão do verificador ou do `sign`), nunca dado de arquivo; o que não tem forma de código não é repassado.
+- **Corpo (passo 13):** um plano com `entries` desordenadas ou repetidas é recusado (`UNEXPECTED`), nunca reordenado nem deduplicado em silêncio; `seq`/`prevSealSha256` incoerentes também. Nesta fatia a assinatura só usa chave de teste. `signSealManifest` confere a assinatura com a pública derivada antes de devolver e nunca repassa o objeto de erro (RS-13).
+- **Vetores-ouro:** o `sign` reproduz G1 → G2 → G3 a partir do pacote, inclusive G3 sobre o fecho G6 fixado. O dossiê dos testes é `ouro|dossie-0N`, rótulo deduzido da regra do cabeçalho dos vetores (`sha256("ouro|<rótulo>")`) e conferido contra o hash.
+- **Ficam para depois:**
+  - `SIGN_KEY_NOT_ACTIVE`/`SIGN_KEY_MISMATCH` do item 2: W4.4, porque precisam de `--key-id` e da chave aberta;
+  - o autoteste: W4.5;
+  - a gravação (com o nome de `sealFileName`): W4.3;
+  - `SIGN_TOO_MANY_ENTRIES` do §7.1: hoje é inalcançável (pacote ≤ 2000 entradas ⇒ manifesto < 256 KiB); a W4.3 confere sobre os bytes gravados.
+
 ### 5.6 Manifesto `v2` e verificador `v2` (onda W3, contrato próprio)
 
 **Decisão de 16/11:** `v2` **antes do primeiro resultado de produção**, com `dossier.sha256` e `prevSealSha256` **dentro da parte assinada**.
