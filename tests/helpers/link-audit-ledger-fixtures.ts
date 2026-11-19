@@ -43,6 +43,8 @@ export interface LedgerServiceOver {
   readonly checkpointEvery?: number;
   readonly capacityPolicy?: LedgerCapacityPolicy;
   readonly observations?: OpenObservations;
+  /** Relógio monotônico do prazo do dono de uma finalização (R1.3, passo 7). */
+  readonly monotonicMs?: () => number;
 }
 
 export function ledgerFor(w: Pick<LedgerWorld, 'ledgerDir' | 'otherDirs' | 'guard'>, over: LedgerServiceOver = {}): LedgerPort {
@@ -57,6 +59,7 @@ export function ledgerFor(w: Pick<LedgerWorld, 'ledgerDir' | 'otherDirs' | 'guar
     ...(over.checkpointEvery !== undefined ? { checkpointEvery: over.checkpointEvery } : {}),
     ...(over.capacityPolicy ? { capacityPolicy: over.capacityPolicy } : {}),
     ...(over.observations ? { observations: over.observations } : {}),
+    ...(over.monotonicMs ? { monotonicMs: over.monotonicMs } : {}),
   });
 }
 

@@ -28,6 +28,7 @@ import {
 import { ANA, anchorPath, BIA, clock, must, rec, registerCleanup } from './helpers/link-audit-decisions-fixtures';
 import { decisionsOver, ledgerAuth, ledgerEvents, ledgerFor, ledgerRecords, ledgerWorld, LEDGER_AUTH_A, LEDGER_KEY_A, LEDGER_KEY_B, NO_RESULTS, refOf, type LedgerWorld } from './helpers/link-audit-ledger-fixtures';
 import { appendLedger, chainOf, plantWorld, runClosingMaker } from './helpers/link-audit-results-ledger-fixtures';
+import { ledgerSnapshotOf, readLog } from '../src/lib/link-audit-decisions/store';
 
 /*
  * R1.1 — CAPACIDADE com a classe RUN (spec §16.17.6): RUN = RECORD (D-9), `RUN_CLOSING_ALLOWANCE = 1` como termo próprio de `deriveCapacityPolicy` (D-24;
@@ -278,6 +279,14 @@ test('RL-21 / M-R13 (porta): o ponto AUTORITATIVO `intent()` também soma o fech
       const session = await port.begin(w.auditId);
       const prev = (records[2] as LedgerRecord).op?.newDecisionsHead.sha256 ?? null;
       const entry = action === 'RECORD' ? refOf(2, prev, 'nova') : refOf(2, prev, 'rev', { action: 'REVOKE', decisionId: null, revokes: 'op-0001', affectsPrior: true });
+      if (!withRun) {
+        // R1.3 (revisão da R1.2, `junin-02`): o `intent` só grava com a autorização de uso único do `prepare` LIBERADO na mesma sessão; o controle passa pela preparação,
+        // como o laço de gravação das decisões. Os casos COM resultado aberto continuam chamando o `intent` sozinho: a capacidade é conferida antes da autorização.
+        const log = await readLog(w.decisionsDir, w.auditId, { anchorDir: w.anchorDir });
+        assert.ok(log.ok);
+        const prepared = await port.prepare({ session, auditId: w.auditId, snapshot: ledgerSnapshotOf(log.value.state.entries, log.value.pending), results: { ok: true, hasResults: false, ledgerHeads: [], unverifiedLedgerHeads: [] }, entryOriginProven: () => true, nowIso: clock(), actor: 'ana@empresa.com', rechecks: 0, intended: action });
+        assert.ok(prepared.kind === 'OK' && prepared.pendingKind === null, `${label} controle (prepare): ${JSON.stringify(prepared).slice(0, 200)}`);
+      }
       const step = await port.intent({ session, auditId: w.auditId, actor: 'ana@empresa.com', nowIso: clock(), entry });
       if (withRun) {
         assert.ok(step.kind === 'REFUSED' && step.refusal.code === 'LEDGER_CAPACITY_EXHAUSTED', `${label} com resultado aberto: ${JSON.stringify(step).slice(0, 200)}`);

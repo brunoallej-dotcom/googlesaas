@@ -2,7 +2,7 @@ import path from 'node:path';
 import { ledgerDirOf, ledgerForRoutes } from '../decisions/ledger-wiring';
 import { NextResponse } from 'next/server';
 import { isErrorResponse, requireOperator } from '@/lib/auth/require-operator';
-import { AUDIT_ID_PATTERN, createDecisionService } from '@/lib/link-audit-decisions';
+import { AUDIT_ID_PATTERN, createDecisionService, type ResultsLedgerPort } from '@/lib/link-audit-decisions';
 import { createEvidenceReader, EvidenceAccessError, type EvidenceActor } from '@/lib/link-audit-evidence';
 import { createScoringBasisReader } from '@/lib/link-audit-evidence/scoring-basis';
 import { evidenceProvenanceFromConfig } from '@/lib/link-audit-evidence/provenance';
@@ -62,6 +62,8 @@ interface Prepared {
   readonly preview: ReturnType<typeof createScoringPreviewService>;
   readonly basisReader: ReturnType<typeof createScoringBasisReader>;
   readonly dirs: { readonly evidence: string; readonly decisions: string; readonly anchors: string };
+  /** Porta de ESCRITA do livro para a finalização (R1.3, D-R1-3): o livro grava os `RUN_*`; o serviço de decisões liga o contexto (R1 → guarda → livro → decisões → R2). */
+  readonly resultsLedger: ResultsLedgerPort | null;
 }
 
 /** Autentica, limita a taxa, confere a configuração das três raízes de LEITURA e monta a prévia; qualquer exceção do chamador vira erro genérico. */
@@ -100,13 +102,10 @@ async function prepare(request: Request, limiter: SlidingWindowLimiter): Promise
   const resultsDir = configuredDir(process.env.GMN_LINK_AUDIT_RESULTS_DIR);
   const resultsAnchorDir = configuredDir(process.env.GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR);
   const knownHeads = resultsDir && resultsAnchorDir ? createResultsKnownHeads({ baseDir: resultsDir, anchorDir: resultsAnchorDir, otherDirs: [decisionsDir, anchorDir, evidenceDir, ledgerDirOf()], ...(prepareOrigin.ok ? { origin: prepareOrigin.authenticator } : {}) }) : async () => ({ ok: false as const, reason: 'NOT_CONFIGURED' as const }); // sem as pastas de resultados: NÃO RESOLVIDO (falha fechada), nunca "sem inconsistência"
-  const preview = createScoringPreviewService({
-    basisReader,
-    evidenceProvenance,
-    decisions: createDecisionService({ baseDir: decisionsDir, anchorDir, evidence: reader, evidenceBaseDir: evidenceDir, knownHeads, ledger: ledgerForRoutes([decisionsDir, anchorDir, evidenceDir, resultsDir, resultsAnchorDir]) }), // só LEITURA das decisões: sem escrita não há o que assinar; com a TESTEMUNHA dos resultados selados
-    clock: serverClock,
-  });
-  return { actor, preview, basisReader, dirs: { evidence: evidenceDir, decisions: decisionsDir, anchors: anchorDir } };
+  // só LEITURA das decisões (sem escrita não há o que assinar), com a TESTEMUNHA dos resultados selados; o MESMO livro grava os RUN_* da finalização pela porta de escrita
+  const decisions = createDecisionService({ baseDir: decisionsDir, anchorDir, evidence: reader, evidenceBaseDir: evidenceDir, knownHeads, ledger: ledgerForRoutes([decisionsDir, anchorDir, evidenceDir, resultsDir, resultsAnchorDir]) });
+  const preview = createScoringPreviewService({ basisReader, evidenceProvenance, decisions, clock: serverClock });
+  return { actor, preview, basisReader, dirs: { evidence: evidenceDir, decisions: decisionsDir, anchors: anchorDir }, resultsLedger: decisions.resultsLedger };
 }
 
 const guarded = async (action: () => Promise<NextResponse>): Promise<NextResponse> => {
@@ -172,6 +171,8 @@ export async function withResults(request: Request, mode: 'read' | 'write', hand
     if (mode === 'write' && !originConfig.ok) return reply({ error: RESULTS_MESSAGE.ORIGIN_KEY_NOT_CONFIGURED, code: 'ORIGIN_KEY_NOT_CONFIGURED' }, RESULTS_HTTP_STATUS.ORIGIN_KEY_NOT_CONFIGURED);
     const service = createScoringResultsService({
       ...(originConfig.ok ? { origin: originConfig.authenticator } : {}),
+      // R1.3: a finalização grava pelo livro (RUN_INTENT antes do resultado, RUN_CONFIRMED depois do recibo); livro não configurado ⇒ a porta recusa (falha fechada)
+      ...(prepared.resultsLedger ? { ledger: prepared.resultsLedger } : {}),
       preview: prepared.preview,
       basisReader: prepared.basisReader,
       baseDir: resultsDir,

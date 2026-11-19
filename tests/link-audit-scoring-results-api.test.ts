@@ -409,7 +409,7 @@ test('limitador da finalização (6/min por operador): a 7ª tentativa ⇒ 429 c
   assert.equal(limited, 2);
 });
 
-test('MAJOR-1 pela API (resultados): resultado pendente com AUTOR FALSIFICADO e sem etiqueta não é concluído pelo "autor" (409 RESULT_PENDING_ORIGIN_UNPROVEN); nenhum recibo; a lista não afirma autoria nem desfecho', async () => {
+test('MAJOR-1 pela API (resultados): resultado pendente com AUTOR FALSIFICADO e sem etiqueta não é concluído pelo "autor" (409; com o livro, RESULT_INTEGRITY); nenhum recibo; a lista não afirma autoria nem desfecho', async () => {
   const c = await setup();
   const body = await preview(c);
   assert.equal((await post(c, body)).status, 201, 'um resultado legítimo existe');
@@ -429,7 +429,10 @@ test('MAJOR-1 pela API (resultados): resultado pendente com AUTOR FALSIFICADO e 
   const receiptsBefore = hashTree(c.dirs.resultAnchors);
   const attempt = await post(c, body, ana); // o "autor" nomeado reenvia o pedido que a interface monta
   const failure = await json(attempt);
-  assert.deepEqual([attempt.status, failure.code, failure.pending.origin], [409, 'RESULT_PENDING_ORIGIN_UNPROVEN', 'UNPROVEN']);
+  // R1.3 (spec do livro §16.17.5 e 16.17.9: mudam os testes que gravam resultado direto no disco em auditoria protegida): a finalização agora passa pelo livro, que confirmou
+  // o resultado ORIGINAL (`RUN_CONFIRMED` com o hash dele); o arquivo trocado não é o confirmado ⇒ a família de resultados não está resolvida ⇒ 409 RESULT_INTEGRITY, sem
+  // dado nenhum (nem a pendente). Continua valendo o que este teste protege: o "autor" nomeado no arquivo não conclui nada e nenhum recibo é gravado.
+  assert.deepEqual([attempt.status, failure.code, failure.pending], [409, 'RESULT_INTEGRITY', undefined]);
   assert.match(attempt.headers.get('cache-control') ?? '', /no-store/);
   assert.deepEqual(hashTree(c.dirs.resultAnchors), receiptsBefore, 'nenhum recibo foi gravado');
   assert.equal((await detail(c, '1', ana)).status, 409, 'o detalhe não é entregue');

@@ -9,6 +9,7 @@ import {
   ATOMIC_UNAVAILABLE_ERRNO,
   confirmReceipt,
   dirStatus,
+  DURABILITY_UNPROVEN_MESSAGE,
   ensureDirectory,
   fail,
   FATAL_ERRNO,
@@ -22,6 +23,7 @@ import {
   splitNames,
   tripBase,
   verifyReceipts,
+  watchDurability,
   type Location,
   type ReceiptProfile,
   type ReceiptSummary,
@@ -275,6 +277,24 @@ const laterOf = (a: string, b: string | undefined): string => (b !== undefined &
 const confirmedSummary = (count: number): RunAnchorSummary => ({ count, lastSeq: count, unanchored: 0 });
 
 /**
+ * PASSOS DO LIVRO na finalização (R1.3; spec §16.17.3). Estrutural: este armazenamento não conhece o livro nem as decisões (lista fechada de imports); o serviço de resultados
+ * liga os passos à porta de escrita do livro. `RESTART` = recomeça do passo 0 (relê resultados e recibos), consumindo tentativa; `REFUSED` = nada mais é feito.
+ */
+export type RunLedgerGate<F> = { readonly kind: 'OK' } | { readonly kind: 'RESTART' } | { readonly kind: 'REFUSED'; readonly failure: F };
+export interface RunLedgerHooks<F> {
+  /** Passo 1 (contexto do livro) e 1b (conferência objeto × livro) sobre a leitura R0 desta tentativa. */
+  context(read: { readonly runs: readonly ScoreRun[]; readonly pending: ScoreRun | null; readonly all: readonly ScoreRun[] }): Promise<RunLedgerGate<F>>;
+  /** Passo 6: `RUN_INTENT` do resultado JÁ SELADO, antes de publicá-lo. */
+  intent(sealed: ScoreRun): Promise<RunLedgerGate<F>>;
+  /** Passo 7: prazo do dono e operação ainda aberta, imediatamente antes do `link()` do resultado. */
+  gate(sealed: ScoreRun): Promise<RunLedgerGate<F>>;
+  /** Passo 11: `RUN_CONFIRMED`, depois do recibo durável. */
+  confirmed(sealed: ScoreRun): Promise<RunLedgerGate<F>>;
+}
+/** A falha é de durabilidade NÃO comprovada (fsync estrito): nunca sucesso, as bases travaram (R6-07, D-15). */
+export const isDurabilityUnknown = (failure: { readonly code: string; readonly issues: readonly string[] }): boolean => failure.code === 'STORAGE_FATAL' && failure.issues.includes(DURABILITY_UNPROVEN_MESSAGE);
+
+/**
  * Acrescenta UM resultado, sob trava por auditoria, em dois tempos: (1) publica `sNNNN.json`; (2) grava o recibo `aNNNN.json` na pasta
  * separada. SÓ depois do (2) devolve sucesso. Antes de gravar: confere resultados e recibos e chama o `build` (assíncrono) com o
  * estado CONFIRMADO. Existindo uma PENDENTE, nada novo é gravado sobre ela: o `build` pode reconhecer o pedido como o REENVIO dela
@@ -282,7 +302,7 @@ const confirmedSummary = (count: number): RunAnchorSummary => ({ count, lastSeq:
  * (o `link()` exclusivo falha com EEXIST), relê e reavalia até `WRITE_RETRIES` vezes: nunca grava sobre estado desatualizado. Se o
  * recibo falhar, o resultado fica PENDENTE e a resposta é `ANCHOR_PENDING`.
  */
-export async function appendRun<F>(baseDir: unknown, auditId: unknown, build: (context: BuildContext) => Promise<BuildOutcome<F>>, options: WriteOptions): Promise<AppendResult<F>> {
+export async function appendRun<F>(baseDir: unknown, auditId: unknown, build: (context: BuildContext) => Promise<BuildOutcome<F>>, options: WriteOptions & { readonly ledger?: RunLedgerHooks<F> }): Promise<AppendResult<F>> {
   const ops = options.fs ?? nodeFsOps;
   const projectRoot = options.projectRoot ?? process.cwd();
   const located = locateRuns(baseDir, auditId, projectRoot);
@@ -290,7 +310,30 @@ export async function appendRun<F>(baseDir: unknown, auditId: unknown, build: (c
   const anchorLocated = locateRunAnchors(options.anchorDir, auditId, projectRoot);
   if (!anchorLocated.ok) return anchorLocated;
   const { root, dir } = located.value;
-  const atomic = atomicOnly(ops);
+  const ledger = options.ledger;
+  // D-15 (R1.3): com o livro, o fsync das pastas de resultados e de recibos é ESTRITO (um RUN_CONFIRMED durável sobre resultado ou recibo não durável viraria regressão falsa depois
+  // de uma queda de energia). Sem o livro (6C isolada, só testes) continua o melhor-esforço de sempre (P-4).
+  const watch = ledger ? watchDurability(ops) : null;
+  const io = watch?.ops ?? ops;
+  const atomic = atomicOnly(io);
+  const durabilityUnknown = (): StoreFailure => {
+    tripBase(root);
+    tripBase(anchorLocated.value.root);
+    return fail('STORAGE_FATAL', DURABILITY_UNPROVEN_MESSAGE);
+  };
+  /** Sincroniza AGORA os diretórios dados; `null` só se todos ficaram comprovadamente duráveis (e nenhuma falha anterior desta gravação foi vista). */
+  const syncStrict = async (dirs: readonly string[]): Promise<StoreFailure | null> => {
+    if (!watch) return null;
+    for (const target of dirs) {
+      try {
+        await watch.ops.syncDirectory(target);
+      } catch {
+        /* registrado por `watchDurability`; a decisão vem logo abaixo */
+      }
+    }
+    return watch.failure() === null ? null : durabilityUnknown();
+  };
+  const unproven = (): StoreFailure | null => (watch && watch.failure() !== null ? durabilityUnknown() : null);
 
   return withLock(`results:${dir.toLowerCase()}`, async (): Promise<AppendResult<F>> => {
     for (let attempt = 0; attempt < WRITE_RETRIES; attempt++) {
@@ -300,17 +343,32 @@ export async function appendRun<F>(baseDir: unknown, auditId: unknown, build: (c
       const base = await dirStatus(ops, root);
       if (base === 'MISSING') return fail('STORAGE_MISSING', 'O armazenamento de resultados não existe neste servidor.');
       if (base !== 'EXISTS') return fail('UNSAFE_PATH', 'O armazenamento de resultados não é um diretório comum.');
-      const anchorReady = await prepareReceiptDirectory(RUN_ANCHORS, ops, anchorLocated.value);
-      if (anchorReady) return anchorReady;
-      const ensured = await ensureDirectory(ops, dir, 'resultados');
-      if (ensured) return ensured;
+      if (ledger) {
+        // com o livro, as pastas da auditoria só são criadas no passo 5, DEPOIS de o livro autorizar (uma finalização recusada não deixa rastro); aqui só a raiz de recibos
+        const anchorRoot = await dirStatus(ops, anchorLocated.value.root);
+        if (anchorRoot === 'MISSING') return fail('ANCHOR_MISSING', 'O armazenamento de recibos de resultados não existe neste servidor.');
+        if (anchorRoot !== 'EXISTS') return fail('UNSAFE_PATH', 'O armazenamento de recibos de resultados não é um diretório comum.');
+      } else {
+        const anchorReady = await prepareReceiptDirectory(RUN_ANCHORS, ops, anchorLocated.value);
+        if (anchorReady) return anchorReady;
+        const ensured = await ensureDirectory(ops, dir, 'resultados');
+        if (ensured) return ensured;
+      }
 
+      // passo 0: leitura R0 (resultados + recibos)
       const read = await readVerified(ops, located.value, anchorLocated.value, auditId as string);
       if (!read.ok) return read;
       const { runs: confirmed, pending, anchorFiles, all } = read.value;
       const seq = all.length + 1;
       const atLimit = pending === null && seq > MAX_RUNS; // só impede GRAVAÇÃO nova: o reenvio idempotente do último continua 200
       const finalizedAt = laterOf(options.now(), all[all.length - 1]?.finalizedAt);
+
+      // passos 1 e 1b: contexto do livro e conferência objeto × livro sobre R0 (antes de qualquer avaliação ou montagem)
+      if (ledger) {
+        const gate = await ledger.context({ runs: confirmed, pending, all });
+        if (gate.kind === 'RESTART') continue;
+        if (gate.kind === 'REFUSED') return { ok: false, code: 'REJECTED', failure: gate.failure };
+      }
 
       const built = await build({ runs: confirmed, pending, all, seq, finalizedAt });
       if (!built.ok) return { ok: false, code: 'REJECTED', failure: built.failure };
@@ -319,6 +377,8 @@ export async function appendRun<F>(baseDir: unknown, auditId: unknown, build: (c
         const target = all[built.replayOf - 1];
         if (!target) return fail('INTERNAL', 'Reenvio aponta para um resultado que não existe (erro interno).');
         if (target !== pending) return { ok: true, run: target, runs: confirmed, anchored: true, replayed: true, anchors: confirmedSummary(confirmed.length) };
+        // com o livro, a conclusão de uma pendente (fases B/C) é da R1.4: o contexto já recusou; chegar aqui é erro interno (falha fechada, nenhum recibo)
+        if (ledger) return fail('INTERNAL', 'Conclusão de pendente sem o protocolo do livro (erro interno): nenhum recibo foi gravado.');
         // Reenvio da PENDENTE: antes de dar o RECIBO, exige a PROVA DE ORIGEM (o arquivo vive numa pasta que quem escreve nela controla
         // por inteiro: autor, conteúdo e selo são afirmações dele). Sem prova válida o recibo NÃO é dado e nada é gravado.
         const verdict = judgeOrigin(options.origin, 'RUN', pending);
@@ -345,6 +405,23 @@ export async function appendRun<F>(baseDir: unknown, auditId: unknown, build: (c
       const data = serialize(run); // exatamente os bytes que a leitura estrita exige
       if (Buffer.byteLength(data) > MAX_RUN_BYTES) return fail('LIMIT_REACHED', 'O resultado ultrapassa o tamanho máximo permitido.');
 
+      if (ledger) {
+        // passo 5: pastas da auditoria em resultados e em recibos, e fsync ESTRITO das raízes (o fsync da pasta da auditoria não persiste o NOME dela; sempre, não só na criação)
+        const anchorReady = await prepareReceiptDirectory(RUN_ANCHORS, ops, anchorLocated.value);
+        if (anchorReady) return anchorReady;
+        const ensured = await ensureDirectory(ops, dir, 'resultados');
+        if (ensured) return ensured;
+        const roots = await syncStrict([root, anchorLocated.value.root]);
+        if (roots) return roots;
+        // passo 6: RUN_INTENT (o livro relê o prefixo e confere a entrada; EEXIST ou outra finalização ⇒ recomeça). Em nenhuma recusa daqui algo foi publicado em resultados.
+        const intended = await ledger.intent(checked.data);
+        if (intended.kind === 'RESTART') continue;
+        if (intended.kind === 'REFUSED') return { ok: false, code: 'REJECTED', failure: intended.failure };
+        // passo 7: prazo do dono e operação ainda aberta, imediatamente antes do link()
+        const cleared = await ledger.gate(checked.data);
+        if (cleared.kind !== 'OK') return cleared.kind === 'REFUSED' ? { ok: false, code: 'REJECTED', failure: cleared.failure } : fail('INTERNAL', 'Passo do livro inesperado antes da publicação (erro interno): nada foi publicado.');
+      }
+
       const finalName = runFileName(seq);
       const published = await publishExclusive(atomic, {
         dir,
@@ -354,6 +431,8 @@ export async function appendRun<F>(baseDir: unknown, auditId: unknown, build: (c
         label: `O resultado ${finalName}`,
       });
       if (!published.ok) {
+        const unprovenFirst = unproven();
+        if (unprovenFirst) return unprovenFirst; // precedência: uma falha de fsync observada vale mais do que outro erro simultâneo
         if (published.code === 'CONFLICT') continue; // outro processo gravou este número: relê e reavalia
         if (published.errno === ATOMIC_UNAVAILABLE_ERRNO) return fail('ATOMIC_WRITE_UNAVAILABLE', 'O armazenamento não suporta link() atômico; os resultados não são gravados por caminho não atômico.');
         if (published.errno && FATAL_ERRNO.has(published.errno)) {
@@ -362,10 +441,21 @@ export async function appendRun<F>(baseDir: unknown, auditId: unknown, build: (c
         }
         return fail('WRITE_FAILED', ...published.issues);
       }
+      // passo 8 (com o livro): a pasta de resultados da auditoria sincronizada ESTRITAMENTE (o fsync da publicação é observado; falha ⇒ fase B com a base travada)
+      const runDurable = ledger ? await syncStrict([dir]) : null;
+      if (runDurable) return runDurable;
 
       // O resultado já existe, mas SÓ vale depois do recibo. Se ele falhar, fica PENDENTE e nenhum sucesso é devolvido.
-      const receipt = await confirmReceipt(RUN_ANCHORS, ops, anchorLocated.value, checked.data, anchorFiles[anchorFiles.length - 1], finalizedAt);
-      if (!receipt.ok) return { ok: false, code: 'ANCHOR_PENDING', issues: receipt.issues, pending: checked.data, runs: confirmed };
+      const receipt = await confirmReceipt(RUN_ANCHORS, io, anchorLocated.value, checked.data, anchorFiles[anchorFiles.length - 1], finalizedAt);
+      if (!receipt.ok) return unproven() ?? { ok: false, code: 'ANCHOR_PENDING', issues: receipt.issues, pending: checked.data, runs: confirmed };
+      if (ledger) {
+        // passo 10: a pasta de recibos da auditoria sincronizada ESTRITAMENTE (falha ⇒ fase C com a base travada)
+        const receiptDurable = await syncStrict([anchorLocated.value.dir]);
+        if (receiptDurable) return receiptDurable;
+        // passo 11: RUN_CONFIRMED (pelo autor). Só então o sucesso.
+        const sealedByLedger = await ledger.confirmed(checked.data);
+        if (sealedByLedger.kind !== 'OK') return sealedByLedger.kind === 'REFUSED' ? { ok: false, code: 'REJECTED', failure: sealedByLedger.failure } : fail('INTERNAL', 'Passo do livro inesperado na confirmação (erro interno).');
+      }
       return { ok: true, run: checked.data, runs: [...confirmed, checked.data], anchored: true, replayed: false, anchors: confirmedSummary(seq) };
     }
     return fail('CONFLICT', 'Outro processo gravou continuamente nesta auditoria; nada foi sobrescrito. Tente novamente.');

@@ -15,6 +15,7 @@ import { TEST_ORIGIN } from './link-audit-origin-fixtures';
  *  - `task: 'recover'`: roda `RECOVER` (com o mesmo mecanismo de queda opcional).
  *  - `task: 'recover-retry'`: `RECOVER` com novas tentativas SÓ no 409 transitório da §16.16 (`PENDING_UNCONFIRMED`); qualquer outra recusa volta como veio.
  *  - `task: 'workload'`: várias rodadas de criar+revogar a MESMA decisão própria, com tentativas; imprime um resumo JSON.
+ *  - `task: 'finalize'` (com `withPort`, R1.3): avalia e finaliza PELA PORTA de escrita do livro; `startAt` sobrepõe processos; `crash` derruba em torno de um `link()` ou fsync.
  */
 interface Config {
   readonly task: 'create' | 'recover' | 'recover-retry' | 'workload' | 'enroll' | 'revoke' | 'create-retry' | 'revoke-retry' | 'list' | 'finalize';
@@ -42,7 +43,12 @@ interface Config {
   readonly ledgerDir: string;
   readonly auditId: string;
   readonly actor: string;
-  readonly crash?: { readonly at: 'before' | 'after' | 'after-temp'; readonly match: string };
+  /** `before`/`after`: em torno do `link()` de um arquivo cujo caminho termina em `match`; `after-temp`: depois do temporário; `sync-before`/`sync-after`: em torno do fsync do diretório `match` (caminho exato). */
+  readonly crash?: { readonly at: 'before' | 'after' | 'after-temp' | 'sync-before' | 'sync-after'; readonly match: string };
+  /** `finalize`: grava PELA PORTA de escrita do livro (R1.3: `RUN_INTENT` antes do resultado, `RUN_CONFIRMED` depois do recibo). */
+  readonly withPort?: boolean;
+  /** Largada sincronizada (ms desde a época) para sobrepor processos concorrentes. */
+  readonly startAt?: number;
   readonly worker?: number;
   readonly rounds?: number;
   /** `recover-retry`: limite de novas tentativas (padrão `RECOVER_RETRIES`); os testes do próprio filho o reduzem para provar que ele é respeitado. */
@@ -63,12 +69,14 @@ const failingPrefix = (): string | null => (config.failSync === 'decisions' ? co
 const ops: FsOps = {
   ...nodeFsOps,
   async syncDirectory(dir) {
+    if (config.crash?.at === 'sync-before' && dir === config.crash.match) die();
     const bad = failingPrefix();
     const armed = config.failSyncWhenExists === undefined || fs.existsSync(`${dir}/${config.failSyncWhenExists}`);
     const hit = config.failSyncBaseOnly === true ? dir === bad : dir.startsWith(`${bad}/`) || (config.failSyncParents === true && dir === bad);
     if (armed && bad !== null && hit) throw Object.assign(new Error('EIO simulado'), { code: 'EIO' });
     await nodeFsOps.syncDirectory(dir);
     if (config.syncLog) fs.appendFileSync(config.syncLog, `${dir}\n`);
+    if (config.crash?.at === 'sync-after' && dir === config.crash.match) die();
   },
   async link(from, to) {
     const hit = config.crash && to.endsWith(config.crash.match);
@@ -121,14 +129,16 @@ const RECOVER_RETRIES = 200;
     const { previewOver } = await import('./link-audit-preview-fixtures');
     const { makeService } = await import('./link-audit-results-fixtures');
     const preview = previewOver({ evidenceDir: config.evidenceDir, raw: service } as never);
+    while (config.startAt !== undefined && Date.now() < config.startAt) await sleep(1);
     const evaluated = await preview.evaluate(actor, config.auditId);
     if (!evaluated.ok) {
       console.log(JSON.stringify({ ok: false, stage: 'evaluate', code: evaluated.code }));
       return;
     }
-    const results = makeService({ base: config.resultsDir as string, anchors: config.resultsAnchorDir as string, other: config.decisionsDir }, preview, { fs: ops });
+    const port = config.withPort ? service.resultsLedger : null;
+    const results = makeService({ base: config.resultsDir as string, anchors: config.resultsAnchorDir as string, other: config.decisionsDir }, preview, { fs: ops, ...(port ? { ledger: port } : {}) });
     const done = await results.finalize(actor, config.auditId, { expectedHead: evaluated.value.decisions.head, expectedInputSha256: evaluated.value.inputSha256 as string });
-    console.log(JSON.stringify({ ok: done.ok, code: done.ok ? null : done.code, ...(done.ok ? {} : { blockers: (evaluated.value.payload.blockers ?? []).map((b: { code: string }) => b.code), hasInput: evaluated.value.inputSha256 !== null }) }));
+    console.log(JSON.stringify({ ok: done.ok, code: done.ok ? null : done.code, ...(done.ok ? { replayed: done.value.replayed, seq: done.value.head.seq } : { blockers: (evaluated.value.payload.blockers ?? []).map((b: { code: string }) => b.code), hasInput: evaluated.value.inputSha256 !== null }) }));
     return;
   }
   if (config.task === 'enroll') {
