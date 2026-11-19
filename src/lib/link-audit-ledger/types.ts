@@ -9,6 +9,11 @@ import { originProofSchema } from '../link-audit-origin';
  * (`DecisionsSnapshot`) e decide. A 6B também não importa este módulo: fala com ele por uma porta estrutural (`ledger-port.ts`).
  */
 export const LEDGER_SCHEMA_VERSION = 1 as const;
+/**
+ * Versão dos registros de RESULTADO (`RUN_*`, spec §16.17.2, D-3). Regra versão ⇔ família: `1` nos seis eventos de decisão (bytes, hashes e etiquetas de todo
+ * registro anterior à R1 ficam idênticos) e `2` nos três `RUN_*`. Uma imagem anterior à R1 recusa `RUN_*` (literal e enum estritos) ⇒ `UNTRUSTED` (falha fechada).
+ */
+export const LEDGER_RUN_SCHEMA_VERSION = 2 as const;
 export const LEDGER_KIND = 'link-audit-decisions-ledger' as const;
 export const MAX_LEDGER_RECORD_BYTES = 4096;
 /** CAPACIDADE TOTAL por auditoria (falha fechada ao atingir): inclui os registros que concluem operações já iniciadas. Política de reserva: ver `LEDGER_CAPACITY_POLICY` e §16.12. */
@@ -19,6 +24,12 @@ export const ledgerFileName = (seq: number): string => `l${String(seq).padStart(
 export const LEDGER_AUDIT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{7,63}$/;
 /** Pontos de verificação automáticos: a cada N registros e na primeira escrita depois de uma rotação de chave. */
 export const CHECKPOINT_EVERY = 64;
+/**
+ * Teto de resultados por auditoria e nome do recibo de resultado (`aNNNN.json`): DUPLICADOS de `MAX_RUNS` e `runAnchorFileName` dos resultados
+ * (`link-audit-scoring-runs/results-types.ts`), porque o livro não importa os resultados (lista fechada de imports). Um teste confere a igualdade.
+ */
+export const MAX_RUNS = 500;
+export const runAnchorName = (seq: number): string => `a${String(seq).padStart(4, '0')}.json`;
 
 /*
  * POLÍTICA DE CAPACIDADE (R7-01 e D3; especificação §16.12). Registros DURÁVEIS por operação, no pior caso:
@@ -40,10 +51,21 @@ export const RECORDS_PER_OPERATION = 2;
 export const REISSUE_ALLOWANCE = 1;
 /** Registros que nenhuma INTENT usa: pontos de verificação (rotação e automático), abortamentos e reemissões de recibo da ÚLTIMA operação. */
 export const MAINTENANCE_RESERVE = 8;
+/**
+ * Folga do fecho de RESULTADO (spec §16.17.6, D-9/D-24): no máximo UM fecho de resultado (`RUN_CONFIRMED`/`RUN_ABORTED`) pode cair na região de revogação (resultado
+ * aberto abaixo do limite e fechado depois de revogações). Termo PRÓPRIO de `deriveCapacityPolicy`, fora de `revocationReserveRecords` (que continua sendo só a
+ * aritmética das 100 revogações: `REVOCATION_RESERVE_RECORDS` = 307).
+ */
+export const RUN_CLOSING_ALLOWANCE = 1;
 /** Limites (total de registros depois de concluída a operação), por classe. `max` é a capacidade total. */
 export interface LedgerCapacityPolicy {
   readonly max: number;
   readonly RECORD: number;
+  /**
+   * Resultados (`RUN_INTENT` + fecho): o MESMO limite de `RECORD` (D-9). `deriveCapacityPolicy` sempre o define; uma política escrita à mão (só testes) sem ele
+   * usa `RECORD`, que é a definição.
+   */
+  readonly RUN?: number;
   readonly REVOKE: number;
   readonly MAINTENANCE: number;
 }
@@ -52,11 +74,13 @@ export const revocationReserveRecords = (revocations: number, every: number): nu
   const worst = revocations * (RECORDS_PER_OPERATION + REISSUE_ALLOWANCE);
   return worst + Math.ceil(worst / every) + 2;
 };
-export function deriveCapacityPolicy(max: number, revocations: number, every: number, maintenance: number = MAINTENANCE_RESERVE): LedgerCapacityPolicy {
-  return Object.freeze({ max, RECORD: max - maintenance - revocationReserveRecords(revocations, every), REVOKE: max - maintenance, MAINTENANCE: max });
+/** `RECORD = RUN = max − manutenção − reserva de revogação − RUN_CLOSING_ALLOWANCE`; `REVOKE = max − manutenção`; `MAINTENANCE = max` (§16.12, §16.17.6). */
+export function deriveCapacityPolicy(max: number, revocations: number, every: number, maintenance: number = MAINTENANCE_RESERVE): Required<LedgerCapacityPolicy> {
+  const decisionsAndRuns = max - maintenance - revocationReserveRecords(revocations, every) - RUN_CLOSING_ALLOWANCE;
+  return Object.freeze({ max, RECORD: decisionsAndRuns, RUN: decisionsAndRuns, REVOKE: max - maintenance, MAINTENANCE: max });
 }
 export const REVOCATION_RESERVE_RECORDS = revocationReserveRecords(REVOCATIONS_RESERVED, CHECKPOINT_EVERY);
-export const LEDGER_CAPACITY_POLICY: LedgerCapacityPolicy = deriveCapacityPolicy(MAX_LEDGER_RECORDS, REVOCATIONS_RESERVED, CHECKPOINT_EVERY);
+export const LEDGER_CAPACITY_POLICY: Required<LedgerCapacityPolicy> = deriveCapacityPolicy(MAX_LEDGER_RECORDS, REVOCATIONS_RESERVED, CHECKPOINT_EVERY);
 
 const hex64 = z.string().regex(/^[0-9a-f]{64}$/);
 const hex32 = z.string().regex(/^[0-9a-f]{32}$/);
@@ -66,9 +90,15 @@ const seqNumber = z.number().int().min(1).max(9999);
 const actorSchema = z.string().regex(/^[^\s\u0000-\u001f\u007f-\u009f]{1,254}$/);
 const decisionIdSchema = z.string().regex(/^op-\d{4}$/);
 const headSchema = z.object({ seq: seqNumber, sha256: hex64 }).strict();
+const ledgerPosition = z.number().int().min(1).max(MAX_LEDGER_RECORDS);
 
-export const LEDGER_EVENTS = ['GENESIS', 'INTENT', 'CONFIRMED', 'ABORTED', 'RECEIPT_REISSUED', 'CHECKPOINT'] as const;
+/** Eventos da família das DECISÕES (`schemaVersion` 1) e dos RESULTADOS (`RUN_*`, `schemaVersion` 2; spec §16.17.2, D-1). */
+export const LEDGER_DECISION_EVENTS = ['GENESIS', 'INTENT', 'CONFIRMED', 'ABORTED', 'RECEIPT_REISSUED', 'CHECKPOINT'] as const;
+export const LEDGER_RUN_EVENTS = ['RUN_INTENT', 'RUN_CONFIRMED', 'RUN_ABORTED'] as const;
+export const LEDGER_EVENTS = [...LEDGER_DECISION_EVENTS, ...LEDGER_RUN_EVENTS] as const;
 export type LedgerEvent = (typeof LEDGER_EVENTS)[number];
+export type LedgerRunEvent = (typeof LEDGER_RUN_EVENTS)[number];
+export const isRunEvent = (event: LedgerEvent): event is LedgerRunEvent => (LEDGER_RUN_EVENTS as readonly string[]).includes(event);
 
 const opSchema = z
   .object({
@@ -96,9 +126,49 @@ const opSchema = z
   .strict();
 export type LedgerOp = z.infer<typeof opSchema>;
 
+/** Operação de RESULTADO (spec §16.17.2). Só hashes, posições e o autor; a etiqueta do registro cobre todo o objeto. */
+const runSchema = z
+  .object({
+    /** Identificador da operação de resultado (128 bits, gerado no `RUN_INTENT`). */
+    runOpId: hex32,
+    /** Número do resultado (`sNNNN`); teto = `MAX_RUNS`. */
+    runSeq: z.number().int().min(1).max(MAX_RUNS),
+    /** `contentSha256` do resultado anterior; `null` ⇔ `runSeq = 1` (S-7). */
+    prevRunSha256: hex64.nullable(),
+    /** `contentSha256` do resultado JÁ SELADO que a operação publica. */
+    runSha256: hex64,
+    /** `finalizedBy` (e-mail da sessão, normalizado). */
+    author: actorSchema,
+    /** `ledgerHead` gravado no resultado = cabeça de decisões do livro no prefixo (I-3). */
+    citedLedgerHead: z.object({ ledgerSeq: ledgerPosition, sha256: hex64 }).strict(),
+    /** `decisions.head` gravado no resultado (I-4). */
+    decisionsHead: headSchema.nullable(),
+    /** `RUN_CONFIRMED`/`RUN_ABORTED`: posição do `RUN_INTENT` que fecham. */
+    intentSeq: ledgerPosition.optional(),
+    /** `RUN_CONFIRMED`: o recibo que ancora o resultado. */
+    anchorRef: z.object({ name: z.string().regex(/^a\d{4}\.json$/), headSha256: hex64 }).strict().optional(),
+    /** `RUN_ABORTED`: o que a recuperação observou (resultado e recibo ausentes). */
+    observed: z.object({ resultPresent: z.literal(false), receiptPresent: z.literal(false), ageMs: z.number().int().min(0) }).strict().optional(),
+  })
+  .strict();
+export type LedgerRun = z.infer<typeof runSchema>;
+
+/** Regras S-3…S-7 de um `RUN_*` (spec §16.17.2; cada uma é ponto de mutação). */
+function refineRun(event: LedgerRunEvent, run: LedgerRun, ledgerSeq: number, bad: (message: string) => void): void {
+  if (event === 'RUN_INTENT' && (run.intentSeq !== undefined || run.anchorRef || run.observed)) bad('S-3: RUN_INTENT não fecha nada');
+  if (event === 'RUN_CONFIRMED') {
+    if (run.intentSeq === undefined || !run.anchorRef || run.observed) bad('S-4: RUN_CONFIRMED exige intentSeq e anchorRef, sem observed');
+    if (run.anchorRef && (run.anchorRef.headSha256 !== run.runSha256 || run.anchorRef.name !== runAnchorName(run.runSeq))) bad('S-4: anchorRef não ancora o resultado da operação');
+  }
+  if (event === 'RUN_ABORTED' && (run.intentSeq === undefined || !run.observed || run.anchorRef)) bad('S-5: RUN_ABORTED exige intentSeq e observed, sem anchorRef');
+  if (run.intentSeq !== undefined && run.intentSeq >= ledgerSeq) bad('S-6: intentSeq deve ser anterior');
+  if (run.citedLedgerHead.ledgerSeq >= ledgerSeq) bad('S-6: a cabeça citada deve ser anterior');
+  if ((run.runSeq === 1) !== (run.prevRunSha256 === null)) bad('S-7: runSeq 1 ⇔ sem resultado anterior');
+}
+
 export const ledgerRecordSchema = z
   .object({
-    schemaVersion: z.literal(LEDGER_SCHEMA_VERSION),
+    schemaVersion: z.union([z.literal(LEDGER_SCHEMA_VERSION), z.literal(LEDGER_RUN_SCHEMA_VERSION)]),
     kind: z.literal(LEDGER_KIND),
     auditId: z.string().regex(LEDGER_AUDIT_ID_PATTERN),
     ledgerSeq: z.number().int().min(1).max(MAX_LEDGER_RECORDS),
@@ -109,13 +179,24 @@ export const ledgerRecordSchema = z
     op: opSchema.optional(),
     genesis: z.object({ mode: z.literal('EMPTY') }).strict().optional(),
     checkpoint: z.object({ throughSeq: z.number().int().min(1).max(MAX_LEDGER_RECORDS), throughSha256: hex64 }).strict().optional(),
+    run: runSchema.optional(),
     origin: originProofSchema,
     contentSha256: hex64,
   })
   .strict()
   .superRefine((record, ctx) => {
     const bad = (message: string): void => ctx.addIssue({ code: 'custom', message });
-    const { event, op, genesis, checkpoint } = record;
+    const { event, op, genesis, checkpoint, run } = record;
+    // S-1: `run` presente ⇔ evento RUN_*; RUN_* não carrega op, genesis nem checkpoint (e evento de decisão não carrega run)
+    const runFamily = isRunEvent(event);
+    if (runFamily !== (run !== undefined)) bad('S-1: run presente ⇔ evento RUN_*');
+    if (runFamily && (op || genesis || checkpoint)) bad('S-1: RUN_* não carrega op, genesis nem checkpoint');
+    // S-2: versão ⇔ família (decisão = 1, resultado = 2)
+    if ((record.schemaVersion === LEDGER_RUN_SCHEMA_VERSION) !== runFamily) bad('S-2: versão do esquema incoerente com a família do evento');
+    if (runFamily) {
+      if (run) refineRun(event, run, record.ledgerSeq, bad);
+      return;
+    }
     if (event === 'GENESIS') {
       if (!genesis || op || checkpoint || record.ledgerSeq !== 1 || record.prevSha256 !== null) bad('GENESIS inválido');
       return;
