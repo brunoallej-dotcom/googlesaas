@@ -24,11 +24,13 @@ registerCleanup();
  * etiquetas mudam) e os campos `ambiguousDecisionIds` e `witness` na listagem (1ª regeneração: ambiguidade; 2ª, R3-MINOR-2: testemunha do histórico; 4ª, livro de cabeças (02/11/2026): a listagem ganhou o campo `ledger` (neste cenário, 6B isolada com `LEDGER_NOT_REQUIRED`: `NOT_REQUIRED`); 3ª, R4-MINOR-1/INFO-1 em 01/11/2026: a testemunha passou a ser OBRIGATÓRIA e ganhou `coveredSeq` e `unwitnessedAffecting`; neste cenário
  * (6B isolada, `WITNESS_NOT_REQUIRED`) o estado é `NOT_REQUIRED`, antes `NOT_CONFIGURED`, que agora significa FALHA FECHADA).
  * Conferido por máscara: fora hashes, `kid` e esses campos, o conteúdo é idêntico ao da v2 anterior (verificado removendo `witness` e `ledger` das duas versões).
+ * 5ª regeneração (19/11/2026, onda R1.2, emenda §16.17 do livro aceita pelo responsável no ADR-0002): a vista do livro ganhou `decisionHead` (cabeça de decisões
+ * separada da cauda, D-6), também no estado `NOT_REQUIRED`. Conferido campo a campo contra a v2 anterior: a única diferença são 7 acréscimos de `decisionHead: null`.
  */
 const FIXTURE_V1 = path.join(__dirname, 'fixtures', 'link-audit-storage', 'protocol-conformance-v1.json');
 const FIXTURE_V1_SHA256 = '17dda7f947065b9c249f18118dc5e0a08f7bce3d9d7204e1490edd591c6a877f';
 const FIXTURE = path.join(__dirname, 'fixtures', 'link-audit-storage', 'protocol-conformance-v2.json');
-const FIXTURE_SHA256 = '2be5a4f2df65a8ec56b1d10b615ae58f755233bff6d1ed99a3fe6c5216760783';
+const FIXTURE_SHA256 = 'def83f23c0701ca88684b04d4e4ac6e5cc72b21b1ae0e5b7c99f053c638bf42c';
 
 test('a referência v1 (anterior à prova de origem) não foi alterada', () => {
   assert.equal(createHash('sha256').update(fs.readFileSync(FIXTURE_V1)).digest('hex'), FIXTURE_V1_SHA256);
