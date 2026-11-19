@@ -38,7 +38,7 @@ import { appendLedger, chainOf, plantWorld, runClosingMaker } from './helpers/li
 registerCleanup();
 const AUD = 'auditoria-runs-0001';
 const P = LEDGER_CAPACITY_POLICY;
-const SMALL = deriveCapacityPolicy(60, 3, 8); // RECORD = RUN = 38, REVOKE = 52, MAX = 60
+const SMALL = deriveCapacityPolicy(60, 3, 8); // RECORD = 38 (também o limite dos resultados), REVOKE = 52, MAX = 60
 const EVERY = 8;
 const REASON = 'Revogada porque o juízo estava errado e foi refeito pelo operador.';
 const NO_RESULTS_EVIDENCE = { ok: true as const, hasResults: false, ledgerHeads: [], unverifiedLedgerHeads: [] };
@@ -49,14 +49,14 @@ const rotatedAuth = () => ledgerAuth({ current: LEDGER_KEY_B, retired: [`${LEDGE
 const fake = (events: readonly string[], kid = 'lk-test-a'): LedgerRecord[] => events.map((event, index) => ({ ledgerSeq: index + 1, event, origin: { kid } }) as unknown as LedgerRecord);
 const genesisPlus = (fillers: number, tail: readonly string[] = []): LedgerRecord[] => fake(['GENESIS', ...Array.from({ length: fillers }, () => 'CHECKPOINT'), ...tail]);
 
-test('RL-21 / M-R14: política real [MAX, RECORD, RUN, REVOKE, MANUTENÇÃO] = [4000, 3684, 3684, 3992, 4000]; a folga do fecho de resultado é termo PRÓPRIO (307 inalterado, D-24)', () => {
-  assert.deepEqual([MAX_LEDGER_RECORDS, P.RECORD, P.RUN, P.REVOKE, P.MAINTENANCE], [4000, 3684, 3684, 3992, 4000]);
+test('RL-21 / M-R14: política real [MAX, RECORD (= limite dos resultados), REVOKE, MANUTENÇÃO] = [4000, 3684, 3992, 4000]; a folga do fecho de resultado é termo PRÓPRIO (307 inalterado, D-24)', () => {
+  assert.deepEqual([MAX_LEDGER_RECORDS, P.RECORD, P.REVOKE, P.MAINTENANCE], [4000, 3684, 3992, 4000]);
   assert.equal(REVOCATION_RESERVE_RECORDS, 307, 'a reserva de revogação continua sendo só a aritmética das 100 revogações');
   assert.equal(RUN_CLOSING_ALLOWANCE, 1);
   assert.equal(P.RECORD, MAX_LEDGER_RECORDS - MAINTENANCE_RESERVE - REVOCATION_RESERVE_RECORDS - RUN_CLOSING_ALLOWANCE);
-  assert.equal(P.RUN, P.RECORD, 'D-9: resultados param no MESMO limite das decisões novas');
+  assert.equal(runsAvailableOf(0, 0), Math.floor(P.RECORD / 2), 'D-9: resultados param no MESMO limite das decisões novas (RECORD)');
   assert.equal(P.REVOKE - P.RECORD, 308, 'região entre RECORD e REVOKE = 307 + RUN_CLOSING_ALLOWANCE');
-  assert.deepEqual([SMALL.max, SMALL.RECORD, SMALL.RUN, SMALL.REVOKE, SMALL.MAINTENANCE], [60, 38, 38, 52, 60], 'política pequena dos testes de serviço');
+  assert.deepEqual([SMALL.max, SMALL.RECORD, SMALL.REVOKE, SMALL.MAINTENANCE], [60, 38, 52, 60], 'política pequena dos testes de serviço');
 });
 
 test('RL-21: livro recém-inscrito anuncia ≥ 1209 decisões novas (eram 1210), 1311 entradas e 1841 resultados; depois de 500 resultados restam ≥ 881 decisões novas', () => {
@@ -75,7 +75,7 @@ test('RL-21 / M-R13: `closing` dos DOIS slots — a vista desconta o fecho da op
   const open = chainOf(AUD).genesis().decision(D1).runIntent();
   const openView = view(open.records, [D1]);
   assert.equal(openView.state, 'PROTECTED');
-  assert.equal(openView.capacity?.runsAvailable, Math.floor((P.RUN - 4 - 1) / 2), 'resultado aberto: o fecho dele está reservado');
+  assert.equal(openView.capacity?.runsAvailable, Math.floor((P.RECORD - 4 - 1) / 2), 'resultado aberto: o fecho dele está reservado');
   assert.equal(openView.capacity?.runsAvailable, 1839);
   assert.equal(openView.capacity?.decisionsAvailable, simulateOperations(4 + 1, 4, false, CHECKPOINT_EVERY, P.RECORD), 'decisões: o fecho do resultado também é descontado');
   const closed = view(chainOf(AUD).genesis().decision(D1).run().records, [D1]);
@@ -84,7 +84,7 @@ test('RL-21 / M-R13: `closing` dos DOIS slots — a vista desconta o fecho da op
   assert.equal(pendingClosings(both.records), 2);
   const bothView = view(both.records);
   assert.deepEqual([bothView.state, bothView.openOperation?.phase], ['PROTECTED', 'A']);
-  assert.equal(bothView.capacity?.runsAvailable, Math.floor((P.RUN - 3 - 2) / 2), 'as duas operações abertas reservam os dois fechos');
+  assert.equal(bothView.capacity?.runsAvailable, Math.floor((P.RECORD - 3 - 2) / 2), 'as duas operações abertas reservam os dois fechos');
   assert.deepEqual([bothView.capacity?.usedRecords, bothView.capacity?.remainingRecords], [3, 3997], 'usado/restante descrevem o que EXISTE');
   assert.deepEqual([pendingClosings(chainOf(AUD).genesis().records), pendingClosings(open.records), pendingClosings(chainOf(AUD).genesis().decision(D1, { open: true }).records)], [0, 1, 1]);
 });
@@ -100,7 +100,7 @@ test('RL-21 / M-R13: admissão do RUN_INTENT (`+ 2` na classe RUN, sem CHECKPOIN
   const asIs = ledgerCapacity(records, 'lk-test-a', CHECKPOINT_EVERY, P);
   const rotated = ledgerCapacity(records, 'lk-test-b', CHECKPOINT_EVERY, P);
   assert.equal(asIs.runsAvailable, rotated.runsAvailable);
-  assert.equal(asIs.runsAvailable, Math.floor((P.RUN - records.length) / 2));
+  assert.equal(asIs.runsAvailable, Math.floor((P.RECORD - records.length) / 2));
   // anunciado = executado: de cada tamanho, admitir RUN_INTENT + fecho enquanto couber executa exatamente o anunciado
   for (let size = 1; size <= 45; size += 1) {
     let current = genesisPlus(size - 1);
@@ -110,7 +110,7 @@ test('RL-21 / M-R13: admissão do RUN_INTENT (`+ 2` na classe RUN, sem CHECKPOIN
     while (runIntentFits(current, SMALL)) {
       current = fake([...current.map((r) => r.event), 'RUN_INTENT', 'RUN_CONFIRMED']);
       executed += 1;
-      assert.ok(current.length <= SMALL.RUN, 'nenhum resultado passa do limite da classe');
+      assert.ok(current.length <= SMALL.RECORD, 'nenhum resultado passa do limite da classe');
     }
     assert.equal(executed, announced, `tamanho ${size}: anunciado ${announced}, executado ${executed}`);
   }
@@ -170,7 +170,7 @@ function revocationTable(policy: LedgerCapacityPolicy, every: number): { value: 
   return { value: (u, s, rot, open) => value[index(u, s, rot, open)] as number, violates: (u, s, rot, open) => bad[index(u, s, rot, open)] === 1 };
 }
 
-function exhaustive(policy: Required<LedgerCapacityPolicy>, every: number): { worst: number; states: number } {
+function exhaustive(policy: LedgerCapacityPolicy, every: number): { worst: number; states: number } {
   const after = revocationTable(policy, every);
   let worst = Number.POSITIVE_INFINITY;
   let states = 0;
@@ -190,7 +190,7 @@ function exhaustive(policy: Required<LedgerCapacityPolicy>, every: number): { wo
           visit(used + cost + REISSUE_ALLOWANCE, (due ? 0 : since) + RECORDS_PER_OPERATION + REISSUE_ALLOWANCE, false, open);
         }
         // (b) RUN_INTENT admitido (nenhuma operação aberta, passo 6 b/c): não paga CHECKPOINT nem limpa a rotação devida; o fecho fica para o adversário
-        if (used + RECORDS_PER_OPERATION <= policy.RUN) visit(used + 1, since + 1, rotation, true);
+        if (used + RECORDS_PER_OPERATION <= policy.RECORD) visit(used + 1, since + 1, rotation, true);
       }
     }
   }
@@ -328,4 +328,30 @@ test('RL-21 / M-R32: com resultado aberto, o CHECKPOINT do RECOVER entra até MA
   assert.ok(reissued.ok, JSON.stringify(reissued).slice(0, 200));
   assert.equal((await ledgerEvents(control)).at(-1), 'RECEIPT_REISSUED');
   assert.ok(fs.existsSync(anchorPath(control, 1)));
+});
+
+test('RL-21 / D-9 (revisão R1.1): o limite de resultados É o de decisões novas — uma política com outro valor para resultados não amplia a admissão nem a vista', () => {
+  const widened = { ...SMALL, RUN: SMALL.REVOKE } as unknown as LedgerCapacityPolicy;
+  assert.equal(runIntentFits(genesisPlus(36), widened), false, '37 + 2 > RECORD (38), mesmo com um "RUN" igual ao limite das revogações');
+  assert.equal(runsAvailableOf(37, 0, widened), runsAvailableOf(37, 0, SMALL), 'a vista anuncia pelo RECORD');
+  assert.equal(ledgerCapacity(genesisPlus(30), 'lk-test-a', CHECKPOINT_EVERY, widened).runsAvailable, ledgerCapacity(genesisPlus(30), 'lk-test-a', CHECKPOINT_EVERY, SMALL).runsAvailable);
+  assert.equal(Object.hasOwn(deriveCapacityPolicy(60, 3, 8), 'RUN'), false, 'a política derivada não carrega um segundo limite que possa divergir');
+  assert.equal(Object.hasOwn(LEDGER_CAPACITY_POLICY, 'RUN'), false);
+});
+
+test('RL-21 / M-R13 (revisão R1.1): o RUN_ABORTED fecha o slot do resultado — nada continua reservado depois do aborto', () => {
+  const view = (records: readonly LedgerRecord[]) =>
+    evaluateProtection({ configured: true, read: { kind: 'PRESENT', records, tagFailure: null }, auditId: AUD, decisions: { confirmed: [], pending: null }, entryOriginProven: () => true, results: NO_RESULTS_EVIDENCE, guard: { status: 'NOT_CONFIGURED' }, ageMsOf: () => 1_000, staleMs: 120_000, currentKeyId: LEDGER_AUTH_A.keyId }).view;
+  const open = chainOf(AUD).genesis().runIntent();
+  const aborted = chainOf(AUD).genesis().runIntent().runAbort();
+  assert.equal(pendingClosings(open.records), 1);
+  assert.equal(pendingClosings(aborted.records), 0, 'depois do RUN_ABORTED não há fecho devido');
+  assert.equal(pendingClosings(genesisPlus(2, ['RUN_INTENT', 'RUN_ABORTED'])), 0);
+  const openView = view(open.records);
+  const abortedView = view(aborted.records);
+  assert.equal(abortedView.state, 'PROTECTED');
+  assert.equal(abortedView.capacity?.runsAvailable, Math.floor((P.RECORD - 3) / 2), 'o anunciado não desconta fecho de operação já abortada');
+  assert.equal(abortedView.capacity?.runsAvailable, openView.capacity?.runsAvailable, 'o fecho reservado foi o que o aborto consumiu');
+  assert.equal(runIntentFits(genesisPlus(34, ['RUN_INTENT', 'RUN_ABORTED']), SMALL), false, '37 + 2 > 38');
+  assert.equal(runIntentFits(genesisPlus(33, ['RUN_INTENT', 'RUN_ABORTED']), SMALL), true, '36 + 2 ≤ 38: nenhuma reserva sobrou do resultado abortado');
 });

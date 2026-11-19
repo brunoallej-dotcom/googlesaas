@@ -34,7 +34,7 @@ test('RL-30: RUN_* sob a chave nova NÃO gravam nem pagam o CHECKPOINT — a rot
   assert.equal(rotationCheckpointDue(records, 'lk-test-b'), true);
   assert.equal(needsCheckpoint(records, 'lk-test-b', CHECKPOINT_EVERY), true, 'o ponto continua devido para a próxima DECISÃO ou o RECOVER');
   const capacity = ledgerCapacity(records, 'lk-test-b');
-  assert.equal(capacity.runsAvailable, Math.floor((LEDGER_CAPACITY_POLICY.RUN - records.length) / 2), 'resultados: nenhum registro reservado para o CHECKPOINT');
+  assert.equal(capacity.runsAvailable, Math.floor((LEDGER_CAPACITY_POLICY.RECORD - records.length) / 2), 'resultados: nenhum registro reservado para o CHECKPOINT');
   assert.equal(capacity.decisionsAvailable, simulateOperations(records.length, records.length, true, CHECKPOINT_EVERY, LEDGER_CAPACITY_POLICY.RECORD), 'decisões: a primeira paga o CHECKPOINT devido');
   // sem o RECOVER, vencida a chave antiga, a auditoria morre (os RUN_* da nova não cobrem nada)
   const expired = await must(rotatedService(w, AFTER_OLD_KEY_EXPIRED).list(BIA, w.auditId, clock()));
