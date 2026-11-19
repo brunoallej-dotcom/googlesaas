@@ -373,7 +373,16 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
         // Pode ser só uma corrida entre as leituras (livro lido antes; decisões já à frente): relê algumas vezes antes de acusar.
         if ((view.reason === 'UNLEDGERED_ENTRY' || view.reason === 'UNLEDGERED_PENDING') && input.rechecks < 3) return { kind: 'RETRY', ms: 25, transient: true };
         const plan = evaluation.plan;
-        if (plan.kind === 'REISSUE_RECEIPT') return { kind: 'OK', pendingKind: 'RECEIPT_REMOVED' }; // só o reenvio do AUTOR passa pela 6B
+        if (plan.kind === 'REISSUE_RECEIPT') {
+          // A reemissão GRAVA (`RECEIPT_REISSUED`, que pela D-6 move a cabeça de decisões): as mesmas conferências de R7-06, na mesma ordem dos outros ramos, antes de liberar —
+          // testemunha das decisões e releitura R2 dos resultados (§16.17.8). Revisão independente da R1.2 (`junin-02`): antes liberava sem nenhuma (desvio desde a 6C).
+          // Só o reenvio do AUTOR passa pela 6B.
+          const blocked = witnessBlock();
+          if (blocked) return blocked;
+          const stale = await revalidate();
+          if (stale) return stale;
+          return { kind: 'OK', pendingKind: 'RECEIPT_REMOVED' };
+        }
         if (plan.kind !== 'COMPLETE_CONFIRMED') return refusedForState(view);
         // Spec §16.16 (16/11/2026): a fase C só é concluída pelo AUTOR da entrada (os recibos não são autenticados: recibo forjado por quem escreve só na pasta de recibos
         // não pode promover a pendente de outro operador). Escrita ou RECOVER de quem não é o autor: recusa, nada gravado; a pendente segue bloqueando (como na fase B).
