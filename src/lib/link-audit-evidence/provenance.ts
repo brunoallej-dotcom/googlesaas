@@ -263,7 +263,10 @@ function isValidKeyring(ring: unknown): ring is TrustKeyring {
   for (const [id, entry] of ring as Map<unknown, TrustKeyringEntry>) {
     const shapeOk = typeof id === 'string' && TRUST_KEY_ID.test(id) && typeof entry === 'object' && entry !== null && isEd25519PublicKey(entry.key) && KEY_STATUSES.has(entry.status);
     if (!shapeOk || !(entry.closureSha256 === null || (entry.status === 'retired' && HEX64.test(entry.closureSha256)))) return false;
-    const material = entry.key.export({ format: 'der', type: 'spki' }).toString('base64');
+    const spki = entry.key.export({ format: 'der', type: 'spki' });
+    // Same rule as the parser (publicKeyFromRaw): a small-order or non-canonical point lets anyone forge signatures.
+    if (spki.length < 32 || isWeakEd25519PublicKey(spki.subarray(spki.length - 32))) return false;
+    const material = spki.toString('base64');
     if (materials.has(material)) return false;
     materials.add(material);
     if (entry.status === 'active') active += 1;

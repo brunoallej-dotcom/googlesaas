@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHash, sign as cryptoSign } from 'node:crypto';
+import { createHash, createPublicKey, sign as cryptoSign } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
@@ -159,6 +159,24 @@ test('V2-20 (RS-16, RS-18, D12) a malformed list closes the policy as a whole (P
   const ring = parseTrustKeyring(listOf(item(H), item(S))) as TrustKeyring;
   const tooManyActive: TrustKeyring = new Map([...ring, [R.keyId, { key: (parseTrustKeyring(item(R)) as TrustKeyring).get(R.keyId)!.key, status: 'active' as const, closureSha256: null }]]);
   assert.deepEqual(await createSealedEvidenceProvenance({ sealsDir, keyring: tooManyActive, acceptedVersions: [2] }).classify(AUD, E1), UNAUTH('PROOF_NOT_CONFIGURED'), 'programmatic keyring with 3 active');
+});
+
+test('V2-20 (RS-16) a keyring built in code rejects small-order (forgeable) public keys like the parser does', async () => {
+  const sealsDir = writeChain(buildChain([{ keys: H, entries: E1 }]));
+  const spki = (rawHex: string) => createPublicKey({ key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), Buffer.from(rawHex, 'hex')]), format: 'der', type: 'spki' });
+  const smallOrder: Array<[string, string]> = [
+    ['identity (order 1)', '0100000000000000000000000000000000000000000000000000000000000000'],
+    ['y = -1 (order 2)', 'ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f'],
+    ['order 8', 'c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a'],
+  ];
+  const valid = parseTrustKeyring(item(H)) as TrustKeyring;
+  for (const [label, raw] of smallOrder) {
+    for (const status of ['active', 'revoked'] as const) {
+      const ring: TrustKeyring = new Map([...valid, ['ek-anel-fraca', { key: spki(raw), status, closureSha256: null }]]);
+      assert.deepEqual(await createSealedEvidenceProvenance({ sealsDir, keyring: ring, acceptedVersions: [2] }).classify(AUD, E1), UNAUTH('PROOF_NOT_CONFIGURED'), `${label} as ${status}`);
+    }
+  }
+  assert.equal((await createSealedEvidenceProvenance({ sealsDir, keyring: valid, acceptedVersions: [2] }).classify(AUD, E1)).status, 'AUTHENTICATED', 'control');
 });
 
 /* ============================================================================================ V2-21, V2-22 */
