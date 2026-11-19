@@ -130,8 +130,8 @@ export async function runSign(input: SignRunInput, deps: SignRunDeps): Promise<S
   const root = await pinnedRoot(deps.fs, input.sealsDir);
   let decided: SignCoreResult<KeyObject>;
   try {
-    const { auditId, custodian, trustKeys, expectSeq, first } = input;
-    decided = await runSignWithChain({ auditId, custodian, ...bytes, sealsDir: root, trustKeys, expectSeq, first }, { fs: deps.fs, now: deps.now, confirm: deps.confirm, openKey: deps.openKey });
+    const { auditId, custodian, trustKeys, expectSeq, first, keyId } = input;
+    decided = await runSignWithChain({ auditId, custodian, ...bytes, sealsDir: root, trustKeys, expectSeq, first, keyId }, { fs: deps.fs, now: deps.now, confirm: deps.confirm, openKey: deps.openKey });
   } catch {
     return BEFORE_WRITE; // o objeto de erro nunca sai daqui (pode vir do leitor de chave, RS-13)
   }
