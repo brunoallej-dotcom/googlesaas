@@ -7,11 +7,12 @@ import type { SignCoreResult, SignPlan, SignRefusal, SignRefusalCode } from './s
 
 /*
  * P1 W4.3 — o DISCO do `sign` (spec §5.5 preâmbulo e passo 15; §5.5.1 item 4; §7.3; IA-12, IA-18; RS-04, RS-12). Encadeia: leitura ÚNICA de
- * `--package`, `--approval` e `--dossier` (bytes exatos, pelo `FsOps` injetado, sem seguir link, com limite) → cadeia + núcleo (`runSignWithChain`, chave
- * injetada e aberta só depois de todas as recusas) → corpo e assinatura (`signSealManifest`) → gravação à prova de queda em `<seals-dir>/<auditId>/`:
+ * `--package`, `--approval`, `--dossier` e, se indicado, `--risk-acceptance` (bytes exatos, pelo `FsOps` injetado, sem seguir link, com limite) → cadeia +
+ * núcleo (`runSignWithChain`: recusas dos passos 1–10, confirmação humana pela porta injetada e só então a chave injetada) → corpo e assinatura
+ * (`signSealManifest`) → gravação à prova de queda em `<seals-dir>/<auditId>/`:
  * temporário não secreto `.seal-NNNN.json.tmp-<aleatório>` + fsync do arquivo + `link()` exclusivo + remoção do temporário + fsync da pasta.
  * Único arquivo do `sign` que ESCREVE: só cria a subpasta da auditoria, o temporário e o nome final (por `link()`), e só remove o próprio temporário;
- * nunca apaga nem altera um `seal-NNNN.json`, nunca renomeia nem muda permissão. Sem CLI, TTY, chave real, confirmação humana, recibo nem autoteste
+ * nunca apaga nem altera um `seal-NNNN.json`, nunca renomeia nem muda permissão. Sem CLI, tela TTY da confirmação, chave real, recibo nem autoteste
  * (W4.4/W4.5); sem relógio implícito (o instante vem de quem chama) e sem o verificador (o texto gravado vem conferido de `sign-chain.ts`).
  */
 
@@ -24,6 +25,8 @@ import type { SignCoreResult, SignPlan, SignRefusal, SignRefusalCode } from './s
 export const MAX_PACKAGE_BYTES = 2 * 1024 * 1024;
 export const MAX_APPROVAL_BYTES = 64 * 1024;
 export const MAX_DOSSIER_BYTES = 16 * 1024 * 1024;
+/** Aceite formal de risco (passo 9): documento humano como o dossiê (pode ser um PDF assinado), só existência e hash; o mesmo teto (revisão da W4.1). */
+export const MAX_RISK_ACCEPTANCE_BYTES = MAX_DOSSIER_BYTES;
 /** O manifesto nasce somente leitura (o `link()` leva o mesmo inode: nenhum chmod toca o nome final). */
 const SEAL_MODE = 0o444;
 const TEMP_SUFFIX_BYTES = 16;
@@ -36,6 +39,11 @@ export interface SignRunInput {
   readonly packagePath: string;
   readonly approvalPath: string;
   readonly dossierPath: string;
+  /**
+   * `--risk-acceptance` (o argumento do CLI é da W4.4): o arquivo do aceite formal de risco citado na aprovação, ou `null` se não indicado. Quando
+   * indicado, é lido uma vez como os outros (ilegível ⇒ recusa, mesmo com papéis distintos); o núcleo só o considera se os papéis coincidirem.
+   */
+  readonly riskAcceptancePath: string | null;
   readonly sealsDir: string;
   readonly trustKeys: string;
   readonly expectSeq: number;
@@ -43,7 +51,7 @@ export interface SignRunInput {
   readonly keyId: string;
 }
 export interface SignRunDeps extends Omit<SignWithChainDeps<KeyObject>, 'fs'> {
-  /** Leitura das três entradas (bytes exatos), da cadeia, e a gravação em `<seals-dir>/<auditId>/`. Nada além disso é tocado (RS-04). */
+  /** Leitura das entradas (bytes exatos), da cadeia, e a gravação em `<seals-dir>/<auditId>/`. Nada além disso é tocado (RS-04). */
   readonly fs: BytesFsOps;
   /** Só para teste: o sufixo aleatório do temporário (32 hex); fora disso, recusa. */
   readonly tempSuffix?: () => string;
@@ -75,7 +83,7 @@ const unconfirmed = (fileName: string): SignRefusal =>
 
 /* ------------------------------------------------------------------------------------------------------------------- leitura única (IA-18) */
 
-type InputBytes = { readonly packageBytes: Uint8Array; readonly approvalBytes: Uint8Array; readonly dossierBytes: Uint8Array };
+type InputBytes = { readonly packageBytes: Uint8Array; readonly approvalBytes: Uint8Array; readonly dossierBytes: Uint8Array; readonly riskAcceptanceBytes: Uint8Array | null };
 
 /**
  * UMA leitura por entrada, pelo `FsOps` injetado (sem seguir link, sem travar em FIFO, tipo e tamanho no descritor, limite), e uma CÓPIA dos bytes:
@@ -97,7 +105,10 @@ async function readInputs(fs: BytesFsOps, input: SignRunInput): Promise<InputByt
   if (!(approvalBytes instanceof Uint8Array)) return approvalBytes;
   const dossierBytes = await readOnce(fs, input.dossierPath, '--dossier', MAX_DOSSIER_BYTES);
   if (!(dossierBytes instanceof Uint8Array)) return dossierBytes;
-  return { packageBytes, approvalBytes, dossierBytes };
+  if (input.riskAcceptancePath === null) return { packageBytes, approvalBytes, dossierBytes, riskAcceptanceBytes: null };
+  const riskAcceptanceBytes = await readOnce(fs, input.riskAcceptancePath, '--risk-acceptance', MAX_RISK_ACCEPTANCE_BYTES);
+  if (!(riskAcceptanceBytes instanceof Uint8Array)) return riskAcceptanceBytes;
+  return { packageBytes, approvalBytes, dossierBytes, riskAcceptanceBytes };
 }
 
 /**
@@ -112,7 +123,7 @@ async function pinnedRoot(fs: FsOps, sealsDir: string): Promise<string> {
   }
 }
 
-/** Leitura única → cadeia + núcleo (passos 1–10, chave só no fim) → corpo e assinatura (13) → gravação (15). Devolve o gravado ou a recusa. */
+/** Leitura única → cadeia + núcleo (passos 1–10, confirmação humana no 11, chave só no fim) → corpo e assinatura (13) → gravação (15). Devolve o gravado ou a recusa. */
 export async function runSign(input: SignRunInput, deps: SignRunDeps): Promise<SignRunResult> {
   const bytes = await readInputs(deps.fs, input);
   if ('ok' in bytes) return bytes;
@@ -120,7 +131,7 @@ export async function runSign(input: SignRunInput, deps: SignRunDeps): Promise<S
   let decided: SignCoreResult<KeyObject>;
   try {
     const { auditId, custodian, trustKeys, expectSeq, first } = input;
-    decided = await runSignWithChain({ auditId, custodian, ...bytes, sealsDir: root, trustKeys, expectSeq, first }, { fs: deps.fs, now: deps.now, openKey: deps.openKey });
+    decided = await runSignWithChain({ auditId, custodian, ...bytes, sealsDir: root, trustKeys, expectSeq, first }, { fs: deps.fs, now: deps.now, confirm: deps.confirm, openKey: deps.openKey });
   } catch {
     return BEFORE_WRITE; // o objeto de erro nunca sai daqui (pode vir do leitor de chave, RS-13)
   }
