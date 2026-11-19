@@ -91,6 +91,7 @@ export function withAutoHead(raw: DecisionService): DecisionService {
     revoke: async (actor, auditId, body, now) => raw.revoke(actor, auditId, await fill(actor, auditId, body), now),
     ledgerAction: (actor, auditId, body, now) => raw.ledgerAction(actor, auditId, body, now),
     durabilityBarrier: (actor, auditId, expected, now) => raw.durabilityBarrier(actor, auditId, expected, now),
+    resultsLedger: raw.resultsLedger,
   };
 }
 

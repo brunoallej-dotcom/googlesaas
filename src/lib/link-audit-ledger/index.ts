@@ -2,8 +2,8 @@ export { createLedgerService, createUnconfiguredLedger, type LedgerServiceOption
 export { createSyntheticGuard, type ExternalGuardPort } from './guard';
 export { ledgerConfigFromEnv, ledgerConfigFromProcess, LEDGER_DIR_ENV, LEDGER_KEY_ENV, LEDGER_RETIRED_KEYS_ENV, LEDGER_REVOKED_IDS_ENV, type LedgerConfig } from './config';
 export { evaluateProtection, keyCoverageOf, keyEpochViolation, ledgerCapacity, needsCheckpoint, operationCost, pendingClosings, replayLedger, resultsGrew, rotationCheckpointDue, runIntentFits, runsAvailableOf, simulateOperations, verifyTags } from './model';
-export type { AbortedRun, ConfirmedRun, Evaluation, GuardEvidence, LedgerReadState, LedgerReplay, ProtectionInput, RecoveryPlan, TagFailure } from './model';
-export { createOpenObservations, MAX_OBSERVATIONS, PROCESS_OBSERVATIONS, type OpenObservations } from './observed';
+export type { AbortedRun, ConfirmedRun, Evaluation, GuardEvidence, LedgerReadState, LedgerReplay, ProtectionInput, RecoveryPlan, RunPlan, TagFailure } from './model';
+export { createOpenObservations, MAX_OBSERVATIONS, monotonicNow, PROCESS_OBSERVATIONS, type OpenObservations } from './observed';
 export { readLedgerFiles, publishLedgerRecord, probeLedgerRoot, newOpId, syncLedgerDirectory } from './store';
 export { CHECKPOINT_EVERY, deriveCapacityPolicy, isLedgerBlocking, isRunEvent, LEDGER_CAPACITY_POLICY, MAINTENANCE_RESERVE, RECORDS_PER_OPERATION, REISSUE_ALLOWANCE, REVOCATION_RESERVE_RECORDS, REVOCATIONS_RESERVED, RUN_CLOSING_ALLOWANCE, LEDGER_AUDIT_ID_PATTERN, LEDGER_DECISION_EVENTS, LEDGER_EVENTS, LEDGER_KIND, LEDGER_RUN_EVENTS, LEDGER_RUN_SCHEMA_VERSION, LEDGER_SCHEMA_VERSION, ledgerFileName, ledgerRecordSchema, MAX_LEDGER_RECORD_BYTES, MAX_LEDGER_RECORDS, MAX_RUNS, NOT_REQUIRED_VIEW, runAnchorName } from './types';
 export type { DecisionRef, DecisionsSnapshot, LedgerCapacityPolicy, LedgerDraft, LedgerHead, LedgerOp, LedgerReason, LedgerRecord, LedgerRun, LedgerRunEvent, LedgerRuns, LedgerState, LedgerView, OpenOperation, OpenRun, ResultsEvidence, ResultsRuns, RunRef, RunsReason } from './types';

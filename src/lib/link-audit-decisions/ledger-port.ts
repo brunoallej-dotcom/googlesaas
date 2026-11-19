@@ -275,17 +275,101 @@ export interface LedgerEnrollInput {
   readonly nowIso: string;
 }
 
+/* ------------------------------------------------------------------ porta de ESCRITA dos resultados (R1.3, D-R1-3; spec §16.17.3) */
+
+/** Rascunho do `RUN_INTENT`: só o que o resultado JÁ SELADO determina (spec §16.17.2). O livro acrescenta `runOpId`, posição, encadeamento, etiqueta e hash. */
+export interface RunDraft {
+  readonly runSeq: number;
+  /** `contentSha256` do resultado anterior (`null` ⇔ `runSeq` 1). */
+  readonly prevRunSha256: string | null;
+  /** `contentSha256` do resultado selado que a finalização vai publicar. */
+  readonly runSha256: string;
+  /** `finalizedBy` (e-mail da sessão, normalizado). */
+  readonly author: string;
+  /** `ledgerHead` gravado no resultado = cabeça de DECISÕES do livro (§16.17.7). */
+  readonly citedLedgerHead: LedgerHead;
+  /** `decisions.head` gravado no resultado. */
+  readonly decisionsHead: { readonly seq: number; readonly sha256: string } | null;
+}
+
+/**
+ * Por que um passo da finalização pelo livro não segue. O serviço de RESULTADOS traduz para os códigos públicos dele (nenhum código HTTP novo, D-11):
+ *  - `STALE_INPUT` (passo 6 (c)/(d)/I-4): há decisão aberta ou a cabeça de decisões mudou depois da barreira ⇒ `INPUT_CHANGED`;
+ *  - `RUNS_UNRESOLVED` (`runs.state = UNRESOLVED`, 16.17.5) ⇒ `RESULT_INTEGRITY`;
+ *  - `RUN_DEADLINE` (passo 7: prazo do dono vencido; o próprio `RUN_ABORTED` foi tentado) e `RUN_CLOSED` (a operação do dono foi fechada por outro processo antes de publicar) ⇒
+ *    `RESULT_WRITE_CONFLICT`, nada publicado;
+ *  - `DURABILITY_UNKNOWN` (fsync do livro) ⇒ `RESULT_DURABILITY_UNKNOWN`;
+ *  - os códigos do livro (`LedgerFailureCode`) passam como estão.
+ */
+export type RunRefusalCode = LedgerFailureCode | 'STALE_INPUT' | 'RUNS_UNRESOLVED' | 'RUN_DEADLINE' | 'RUN_CLOSED' | 'DURABILITY_UNKNOWN';
+export interface RunRefusal {
+  readonly code: RunRefusalCode;
+  readonly reason: LedgerReason | RunsReason | null;
+  /** Frases fixas e seguras (nunca caminho, etiqueta nem identidade de terceiros). */
+  readonly issues: readonly string[];
+}
+/** Passo de gravação do livro numa finalização. `RESTART` = o prefixo mudou (outra finalização, R0 atrasado): recomeça do passo 0, consumindo tentativa. */
+export type RunStep = { readonly kind: 'OK' } | { readonly kind: 'RESTART' } | { readonly kind: 'REFUSED'; readonly refusal: RunRefusal };
+/** Passo 1 dentro do livro (`runPrepare`): `OK` traz a vista (com `runs`) da leitura avaliada e deixa na sessão a autorização de UM `RUN_INTENT` quando não há resultado aberto. */
+export type LedgerRunPrepareStep =
+  | { readonly kind: 'OK'; readonly view: LedgerView }
+  | { readonly kind: 'WAIT'; readonly ms: number }
+  | { readonly kind: 'RETRY'; readonly ms: number; readonly transient: boolean }
+  | { readonly kind: 'REFUSED'; readonly refusal: RunRefusal };
+export interface LedgerRunPrepareInput extends LedgerViewInput {
+  readonly actor: string;
+  /** Quantas vezes esta finalização já releu por suspeita de corrida. */
+  readonly rechecks: number;
+  /** Se a testemunha das DECISÕES (6B) não está resolvida, o status dela (nenhuma gravação é feita); senão `null`. */
+  readonly decisionsWitness?: string | null;
+}
+export interface LedgerRunInput {
+  /** A sessão do `runPrepare` desta finalização. */
+  readonly session: unknown;
+  readonly auditId: string;
+  /** Quem grava (o e-mail da sessão autenticada, normalizado). */
+  readonly actor: string;
+  readonly nowIso: string;
+}
+export interface LedgerRunWriteInput extends LedgerRunInput {
+  readonly run: RunDraft;
+}
+
+/**
+ * O que o serviço de RESULTADOS recebe (`ResultsDeps.ledger`, opcional; D-R1-3). O LIVRO implementa as gravações (`LedgerPort.run*`); quem conhece as decisões (o serviço de
+ * decisões) liga o contexto na ordem da §16.17.8 — R1 (testemunha dos resultados) → guarda → livro → decisões → R2 condicional — e a testemunha das decisões, e repassa os passos.
+ */
+export type ResultsLedgerContext = { readonly kind: 'OK'; readonly session: unknown; readonly view: LedgerView } | { readonly kind: 'REFUSED'; readonly refusal: RunRefusal };
+export interface ResultsLedgerPort {
+  /** Passo 1: contexto do livro e a receita da fase A (vencida ⇒ `RUN_ABORTED` depois da releitura TOCTOU; recente ⇒ espera limitada e então `LEDGER_OPERATION_IN_PROGRESS`). */
+  context(input: { readonly auditId: string; readonly actor: string; readonly nowIso: string }): Promise<ResultsLedgerContext>;
+  /** Passo 6: `RUN_INTENT` (ANTES de publicar o resultado). */
+  intent(input: LedgerRunWriteInput): Promise<RunStep>;
+  /** Passo 7: prazo do dono e releitura — imediatamente ANTES do `link()` do resultado. */
+  gate(input: LedgerRunInput): Promise<RunStep>;
+  /** Passo 11: `RUN_CONFIRMED` (DEPOIS do recibo durável), gravado pelo autor. */
+  confirmed(input: LedgerRunWriteInput): Promise<RunStep>;
+}
+
 export interface LedgerPort {
   /** Lê o livro (antes das decisões). Devolve uma sessão opaca. */
   begin(auditId: string): Promise<unknown>;
-  /** Avaliação SOMENTE LEITURA (nunca grava, nunca recupera). */
+  /** Avaliação SOMENTE LEITURA (nunca grava, nunca recupera, nunca autoriza gravação). */
   view(input: LedgerViewInput): Promise<LedgerView>;
-  /** Dentro da coordenação da escrita: confere a proteção e aplica a recuperação verificável. */
+  /** Dentro da coordenação da escrita: confere a proteção e aplica a recuperação verificável. Liberado, autoriza UMA gravação (`intent` ou `reissue`) nesta sessão. */
   prepare(input: LedgerPrepareInput): Promise<LedgerStep>;
-  /** `INTENT`: ANTES de publicar a entrada. */
+  /** `INTENT`: ANTES de publicar a entrada. Exige (e consome) a autorização do `prepare` liberado. */
   intent(input: LedgerEntryInput): Promise<LedgerStep>;
-  /** `RECEIPT_REISSUED`: ANTES de reemitir o recibo de entrada já confirmada pelo livro. */
+  /** `RECEIPT_REISSUED`: ANTES de reemitir o recibo de entrada já confirmada pelo livro. Exige (e consome) a autorização do `prepare` liberado. */
   reissue(input: LedgerEntryInput): Promise<LedgerStep>;
+  /** Finalização, passo 1 (§16.17.3): avalia o contexto e aplica a receita da fase A vencida de resultado. Liberado sem resultado aberto, autoriza UM `RUN_INTENT`. */
+  runPrepare(input: LedgerRunPrepareInput): Promise<LedgerRunPrepareStep>;
+  /** Finalização, passo 6: `RUN_INTENT` sobre o prefixo relido agora. Exige (e consome) a autorização do `runPrepare`. */
+  runIntent(input: LedgerRunWriteInput): Promise<RunStep>;
+  /** Finalização, passo 7: a operação do dono continua aberta e o prazo (`staleOperationMs / 2`, monotônico) não venceu; vencido ⇒ grava o próprio `RUN_ABORTED`. */
+  runGate(input: LedgerRunInput): Promise<RunStep>;
+  /** Finalização, passo 11: `RUN_CONFIRMED` do `RUN_INTENT` desta sessão, pelo autor. */
+  runConfirmed(input: LedgerRunWriteInput): Promise<RunStep>;
   /** `CONFIRMED`: DEPOIS do recibo. Só então a resposta de sucesso. */
   confirmed(input: LedgerEntryInput): Promise<LedgerStep>;
   /**

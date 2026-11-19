@@ -10,7 +10,7 @@ import { availableRefs, captureRef, parseEvidenceRef, referencedEvidence, report
 import { assertBase, DURABILITY_UNPROVEN_MESSAGE, type StoreErrorCode, type StoreFailure } from './files';
 import { canSupersede, effectiveScoringRecords, slotConflicts, toScoringRecord, type DecisionView, type LogState } from './project';
 import { appendEntry, assertDecisionBase, findReplay, readLog, syncDecisionDirectories, type OperationSpec, type PendingFailure, ledgerSnapshotOf } from './store';
-import { isLedgerBlocking, LEDGER_NOT_REQUIRED, NOT_REQUIRED_VIEW, type LedgerRefusal, type LedgerSource, type LedgerView, type ResultsEvidence, type ResultsRuns, type RunRef } from './ledger-port';
+import { isLedgerBlocking, LEDGER_NOT_REQUIRED, NOT_REQUIRED_VIEW, type LedgerRefusal, type LedgerSource, type LedgerView, type ResultsEvidence, type ResultsLedgerContext, type ResultsLedgerPort, type ResultsRuns, type RunRef, type RunRefusal } from './ledger-port';
 import { evaluateKnownHeads, isUnresolved, WITNESS_NOT_REQUIRED, type KnownHeadsRead, type WitnessSource, type WitnessVerdict } from './witness';
 import {
   AUDIT_ID_PATTERN,
@@ -556,6 +556,11 @@ function failedAppend(appended: Exclude<Awaited<ReturnType<typeof appendEntry<Se
   return fromStore(appended);
 }
 
+/** Finalização pelo livro (R1.3): espera pela fase A recente de outra finalização e tentativas de preparar o contexto (as mesmas das escritas de decisão, `store.ts`). */
+const RESULTS_LEDGER_WAITS = 40;
+const RESULTS_LEDGER_RETRIES = 5;
+const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
 export function createDecisionService(options: DecisionServiceOptions) {
   const ops = options.fs ?? nodeFsOps;
   const projectRoot = options.projectRoot ?? process.cwd();
@@ -1078,7 +1083,68 @@ export function createDecisionService(options: DecisionServiceOptions) {
     return unsettled(second.value) ?? { ok: true };
   }
 
-  return { ...api, durabilityBarrier };
+  /**
+   * PORTA DE ESCRITA DOS RESULTADOS (R1.3, D-R1-3; spec §16.17.3). O LIVRO implementa as gravações (`runPrepare`, `runIntent`, `runGate`, `runConfirmed`); este serviço só liga o
+   * que ele conhece e o livro não: a leitura na ordem da §16.17.8 — R1 (testemunha dos resultados) → guarda → livro (`begin`) → decisões e recibos → R2 condicional (`freshResults`)
+   * — e a testemunha das DECISÕES (R7-06 (2)). Espera limitada pela fase A recente de outra finalização (`RESULTS_LEDGER_WAITS` × `pollMs`, como as escritas de decisão) e releitura
+   * limitada nas corridas; esgotadas ⇒ `LEDGER_OPERATION_IN_PROGRESS`, nada gravado. A trava das decisões NÃO é tomada (decisões nunca esperam por resultado, D-8). Sem livro ou sem
+   * testemunha dos resultados (`WITNESS_NOT_REQUIRED`, só testes da 6B isolada) não há porta: a finalização segue o caminho de antes (R1.5 o marcará `RECEIPT_ONLY`).
+   */
+  async function runContext(input: { readonly auditId: string; readonly actor: string; readonly nowIso: string }): Promise<ResultsLedgerContext> {
+    const refused = (code: RunRefusal['code'], issues: string[]): ResultsLedgerContext => ({ kind: 'REFUSED', refusal: { code, reason: null, issues } });
+    if (!ledgerPort) return refused('LEDGER_NOT_CONFIGURED', ['Este serviço não usa o livro de cabeças.']);
+    if (!validAuditId(input.auditId)) return refused('LEDGER_UNAVAILABLE', ['auditId inválido.']);
+    const { auditId } = input;
+    let waits = 0;
+    let rechecks = 0;
+    for (let attempt = 0; attempt < RESULTS_LEDGER_RETRIES; attempt += 1) {
+      const heads = await readKnownHeads(auditId);
+      const session = await ledgerPort.begin(auditId);
+      const log = await readLog(options.baseDir, auditId, storeOptions);
+      if (!log.ok) return refused('DECISIONS_HISTORY_UNRESOLVED', ['O histórico de decisões não pôde ser lido para a finalização; nada foi gravado.']);
+      const { state, pending } = log.value;
+      const entries = pending ? [...state.entries, pending] : state.entries;
+      const witness = evaluateKnownHeads(state.entries.map(chained), pending ? chained(pending) : null, heads);
+      const step = await ledgerPort.runPrepare({
+        session,
+        auditId,
+        snapshot: ledgerSnapshotOf(state.entries, pending),
+        results: resultsEvidenceOf(heads),
+        // R2: releitura POSTERIOR ao livro e às decisões (só decide o que o livro cita e a fase do resultado aberto; e é a conferência TOCTOU antes de um RUN_ABORTED)
+        freshResults: async () => resultsEvidenceOf(await readKnownHeads(auditId)),
+        entryOriginProven: (seq) => {
+          const entry = entries[seq - 1];
+          return entry !== undefined && judgeOrigin(options.origin, 'DECISION', entry) === 'PROVEN';
+        },
+        nowIso: input.nowIso,
+        actor: input.actor,
+        rechecks,
+        decisionsWitness: isUnresolved(witness.status) ? witness.status : null,
+      });
+      if (step.kind === 'OK') return { kind: 'OK', session, view: step.view };
+      if (step.kind === 'REFUSED') return step;
+      if (step.kind === 'WAIT') {
+        if (++waits > RESULTS_LEDGER_WAITS) return refused('LEDGER_OPERATION_IN_PROGRESS', ['Há uma finalização de outro processo em andamento nesta auditoria; tente novamente em instantes. Nada foi gravado.']);
+        await pause(step.ms);
+        attempt -= 1; // esperar não consome tentativa
+        continue;
+      }
+      if (step.transient) rechecks += 1;
+      await pause(step.ms);
+    }
+    return refused('LEDGER_OPERATION_IN_PROGRESS', ['O livro mudou a cada tentativa de preparar a finalização; nada foi gravado. Tente novamente.']);
+  }
+  const resultsLedger: ResultsLedgerPort | null =
+    ledgerPort && options.knownHeads !== WITNESS_NOT_REQUIRED
+      ? {
+          context: runContext,
+          intent: (input) => ledgerPort.runIntent(input),
+          gate: (input) => ledgerPort.runGate(input),
+          confirmed: (input) => ledgerPort.runConfirmed(input),
+        }
+      : null;
+
+  return { ...api, durabilityBarrier, resultsLedger };
 }
 
 export type DecisionService = ReturnType<typeof createDecisionService>;

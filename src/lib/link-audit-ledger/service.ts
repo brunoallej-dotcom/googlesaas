@@ -1,13 +1,51 @@
 import path from 'node:path';
-import type { CapacityLevel, LedgerEnrollInput, LedgerEntryInput, LedgerFailureCode, LedgerPort, LedgerPrepareInput, LedgerRefusal, LedgerStep, LedgerView, LedgerViewInput } from '../link-audit-decisions/ledger-port';
+import type {
+  CapacityLevel,
+  LedgerEnrollInput,
+  LedgerEntryInput,
+  LedgerFailureCode,
+  LedgerPort,
+  LedgerPrepareInput,
+  LedgerRefusal,
+  LedgerRunInput,
+  LedgerRunPrepareInput,
+  LedgerRunPrepareStep,
+  LedgerRunWriteInput,
+  LedgerStep,
+  LedgerView,
+  LedgerViewInput,
+  RunDraft,
+  RunRefusal,
+  RunRefusalCode,
+  RunStep,
+} from '../link-audit-decisions/ledger-port';
 import type { OriginAuthenticator } from '../link-audit-origin';
 import { DURABILITY_UNPROVEN_MESSAGE, seal } from '../link-audit-storage';
 import { nodeFsOps, type FsOps } from '../link-audit/snapshot-store';
 import type { ExternalGuardPort } from './guard';
-import { evaluateProtection, ledgerCapacity, operationCost, pendingClosings, replayLedger, resultsGrew, rotationCheckpointDue, verifyTags, type Evaluation, type GuardEvidence, type LedgerReadState, type TagFailure } from './model';
-import { PROCESS_OBSERVATIONS, type OpenObservations } from './observed';
+import { evaluateProtection, ledgerCapacity, operationCost, pendingClosings, replayLedger, resultsGrew, rotationCheckpointDue, runIntentFits, verifyTags, type Evaluation, type GuardEvidence, type LedgerReadState, type LedgerReplay, type TagFailure } from './model';
+import { monotonicNow, PROCESS_OBSERVATIONS, type OpenObservations } from './observed';
 import { ensureLedgerProven, ledgerDurabilityTripped, publishLedgerRecord, readLedgerFiles, newOpId, syncLedgerDirectory, type PublishLedgerResult } from './store';
-import { CHECKPOINT_EVERY, LEDGER_CAPACITY_POLICY, LEDGER_KIND, LEDGER_SCHEMA_VERSION, ledgerRecordSchema, type DecisionRef, type LedgerCapacityPolicy, type ResultsEvidence, type LedgerDraft, type LedgerHead, type LedgerOp, type LedgerReason, type LedgerRecord } from './types';
+import {
+  CHECKPOINT_EVERY,
+  isRunEvent,
+  LEDGER_CAPACITY_POLICY,
+  LEDGER_KIND,
+  LEDGER_RUN_SCHEMA_VERSION,
+  LEDGER_SCHEMA_VERSION,
+  ledgerRecordSchema,
+  runAnchorName,
+  type DecisionRef,
+  type LedgerCapacityPolicy,
+  type ResultsEvidence,
+  type LedgerDraft,
+  type LedgerHead,
+  type LedgerOp,
+  type LedgerReason,
+  type LedgerRecord,
+  type LedgerRun,
+  type RunsReason,
+} from './types';
 
 /*
  * SERVIÇO do livro de cabeças (contrato: `onda6c-especificacao-livro-de-cabecas.md` §16). Implementa a porta que a 6B consome (`LedgerPort`).
@@ -38,6 +76,8 @@ export interface LedgerServiceOptions {
   readonly capacityPolicy?: LedgerCapacityPolicy;
   /** Idade observada das operações abertas com hora gravada no futuro (R7-09). Padrão: o registro do processo (monotônico). Só testes injetam outro. */
   readonly observations?: OpenObservations;
+  /** Relógio MONOTÔNICO do prazo do dono de uma finalização (§16.17.3, passo 7; D-22). Padrão: o do processo (`observed.ts`). Só testes injetam outro. */
+  readonly monotonicMs?: () => number;
 }
 
 const WITNESS_REASONS: ReadonlySet<LedgerReason> = new Set<LedgerReason>(['RESULT_LEDGER_MISMATCH', 'UNTRUSTED', 'RESULTS_EVIDENCE_UNAVAILABLE', 'GUARD_MISMATCH', 'LEDGER_REMOVED_WITNESSED']);
@@ -54,9 +94,23 @@ interface Session {
   /** `INTENT` gravado por esta operação. */
   intent: LedgerRecord | null;
   evaluation: Evaluation | null;
+  /**
+   * AUTORIZAÇÃO DE USO ÚNICO (revisão da R1.2, `junin-02`): só um `prepare`/`runPrepare` LIBERADO a emite, para a gravação que ele liberou; `intent`, `reissue` e `runIntent` a
+   * exigem e a consomem já na primeira chamada. `view()` (somente leitura) a revoga: uma avaliação de vista nunca vale como preparação.
+   */
+  grant: 'INTENT' | 'REISSUE' | 'RUN_INTENT' | null;
+  /** `RUN_INTENT` gravado por esta finalização (passos 7 e 11) e o instante monotônico anotado ANTES de publicá-lo (prazo do dono). */
+  runIntent: LedgerRecord | null;
+  runMark: number | null;
 }
 
 const anchorName = (seq: number): string => `a${String(seq).padStart(4, '0')}.json`;
+/** Consome a autorização de uso único: devolve se ela era a esperada e a apaga em qualquer caso (falha fechada). */
+const takeGrant = (session: Session, kind: NonNullable<Session['grant']>): boolean => {
+  const granted = session.grant === kind;
+  session.grant = null;
+  return granted;
+};
 const laterOf = (a: string, b: string | undefined): string => (b !== undefined && b > a ? b : a);
 
 const MESSAGES: Partial<Record<LedgerReason, string>> = {
@@ -82,6 +136,45 @@ const MESSAGES: Partial<Record<LedgerReason, string>> = {
   GUARD_MISMATCH: 'A guarda externa guarda uma cabeça que o livro não contém.',
   GUARD_UNAVAILABLE: 'A guarda externa não pôde ser consultada.',
 };
+/** Razões da família de RESULTADOS que fecham só os resultados (§16.17.5); texto fixo, nunca eco de dado. */
+const RUNS_MESSAGES: Readonly<Record<RunsReason, string>> = {
+  RESULT_RECEIPT_REMOVED: 'O recibo de um resultado já confirmado pelo livro foi removido; nada foi gravado.',
+  RESULT_REGRESSED: 'Um resultado confirmado pelo livro não está mais na pasta de resultados (volume restaurado sozinho ou arquivo removido); nada foi gravado.',
+};
+const messageOf = (reason: LedgerReason | RunsReason): string | undefined => (MESSAGES as Partial<Record<string, string>>)[reason] ?? (RUNS_MESSAGES as Partial<Record<string, string>>)[reason];
+/** Gravação sem a autorização do `prepare`/`runPrepare` liberado nesta mesma sessão (p.ex. depois de só uma `view()`). */
+const NOT_PREPARED_MESSAGE = 'Gravação no livro sem a preparação liberada desta mesma operação; nada foi gravado.';
+/* Textos fixos da finalização pelo livro (R1.3; nunca caminho nem identidade). */
+const RUN_AUTHOR_MESSAGE = 'Só o autor do resultado grava a operação de resultado no livro; nada foi gravado.';
+const RUN_STALE_MESSAGE = 'O livro mudou depois da conferência da finalização (decisão aberta ou cabeça de decisões diferente); nenhum resultado foi publicado.';
+const RUN_REREAD_MESSAGE = 'O livro de cabeças não pôde ser relido antes da gravação; nenhum resultado foi publicado.';
+const RUN_NO_INTENT_MESSAGE = 'Não há operação de resultado aberta por esta finalização para este resultado; nada foi gravado.';
+const RUN_CLOSED_MESSAGE = 'A operação desta finalização foi encerrada por outro processo antes da publicação; nenhum resultado foi publicado.';
+const RUN_DEADLINE_MESSAGE = 'A finalização passou do prazo seguro entre o registro no livro e a publicação; nenhum resultado foi publicado.';
+const RUN_CLOSED_BEFORE_CONFIRM_MESSAGE = 'A operação deste resultado foi encerrada por outro processo antes da confirmação; a confirmação não foi gravada.';
+const RUN_CLOSING_CONFLICT_MESSAGE = 'Outro processo gravou no livro durante a confirmação; o resultado e o recibo existem, mas a confirmação do livro não foi gravada.';
+const RUN_OPEN_NO_RECIPE_MESSAGE = 'Há uma operação de resultado aberta sem receita segura nesta auditoria; nada foi gravado.';
+const RUN_TOCTOU_UNAVAILABLE_MESSAGE = 'Sem como reler os resultados antes de abortar a operação de resultado; nada foi gravado.';
+const RUN_REPLAY_MESSAGE = 'O registro de resultado montado violaria as invariantes do livro (erro interno); nada foi gravado.';
+/** O rascunho do `RUN_INTENT` com EXATAMENTE os campos do contrato (o esquema é estrito; nada do chamador passa além deles). */
+const runFieldsOf = (run: RunDraft) => ({
+  runSeq: run.runSeq,
+  prevRunSha256: run.prevRunSha256,
+  runSha256: run.runSha256,
+  author: run.author,
+  citedLedgerHead: { ledgerSeq: run.citedLedgerHead.ledgerSeq, sha256: run.citedLedgerHead.sha256 },
+  decisionsHead: run.decisionsHead === null ? null : { seq: run.decisionsHead.seq, sha256: run.decisionsHead.sha256 },
+});
+/** O `RUN_INTENT` desta sessão é o deste resultado (mesmo número, encadeamento, hash, autor e citações). */
+const sameDraft = (run: LedgerRun, draft: RunDraft): boolean =>
+  run.runSeq === draft.runSeq &&
+  run.prevRunSha256 === draft.prevRunSha256 &&
+  run.runSha256 === draft.runSha256 &&
+  run.author === draft.author &&
+  run.citedLedgerHead.ledgerSeq === draft.citedLedgerHead.ledgerSeq &&
+  run.citedLedgerHead.sha256 === draft.citedLedgerHead.sha256 &&
+  (run.decisionsHead?.seq ?? null) === (draft.decisionsHead?.seq ?? null) &&
+  (run.decisionsHead?.sha256 ?? null) === (draft.decisionsHead?.sha256 ?? null);
 
 /**
  * §16.16: quem grava é o AUTOR da entrada? As duas identidades chegam já normalizadas na fronteira (`operatorOf` do serviço de decisões: sem espaços nas pontas, minúsculas;
@@ -116,6 +209,7 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
   const policy = options.capacityPolicy ?? LEDGER_CAPACITY_POLICY;
   const auth = options.authenticator;
   const observations = options.observations ?? PROCESS_OBSERVATIONS;
+  const monotonic = options.monotonicMs ?? monotonicNow;
 
   async function overlapping(): Promise<boolean> {
     const real = async (target: string): Promise<string> => {
@@ -133,7 +227,7 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
   }
 
   async function begin(auditId: string): Promise<Session> {
-    const session: Session = { auditId, state: 'OK', records: [], tagFailure: null, guard: { status: 'NOT_CONFIGURED' }, intent: null, evaluation: null };
+    const session: Session = { auditId, state: 'OK', records: [], tagFailure: null, guard: { status: 'NOT_CONFIGURED' }, intent: null, evaluation: null, grant: null, runIntent: null, runMark: null };
     try {
       if (!path.isAbsolute(options.dir) || (await overlapping())) return { ...session, state: 'NOT_CONFIGURED' };
       // M2: depois de uma falha de fsync (ou erro fatal) neste processo a durabilidade do livro NÃO está comprovada: ele não é lido como protegido (nada vigente, nada finalizável) até reiniciar e provar de novo
@@ -217,6 +311,16 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
     issues: [...(reason ? [`livro: ${reason}`, ...(MESSAGES[reason] ? [MESSAGES[reason] as string] : [])] : []), ...extra],
     view,
   });
+  /** Recusa de um passo da finalização pelo livro (texto fixo; nada gravado salvo quando o texto diz o contrário). */
+  const runRefused = (code: RunRefusalCode, reason: LedgerReason | RunsReason | null = null, extra: string[] = []): { readonly kind: 'REFUSED'; readonly refusal: RunRefusal } => {
+    const message = reason ? messageOf(reason) : undefined;
+    return { kind: 'REFUSED', refusal: { code, reason, issues: [...(reason ? [`livro: ${reason}`, ...(message ? [message] : [])] : []), ...extra] } };
+  };
+  /** Recusa do livro (estado ou gravação) como recusa de um passo da finalização: durabilidade não comprovada vira `DURABILITY_UNKNOWN` (R6-07: nunca sucesso). */
+  const asRun = (from: LedgerRefusal): { readonly kind: 'REFUSED'; readonly refusal: RunRefusal } => ({
+    kind: 'REFUSED',
+    refusal: { code: from.reason === 'DURABILITY_UNKNOWN' || from.issues.includes(DURABILITY_UNPROVEN_MESSAGE) ? 'DURABILITY_UNKNOWN' : from.code, reason: from.reason, issues: from.issues },
+  });
   /** Texto fixo por nível de capacidade (R7-01): nunca "erro interno", nunca caminho, e diz quando a auditoria precisa de intervenção. */
   const capacityMessage = (level: CapacityLevel): string =>
     level === 'OK'
@@ -226,20 +330,35 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
         : 'Capacidade do livro ESGOTADA: nem revogações cabem. A auditoria precisa de INTERVENÇÃO (a reabertura administrativa ainda não existe). Nada foi gravado.';
   const capacityLevelOf = (session: Session): CapacityLevel => ledgerCapacity(session.records, auth.keyId, every, policy, pendingClosings(session.records)).level;
   const refused = (code: LedgerFailureCode, view: LedgerView | null, reason?: LedgerReason | null, extra?: string[]): LedgerStep => ({ kind: 'REFUSED', refusal: refusal(code, view, reason, extra) });
-  const refusedForState = (view: LedgerView): LedgerStep =>
+  const stateRefusal = (view: LedgerView): LedgerRefusal =>
     view.state === 'ENROLLMENT_PENDING'
-      ? refused('LEDGER_ENROLLMENT_REQUIRED', view, null)
+      ? refusal('LEDGER_ENROLLMENT_REQUIRED', view, null)
       : view.state === 'LEGACY_READ_ONLY'
-        ? refused('LEDGER_LEGACY_READ_ONLY', view)
-        : refused(view.reason === 'NOT_CONFIGURED' ? 'LEDGER_NOT_CONFIGURED' : 'DECISIONS_HISTORY_UNRESOLVED', view);
+        ? refusal('LEDGER_LEGACY_READ_ONLY', view)
+        : refusal(view.reason === 'NOT_CONFIGURED' ? 'LEDGER_NOT_CONFIGURED' : 'DECISIONS_HISTORY_UNRESOLVED', view);
+  const refusedForState = (view: LedgerView): LedgerStep => ({ kind: 'REFUSED', refusal: stateRefusal(view) });
+  /**
+   * Passo 1 da finalização (§16.17.3) e passo 6 (a): só em `PROTECTED` e com a família de resultados resolvida. Estado ⇒ o código do estado (`refusedForState`); `runs` não resolvido
+   * ⇒ `RUNS_UNRESOLVED` (o serviço de resultados responde `RESULT_INTEGRITY`). `null` = segue.
+   */
+  const runBlocked = (evaluation: Evaluation): { readonly kind: 'REFUSED'; readonly refusal: RunRefusal } | null => {
+    const view = evaluation.view;
+    if (view.state !== 'PROTECTED') return asRun(stateRefusal(view));
+    if (!view.runs || view.runs.state !== 'OK') return runRefused('RUNS_UNRESOLVED', view.runs?.reason ?? null);
+    return null;
+  };
 
-  /** Anexa UM registro. `CONFLICT` = outro processo ocupou a posição (relê). Falha de disco ⇒ `LEDGER_UNAVAILABLE`; nada é dado como gravado. */
-  async function append(session: Session, draft: LedgerDraft, nowIso: string): Promise<'OK' | 'CONFLICT' | LedgerRefusal> {
+  /**
+   * Anexa UM registro. `CONFLICT` = outro processo ocupou a posição (relê). Falha de disco ⇒ `LEDGER_UNAVAILABLE`; nada é dado como gravado. A versão do esquema segue a FAMÍLIA
+   * do evento (D-3: 1 nas decisões, bytes de sempre; 2 nos `RUN_*`). `verifyReplay`: antes de publicar, o replay da cadeia COM o registro novo tem de ser válido (os `RUN_*` nunca
+   * são publicados se deixariam o livro não confiável — defesa contra erro de montagem).
+   */
+  async function append(session: Session, draft: LedgerDraft, nowIso: string, verifyReplay = false): Promise<'OK' | 'CONFLICT' | LedgerRefusal> {
     const last = session.records[session.records.length - 1];
     // R7-02: o limite duro vale para QUALQUER registro (inclusive manutenção); o texto nunca diz "erro interno"
     if ((last?.ledgerSeq ?? 0) + 1 > policy.max) return refusal('LEDGER_CAPACITY_EXHAUSTED', null, 'LIMIT_REACHED', [capacityMessage('EXHAUSTED')]);
     const unsigned = {
-      schemaVersion: LEDGER_SCHEMA_VERSION,
+      schemaVersion: isRunEvent(draft.event) ? LEDGER_RUN_SCHEMA_VERSION : LEDGER_SCHEMA_VERSION,
       kind: LEDGER_KIND,
       auditId: session.auditId,
       ledgerSeq: (last?.ledgerSeq ?? 0) + 1,
@@ -255,6 +374,7 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
     }
     const checked = ledgerRecordSchema.safeParse(record);
     if (!checked.success) return refusal('LEDGER_UNAVAILABLE', null, null, ['O registro do livro não segue o contrato (erro interno); nada foi gravado.']);
+    if (verifyReplay && !replayLedger([...session.records, checked.data], session.auditId).ok) return refusal('LEDGER_UNAVAILABLE', null, null, [RUN_REPLAY_MESSAGE]);
     const published: PublishLedgerResult = await publishLedgerRecord(options.dir, checked.data, storeOptions);
     if (published.ok) {
       session.records.push(checked.data);
@@ -328,16 +448,78 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
     return adopted ? 'ADOPTED' : 'REAPPEND';
   }
 
+  /* ------------------------------------------------------------------ finalização pelo livro (R1.3; spec §16.17.3 e 16.17.4) */
+
+  /**
+   * RELEITURA do livro desta auditoria AGORA (passos 6, 7 e 11 da finalização): o prefixo sobre o qual o próximo registro vai entrar. Exige etiquetas e replay válidos e que a
+   * releitura ESTENDA o que esta sessão já leu (o livro só cresce; conferir o último registro conhecido fixa o resto, pelo encadeamento). Atualiza a sessão; nunca grava.
+   */
+  async function rereadPrefix(session: Session): Promise<{ readonly ok: true; readonly replay: LedgerReplay } | { readonly ok: false; readonly step: { readonly kind: 'REFUSED'; readonly refusal: RunRefusal } }> {
+    if (ledgerDurabilityTripped(options.dir, storeOptions)) return { ok: false, step: runRefused('DURABILITY_UNKNOWN', 'DURABILITY_UNKNOWN') };
+    const read = await readLedgerFiles(options.dir, session.auditId, storeOptions);
+    if (!read.ok) return { ok: false, step: runRefused('LEDGER_UNAVAILABLE', 'UNAVAILABLE', [RUN_REREAD_MESSAGE]) };
+    const records = read.value.records;
+    const tagFailure = verifyTags(records, auth);
+    const replayed = replayLedger(records, session.auditId);
+    if (tagFailure !== null || !replayed.ok) return { ok: false, step: runRefused('DECISIONS_HISTORY_UNRESOLVED', tagFailure?.reason ?? 'UNTRUSTED') };
+    const known = session.records[session.records.length - 1];
+    const extendsRead = known !== undefined && records.length >= session.records.length && records[known.ledgerSeq - 1]?.contentSha256 === known.contentSha256;
+    if (!extendsRead) return { ok: false, step: runRefused('DECISIONS_HISTORY_UNRESOLVED', 'UNTRUSTED') };
+    session.records = [...records];
+    session.state = 'OK';
+    session.tagFailure = null;
+    return { ok: true, replay: replayed.value };
+  }
+
+  /** `RUN_ABORTED` de uma operação de resultado aberta em fase A: repete o `RUN_INTENT` e grava o observado (resultado e recibo ausentes, idade). */
+  const runAbortDraft = (intent: LedgerRecord, ageMs: number, actor: string, nowIso: string): LedgerDraft => ({
+    event: 'RUN_ABORTED',
+    recordedAt: nowIso,
+    actor,
+    run: { ...(intent.run as LedgerRun), intentSeq: intent.ledgerSeq, observed: { resultPresent: false, receiptPresent: false, ageMs: Math.max(0, Math.floor(ageMs)) } },
+  });
+
+  /**
+   * RECEITA DA FASE A VENCIDA de resultado pela FINALIZAÇÃO (§16.17.4; RL-18): qualquer operador grava `RUN_ABORTED`, e só depois de (1) a testemunha das DECISÕES resolvida
+   * (R7-06 (2)); (2) RELER os resultados AGORA (R2) e conferir, sobre a MESMA leitura do livro, que `sk` e `ak` continuam ausentes (TOCTOU, espelho da §16.14): resultado novo
+   * na releitura ⇒ nova tentativa limitada (a leitura seguinte vê a fase B), nunca aborto às cegas; releitura que falha ⇒ recusa. As testemunhas (citações e guarda, R6-05) já
+   * decidiram na avaliação: o plano só existe em `PROTECTED`.
+   */
+  async function abortStaleRun(session: Session, input: LedgerRunPrepareInput, evaluation: Evaluation): Promise<{ readonly kind: 'DONE'; readonly evaluation: Evaluation } | { readonly kind: 'STOP'; readonly step: LedgerRunPrepareStep }> {
+    const stop = (step: LedgerRunPrepareStep) => ({ kind: 'STOP' as const, step });
+    const busy = (): LedgerRunPrepareStep => (input.rechecks < 3 ? { kind: 'RETRY', ms: 25, transient: true } : runRefused('LEDGER_OPERATION_IN_PROGRESS', null, [RESULTS_MOVING_MESSAGE]));
+    if (input.decisionsWitness) return stop(runRefused('DECISIONS_HISTORY_UNRESOLVED', null, [`testemunha: ${input.decisionsWitness}`]));
+    if (!input.freshResults) return stop(runRefused('LEDGER_UNAVAILABLE', null, [RUN_TOCTOU_UNAVAILABLE_MESSAGE]));
+    const fresh = await reread(input.freshResults);
+    if (!fresh.ok) return stop(asRun(stateRefusal(evaluate(session, input, fresh).view)));
+    if (resultsGrew(input.results, fresh)) return stop(busy());
+    const again = evaluate(session, input, fresh);
+    const blocked = runBlocked(again);
+    if (blocked) return stop(blocked);
+    // a MESMA operação continua vencida e com o lugar vazio sobre R1 + R2; qualquer mudança ⇒ nova tentativa, nunca aborto às cegas
+    const target = evaluation.runPlan.kind === 'ABORT_RUN' ? evaluation.runPlan.intent.contentSha256 : null;
+    if (again.runPlan.kind !== 'ABORT_RUN' || again.runPlan.intent.contentSha256 !== target) return stop(busy());
+    const written = await append(session, runAbortDraft(again.runPlan.intent, again.runPlan.ageMs, input.actor, input.nowIso), input.nowIso, true);
+    if (written === 'CONFLICT') return stop({ kind: 'RETRY', ms: 10, transient: false });
+    if (written !== 'OK') return stop(asRun(written));
+    await publishGuard(session);
+    const after = evaluate(session, input, fresh);
+    const afterBlocked = runBlocked(after);
+    return afterBlocked ? stop(afterBlocked) : { kind: 'DONE', evaluation: after };
+  }
+
   return {
     begin,
 
     async view(input) {
       const session = input.session as Session;
+      session.grant = null; // somente leitura: nunca vale como preparação (`junin-02`)
       return (await evaluateSandwich(session, input)).view;
     },
 
     async prepare(input: LedgerPrepareInput): Promise<LedgerStep> {
       const session = input.session as Session;
+      session.grant = null;
       const actor = input.actor ?? 'system';
       const intended = input.intended ?? 'RECORD';
       let evaluation = evaluate(session, input);
@@ -381,6 +563,8 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
           if (blocked) return blocked;
           const stale = await revalidate();
           if (stale) return stale;
+          // autoriza UMA reemissão nesta sessão — salvo para a manutenção (`RECOVER`), que nunca reemite
+          session.grant = intended === 'NONE' ? null : 'REISSUE';
           return { kind: 'OK', pendingKind: 'RECEIPT_REMOVED' };
         }
         if (plan.kind !== 'COMPLETE_CONFIRMED') return refusedForState(view);
@@ -415,6 +599,26 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
           const intentOp = intent.op as LedgerOp;
           // EEXIST (p.ex. o CHECKPOINT de outro RECOVER) ⇒ RETRY com releitura e reavaliação, nunca regravação cega (ver o comentário de `stepFromAppend`)
           const written = await append(session, { event: 'ABORTED', recordedAt: input.nowIso, actor, op: { ...intentOp, intentSeq: intent.ledgerSeq, observed: { entryPresent: false, receiptPresent: false, ageMs: Math.max(0, view.openOperation?.ageMs ?? 0) } } }, input.nowIso);
+          const stop = stepFromAppend(written);
+          if (stop) return stop;
+          await publishGuard(session);
+          evaluation = evaluate(session, input);
+          view = evaluation.view;
+          if (view.state !== 'PROTECTED') return refusedForState(view);
+        }
+      }
+
+      // RECOVER (só a manutenção; escritas de decisão nunca aplicam receita de resultado, §16.17.4): aborta a fase A VENCIDA de resultado (`RUN_ABORTED`, qualquer operador) com as
+      // mesmas conferências das outras receitas — testemunha das decisões e releitura R2 dos resultados (TOCTOU: `sk` e `ak` ainda ausentes) — e nunca conclui B/C (D-12).
+      if (intended === 'NONE' && evaluation.runPlan.kind === 'ABORT_RUN') {
+        const blocked = witnessBlock();
+        if (blocked) return blocked;
+        if (!input.freshResults) return refused('LEDGER_UNAVAILABLE', view, null, [RUN_TOCTOU_UNAVAILABLE_MESSAGE]);
+        const before = evaluation.runPlan.intent.contentSha256;
+        const stale = await revalidate();
+        if (stale) return stale;
+        if (evaluation.runPlan.kind === 'ABORT_RUN' && evaluation.runPlan.intent.contentSha256 === before) {
+          const written = await append(session, runAbortDraft(evaluation.runPlan.intent, evaluation.runPlan.ageMs, actor, input.nowIso), input.nowIso, true);
           const stop = stepFromAppend(written);
           if (stop) return stop;
           await publishGuard(session);
@@ -471,6 +675,7 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
       }
       // Guarda externa configurada: a cabeça anterior precisa estar publicada antes de uma nova operação.
       if (options.guard && !(await publishGuard(session))) return refused('LEDGER_GUARD_UNAVAILABLE', view, 'GUARD_UNAVAILABLE');
+      session.grant = 'INTENT'; // autoriza UMA INTENT nesta sessão (consumida pelo `intent`)
       return { kind: 'OK', pendingKind: null };
     },
 
@@ -479,8 +684,11 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
       // PONTO AUTORITATIVO da capacidade (R7-01): vale para a posição que esta INTENT vai ocupar. Se outro processo ocupar a posição o `link()` exclusivo falha (CONFLICT) e
       // a reavaliação recomeça com o livro novo — a verificação é coordenada entre processos pelo próprio disco. A INTENT só entra se ela e o registro que a fecha cabem na classe,
       // sem tomar o fecho reservado de um resultado aberto (§16.17.6: `len + 2 + openRun ≤ classe`).
+      // A autorização do `prepare` liberado é consumida já aqui (uso único, `junin-02`); a capacidade continua conferida antes, sozinha (a porta se defende mesmo sem preparação).
+      const granted = takeGrant(session, 'INTENT');
       const cls = input.entry.action === 'REVOKE' ? 'REVOKE' : 'RECORD';
       if (session.records.length + 2 + pendingClosings(session.records) > policy[cls]) return refused('LEDGER_CAPACITY_EXHAUSTED', null, 'LIMIT_REACHED', [capacityMessage(capacityLevelOf(session))]);
+      if (!granted) return refused('LEDGER_UNAVAILABLE', null, null, [NOT_PREPARED_MESSAGE]);
       const written = await append(session, { event: 'INTENT', recordedAt: input.nowIso, actor: input.actor, op: opFor(input.entry) }, input.nowIso);
       const stop = stepFromAppend(written);
       if (stop) return stop;
@@ -490,6 +698,8 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
 
     async reissue(input: LedgerEntryInput): Promise<LedgerStep> {
       const session = input.session as Session;
+      // só depois de um `prepare` LIBERADO para esta reemissão (uso único): uma `view()` deixa o plano na sessão, mas não autoriza gravar (`junin-02`)
+      if (!takeGrant(session, 'REISSUE')) return refused('LEDGER_UNAVAILABLE', null, null, [NOT_PREPARED_MESSAGE]);
       const plan = session.evaluation?.plan;
       if (!plan || plan.kind !== 'REISSUE_RECEIPT' || plan.entry.sha256 !== input.entry.sha256) return refused('LEDGER_UNAVAILABLE', null, null, ['Reemissão de recibo sem a confirmação correspondente no livro; nada foi gravado.']);
       const confirmed = plan.confirmed;
@@ -543,6 +753,113 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
       return { kind: 'OK', pendingKind: null };
     },
 
+    async runPrepare(input: LedgerRunPrepareInput): Promise<LedgerRunPrepareStep> {
+      const session = input.session as Session;
+      session.grant = null;
+      session.runIntent = null;
+      session.runMark = null;
+      // leitura "sanduíche" (§16.17.8): R1 → guarda → livro → decisões → R2 só se a avaliação pedir
+      let evaluation = await evaluateSandwich(session, input);
+      // passo 1: `runs` não resolvido ⇒ RESULT_INTEGRITY. Estado que não é `PROTECTED`: nenhuma receita e NENHUMA autorização de RUN_INTENT — a avaliação da própria finalização o
+      // recusa adiante (`NOT_FINALIZABLE`, com os bloqueios, como antes da R1.3), e o passo 6 (a) recusaria pelo código do estado se ela chegasse lá (falha fechada nos dois).
+      const runs = evaluation.view.runs;
+      if (runs && runs.state !== 'OK') return runRefused('RUNS_UNRESOLVED', runs.reason);
+      if (evaluation.view.state !== 'PROTECTED') return { kind: 'OK', view: evaluation.view };
+      const blocked = runBlocked(evaluation);
+      if (blocked) return blocked;
+      if (evaluation.runPlan.kind === 'WAIT_RUN') return { kind: 'WAIT', ms: pollMs };
+      if (evaluation.runPlan.kind === 'ABORT_RUN') {
+        const aborted = await abortStaleRun(session, input, evaluation);
+        if (aborted.kind === 'STOP') return aborted.step;
+        evaluation = aborted.evaluation;
+      }
+      const open = evaluation.view.runs?.open ?? null;
+      // fase A sem receita (vencida com o lugar ocupado, ou ainda dentro do prazo depois de uma releitura): nada a fazer com segurança agora
+      if (open !== null && open.phase === 'A') return runRefused('LEDGER_OPERATION_IN_PROGRESS', null, [RUN_OPEN_NO_RECIPE_MESSAGE]);
+      // sem resultado aberto: autoriza UM RUN_INTENT nesta sessão (a testemunha das decisões resolvida também é condição; a finalização a confere de novo na barreira)
+      if (open === null && !input.decisionsWitness) session.grant = 'RUN_INTENT';
+      return { kind: 'OK', view: evaluation.view };
+    },
+
+    async runIntent(input: LedgerRunWriteInput): Promise<RunStep> {
+      const session = input.session as Session;
+      // autorização de uso ÚNICO do `runPrepare` liberado nesta sessão (sem resultado aberto), consumida já na primeira chamada
+      if (!takeGrant(session, 'RUN_INTENT')) return runRefused('LEDGER_UNAVAILABLE', null, [NOT_PREPARED_MESSAGE]);
+      const run = input.run;
+      if (!isEntryAuthor(input.actor, run.author)) return runRefused('LEDGER_UNAVAILABLE', null, [RUN_AUTHOR_MESSAGE]);
+      // o prefixo AGORA: é sobre ele que o `link()` exclusivo da posição torna a admissão autoritativa (quem chegar antes ocupa a posição e este recomeça)
+      const prefix = await rereadPrefix(session);
+      if (!prefix.ok) return prefix.step;
+      const replay = prefix.replay;
+      // (c)/(d): decisão aberta, ou cabeça de decisões que não é a citada pelo resultado selado ⇒ a entrada mudou depois da barreira (INPUT_CHANGED), nada publicado
+      if (replay.open !== null || replay.decisionHead.ledgerSeq !== run.citedLedgerHead.ledgerSeq || replay.decisionHead.sha256 !== run.citedLedgerHead.sha256) return runRefused('STALE_INPUT', null, [RUN_STALE_MESSAGE]);
+      // (b): outra finalização abriu uma operação de resultado ⇒ recomeça do passo 0
+      if (replay.openRun !== null) return { kind: 'RESTART' };
+      // (e) I-2: o resultado encadeia no último RUN_CONFIRMED (senão a leitura R0 ficou atrás do livro) ⇒ recomeça
+      const lastRun = replay.confirmedRuns[replay.confirmedRuns.length - 1];
+      if (run.runSeq !== replay.confirmedRuns.length + 1 || run.prevRunSha256 !== (lastRun?.runSha256 ?? null)) return { kind: 'RESTART' };
+      // (e) I-4: as decisões citadas são as do último CONFIRMED ⇒ senão a entrada mudou
+      const lastDecision = replay.confirmed[replay.confirmed.length - 1];
+      if ((run.decisionsHead?.seq ?? null) !== (lastDecision?.decisionSeq ?? null) || (run.decisionsHead?.sha256 ?? null) !== (lastDecision?.sha256 ?? null)) return runRefused('STALE_INPUT', null, [RUN_STALE_MESSAGE]);
+      // (f): o RUN_INTENT e o fecho cabem na classe RUN (a MESMA conta que a vista anuncia em `runsAvailable`)
+      if (!runIntentFits(session.records, policy)) return runRefused('LEDGER_CAPACITY_EXHAUSTED', 'LIMIT_REACHED', [capacityMessage(capacityLevelOf(session))]);
+      // (g): com guarda configurada, a cabeça atual publicada antes
+      if (options.guard && !(await publishGuard(session))) return runRefused('LEDGER_GUARD_UNAVAILABLE', 'GUARD_UNAVAILABLE');
+      // prazo do dono (passo 7): o instante monotônico é anotado ANTES de publicar o RUN_INTENT
+      session.runMark = monotonic();
+      const written = await append(session, { event: 'RUN_INTENT', recordedAt: input.nowIso, actor: input.actor, run: { runOpId: newOpId(), ...runFieldsOf(run) } }, input.nowIso, true);
+      if (written === 'CONFLICT') return { kind: 'RESTART' }; // EEXIST na posição: relê e recomeça do passo 0
+      if (written !== 'OK') return asRun(written);
+      session.runIntent = session.records[session.records.length - 1] as LedgerRecord;
+      return { kind: 'OK' };
+    },
+
+    async runGate(input: LedgerRunInput): Promise<RunStep> {
+      const session = input.session as Session;
+      const intent = session.runIntent;
+      const mark = session.runMark;
+      if (!intent?.run || mark === null) return runRefused('LEDGER_UNAVAILABLE', null, [RUN_NO_INTENT_MESSAGE]);
+      // a operação do dono foi fechada por OUTRO processo (fase A vencida abortada): publicar agora seria resultado depois do aborto (RL-11) ⇒ não publica
+      const prefix = await rereadPrefix(session);
+      if (!prefix.ok) return prefix.step;
+      if (prefix.replay.openRun?.contentSha256 !== intent.contentSha256) {
+        session.runIntent = null;
+        return runRefused('RUN_CLOSED', null, [RUN_CLOSED_MESSAGE]);
+      }
+      // PRAZO DO DONO (D-22): passados MAIS de staleOperationMs / 2 monotônicos desde o RUN_INTENT, não publica — grava o próprio RUN_ABORTED (uma tentativa; sem ela a fase A segue
+      // aberta até vencer e qualquer operador a aborta). A margem até o aborto alheio (≥ staleOperationMs) fica de pelo menos staleOperationMs / 2.
+      const elapsed = monotonic() - mark;
+      if (!(elapsed <= staleMs / 2)) {
+        session.runIntent = null;
+        const written = await append(session, runAbortDraft(intent, Number.isFinite(elapsed) ? elapsed : 0, input.actor, input.nowIso), input.nowIso, true);
+        if (written === 'OK') await publishGuard(session);
+        else if (written !== 'CONFLICT' && asRun(written).refusal.code === 'DURABILITY_UNKNOWN') return asRun(written);
+        return runRefused('RUN_DEADLINE', null, [RUN_DEADLINE_MESSAGE]);
+      }
+      return { kind: 'OK' };
+    },
+
+    async runConfirmed(input: LedgerRunWriteInput): Promise<RunStep> {
+      const session = input.session as Session;
+      const intent = session.runIntent;
+      const run = intent?.run;
+      if (!intent || !run || !sameDraft(run, input.run)) return runRefused('LEDGER_UNAVAILABLE', null, [RUN_NO_INTENT_MESSAGE]);
+      // D-R1-1: só o AUTOR confirma (o replay também recusa o fecho de quem não é o autor)
+      if (!isEntryAuthor(input.actor, run.author)) return runRefused('LEDGER_UNAVAILABLE', null, [RUN_AUTHOR_MESSAGE]);
+      // o fecho entra na cauda ATUAL e só se a própria operação continua aberta (um RUN_CONFIRMED depois de um RUN_ABORTED alheio deixaria o livro não confiável)
+      const prefix = await rereadPrefix(session);
+      if (!prefix.ok) return prefix.step;
+      if (prefix.replay.openRun?.contentSha256 !== intent.contentSha256) return runRefused('LEDGER_UNAVAILABLE', null, [RUN_CLOSED_BEFORE_CONFIRM_MESSAGE]);
+      const written = await append(session, { event: 'RUN_CONFIRMED', recordedAt: input.nowIso, actor: input.actor, run: { ...run, intentSeq: intent.ledgerSeq, anchorRef: { name: runAnchorName(run.runSeq), headSha256: run.runSha256 } } }, input.nowIso, true);
+      // EEXIST: outro registro ocupou a posição entre a releitura e o link(). A regravação na nova cauda (fechos intercalados da família RUN_*) é da R1.4: aqui a operação fica em
+      // fase C e o autor a conclui quando a conclusão existir.
+      if (written === 'CONFLICT') return runRefused('LEDGER_UNAVAILABLE', null, [RUN_CLOSING_CONFLICT_MESSAGE]);
+      if (written !== 'OK') return asRun(written);
+      session.runIntent = null;
+      await publishGuard(session);
+      return { kind: 'OK' };
+    },
+
     async sync(auditId: string) {
       const synced = await syncLedgerDirectory(options.dir, auditId, storeOptions);
       return synced.ok ? { ok: true as const } : { ok: false as const, refusal: refusal('LEDGER_UNAVAILABLE', null, null, [...synced.issues]) };
@@ -580,6 +897,7 @@ export function createUnconfiguredLedger(): LedgerPort {
   };
   const refusal: LedgerRefusal = { code: 'LEDGER_NOT_CONFIGURED', reason: 'NOT_CONFIGURED', issues: ['livro: NOT_CONFIGURED', MESSAGES.NOT_CONFIGURED as string], view: notConfigured };
   const step: LedgerStep = { kind: 'REFUSED', refusal };
+  const runStep = { kind: 'REFUSED' as const, refusal: { code: refusal.code, reason: refusal.reason, issues: refusal.issues } };
   return {
     async begin() {
       return null;
@@ -598,6 +916,19 @@ export function createUnconfiguredLedger(): LedgerPort {
     },
     async confirmed() {
       return step;
+    },
+    async runPrepare() {
+      // como no livro configurado com estado não PROTECTED: nenhuma autorização de RUN_INTENT; a avaliação da finalização recusa (`NOT_FINALIZABLE`) e os passos seguintes também
+      return { kind: 'OK' as const, view: notConfigured };
+    },
+    async runIntent() {
+      return runStep;
+    },
+    async runGate() {
+      return runStep;
+    },
+    async runConfirmed() {
+      return runStep;
     },
     async sync() {
       return { ok: false as const, refusal };

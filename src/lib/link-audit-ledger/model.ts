@@ -412,10 +412,25 @@ export type RecoveryPlan =
   /** Recibo removido de entrada já confirmada: o autor pode reemitir o recibo de MESMO conteúdo (registrando `RECEIPT_REISSUED`). */
   | { readonly kind: 'REISSUE_RECEIPT'; readonly confirmed: ConfirmedOp; readonly entry: DecisionRef };
 
+/**
+ * Plano PARALELO da família de resultados (spec §16.17.2, 16.17.4): o que a finalização (passo 1) e o `RECOVER` podem fazer com a operação de resultado aberta. Só em
+ * `PROTECTED` com `runs.state = OK` (16.17.9: o `RUN_ABORTED`, como o `ABORTED`, só em auditoria protegida); fora disso, `NONE`.
+ *  - `WAIT_RUN`: fase A recente (o dono pode estar vivo) — espera limitada;
+ *  - `ABORT_RUN`: fase A vencida com o lugar VAZIO — qualquer operador grava `RUN_ABORTED`, depois de reler os resultados (TOCTOU) e com as testemunhas conferidas antes;
+ *  - `CONCLUDE_RUN`: fase B/C com a origem comprovada — só o AUTOR conclui, pelo serviço de resultados (R1.4; o `RECOVER` nunca conclui, D-12).
+ */
+export type RunPlan =
+  | { readonly kind: 'NONE' }
+  | { readonly kind: 'WAIT_RUN'; readonly intent: LedgerRecord }
+  | { readonly kind: 'ABORT_RUN'; readonly intent: LedgerRecord; readonly ageMs: number }
+  | { readonly kind: 'CONCLUDE_RUN'; readonly intent: LedgerRecord; readonly phase: 'B' | 'C' };
+
 export interface Evaluation {
   readonly view: LedgerView;
   readonly replay: LedgerReplay | null;
   readonly plan: RecoveryPlan;
+  /** Receita da operação de RESULTADO aberta (paralela a `plan`, que é só das decisões). */
+  readonly runPlan: RunPlan;
   /**
    * L → R2 (§16.17.8): um `RUN_CONFIRMED` que R1 (lida antes do livro) não mostra ancorado só pode ser julgado por uma releitura POSTERIOR ao livro. `true` = a avaliação foi feita
    * sem ela (e, até lá, julgou sobre R1, falhando fechado para os resultados); quem avalia relê os resultados e avalia de novo com `resultsAfterLedger`.
@@ -439,26 +454,30 @@ export function evaluateProtection(input: ProtectionInput): Evaluation {
   const guardStatus: GuardStatus = input.guard.status === 'NOT_CONFIGURED' ? 'NOT_CONFIGURED' : input.guard.status === 'UNAVAILABLE' ? 'UNAVAILABLE' : 'CONSISTENT';
   /** Família de resultados: só existe depois das TESTEMUNHAS (R6-05); atribuída antes do cruzamento livro × decisões, entra em toda vista montada dali em diante. */
   let runs: RunsJudgement | null = null;
-  const make = (state: LedgerView['state'], reason: LedgerReason | null, replay: LedgerReplay | null, extra: Partial<LedgerView> = {}, plan: RecoveryPlan = none): Evaluation => ({
-    view: {
-      state,
-      reason,
-      head: replay?.head ?? null,
-      decisionHead: replay?.decisionHead ?? null,
-      confirmedDecisions: replay?.confirmed.length ?? 0,
-      openOperation: null,
-      recoverable: false,
-      receiptReissuable: false,
-      externalGuard: guardStatus,
-      // `closing` dos DOIS slots (16.17.6): o fecho da operação de decisão aberta e o do resultado aberto
-      ...(replay && input.currentKeyId ? { capacity: ledgerCapacity(replay.records, input.currentKeyId, input.checkpointEvery ?? CHECKPOINT_EVERY, input.capacityPolicy ?? LEDGER_CAPACITY_POLICY, (replay.open ? 1 : 0) + (replay.openRun ? 1 : 0)), keyCoverage: keyCoverageOf(replay.records, input.currentKeyId) } : {}),
-      ...(runs ? { runs: settleRuns(runs, state) } : {}),
-      ...extra,
-    },
-    replay,
-    plan,
-    needsFreshResults: runs?.needsFreshResults ?? false,
-  });
+  const make = (state: LedgerView['state'], reason: LedgerReason | null, replay: LedgerReplay | null, extra: Partial<LedgerView> = {}, plan: RecoveryPlan = none): Evaluation => {
+    const settled = runs ? settleRuns(runs, state) : null;
+    return {
+      view: {
+        state,
+        reason,
+        head: replay?.head ?? null,
+        decisionHead: replay?.decisionHead ?? null,
+        confirmedDecisions: replay?.confirmed.length ?? 0,
+        openOperation: null,
+        recoverable: false,
+        receiptReissuable: false,
+        externalGuard: guardStatus,
+        // `closing` dos DOIS slots (16.17.6): o fecho da operação de decisão aberta e o do resultado aberto
+        ...(replay && input.currentKeyId ? { capacity: ledgerCapacity(replay.records, input.currentKeyId, input.checkpointEvery ?? CHECKPOINT_EVERY, input.capacityPolicy ?? LEDGER_CAPACITY_POLICY, (replay.open ? 1 : 0) + (replay.openRun ? 1 : 0)), keyCoverage: keyCoverageOf(replay.records, input.currentKeyId) } : {}),
+        ...(settled ? { runs: settled } : {}),
+        ...extra,
+      },
+      replay,
+      plan,
+      runPlan: planRun(replay?.openRun ?? null, settled, state),
+      needsFreshResults: runs?.needsFreshResults ?? false,
+    };
+  };
   const unresolved = (reason: LedgerReason, replay: LedgerReplay | null = null, extra: Partial<LedgerView> = {}, plan: RecoveryPlan = none): Evaluation => make('HISTORY_UNRESOLVED', reason, replay, extra, plan);
 
   if (!input.configured) return unresolved('NOT_CONFIGURED');
@@ -627,6 +646,20 @@ function describeOpenRun(intent: LedgerRecord | null, latest: ResultsEvidence, i
   // receita (16.17.4): A vencida e com o lugar VAZIO ⇒ qualquer operador aborta (a R1.3 relê antes de gravar); B/C ⇒ só o autor conclui, e só com a origem comprovada (D-16)
   const recipe = ours ? ours.ref.originProven : seen === null && stale;
   return { runOpId: run.runOpId, runSeq: run.runSeq, runSha256: run.runSha256, phase, ageMs, stale, recoverable: recipe };
+}
+
+/**
+ * Plano da operação de resultado aberta (R1.3). `settled.open.recoverable` já exige `PROTECTED` e `runs.state = OK` (`settleRuns`); a conferência é repetida aqui de propósito
+ * (falha fechada, M-R30). Fase A vencida SEM receita (o lugar não está vazio) não vira espera: não há o que esperar, e a acusação desse `sk` é da R1.5.
+ */
+function planRun(intent: LedgerRecord | null, settled: LedgerRuns | null, state: LedgerView['state']): RunPlan {
+  const open = settled?.open ?? null;
+  if (!intent || !open || state !== 'PROTECTED' || settled?.state !== 'OK') return { kind: 'NONE' };
+  if (open.phase === 'A') {
+    if (open.recoverable) return { kind: 'ABORT_RUN', intent, ageMs: Math.max(0, Math.floor(open.ageMs)) };
+    return open.stale ? { kind: 'NONE' } : { kind: 'WAIT_RUN', intent };
+  }
+  return open.recoverable ? { kind: 'CONCLUDE_RUN', intent, phase: open.phase } : { kind: 'NONE' };
 }
 
 /** Receita do resultado só em `PROTECTED` (o `RUN_ABORTED`, como o `ABORTED`, só em auditoria protegida; 16.17.9) e com a família de resultados resolvida (16.17.3, passo 1). */
