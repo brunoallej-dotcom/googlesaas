@@ -136,6 +136,7 @@ const inputFor = (pkg: unknown, approval: unknown, over: Partial<SignCoreInput> 
   dossierBytes: DOSSIER,
   ...chainAfter(makeLastSeal()),
   riskAcceptanceBytes: null,
+  signingKeyStatus: 'active',
   ...over,
 });
 const validInput = (over: Partial<SignCoreInput> = {}): SignCoreInput => {
@@ -547,6 +548,20 @@ test('passo 10: relógio inválido ou fora do formato do manifesto ⇒ UNEXPECTE
   await assertRefused(validInput(), 'UNEXPECTED', '+010000-01-01T00:00:00.000Z');
 });
 
+/* --------------------------------------------------------------------------------------------------------------- §5.5.1 item 2: --key-id ativo, antes do passo 11 */
+
+test('§5.5.1 item 2 (confirmação da revisão da W4.1): --key-id ausente da lista, retired ou revoked (ou estado fora de forma) ⇒ SIGN_KEY_NOT_ACTIVE, depois das recusas 1–10 e antes da confirmação e da chave; active prossegue', async () => {
+  for (const status of ['absent', 'retired', 'revoked']) {
+    const refusal = await assertRefused(validInput({ signingKeyStatus: status as SignCoreInput['signingKeyStatus'] }), 'SIGN_KEY_NOT_ACTIVE');
+    assert.match(refusal.message, /--key-id/);
+  }
+  for (const malformed of ['ACTIVE', 'ativa', '', undefined, null]) await assertRefused(validInput({ signingKeyStatus: malformed as never }), 'SIGN_KEY_NOT_ACTIVE');
+  await assertSigned(validInput({ signingKeyStatus: 'active' }));
+  // as recusas dos passos 1–10 vêm antes, mesmo com a chave inativa
+  await assertRefused(validInput({ signingKeyStatus: 'revoked' }), 'SIGN_CLOCK_REGRESSION', '2026-11-18T11:59:59.999Z');
+  await assertRefused(validInput({ signingKeyStatus: 'retired', custodian: 'CONF-01' }), 'SIGN_ROLE_SEPARATION');
+});
+
 /* --------------------------------------------------------------------------------------------------------------- passo 11 (revisão da W4.1) */
 
 test('passo 11: a confirmação humana vem depois de todas as recusas e antes da chave, uma vez; a tela recebe só auditId, seq (W4.2) e o número de entradas (nunca o hash)', async () => {
@@ -611,8 +626,11 @@ test('passo 11: confirm que lança (síncrono) ou rejeita ⇒ SIGN_CONFIRMATION_
 
 /* --------------------------------------------------------------------------------------------------------------- ordem do §5.5 */
 
-type Fault = 'PACKAGE_SCHEMA' | 'APPROVAL_SCHEMA' | 'AUDIT' | 'PACKAGE_HASH' | 'NOT_APPROVED' | 'CHECK_FAIL' | 'LEGACY' | 'HUMAN_MISSING' | 'HUMAN_EXTRA' | 'DOSSIER' | 'CHAIN_AUDIT' | 'EVIDENCE_CHANGED' | 'ROLE' | 'CLOCK' | 'CONFIRM';
-/** Falhas na ordem do §5.5 (1, 1, 1, 2, 3, 4a, 4/5, 4b, 4b, 6, 7*, 8, 9, 10, 11); 7* = guarda do último manifesto recebido (a leitura da cadeia é da W4.2). */
+type Fault = 'PACKAGE_SCHEMA' | 'APPROVAL_SCHEMA' | 'AUDIT' | 'PACKAGE_HASH' | 'NOT_APPROVED' | 'CHECK_FAIL' | 'LEGACY' | 'HUMAN_MISSING' | 'HUMAN_EXTRA' | 'DOSSIER' | 'CHAIN_AUDIT' | 'EVIDENCE_CHANGED' | 'ROLE' | 'CLOCK' | 'KEY_NOT_ACTIVE' | 'CONFIRM';
+/**
+ * Falhas na ordem do §5.5 (1, 1, 1, 2, 3, 4a, 4/5, 4b, 4b, 6, 7*, 8, 9, 10, 10+, 11); 7* = guarda do último manifesto recebido (a leitura da cadeia é da
+ * W4.2); 10+ = `--key-id` ativo na lista (§5.5.1 item 2), imediatamente antes da confirmação humana.
+ */
 const LADDER: ReadonlyArray<readonly [Fault, string]> = [
   ['PACKAGE_SCHEMA', 'SIGN_PACKAGE_INVALID'],
   ['APPROVAL_SCHEMA', 'SIGN_APPROVAL_INVALID'],
@@ -628,6 +646,7 @@ const LADDER: ReadonlyArray<readonly [Fault, string]> = [
   ['EVIDENCE_CHANGED', 'SIGN_EVIDENCE_CHANGED'],
   ['ROLE', 'SIGN_ROLE_SEPARATION'],
   ['CLOCK', 'SIGN_CLOCK_REGRESSION'],
+  ['KEY_NOT_ACTIVE', 'SIGN_KEY_NOT_ACTIVE'],
   ['CONFIRM', 'SIGN_CONFIRMATION_FAILED'],
 ];
 
@@ -650,6 +669,7 @@ function build(faults: ReadonlySet<Fault>): { readonly input: SignCoreInput; rea
     custodian: has('ROLE') ? 'CONF-01' : 'CUST-01',
     dossierBytes: has('DOSSIER') ? Buffer.concat([DOSSIER, Buffer.from([0x0a])]) : DOSSIER,
     ...chainAfter(makeLastSeal({ auditId: has('CHAIN_AUDIT') ? OTHER_AUDIT : AUDIT, entries: sealed })),
+    signingKeyStatus: has('KEY_NOT_ACTIVE') ? 'retired' : 'active',
   });
   return { input, now: has('CLOCK') ? '2026-11-18T11:00:00.000Z' : NOW, ...(has('CONFIRM') ? { confirm: typing(rightPrefix(input).toUpperCase()) } : {}) };
 }

@@ -7,7 +7,7 @@ import { canonicalJson, sha256Hex } from '../src/lib/link-audit/canonical';
 import { nodeFsOps, type FsOps } from '../src/lib/link-audit/snapshot-store';
 import { CHECK_IDS, computePackageSha256, type Approval, type CandidatePackage } from '../src/lib/link-audit-attestation';
 import { exportCandidatePackage } from '../src/lib/link-audit-attestation/export-run';
-import { buildSealManifestBody, readSealChain, runSignWithChain, sealFileName, signSealManifest, type SignWithChainInput } from '../src/lib/link-audit-attestation/sign-chain';
+import { buildSealManifestBody, readSealChain, runSignWithChain, sealFileName, SIGN_KEY_ID_PATTERN, signSealManifest, type SignWithChainInput } from '../src/lib/link-audit-attestation/sign-chain';
 import { MAX_SEAL_SEQ, runSignCore, type ConfirmationFacts, type SignCoreDeps, type SignPlan, type SignRefusal } from '../src/lib/link-audit-attestation/sign-core';
 import { evidenceToProveFromBasis } from '../src/lib/link-audit-evidence/evidence-to-prove';
 import {
@@ -121,6 +121,8 @@ interface Scenario {
   readonly trustKeys?: string;
   readonly custodian?: string;
   readonly riskAcceptance?: Uint8Array | null;
+  /** `--key-id`; por padrão a chave A, ativa em `RING`. */
+  readonly keyId?: string;
 }
 function inputOf(scenario: Scenario): SignWithChainInput {
   const pkg = scenario.pkg ?? makePackage(scenario.entries ?? E3);
@@ -135,6 +137,7 @@ function inputOf(scenario: Scenario): SignWithChainInput {
     expectSeq: scenario.expectSeq,
     first: scenario.first ?? false,
     riskAcceptanceBytes: scenario.riskAcceptance ?? null,
+    keyId: scenario.keyId ?? KEYS_A.keyId,
   };
 }
 
@@ -436,8 +439,8 @@ test('TOCTOU: o verificador julga os MESMOS bytes de onde saem entries, sealedAt
 
 /* =============================================================================================================== ordem do §5.5 */
 
-type ChainFault = 'DOSSIER' | 'CHAIN_INVALID' | 'SEQ' | 'EVIDENCE_CHANGED' | 'ROLE' | 'CLOCK' | 'CONFIRM';
-/** Passos 6, 7 (cadeia inválida antes do seq), 7 (seq), 8, 9, 10 e 11 (confirmação humana, revisão da W4.1). */
+type ChainFault = 'DOSSIER' | 'CHAIN_INVALID' | 'SEQ' | 'EVIDENCE_CHANGED' | 'ROLE' | 'CLOCK' | 'KEY_NOT_ACTIVE' | 'CONFIRM';
+/** Passos 6, 7 (cadeia inválida antes do seq), 7 (seq), 8, 9, 10, `--key-id` ativo (§5.5.1 item 2, logo antes do 11) e 11 (confirmação humana). */
 const CHAIN_LADDER: ReadonlyArray<readonly [ChainFault, string]> = [
   ['DOSSIER', 'SIGN_DOSSIER_MISMATCH'],
   ['CHAIN_INVALID', 'SIGN_SEAL_CHAIN_INVALID'],
@@ -445,6 +448,7 @@ const CHAIN_LADDER: ReadonlyArray<readonly [ChainFault, string]> = [
   ['EVIDENCE_CHANGED', 'SIGN_EVIDENCE_CHANGED'],
   ['ROLE', 'SIGN_ROLE_SEPARATION'],
   ['CLOCK', 'SIGN_CLOCK_REGRESSION'],
+  ['KEY_NOT_ACTIVE', 'SIGN_KEY_NOT_ACTIVE'],
   ['CONFIRM', 'SIGN_CONFIRMATION_FAILED'],
 ];
 function ladder(sealsDir: string, faults: ReadonlySet<ChainFault>): { readonly input: SignWithChainInput; readonly now: string; readonly confirm?: Confirm } {
@@ -457,6 +461,7 @@ function ladder(sealsDir: string, faults: ReadonlySet<ChainFault>): { readonly i
     trustKeys: has('CHAIN_INVALID') ? KEYS_B.trustKeys : RING, // a cadeia é de A: fora da lista ⇒ SEAL_INVALID
     expectSeq: has('SEQ') ? 4 : 3,
     custodian: has('ROLE') ? 'CONF-01' : 'CUST-01',
+    keyId: has('KEY_NOT_ACTIVE') ? KEYS_X.keyId : KEYS_A.keyId, // X nunca está na lista
   });
   const wrong = has('CONFIRM') ? { confirm: async (): Promise<string> => rightPrefix(input).toUpperCase() } : {};
   return { input, now: has('CLOCK') ? '2026-11-18T10:30:00.000Z' : NOW, ...wrong }; // antes do último manifesto (11:00), depois da coleta (09:00)
@@ -583,7 +588,7 @@ test('IA-03 (fonte): pacote do export real → plano → corpo v2 → assinatura
   const sealsDir = tmpDir('lass-rt-');
   // 1ª assinatura (seq 1)
   const pkg1 = await exportedPackage(audit, EXPORT_NOW);
-  const plan1 = await planned(inputOf({ sealsDir, pkg: pkg1, expectSeq: 1, first: true, trustKeys }), { now: new Date(EXPORT_NOW.getTime() + HOUR / 2).toISOString() });
+  const plan1 = await planned(inputOf({ sealsDir, pkg: pkg1, expectSeq: 1, first: true, trustKeys, keyId: keys.keyId }), { now: new Date(EXPORT_NOW.getTime() + HOUR / 2).toISOString() });
   const signed1 = signSealManifest(plan1, keys.keyId, keys.privateKey);
   if (!signed1.ok) assert.fail(signed1.code);
   deliver(sealsDir, audit.auditId, signed1.seal);
@@ -594,7 +599,7 @@ test('IA-03 (fonte): pacote do export real → plano → corpo v2 → assinatura
   assert.ok(revised.ok && revised.value.revision === 2);
   const pkg2 = await exportedPackage(audit, new Date(EXPORT_NOW.getTime() + HOUR));
   assert.ok(pkg2.entries.some((entry) => entry.ref === 'report:c0001-r0002'));
-  const plan2 = await planned(inputOf({ sealsDir, pkg: pkg2, expectSeq: 2, trustKeys }), { now: new Date(EXPORT_NOW.getTime() + (3 * HOUR) / 2).toISOString() });
+  const plan2 = await planned(inputOf({ sealsDir, pkg: pkg2, expectSeq: 2, trustKeys, keyId: keys.keyId }), { now: new Date(EXPORT_NOW.getTime() + (3 * HOUR) / 2).toISOString() });
   assert.deepEqual([plan2.seq, plan2.prevSealSha256], [2, sealSha256(signed1.seal)]);
   const signed2 = signSealManifest(plan2, keys.keyId, keys.privateKey);
   if (!signed2.ok) assert.fail(signed2.code);
@@ -611,7 +616,7 @@ test('IA-03 (fonte): 1 byte alterado em contentSha256, ref, signature, seq, keyI
   const seal1 = createEvidenceSealV2({ auditId: audit.auditId, seq: 1, sealedAt: EXPORT_NOW.toISOString(), keyId: keys.keyId, privateKey: keys.privateKey, entries: (await basisEvidences(audit)).map(({ ref, contentSha256 }) => ({ ref, contentSha256 })), dossier: PREVIOUS_DOSSIER, prevSealSha256: null });
   deliver(sealsDir, audit.auditId, seal1);
   const pkg = await exportedPackage(audit, EXPORT_NOW);
-  const plan = await planned(inputOf({ sealsDir, pkg, expectSeq: 2, trustKeys }), { now: new Date(EXPORT_NOW.getTime() + HOUR).toISOString() });
+  const plan = await planned(inputOf({ sealsDir, pkg, expectSeq: 2, trustKeys, keyId: keys.keyId }), { now: new Date(EXPORT_NOW.getTime() + HOUR).toISOString() });
   const signed = signSealManifest(plan, keys.keyId, keys.privateKey);
   if (!signed.ok) assert.fail(signed.code);
   const seal2 = signed.seal;
@@ -680,7 +685,7 @@ async function produceGolden(vector: GoldenV2, sealsDir: string, trustKeys = GOL
   const dossier = goldenDossier(n);
   assert.equal(sha256(dossier), vector.body.dossier.sha256, `premissa do vetor G${n}`);
   const pkg = makePackage(vector.body.entries, GOLD_AUDIT, '2026-11-19T09:00:00.000Z');
-  const plan = await planned(inputOf({ sealsDir, pkg, approval: makeApproval(pkg, dossier, vector.body.dossier.id), dossier, expectSeq: n, first: n === 1, trustKeys }), { now: vector.body.sealedAt });
+  const plan = await planned(inputOf({ sealsDir, pkg, approval: makeApproval(pkg, dossier, vector.body.dossier.id), dossier, expectSeq: n, first: n === 1, trustKeys, keyId: vector.body.keyId }), { now: vector.body.sealedAt });
   const built = buildSealManifestBody(plan, vector.body.keyId);
   if (!built.ok) assert.fail(built.code);
   assert.equal(built.signingBytes.toString('hex'), vector.canonicalHex, `G${n}: bytes canônicos`);
@@ -709,7 +714,7 @@ test('§5.5.1 item 2 (lista completa com estado e fechos): G1–G2 da chave apos
   const pinned = `${GA.keyId}:${GA.publicRaw}:retired:${GOLDEN.g6.closureSha256},${GB.keyId}:${GB.publicRaw}:active`;
   await produceGolden(GOLDEN.g3, sealsDir, pinned);
   const pkg = makePackage(GOLDEN.g3.body.entries, GOLD_AUDIT, '2026-11-19T09:00:00.000Z');
-  const g3 = (trustKeys: string): SignWithChainInput => inputOf({ sealsDir, pkg, approval: makeApproval(pkg, goldenDossier(3), GOLDEN.g3.body.dossier.id), dossier: goldenDossier(3), expectSeq: 3, trustKeys });
+  const g3 = (trustKeys: string): SignWithChainInput => inputOf({ sealsDir, pkg, approval: makeApproval(pkg, goldenDossier(3), GOLDEN.g3.body.dossier.id), dossier: goldenDossier(3), expectSeq: 3, trustKeys, keyId: GOLDEN.g3.body.keyId });
   await chainRefused(g3(`${GA.keyId}:${GA.publicRaw}:retired,${GB.keyId}:${GB.publicRaw}`), 'SEAL_KEY_RETIRED_UNCOVERED', 'aposentada sem hash fixado', { now: GOLDEN.g3.body.sealedAt });
   await chainRefused(g3(`${GA.keyId}:${GA.publicRaw}:retired:${GOLDEN.g6.canonicalFileSha256},${GB.keyId}:${GB.publicRaw}`), 'SEAL_KEY_RETIRED_UNCOVERED', 'hash fixado de outros bytes', { now: GOLDEN.g3.body.sealedAt });
 });
@@ -720,7 +725,7 @@ test('passo 7 no núcleo: fato de cadeia fora de forma (seq, sealSha256) ⇒ SIG
   const pkg = makePackage(E3);
   const core = (chain: unknown, expectSeq = 2) =>
     runSignCore(
-      { auditId: AUD, custodian: 'CUST-01', packageBytes: bytes(pkg), approvalBytes: bytes(makeApproval(pkg)), dossierBytes: DOSSIER, riskAcceptanceBytes: null, chain: chain as never, expectSeq, first: false },
+      { auditId: AUD, custodian: 'CUST-01', packageBytes: bytes(pkg), approvalBytes: bytes(makeApproval(pkg)), dossierBytes: DOSSIER, riskAcceptanceBytes: null, signingKeyStatus: 'active', chain: chain as never, expectSeq, first: false },
       { now: () => new Date(NOW), confirm: async () => pkg.packageSha256.slice(0, CONFIRM_LENGTH), openKey: () => KEY_SENTINEL },
     );
   const last = { auditId: AUD, seq: 1, sealSha256: h('7'), sealedAt: '2026-11-18T10:00:00.000Z', entries: plain(E1) };
@@ -809,4 +814,50 @@ test('passo 9 pela cadeia (revisão da W4.1): runSignWithChain repassa os bytes 
   assert.deepEqual([plan.roleException, plan.requiresLaterReview], [true, true]);
   await refusedWith(inputOf({ ...same, riskAcceptance: null }), 'SIGN_ROLE_SEPARATION');
   await refusedWith(inputOf({ ...same, riskAcceptance: Buffer.concat([risk, Buffer.from('x')]) }), 'SIGN_ROLE_SEPARATION');
+});
+
+/* =============================================================================================================== §5.5.1 item 2: --key-id ativo antes do passo 11 */
+
+test('§5.5.1 item 2 (confirmação da revisão da W4.1): --key-id ausente da lista, retired ou revoked ⇒ SIGN_KEY_NOT_ACTIVE, com confirm e openKey em 0 chamadas; active prossegue (com cadeia e no primeiro manifesto)', async () => {
+  const sealsDir = tmpDir('lass-');
+  chain(sealsDir, [{ entries: E1 }, { entries: E2 }]); // a cadeia é de A: B pode mudar de estado sem afetá-la
+  const cases: ReadonlyArray<readonly [string, string, string]> = [
+    ['ausente da lista', `${KEYS_A.trustKeys}:active,${KEYS_B.trustKeys}`, KEYS_X.keyId],
+    ['retired', `${KEYS_A.trustKeys}:active,${KEYS_B.trustKeys}:retired`, KEYS_B.keyId],
+    ['revoked', `${KEYS_A.trustKeys}:active,${KEYS_B.trustKeys}:revoked`, KEYS_B.keyId],
+  ];
+  for (const [label, trustKeys, keyId] of cases) {
+    const refusal = await refusedWith(inputOf({ sealsDir, expectSeq: 3, trustKeys, keyId }), 'SIGN_KEY_NOT_ACTIVE');
+    assert.match(refusal.message, /--key-id/, label);
+    await refusedWith(inputOf({ sealsDir: tmpDir('lass-'), expectSeq: 1, first: true, trustKeys, keyId }), 'SIGN_KEY_NOT_ACTIVE');
+  }
+  assert.equal((await planned(inputOf({ sealsDir, expectSeq: 3, keyId: KEYS_B.keyId }))).seq, 3, 'B ativa em RING: prossegue');
+  assert.equal((await planned(inputOf({ sealsDir, expectSeq: 3, keyId: KEYS_A.keyId }))).seq, 3);
+});
+
+test('§5.5.1 item 2: com a chave inativa, as recusas dos passos 1–10 continuam vindo antes (cadeia, seq, papéis, relógio)', async () => {
+  const sealsDir = tmpDir('lass-');
+  chain(sealsDir, [{ entries: E1 }, { entries: E2 }]);
+  const keyId = KEYS_X.keyId;
+  await chainRefused(inputOf({ sealsDir, expectSeq: 3, keyId, trustKeys: KEYS_B.trustKeys }), 'SEAL_INVALID', 'cadeia fora da lista');
+  await refusedWith(inputOf({ sealsDir, expectSeq: 4, keyId }), 'SIGN_SEQ_MISMATCH');
+  await refusedWith(inputOf({ sealsDir, expectSeq: 3, keyId, custodian: 'CONF-01' }), 'SIGN_ROLE_SEPARATION');
+  await refusedWith(inputOf({ sealsDir, expectSeq: 3, keyId }), 'SIGN_CLOCK_REGRESSION', { now: '2026-11-18T10:30:00.000Z' });
+});
+
+test('§5.5.1 item 2: --key-id fora do padrão (^[a-z0-9][a-z0-9-]{3,31}$) ⇒ USAGE antes de ler qualquer coisa; o padrão é o mesmo do verificador (paridade com parseTrustKeyring)', async () => {
+  const sealsDir = tmpDir('lass-');
+  chain(sealsDir, [{ entries: E1 }]);
+  const bad = ['', 'ek', 'ek1', 'EK-202611-A', 'ek_202611', '-ek-2026', 'ek 2026', 'ek:2026', 'ek-2026,a', 'é-2026-a', 'a'.repeat(33)];
+  for (const keyId of bad) {
+    const reads: string[] = [];
+    const spy = faulty(Object.fromEntries((['lstat', 'readdir', 'realpath', 'readFile'] as const).map((name) => [name, async (...args: unknown[]) => (reads.push(name), (nodeFsOps[name] as (...a: unknown[]) => Promise<unknown>)(...args))])));
+    const refusal = await refusedWith(inputOf({ sealsDir, expectSeq: 2, keyId }), 'USAGE', { fs: spy });
+    assert.match(refusal.message, /--key-id/, JSON.stringify(keyId));
+    assert.deepEqual(reads, [], `${JSON.stringify(keyId)}: nada lido`);
+  }
+  const corpus = [...bad, 'ek-1', 'abcd', '0abc', 'ek-202611-a', 'a'.repeat(32), 'ek--a', 'ek-sign-cadeia-a'];
+  for (const keyId of corpus) {
+    assert.equal(SIGN_KEY_ID_PATTERN.test(keyId), parseTrustKeyring(`${keyId}:${KEYS_A.publicRaw}`) !== null, `paridade com o verificador para ${JSON.stringify(keyId)}`);
+  }
 });

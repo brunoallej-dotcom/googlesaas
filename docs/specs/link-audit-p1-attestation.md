@@ -281,7 +281,7 @@ Fecham lacunas apontadas no mapa da W4; prevalecem sobre o texto acima onde houv
 - **Corpo (passo 13):** um plano com `entries` desordenadas ou repetidas é recusado (`UNEXPECTED`), nunca reordenado nem deduplicado em silêncio; `seq`/`prevSealSha256` incoerentes também. Nesta fatia a assinatura só usa chave de teste. `signSealManifest` confere a assinatura com a pública derivada antes de devolver e nunca repassa o objeto de erro (RS-13).
 - **Vetores-ouro:** o `sign` reproduz G1 → G2 → G3 a partir do pacote, inclusive G3 sobre o fecho G6 fixado. O dossiê dos testes é `ouro|dossie-0N`, rótulo deduzido da regra do cabeçalho dos vetores (`sha256("ouro|<rótulo>")`) e conferido contra o hash.
 - **Ficam para depois:**
-  - `SIGN_KEY_NOT_ACTIVE`/`SIGN_KEY_MISMATCH` do item 2: W4.4, porque precisam de `--key-id` e da chave aberta;
+  - ~~`SIGN_KEY_NOT_ACTIVE`/`SIGN_KEY_MISMATCH` do item 2: W4.4, porque precisam de `--key-id` e da chave aberta;~~ **Corrigido na confirmação da revisão da W4.1 (nota no fim desta seção):** `SIGN_KEY_NOT_ACTIVE` precisa só do `--key-id` e da lista, não da chave aberta, e entrou na W4.2; só `SIGN_KEY_MISMATCH` precisa da chave aberta e fica para depois do passo 12 (W4.3);
   - o autoteste: W4.5;
   - a gravação (com o nome de `sealFileName`): W4.3;
   - `SIGN_TOO_MANY_ENTRIES` do §7.1: hoje é inalcançável (pacote ≤ 2000 entradas ⇒ manifesto < 256 KiB); a W4.3 confere sobre os bytes gravados.
@@ -331,6 +331,17 @@ Fecham lacunas apontadas no mapa da W4; prevalecem sobre o texto acima onde houv
   Confirmação errada ou porta que falha ⇒ nenhuma escrita (nem subpasta, temporário, `link()` ou fsync) e a chave não é aberta, também sobre uma cadeia existente.
 
 - **Revisão independente da W4.3 (19/11/2026, `junin-01`, aprovar com mudanças):** o `SIGN_SEQ_CONFLICT` passou a avisar do temporário restante quando, depois do `link()` recusado por já existir o nome final, a remoção do temporário também falha (antes só o `SIGN_WRITE_FAILED` avisava). O manifesto existente continua intacto em todos os casos.
+
+**Confirmação da revisão da W4.1 (19/11/2026, `junin-03`), pontos novos para a W4.2:**
+
+- **`SIGN_KEY_NOT_ACTIVE` (§5.5.1 item 2) antes da confirmação humana:**
+  - **Posição:** imediatamente antes do passo 11, isto é, depois de todas as recusas dos passos 1–10 e antes de `confirm` e de `openKey`. O custodiante nunca é chamado a confirmar, nem a chave é aberta, para uma chave que não assina.
+  - **O que se confere:** `runSignWithChain` recebe `keyId` (o `--key-id`) e consulta o estado dele na lista `--trust-keys` já parseada pelo verificador (`parseTrustKeyring`). Ausente, `retired` ou `revoked` ⇒ `SIGN_KEY_NOT_ACTIVE`; só `active` segue. A mensagem diz o estado, sem repetir o id.
+  - **Como chega ao núcleo:** o estado vai como fato estrutural (`signingKeyStatus: 'active' | 'retired' | 'revoked' | 'absent'`), e o núcleo continua sem importar o verificador. Qualquer valor diferente de `active`, inclusive fora de forma, é recusa.
+  - **Lista inválida:** o estado é `absent`, mas a cadeia já a recusa no passo 7 (`PROOF_NOT_CONFIGURED`).
+- **Formato do `--key-id`:** fora de `^[a-z0-9][a-z0-9-]{3,31}$` ⇒ `USAGE`, antes de ler qualquer coisa (nem a cadeia). O padrão é o do verificador (`TRUST_KEY_ID`, que ele não exporta). Foi copiado em `SIGN_KEY_ID_PATTERN`, sem mudar o verificador, com a paridade travada por teste contra `parseTrustKeyring`.
+- **`SIGN_KEY_MISMATCH`:** depende da chave aberta e fica para depois do passo 12, na W4.3.
+- **Isolamento:** nos arquivos do `sign` (`sign-*.ts`), nenhum `import(` cujo argumento não seja uma string literal simples e nenhuma forma de `require` (`require(`, `require.resolve`, `module.require`, `createRequire`). O código atual não tinha esse padrão; o teste pega a inserção de `import('./' + 'x')`.
 
 ### 5.6 Manifesto `v2` e verificador `v2` (onda W3, contrato próprio)
 
