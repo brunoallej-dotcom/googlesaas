@@ -154,6 +154,12 @@ test('RL-34 / M-R33: na gravação, resultado (ou citação, ou recibo) que a re
     ['só uma citação nova', { ...R1_ONLY, hasResults: true, ledgerHeads: [cite] }],
     ['só a primeira evidência de resultado (v1, sem citação)', { ...R1_ONLY, hasResults: true }],
   ];
+  // com resultado já visto em R1, só a citação nova (de testemunha ou de indício) é a novidade
+  const legacy: ResultsEvidence = { ...R1_ONLY, hasResults: true };
+  const citedOnly: Array<[string, ResultsEvidence, ResultsEvidence]> = [
+    ['citação nova de testemunha', legacy, { ...legacy, ledgerHeads: [cite] }],
+    ['citação nova de indício (pendente sem origem)', legacy, { ...legacy, unverifiedLedgerHeads: [cite] }],
+  ];
   const port = ledgerFor(w, { guard: null });
   const prepare = async (r1: ResultsEvidence, r2: ResultsEvidence, rechecks: number) =>
     port.prepare({ session: await port.begin(w.auditId), auditId: w.auditId, snapshot, results: r1, freshResults: async () => r2, entryOriginProven: () => true, nowIso: clock(), actor: 'ana@empresa.com', rechecks, intended: 'REVOKE', decisionsWitness: null });
@@ -163,6 +169,7 @@ test('RL-34 / M-R33: na gravação, resultado (ou citação, ou recibo) que a re
     const exhausted = await prepare(R1_ONLY, r2, 3);
     assert.ok(exhausted.kind === 'REFUSED' && exhausted.refusal.code === 'LEDGER_OPERATION_IN_PROGRESS', `${label}: esgotado ⇒ recusa transitória, não acusação (${JSON.stringify(exhausted).slice(0, 160)})`);
   }
+  for (const [label, r1, r2] of citedOnly) assert.deepEqual(await prepare(r1, r2, 0), { kind: 'RETRY', ms: 25, transient: true }, label);
   // o recibo que aparece (pendente → ancorado) também é novidade da releitura
   const pending = { ...R1_ONLY, hasResults: true, ledgerHeads: [cite], runs: { anchored: [], pending: runRefOf(1, sha, { ledgerHead: cite }) } };
   const anchored = { ...pending, runs: { anchored: [runRefOf(1, sha, { ledgerHead: cite })], pending: null } };

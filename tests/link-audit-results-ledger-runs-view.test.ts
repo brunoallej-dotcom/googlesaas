@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 import type { KnownHeadsProvider } from '../src/lib/link-audit-decisions';
+import { createResultsKnownHeads } from '../src/lib/link-audit-scoring-runs';
 import { evaluateProtection, verifyTags, type DecisionRef, type LedgerRecord, type ProtectionInput, type ResultsEvidence } from '../src/lib/link-audit-ledger';
 import { ANA, BIA, clock, hashTree, must, rec, registerCleanup } from './helpers/link-audit-decisions-fixtures';
 import { decisionsOver, LEDGER_AUTH_A, ledgerFor, ledgerRecords, ledgerWorld, refOf } from './helpers/link-audit-ledger-fixtures';
@@ -97,8 +98,10 @@ test('L → R2: confirmado NÃO ancorado em R1 pede R2; só R2 decide RESULT_REG
     ['R2 com sk de outro hash', NONE, seen([runRefOf(1, hashOf('outro'))]), 'UNRESOLVED', 'RESULT_REGRESSED'],
     ['R2 com sk certo e sem recibo', NONE, seen([], runRefOf(1, sha)), 'UNRESOLVED', 'RESULT_RECEIPT_REMOVED'],
     ['R1 já sem recibo, R2 idem', seen([], runRefOf(1, sha)), seen([], runRefOf(1, sha)), 'UNRESOLVED', 'RESULT_RECEIPT_REMOVED'],
+    ['R1 e R2 com OUTRO conteúdo ancorado no número (recibo coerente com o arquivo trocado)', seen([runRefOf(1, hashOf('outro'))]), seen([runRefOf(1, hashOf('outro'))]), 'UNRESOLVED', 'RESULT_REGRESSED'],
   ];
   for (const [label, r1, r2, state, reason] of cases) {
+    assert.equal(evaluate(chain, r1).needsFreshResults, true, `${label}: R1 não resolve (ancorado e com o MESMO hash é a única coisa que resolve)`);
     const evaluation = evaluate(chain, r1, { resultsAfterLedger: r2 });
     assert.equal(evaluation.needsFreshResults, false, `${label}: com R2 nada mais é pedido`);
     assert.deepEqual([evaluation.view.state, evaluation.view.reason, evaluation.view.confirmedDecisions], ['PROTECTED', null, 1], `${label}: o livro e as decisões seguem protegidos`);
@@ -136,6 +139,7 @@ test('a receita do resultado só é anunciada em PROTECTED e com runs OK; com ra
     const evaluation = evaluate(chain, seen([runRefOf(1, run?.runSha256 as string)]), stale, confirmed, pending);
     assert.deepEqual([evaluation.view.state, evaluation.view.reason], ['HISTORY_UNRESOLVED', reason], label);
     assert.equal(evaluation.view.runs?.state, 'OK', `${label}: runs presente`);
+    assert.deepEqual([evaluation.view.runs?.open?.phase, evaluation.view.runs?.open?.stale, evaluation.view.runs?.open?.recoverable], ['A', true, false], `${label}: fase A vencida, mas fora de PROTECTED não há receita`);
   }
   // runs UNRESOLVED (resultado confirmado sumiu): a fase A vencida não é anunciada como receita
   const regressed = evaluate(chain, NONE, { ...stale, resultsAfterLedger: NONE });
@@ -176,10 +180,14 @@ test('testemunha dos resultados: createResultsKnownHeads entrega runs (ancorados
   const read = await witnessOver(w, e)(w.auditId);
   assert.ok(read.ok);
   assert.deepEqual(read.runs, { anchored: [{ seq: 1, sha256: first.contentSha256, prevSha256: null, schemaVersion: 2, ledgerHead: first.ledgerHead, finalizedBy: 'ana@empresa.com', originProven: true }], pending: null });
+  // sem autenticador de origem (ou com origem não comprovável) o resultado é entregue com originProven: false — nunca promovido
+  const blind = await createResultsKnownHeads({ baseDir: e.base, anchorDir: e.anchors, otherDirs: [w.decisionsDir, w.anchorDir, w.evidenceDir, w.ledgerDir] })(w.auditId);
+  assert.ok(blind.ok);
+  assert.deepEqual(blind.runs?.anchored.map((ref) => [ref.seq, ref.originProven]), [[1, false]]);
   fs.rmSync(receiptPath(e, 1, w.auditId));
   const pending = await witnessOver(w, e)(w.auditId);
   assert.ok(pending.ok);
-  assert.deepEqual([pending.runs?.anchored.length, pending.runs?.pending?.seq, pending.runs?.pending?.sha256], [0, 1, first.contentSha256]);
+  assert.deepEqual([pending.runs?.anchored.length, pending.runs?.pending?.seq, pending.runs?.pending?.sha256, pending.runs?.pending?.originProven], [0, 1, first.contentSha256, true]);
 
   const good = { seq: 1, sha256: hashOf('r1'), prevSha256: null, schemaVersion: 2, ledgerHead: null, finalizedBy: 'ana@empresa.com', originProven: true };
   const malformed: Array<[string, unknown]> = [
