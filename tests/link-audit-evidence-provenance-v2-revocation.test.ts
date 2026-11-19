@@ -184,6 +184,22 @@ test('V2-27 (review MAJOR) the pre-step verifies on a LENIENT parse: a revoked s
   await expectFor(crossDir, E1, UNAUTH('SEAL_INVALID'), "escaped copy of another audit's revoked seal");
 });
 
+test('V2-27 (review MAJOR, 2nd reading) the pre-step does not filter on schemaVersion: a revoked seal labelled 3 or without a version still signals; an active one does not', async () => {
+  const relabelled = (seal: AnySeal, keys: EvidenceKeys, version: 3 | undefined): AnySeal => {
+    const body = bodyOf(seal);
+    if (version === undefined) delete body.schemaVersion;
+    else body.schemaVersion = version;
+    return signedBy(body, keys); // well signed over the relabelled body
+  };
+  for (const [label, version] of [['schemaVersion 3', 3], ['no schemaVersion', undefined]] as const) {
+    const revoked = buildChain([{ keys: A, entries: E1 }, { keys: K, entries: E2 }]);
+    await expectFor(writeChain([revoked[0] as AnySeal, relabelled(revoked[1] as AnySeal, K, version)]), E2, REVOKED(K.keyId), `revoked key, ${label}`);
+    // the same by an ACTIVE key: no signal; [1,2] takes path B for an unknown latest version (V2-48) and row 8 refuses it, as [2] does
+    const active = buildChain([{ keys: A, entries: E1 }, { keys: B, entries: E2 }]);
+    await expectFor(writeChain([active[0] as AnySeal, relabelled(active[1] as AnySeal, B, version)]), E2, UNAUTH('SEAL_INVALID'), `active key, ${label}`);
+  }
+});
+
 test('V2-28 (M1) the revocation signal WINS over a corrupted last seal, a gap, non-cumulativity, a broken link, a downgrade, an unknown or uncovered key; a deleted folder gives NO_SEAL', async () => {
   const base = (): AnySeal[] => buildChain([{ keys: K, entries: E1 }, { keys: A, entries: E2 }, { keys: A, entries: E3 }]);
   const corrupted = writeChain(base());
