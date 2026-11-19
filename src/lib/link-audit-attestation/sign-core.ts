@@ -196,8 +196,20 @@ function evidenceChangedRefusal(pkg: CandidatePackage, last: LastSealFacts | nul
   return { ...refuse('SIGN_EVIDENCE_CHANGED', `Evidência já atestada mudou de hash ou sumiu (${refs.join(', ')}). ${NOTHING_SIGNED}`), refs };
 }
 
-/** Rótulo comparável: NFKC, sem caixa e sem separadores (`CONF-01` ≡ `conf 01` ≡ `ＣＯＮＦ.01`). Erra para o lado de "coincide" (falha fechada). */
-const roleKey = (label: string): string => label.normalize('NFKC').toLowerCase().replace(/[\s._-]+/gu, '');
+/** Todo grupo de separadores (espaço, `.`, `_`, `-`) sai da chave do rótulo, não só o primeiro. */
+const ROLE_SEPARATORS = /[\s._-]+/gu;
+/** Rótulo comparável: NFKC e sem separadores (`CONF-01` ≡ `conf 01` ≡ `ＣＯＮＦ.01`); a caixa é tratada em `sameRole`. */
+const roleKey = (label: string): string => label.normalize('NFKC').replace(ROLE_SEPARATORS, '');
+
+/**
+ * Mesma pessoa se as chaves coincidem em minúsculas OU em maiúsculas OU na dobra maiúsculas(minúsculas): `ΟΣ` em minúsculas vira `ος` (sigma
+ * final) e não bate com `οσ`, mas em maiúsculas sim; `ß`/`SS` só batem em maiúsculas; `ẞ`/`SS` só na dobra. Cada forma a mais só AMPLIA a
+ * coincidência: erra sempre para o lado de "coincide" (falha fechada).
+ */
+function sameRole(left: string, right: string): boolean {
+  const [a, b] = [roleKey(left), roleKey(right)];
+  return a.toLowerCase() === b.toLowerCase() || a.toUpperCase() === b.toUpperCase() || a.toLowerCase().toUpperCase() === b.toLowerCase().toUpperCase();
+}
 
 /**
  * Passo 9, aceite formal com os papéis coincidindo: a referência na aprovação, o arquivo EXISTENTE (bytes não vazios: um arquivo vazio não é aceite
@@ -215,10 +227,10 @@ function riskAcceptanceRefusal(approval: Approval, bytes: Uint8Array | null): Si
 
 /** Passo 9 (RS-01, D4): conferente ≠ custodiante, ou aceite formal existente e com o hash citado; operador = conferente não bloqueia, só marca revisão. */
 function roleDecision(approval: Approval, input: SignCoreInput): Roles {
-  const roleException = roleKey(approval.approvedBy) === roleKey(input.custodian);
+  const roleException = sameRole(approval.approvedBy, input.custodian);
   const refused = roleException ? riskAcceptanceRefusal(approval, input.riskAcceptanceBytes) : null;
   if (refused) return refused;
-  return { ok: true, roleException, requiresLaterReview: roleException || roleKey(approval.operator) === roleKey(approval.approvedBy) };
+  return { ok: true, roleException, requiresLaterReview: roleException || sameRole(approval.operator, approval.approvedBy) };
 }
 
 /** Passo 10: `sealedAt` (relógio injetado) ≥ `lastCollectedAt` e ≥ `sealedAt` do último manifesto. Todas com ms em UTC: ordem lexicográfica = cronológica. */
