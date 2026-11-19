@@ -319,6 +319,8 @@ Fecham lacunas apontadas no mapa da W4; prevalecem sobre o texto acima onde houv
 - **`SIGN_KEY_MISMATCH`:** depende da chave aberta e fica para depois do passo 12, na W4.3.
 - **Isolamento:** nos arquivos do `sign` (`sign-*.ts`), nenhum `import(` cujo argumento não seja uma string literal simples e nenhuma forma de `require` (`require(`, `require.resolve`, `module.require`, `createRequire`). O código atual não tinha esse padrão; o teste pega a inserção de `import('./' + 'x')`.
 
+- **Confirmação da W4.2 pelo `junin-03` (19/11/2026, aprovar com mudanças):** (i) a guarda contra `import()` com nome calculado e `require` passou a valer para todos os arquivos alcançáveis a partir dos arquivos do `sign`, inclusive o verificador e suas dependências, e não só para os `sign-*`; (ii) a mensagem de `--key-id` fora do formato diz "nada foi assinado nem gravado", porque na W4.3 as entradas já foram lidas quando ela sai; (iii) o achado de que `$` aceitaria um `\n` final foi conferido e não procede em JavaScript (sem a flag `m`, `/^…$/.test('abcd\n')` é falso).
+
 ### 5.6 Manifesto `v2` e verificador `v2` (onda W3, contrato próprio)
 
 **Decisão de 16/11:** `v2` **antes do primeiro resultado de produção**, com `dossier.sha256` e `prevSealSha256` **dentro da parte assinada**.

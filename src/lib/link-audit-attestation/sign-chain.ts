@@ -177,7 +177,7 @@ export interface SignWithChainInput extends Omit<SignCoreInput, 'chain' | 'signi
  * para não mudar o verificador; a paridade é travada por teste contra `parseTrustKeyring`.
  */
 export const SIGN_KEY_ID_PATTERN = /^[a-z0-9][a-z0-9-]{3,31}$/;
-const BAD_KEY_ID: SignRefusal = { ok: false, code: 'USAGE', message: '--key-id inválido (minúsculas, dígitos e "-", 4 a 32 caracteres, começando por letra ou dígito). Nada foi lido nem assinado.' };
+const BAD_KEY_ID: SignRefusal = { ok: false, code: 'USAGE', message: '--key-id inválido (minúsculas, dígitos e "-", 4 a 32 caracteres, começando por letra ou dígito). Nada foi assinado nem gravado.' };
 
 /** Estado de `--key-id` na lista com estado já parseada pelo verificador (contrato v2 §5). Lista inválida ⇒ `absent` (a cadeia já a recusa no passo 7). */
 export function signingKeyStatus(trustKeys: string, keyId: string): SigningKeyStatus {
