@@ -255,6 +255,17 @@ Fecham lacunas apontadas no mapa da W4; prevalecem sobre o texto acima onde houv
 8. **Frase da chave sem eco (§8, IA-04, IA-15):** TTY herdado em modo bruto, sem eco, restaurado em `finally`; stdin sem TTY ⇒ recusa. Testado com TTY injetável; execução em pseudo-terminal no CI se for viável sem dependência nova.
 9. **Comando de fecho (V2-46, subcomando `close-key`, W4.5):** o registro externo é a pasta de **recibos de assinatura** (passo 16), um JSON por assinatura, indicada por `--receipts-dir`; a correspondência é por `{auditId, seq, sealSha256}` com `keyId = R`. Cadeia presente na cópia do servidor com posição assinada por `R` e sem recibo correspondente ⇒ listada como `UNKNOWN_SEAL_ON_SERVER` e **excluída** do fecho; recibos duplicados idênticos são tolerados; recibos divergentes para a mesma posição ⇒ recusa. O fecho é montado e assinado pela chave `active` indicada, com o mesmo autoteste do item 2.
 
+
+**Notas da W4.1 (19/11/2026, núcleo puro `sign-core.ts`):**
+
+- **Ordem dentro dos passos 4 e 5:** `FAIL` ⇒ `SIGN_INTEGRITY_NOT_OK`; depois `attestable = false` ou entrada legada ⇒ `SIGN_LEGACY_NOT_ATTESTABLE`; só então a cobertura humana ⇒ `SIGN_CHECK_NOT_EXECUTED`. Pelo esquema da W1 (`attestable ⇔ sem legado`) a condição `attestable` do passo 4 e o passo 5 são o mesmo predicado; julgá-los juntos, antes da cobertura humana, é o que torna a IA-01 (b) alcançável.
+- **IA-01 (d):** `integrity.status ≠ OK` nunca chega ao passo 4, porque o esquema da W1 fixa o literal `"OK"`; o pacote é recusado no passo 1 (`SIGN_PACKAGE_INVALID`). Falha fechada, travada por teste.
+- **Resultado humano para verificação que o pacote não marca `NOT_EXECUTED`** ⇒ `SIGN_APPROVAL_INVALID` (sem código novo). "Com nota" = nota não vazia depois de `trim()`.
+- **Separação de papéis (passo 9):** rótulos comparados depois de NFKC, sem caixa e sem separadores (`CONF-01` ≡ `conf 01`), errando para "coincide" (falha fechada).
+- **`dossier.id`:** padrão do contrato **e** a regra de texto seguro (um id com cara de telefone é recusado); paridade com o construtor do manifesto `v2` travada por teste. O padrão é copiado, não importado: o esquema não pode puxar o verificador (grafo de rede, item 7).
+- **Ficam para a W4.4:** (i) o passo 9 fala em "existência e hash" do aceite de risco, mas o CLI não tem argumento para esse arquivo; hoje só se exige a referência presente; (ii) a subpasta `<seals-dir>/<auditId>/` deriva só do `--audit` validado (quarto lugar do passo 1, por construção).
+- **Pergunta aberta (junto da §13.3):** operador = custodiante não marca `requiresLaterReview`; a spec não trata o caso.
+
 ### 5.6 Manifesto `v2` e verificador `v2` (onda W3, contrato próprio)
 
 **Decisão de 16/11:** `v2` **antes do primeiro resultado de produção**, com `dossier.sha256` e `prevSealSha256` **dentro da parte assinada**.
