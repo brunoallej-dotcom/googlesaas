@@ -342,3 +342,35 @@ test('ABORTED da recuperação colide com o CHECKPOINT de outro RECOVER (que viu
   assert.ok(replayLedger(records, w.auditId).ok);
   assert.equal(verifyTags(records, rotatedAuth(AFTER_OLD_KEY_EXPIRED)), null);
 });
+
+test('CONFIRMED da FASE C (gravado no prepare pelo autor) colide com um CHECKPOINT intercalado: o EEXIST vira nova tentativa, o laço relê e reavalia (fase C de novo, mesmas conferências) e o autor conclui na nova cauda — um único CONFIRMED, cadeia autêntica', async () => {
+  const w = await ledgerWorld();
+  // fase C: entrada e recibo publicados; a publicação do CONFIRMED falha (ENOSPC, não fatal) e o livro fica um registro atrás
+  let failedOnce = false;
+  const noClosing = faulty({
+    async link(from, to) {
+      if (!failedOnce && path.dirname(to) === path.join(w.ledgerDir, w.auditId) && (JSON.parse(fs.readFileSync(from, 'utf8')) as LedgerRecord).event === 'CONFIRMED') {
+        failedOnce = true;
+        throw errno('ENOSPC');
+      }
+      return nodeFsOps.link(from, to);
+    },
+  });
+  const stuck = await serviceOver(w, { fs: noClosing }).create(ANA, w.auditId, { record: rec.c2(), expectedHead: null }, clock);
+  assert.equal(codeOf(stuck), 'LEDGER_UNAVAILABLE', JSON.stringify(stuck).slice(0, 200));
+  assert.ok(fs.existsSync(anchorPath(w, 1)), 'o recibo existe');
+  assert.deepEqual((await must(serviceOver(w).list(BIA, w.auditId, clock()))).ledger.openOperation?.phase, 'C');
+  // o autor reenvia; no instante do CONFIRMED da fase C entra um CHECKPOINT (outro processo, mesma chave) na mesma posição
+  const hook = planter(w, 'CONFIRMED', (chain) => extend(LEDGER_AUTH_A, w, chain, checkpoint));
+  const concluded = await serviceOver(w, { fs: hook.ops }).create(ANA, w.auditId, { record: rec.c2(), expectedHead: null }, clock);
+  assert.equal(hook.state.mismatch, null);
+  assert.equal(hook.state.collisions, 1);
+  assert.ok(concluded.ok, `o autor conclui: ${JSON.stringify(concluded).slice(0, 200)}`);
+  const records = await ledgerRecords(w);
+  assert.deepEqual(records.map((r) => r.event), ['GENESIS', 'INTENT', 'CHECKPOINT', 'CONFIRMED']);
+  assert.deepEqual([records[3]?.actor, records[3]?.op?.intentSeq, records[3]?.prevSha256], ['ana@empresa.com', 2, records[2]?.contentSha256]);
+  assert.ok(replayLedger(records, w.auditId).ok);
+  assert.equal(verifyTags(records, LEDGER_AUTH_A), null);
+  const end = await must(serviceOver(w).list(BIA, w.auditId, clock()));
+  assert.deepEqual([end.ledger.state, end.ledger.openOperation, end.decisions.length], ['PROTECTED', null, 1]);
+});
