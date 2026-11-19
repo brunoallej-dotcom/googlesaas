@@ -13,6 +13,7 @@ import {
   createEvidenceSealV2,
   createKeyRetirementClosure,
   createSealedEvidenceProvenance,
+  evidenceProvenanceFromConfig,
   parseEvidenceSealV2Text,
   parseKeyRetirementClosureText,
   parseTrustKeys,
@@ -32,8 +33,8 @@ import { GOLDEN } from './helpers/link-audit-seal-v2-golden';
  * V2-38 (RS-09, IA-03) — golden vectors G1–G6 of the v2 format (contract §11). The VALUES come from `helpers/link-audit-seal-v2-golden.ts`, produced
  * by an independent route (Python canonical text, OpenSSL signatures, sha256sum; header of that file). These tests only read them: they recompute
  * `canonicalJson`, compare byte for byte, verify the signatures with the raw public keys in trust-list format, check `sealSha256`, go through the
- * verifier where the slice allows it, and fail with one byte changed in each field. G1 → G2 → G3 go through the chain verifier (W3.3); G6 through
- * the closure logic is W3.4 (here: bytes, pinned hash, canonical body and signature).
+ * verifier, and fail with one byte changed in each field. G1 → G2 → G3 go through the chain verifier (W3.3); G6 retires key a over G1–G2 and goes
+ * through the closure logic of the keyring (W3.4).
  */
 registerCleanup();
 
@@ -205,6 +206,20 @@ test('V2-38 (RS-09) one changed byte in each field: G1 and G4 are refused by the
 });
 
 /* ============================================================================================ G6 */
+
+test('V2-38 (D12, W3.4) G6 through the verifier: key a retired by the pinned G6 closure covers G1–G2, G3 (key b) extends it; other bytes never count', async () => {
+  const auditId = GOLDEN.g1.body.auditId;
+  const chain: ReadonlyArray<readonly [number, SealVector<V2Body>]> = [[1, GOLDEN.g1], [2, GOLDEN.g2], [3, GOLDEN.g3]];
+  const sealsDir = tmpDir('lepg-');
+  for (const [seq, vector] of chain) writeSealFile(sealsDir, auditId, seq, fileOf(vector));
+  fs.mkdirSync(path.join(sealsDir, '_closures'));
+  fs.writeFileSync(path.join(sealsDir, '_closures', `${KEY_A.keyId}.json`), Buffer.from(GOLDEN.g6.fileHex, 'hex'));
+  const list = (status: string) => `${KEY_A.keyId}:${KEY_A.publicRaw}:${status},${KEY_B.keyId}:${KEY_B.publicRaw}:active`;
+  const verdict = (status: string) => evidenceProvenanceFromConfig({ sealsDir, trustKeys: list(status), acceptedVersions: [2] }).classify(auditId, evidencesOf(GOLDEN.g3.body));
+  assert.deepEqual(await verdict(`retired:${GOLDEN.g6.closureSha256}`), { status: 'AUTHENTICATED', headSeq: 3, headSealSha256: GOLDEN.g3.sealSha256, keyIds: [KEY_A.keyId, KEY_B.keyId] }, 'pinned closureSha256');
+  assert.deepEqual(await verdict(`retired:${GOLDEN.g6.canonicalFileSha256}`), { status: 'UNAUTHENTICATED', reason: 'SEAL_KEY_RETIRED_UNCOVERED' }, 'the hash of the CANONICAL form is not the pin');
+  assert.deepEqual(await verdict('retired'), { status: 'UNAUTHENTICATED', reason: 'SEAL_KEY_RETIRED_UNCOVERED' }, 'nothing pinned');
+});
 
 test('V2-38 (RS-09, D12) G6 closure: exact delivered bytes, closureSha256 pinned over the RAW bytes (not the canonical form), canonical body and signature', () => {
   const vector = GOLDEN.g6;
