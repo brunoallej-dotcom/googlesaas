@@ -342,6 +342,12 @@ Fecham lacunas apontadas no mapa da W4; prevalecem sobre o texto acima onde houv
 - **Formato do `--key-id`:** fora de `^[a-z0-9][a-z0-9-]{3,31}$` ⇒ `USAGE`, antes de ler qualquer coisa (nem a cadeia). O padrão é o do verificador (`TRUST_KEY_ID`, que ele não exporta). Foi copiado em `SIGN_KEY_ID_PATTERN`, sem mudar o verificador, com a paridade travada por teste contra `parseTrustKeyring`.
 - **`SIGN_KEY_MISMATCH`:** depende da chave aberta e fica para depois do passo 12, na W4.3.
 - **Isolamento:** nos arquivos do `sign` (`sign-*.ts`), nenhum `import(` cujo argumento não seja uma string literal simples e nenhuma forma de `require` (`require(`, `require.resolve`, `module.require`, `createRequire`). O código atual não tinha esse padrão; o teste pega a inserção de `import('./' + 'x')`.
+- **Na W4.3:**
+  - **`--key-id` repassado:** `runSign` repassa o `--key-id` a `runSignWithChain`. As entradas já foram lidas, só para leitura, antes do `USAGE` de um `--key-id` fora do padrão; nada é gravado.
+  - **`SIGN_KEY_MISMATCH` (§5.5.1 item 2), logo depois do passo 12 e antes da assinatura (13):** a pública derivada da chave aberta é comparada byte a byte (SPKI) com a pública de `--key-id` na lista. Outra semente, chave aleatória, a outra chave ativa da lista ou chave de outro tipo ⇒ `SIGN_KEY_MISMATCH`: nada assinado nem gravado.
+  - **Falha na conferência:** qualquer falha na própria conferência (chave que nem deriva pública) também é recusa, e o objeto de erro não sai (RS-13).
+  - **Onde fica o código:** a conferência fica em `keyMismatchRefusal` (`sign-chain.ts`, o único arquivo do `sign` que lê a lista pelo verificador), chamada por `sign-run.ts`, que continua sem importar o verificador.
+  - **Comportamento anterior:** antes desta mudança, uma chave trocada assinava e gravava um manifesto em nome do `--key-id`; o autoteste da W4.5 o recusaria, mas só depois.
 
 ### 5.6 Manifesto `v2` e verificador `v2` (onda W3, contrato próprio)
 
