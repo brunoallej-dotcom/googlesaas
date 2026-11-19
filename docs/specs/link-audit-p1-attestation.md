@@ -330,6 +330,8 @@ Fecham lacunas apontadas no mapa da W4; prevalecem sobre o texto acima onde houv
 
   Confirmação errada ou porta que falha ⇒ nenhuma escrita (nem subpasta, temporário, `link()` ou fsync) e a chave não é aberta, também sobre uma cadeia existente.
 
+- **Revisão independente da W4.3 (19/11/2026, `junin-01`, aprovar com mudanças):** o `SIGN_SEQ_CONFLICT` passou a avisar do temporário restante quando, depois do `link()` recusado por já existir o nome final, a remoção do temporário também falha (antes só o `SIGN_WRITE_FAILED` avisava). O manifesto existente continua intacto em todos os casos.
+
 ### 5.6 Manifesto `v2` e verificador `v2` (onda W3, contrato próprio)
 
 **Decisão de 16/11:** `v2` **antes do primeiro resultado de produção**, com `dossier.sha256` e `prevSealSha256` **dentro da parte assinada**.

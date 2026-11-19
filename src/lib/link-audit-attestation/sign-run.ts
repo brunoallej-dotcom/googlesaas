@@ -76,8 +76,8 @@ const BAD_SUFFIX = refuse('UNEXPECTED', `Nome de temporário fora de forma. ${NO
 const UNSAFE_DIR = refuse('SIGN_WRITE_FAILED', `A pasta de manifestos ou a subpasta da auditoria não é um diretório comum (link simbólico, arquivo, ausente) ou mudou durante o sign. ${NOTHING_WRITTEN}`);
 const BEFORE_WRITE = refuse('UNEXPECTED', `Falha inesperada antes da gravação (cadeia, núcleo ou abertura da chave). ${NOTHING_WRITTEN}`);
 const writeFailed = (tempLeft: boolean): SignRefusal => refuse('SIGN_WRITE_FAILED', `Falha ao gravar o manifesto (escrita, fsync ou link do temporário; sem espaço, erro de disco ou permissão). ${NOTHING_WRITTEN}${tempLeft ? TEMP_LEFT : ''}`);
-const seqConflict = (fileName: string): SignRefusal =>
-  refuse('SIGN_SEQ_CONFLICT', `${fileName} já existe na pasta da auditoria (outra execução gravou este seq): nada foi sobrescrito. Confira o registro externo e refaça a partir da cadeia atualizada.`);
+const seqConflict = (fileName: string, tempLeft = false): SignRefusal =>
+  refuse('SIGN_SEQ_CONFLICT', `${fileName} já existe na pasta da auditoria (outra execução gravou este seq): nada foi sobrescrito. Confira o registro externo e refaça a partir da cadeia atualizada.${tempLeft ? TEMP_LEFT : ''}`);
 const unconfirmed = (fileName: string): SignRefusal =>
   refuse('SIGN_WRITE_UNCONFIRMED', `${fileName} foi criado, mas a confirmação em disco falhou (remoção do temporário ou fsync da pasta): a gravação NÃO está confirmada. Não entregue o manifesto nem emita recibo; o sign nunca o apaga. Confira o disco e trate como incidente (runbook).`);
 
@@ -227,7 +227,8 @@ async function commitSeal(fs: FsOps, dir: string, fileName: string, temp: string
     await fs.link(temp, path.join(dir, fileName));
   } catch (error) {
     const tempLeft = !(await attempt(() => fs.unlink(temp)));
-    return errorCode(error) === 'EEXIST' ? seqConflict(fileName) : writeFailed(tempLeft);
+    // revisão da W4.3: o conflito também avisa quando a limpeza do temporário falhou (o resíduo não é secreto, mas precisa de limpeza pelo runbook)
+    return errorCode(error) === 'EEXIST' ? seqConflict(fileName, tempLeft) : writeFailed(tempLeft);
   }
   const removed = await attempt(() => fs.unlink(temp));
   const synced = await attempt(() => fs.syncDirectory(dir));
