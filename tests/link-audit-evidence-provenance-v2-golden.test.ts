@@ -20,6 +20,8 @@ import {
   verifyEd25519PureSignature,
   verifyEvidenceSealV2Signature,
   verifyKeyRetirementClosureSignature,
+  type AcceptedSealVersion,
+  type EvidenceSealFile,
   type EvidenceToProve,
 } from '../src/lib/link-audit-evidence/provenance';
 import { registerCleanup, tmpDir } from './helpers/link-audit-decisions-fixtures';
@@ -64,6 +66,20 @@ function writeSealText(sealsDir: string, auditId: string, text: string): void {
   fs.writeFileSync(file, text);
 }
 
+type Entries = ReadonlyArray<{ readonly ref: string; readonly contentSha256: string }>;
+interface SealVector<B> {
+  readonly body: B;
+  readonly canonicalHex: string;
+  readonly signature: string;
+  readonly sealSha256: string;
+}
+type V2Body = { readonly schemaVersion: 2; readonly kind: 'LINK_AUDIT_EVIDENCE_SEAL'; readonly auditId: string; readonly seq: number; readonly sealedAt: string; readonly keyId: string; readonly entries: Entries; readonly dossier: { readonly id: string; readonly sha256: string }; readonly prevSealSha256: string | null };
+type V1Body = { readonly schemaVersion: 1; readonly kind: 'LINK_AUDIT_EVIDENCE_SEAL'; readonly auditId: string; readonly seq: number; readonly sealedAt: string; readonly keyId: string; readonly entries: Entries };
+const V2_VECTORS: ReadonlyArray<readonly [string, SealVector<V2Body>]> = [['G1', GOLDEN.g1], ['G2', GOLDEN.g2], ['G3', GOLDEN.g3]];
+const G4: SealVector<V1Body> = GOLDEN.g4;
+/** The data module is deeply readonly; the seal file types use mutable arrays. A plain JSON copy is what a reader would hand over. */
+const plainFile = <T,>(vector: SealVector<object>): T => JSON.parse(JSON.stringify(fileOf(vector))) as T;
+
 type Json = null | boolean | number | string | readonly Json[] | { readonly [key: string]: Json };
 /** Every leaf changed by exactly one byte (last char XOR 1; number XOR 1). `null` is handled at the text level by the callers. */
 function leafVariants(value: Json, at = ''): Array<readonly [string, Json]> {
@@ -99,7 +115,7 @@ test('V2-38 (RS-09) G5 canonicalJson probe: key order, NFD to NFC, numbers, esca
 /* ============================================================================================ G1–G4 */
 
 test('V2-38 (RS-09, IA-03) G1–G3: canonical bytes, OpenSSL signature under the trust-list key, sealSha256, chain links and K1 parity', () => {
-  for (const [label, vector] of [['G1', GOLDEN.g1], ['G2', GOLDEN.g2], ['G3', GOLDEN.g3]] as const) {
+  for (const [label, vector] of V2_VECTORS) {
     const key = publicOf(vector.body.keyId);
     const { body, signingBytes } = buildEvidenceSealBodyV2(inputOf(vector.body));
     assert.equal(signingBytes.toString('hex'), vector.canonicalHex, `${label}: builder bytes = independent canonical bytes`);
@@ -120,12 +136,12 @@ test('V2-38 (RS-09, IA-03) G1–G3: canonical bytes, OpenSSL signature under the
 });
 
 test('V2-38 (RS-09) G4 v1 non-regression: canonical bytes, OpenSSL signature, sealSha256 and the unchanged v1 producer', () => {
-  const vector = GOLDEN.g4;
+  const vector = G4;
   const key = publicOf(vector.body.keyId);
   assert.equal(hexOf(canonicalJson(vector.body)), vector.canonicalHex);
   assert.equal(cryptoVerify(null, Buffer.from(vector.canonicalHex, 'hex'), key, Buffer.from(vector.signature, 'base64url')), true);
   assert.deepEqual(createEvidenceSeal({ ...inputOf(vector.body), privateKey: fromSeed(KEY_A.seedHex) }), fileOf(vector), 'createEvidenceSeal (v1) = OpenSSL, bit for bit');
-  assert.equal(sealSha256(fileOf(vector)), vector.sealSha256);
+  assert.equal(sealSha256(plainFile<EvidenceSealFile>(vector)), vector.sealSha256);
   assert.notEqual(vector.sealSha256, GOLDEN.g1.sealSha256);
 });
 
@@ -144,7 +160,8 @@ test('V2-38 (IA-21) through the verifier: G1 gives the golden head metadata; G4 
 test('V2-38 (RS-09) one changed byte in each field: G1 and G4 are refused by the verifier, G2 and G3 by the signature check', async () => {
   const sealsDir = tmpDir('lepg-');
   const compact = (value: unknown): string => JSON.stringify(value);
-  for (const [label, vector, versions] of [['G1', GOLDEN.g1, [2]], ['G4', GOLDEN.g4, [1, 2]]] as const) {
+  const verified: ReadonlyArray<readonly [string, SealVector<V1Body | V2Body>, readonly AcceptedSealVersion[]]> = [['G1', GOLDEN.g1, [2]], ['G4', G4, [1, 2]]];
+  for (const [label, vector, versions] of verified) {
     const variants = oneByteTexts(fileOf(vector), compact);
     assert.ok(variants.length >= 10, `${label}: ${variants.length} variants`);
     for (const [where, text] of variants) {
@@ -153,7 +170,7 @@ test('V2-38 (RS-09) one changed byte in each field: G1 and G4 are refused by the
       assert.equal(verdict.status, 'UNAUTHENTICATED', `${label} ${where}: ${JSON.stringify(verdict)}`);
     }
   }
-  for (const [label, vector] of [['G2', GOLDEN.g2], ['G3', GOLDEN.g3]] as const) {
+  for (const [label, vector] of V2_VECTORS.slice(1)) {
     for (const [where, text] of oneByteTexts(fileOf(vector), compact)) {
       const parsed = parseEvidenceSealV2Text(Buffer.from(text, 'utf8'));
       const key = parsed.ok ? TRUST.get(parsed.value.keyId) : undefined;
