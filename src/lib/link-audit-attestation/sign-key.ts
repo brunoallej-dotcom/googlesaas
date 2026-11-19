@@ -339,7 +339,7 @@ function kdfOf(der: Buffer): KdfParams {
   return id.equals(SCRYPT_OID) ? { kind: 'SCRYPT', cost } : null;
 }
 
-const KDF_NOTICE_TAIL = 'o runbook da W5 fixa os parâmetros; nenhuma chave real antes disso. Recifre a chave antes de usá-la de verdade.';
+const KDF_NOTICE_TAIL = 'o runbook da W5 fixa os parâmetros; nenhuma chave real antes disso. Recifre a chave antes de usá-la de verdade. Este aviso confere só as iterações do PBKDF2 ou o custo N do scrypt, não o perfil completo.';
 
 /** O aviso (na saída de erro, antes da frase) quando o KDF está abaixo do mínimo provisório ou não pôde ser conferido; `null` se está bom. */
 function kdfNotice(kdf: KdfParams): string | null {

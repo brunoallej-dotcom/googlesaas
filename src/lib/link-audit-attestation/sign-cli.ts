@@ -56,7 +56,7 @@ const UNEXPECTED_MESSAGE = 'Falha inesperada.';
 const KEY_SOURCE_UNSUPPORTED: SignRefusal = {
   ok: false,
   code: 'SIGN_KEY_SOURCE_UNSUPPORTED',
-  message: '--key-source external:<id> (token de hardware, K2) ainda não é suportado nesta versão (D11): use file:<caminho> com a chave PKCS#8 cifrada. Nada foi lido, assinado nem gravado.',
+  message: '--key-source external:<id> (token de hardware, K2) ainda não é suportado nesta versão (D11): use file:<caminho> com a chave PKCS#8 cifrada. O valor depois de external: é um identificador PÚBLICO; se você digitou ali um segredo, trate-o como exposto (histórico do shell, lista de processos). Nada foi lido, assinado nem gravado.',
 };
 
 /** RS-13: nenhum relatório de diagnóstico do Node (que despeja memória, pilha e ambiente) num erro fatal, sinal ou exceção não tratada. */
