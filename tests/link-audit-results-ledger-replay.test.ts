@@ -93,6 +93,7 @@ test('RL-23 / M-R05 (I-3): RUN_INTENT.citedLedgerHead === cabeça de decisões d
   rejected(chain0().decision(D1).run().runIntent({ citedLedgerHead: { ledgerSeq: runConfirmed.ledgerSeq, sha256: runConfirmed.contentSha256 } }), 'cita a cauda RUN_CONFIRMED', [D1]);
   rejected(chain0().decision(D1).runIntent({ citedLedgerHead: { ledgerSeq: 2, sha256: (after.records[1] as LedgerRecord).contentSha256 } }), 'cita registro de decisão ANTERIOR ao último', [D1]);
   rejected(chain0().decision(D1).runIntent({ citedLedgerHead: { ledgerSeq: decisionTail.ledgerSeq, sha256: hashOf('outro') } }), 'posição certa, hash errado', [D1]);
+  rejected(chain0().decision(D1).runIntent({ citedLedgerHead: { ledgerSeq: 2, sha256: decisionTail.contentSha256 } }), 'hash certo, posição errada', [D1]);
   // a cauda é RUN_*: a cabeça citada é a do último registro de DECISÃO (aqui o CONFIRMED, seq 3)
   const valid = chain0().decision(D1).run().runIntent();
   assert.deepEqual((valid.tail() as unknown as { run: RunBody }).run.citedLedgerHead, { ledgerSeq: 3, sha256: decisionTail.contentSha256 });
@@ -104,6 +105,7 @@ test('RL-23 / M-R05 (I-3): RUN_INTENT.citedLedgerHead === cabeça de decisões d
 test('RL-23 / M-R28 (I-4): RUN_INTENT.decisionsHead === newDecisionsHead do último CONFIRMED (ou null)', () => {
   rejected(chain0().decision(D1).runIntent({ decisionsHead: null }), 'nulo com decisão confirmada', [D1]);
   rejected(chain0().decision(D1).runIntent({ decisionsHead: { seq: 1, sha256: hashOf('outro') } }), 'hash errado', [D1]);
+  rejected(chain0().decision(D1).runIntent({ decisionsHead: { seq: 2, sha256: D1.sha256 } }), 'hash certo, posição errada', [D1]);
   rejected(chain0().decision(D1).decision(D2).runIntent({ decisionsHead: { seq: 1, sha256: D1.sha256 } }), 'decisão anterior à última', [D1, D2]);
   rejected(chain0().runIntent({ decisionsHead: { seq: 1, sha256: D1.sha256 } }), 'não nulo sem decisão confirmada');
   rejected(chain0().decision(D1).decision(D2, { open: true }).abortDecision().runIntent({ decisionsHead: { seq: 2, sha256: D2.sha256 } }), 'decisão abortada não conta', [D1]);
@@ -112,13 +114,15 @@ test('RL-23 / M-R28 (I-4): RUN_INTENT.decisionsHead === newDecisionsHead do últ
 
 /** Cadeia com o 2º resultado aberto (runSeq 2, anterior não nulo): permite mudar runSeq e prevRunSha256 sem violar S-7. */
 const withSecondOpen = (): Chain => chain0().decision(D1).run().runIntent();
+/** Hash da cabeça de decisões que o 2º RUN_INTENT cita (o CONFIRMED da decisão, seq 3): quebrar só a posição exige manter o hash. */
+const CITED_SHA = (chain0().decision(D1).records[2] as LedgerRecord).contentSha256;
 const FIELD_BREAKS: ReadonlyArray<[string, Partial<RunBody>]> = [
   ['runOpId', { runOpId: 'f'.repeat(32) }],
   ['runSeq', { runSeq: 3 }],
   ['prevRunSha256', { prevRunSha256: hashOf('outro-anterior') }],
   ['runSha256', { runSha256: hashOf('outro-resultado') }],
   ['author', { author: 'bia@empresa.com' }],
-  ['citedLedgerHead.ledgerSeq', { citedLedgerHead: { ledgerSeq: 2, sha256: hashOf('x') } }],
+  ['citedLedgerHead.ledgerSeq', { citedLedgerHead: { ledgerSeq: 2, sha256: CITED_SHA } }],
   ['citedLedgerHead.sha256', { citedLedgerHead: { ledgerSeq: 3, sha256: hashOf('x') } }],
   ['decisionsHead.seq', { decisionsHead: { seq: 2, sha256: D1.sha256 } }],
   ['decisionsHead.sha256', { decisionsHead: { seq: 1, sha256: hashOf('x') } }],
