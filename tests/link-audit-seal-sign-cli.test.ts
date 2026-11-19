@@ -133,17 +133,17 @@ test('IA-15: obrigatórios e formatos ⇒ USAGE (código 1), sem ecoar valores: 
 
 test('IA-15: opções com nome de senha, chave, PIN ou segredo ⇒ SECRET_VIA_ARGV_FORBIDDEN (código 3, RECUSADO:), sem ecoar o valor, antes de qualquer outra análise', async () => {
   const world = cliWorld();
-  const secret = 'valor-secreto-sentinela-9d2e';
+  const sentinela = 'valor-secreto-sentinela-9d2e';
   const flags = ['--passphrase', '--password', '--senha', '--frase-senha', '--pin', '--PIN', '--private-key', '--key', '--key-file', '--secret', '--segredo', '--chave', '--token', '--pwd'];
   for (const flag of flags) {
-    for (const argv of [[...world.argv(), flag, secret], [flag, secret], [`${flag}=${secret}`, '--foo'], [...world.argv({ audit: null }), flag, secret, '--json']]) {
+    for (const argv of [[...world.argv(), flag, sentinela], [flag, sentinela], [`${flag}=${sentinela}`, '--foo'], [...world.argv({ audit: null }), flag, sentinela, '--json']]) {
       const data = spyData();
       const key = spyKey();
       const run = await runSign(argv, { typed: world.typed(), fs: data.ops, keyFs: key.ops });
       assert.equal(run.code, 3, `${flag}: código 3`);
       if (argv.includes('--json')) assert.equal(jsonOut(run).code, 'SECRET_VIA_ARGV_FORBIDDEN', flag);
       else refusedCli(run, 'SECRET_VIA_ARGV_FORBIDDEN', flag);
-      assert.ok(!run.stdout.includes(secret) && !run.stderr.includes(secret), `${flag}: valor nunca ecoado`);
+      assert.ok(!run.stdout.includes(sentinela) && !run.stderr.includes(sentinela), `${flag}: valor nunca ecoado`);
       assert.equal(data.calls.length + key.calls.length, 0, `${flag}: nada lido`);
       terminalUntouched(run, flag);
     }
@@ -176,19 +176,19 @@ test('IA-15: --key-source com o VALOR da chave (PEM, base64, hex) ou fora de fil
 
 test('IA-15 (§8.1): variável de ambiente com nome de segredo ⇒ SECRET_VIA_ENV_FORBIDDEN (código 3), lendo só os NOMES (nunca os valores), antes de qualquer arquivo; nomes comuns passam', async () => {
   const world = cliWorld();
-  const secret = 'valor-de-ambiente-sentinela-41ac';
+  const sentinela = 'valor-de-ambiente-sentinela-41ac';
   const recording = (values: Record<string, string>): { readonly env: Record<string, string>; readonly reads: string[] } => {
     const reads: string[] = [];
     const env = new Proxy(values, { get: (target, prop) => (typeof prop === 'string' && reads.push(prop), Reflect.get(target, prop)) });
     return { env, reads };
   };
   for (const name of ['GMN_LINK_AUDIT_SIGN_PASSPHRASE', 'GMN_SEAL_KEY', 'GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS', 'gmn_seal_pin', 'GMN_SECRET', 'GMN_TOKEN_X', 'MY_PASSPHRASE', 'KEY_PASSWORD', 'SENHA_DA_CHAVE', 'LINK_AUDIT_SIGNING_KEY', 'SEAL_PASS']) {
-    const { env, reads } = recording({ PATH: '/usr/bin', [name]: secret });
+    const { env, reads } = recording({ PATH: '/usr/bin', [name]: sentinela });
     const data = spyData();
     const run = await runSign(world.argv(), { typed: world.typed(), env, fs: data.ops });
     refusedCli(run, 'SECRET_VIA_ENV_FORBIDDEN', name);
     assert.ok(run.stderr.includes(name), `${name}: o NOME (não secreto) é citado para o custodiante limpar o ambiente`);
-    assert.ok(!run.stdout.includes(secret) && !run.stderr.includes(secret), `${name}: valor nunca ecoado`);
+    assert.ok(!run.stdout.includes(sentinela) && !run.stderr.includes(sentinela), `${name}: valor nunca ecoado`);
     assert.deepEqual(reads, [], `${name}: nenhum VALOR de variável lido`);
     assert.equal(data.calls.length, 0, `${name}: nada lido`);
     terminalUntouched(run, name);

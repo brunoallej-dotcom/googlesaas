@@ -5,3 +5,10 @@
 # no corte da saída saneada; o campo do caso casou com a regra genérica. Corrigido no commit seguinte (campo
 # renomeado); a entrada cobre só este commit antigo, sem reescrever o histórico.
 e259936c1d0789963ddde27d18ee2e6446fba230:tests/link-audit-redaction.test.ts:generic-api-key:300
+
+# W4.4 (PR #44): sentinelas de teste ("valor-secreto-sentinela-…" e "valor-de-ambiente-sentinela-…", nunca foram credenciais),
+# usadas para provar que o CLI do sign nunca ecoa um segredo recebido por argumento ou ambiente; a variável se chamava `secret` e o
+# par casou com a regra genérica. Corrigido no commit seguinte (variável renomeada para `sentinela`); as entradas cobrem só o commit antigo,
+# sem reescrever o histórico.
+97872564f84d3e13a41f9f8ea51ad45b9916713d:tests/link-audit-seal-sign-cli.test.ts:generic-api-key:136
+97872564f84d3e13a41f9f8ea51ad45b9916713d:tests/link-audit-seal-sign-cli.test.ts:generic-api-key:179
