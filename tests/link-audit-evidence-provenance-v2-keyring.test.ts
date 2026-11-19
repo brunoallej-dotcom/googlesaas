@@ -177,6 +177,11 @@ test('V2-22 (B1 a) a retired key signing seal-0001…k of a NEW audit is SEAL_KE
     writeChain(seals, NEW_AUDIT, sealsDir);
     assert.deepEqual(await classify(sealsDir, list, chain[chain.length - 1]?.entries as readonly EvidenceToProve[], [2], NEW_AUDIT), UNCOVERED, `new audit, ${chain.length} seal(s) by R`);
   }
+  // a head that NAMES another audit covers nothing here, even when it carries this chain's seal hash
+  const seals = buildChain([{ keys: R, entries: E1 }, { keys: R, entries: E2 }]);
+  const dir = writeChain(seals);
+  const pin = putClosure(dir, `${R.keyId}.json`, closureText(R, S, [{ auditId: 'auditoria-anel-v2-00', seq: 2, sealSha256: sealSha256(seals[1] as AnySeal) }]));
+  assert.deepEqual(await classify(dir, listOf(item(R, 'retired', pin), item(S)), E2), UNCOVERED, 'head of another audit');
 });
 
 /* ============================================================================================ V2-23, V2-24 */
