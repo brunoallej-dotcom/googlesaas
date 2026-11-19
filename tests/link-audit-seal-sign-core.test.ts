@@ -431,6 +431,35 @@ test('passo 9 (RS-01): conferente = custodiante sem aceite formal ⇒ SIGN_ROLE_
   }
 });
 
+test('passo 9 (revisão da W4.1): rótulos coincidem em minúsculas OU maiúsculas (sigma final, ß/SS, ẞ), depois de NFKC e sem NENHUM grupo de separadores ⇒ SIGN_ROLE_SEPARATION', async () => {
+  const pkg = makePackage();
+  assert.notEqual('ΟΣ'.toLowerCase(), 'οσ'.toLowerCase(), 'premissa: em minúsculas o sigma final esconde a coincidência');
+  const same: ReadonlyArray<readonly [string, string]> = [
+    ['ΟΣ', 'οσ'],
+    ['οσ', 'ΟΣ'],
+    ['ΟΣ', 'ος'],
+    ['ος', 'οσ'],
+    ['ΚΩΣ-01', 'κωσ 01'],
+    ['maßa-01', 'MASSA-01'],
+    ['MASSA 01', 'maßa.01'],
+    ['STRAẞE', 'straße'],
+    ['STRAẞE', 'STRASSE'],
+    ['CONF-01-A', 'conf 01 a'],
+    ['C.O.N.F-0.1', 'conf01'],
+    ['conf__01--a', 'CONF 01 A'],
+  ];
+  for (const [approvedBy, custodian] of same) {
+    const refusal = await assertRefused(inputFor(pkg, makeApproval(pkg, { approvedBy }), { custodian }), 'SIGN_ROLE_SEPARATION');
+    assert.match(refusal.message, /sem aceite formal de risco/, `${approvedBy} × ${custodian}`);
+    const operatorToo = await assertSigned(inputFor(pkg, makeApproval(pkg, { approvedBy, operator: custodian })));
+    assert.deepEqual([operatorToo.roleException, operatorToo.requiresLaterReview], [false, true], `operador ${custodian} = conferente ${approvedBy} marca revisão`);
+  }
+  for (const [approvedBy, custodian] of [['CONF-01', 'CONF-011'], ['ος', 'ο'], ['maßa', 'masa'], ['CONF-01-A', 'CONF-01-B']] as const) {
+    const plan = await assertSigned(inputFor(pkg, makeApproval(pkg, { approvedBy }), { custodian }));
+    assert.equal(plan.roleException, false, `${approvedBy} × ${custodian} são pessoas diferentes`);
+  }
+});
+
 test('passo 9 (RS-01): com aceite formal (referência E arquivo com o hash citado) ⇒ prossegue com roleException e requiresLaterReview; operador = conferente só marca revisão', async () => {
   const pkg = makePackage();
   const accepted = await assertSigned(inputFor(pkg, makeApproval(pkg, { riskAcceptance: RISK_REF }), { custodian: 'CONF-01', riskAcceptanceBytes: RISK }));
