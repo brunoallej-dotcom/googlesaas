@@ -40,6 +40,7 @@ import {
   type Entries,
   type StationFiles,
 } from './helpers/link-audit-seal-sign-disk-fixtures';
+import { GOLDEN } from './helpers/link-audit-seal-v2-golden';
 
 /*
  * P1 W4.3 — DISCO e CONCORRÊNCIA do `sign` (spec §5.5 preâmbulo e passo 15; §5.5.1 item 4; IA-12, IA-18; RS-04, RS-12). Leitura ÚNICA de `--package`,
@@ -209,7 +210,7 @@ test('IA-18: trocar 1 byte do pacote depois da aprovação ⇒ recusa em TODA po
   for (let at = 0; at < approved.length; at += 1) {
     let keyCalls = 0;
     const result = await runSignCore(
-      { auditId: AUD, custodian: 'CUST-01', packageBytes: flip(at), approvalBytes, dossierBytes: DOSSIER, riskAcceptanceBytes: null, chain: { status: 'EMPTY' }, expectSeq: 1, first: true },
+      { auditId: AUD, custodian: 'CUST-01', packageBytes: flip(at), approvalBytes, dossierBytes: DOSSIER, riskAcceptanceBytes: null, signingKeyStatus: 'active', chain: { status: 'EMPTY' }, expectSeq: 1, first: true },
       { now: () => new Date(NOW), confirm: custodianOf(pkg), openKey: () => (keyCalls += 1) },
     );
     if (result.ok) {
@@ -726,5 +727,37 @@ test('IA-12 (revisão W4.3): conflito no link() com a limpeza do temporário fal
     assert.equal(fs.readFileSync(sealPath(sealsDir), 'utf8'), 'manifesto já gravado por outra execução', 'o manifesto existente nunca é alterado');
     assert.equal(tempsIn(dir).length > 0, unlinkFails, `temporário ${unlinkFails ? 'restante' : 'removido'}`);
     assert.equal(/temporário \.seal-NNNN\.json\.tmp-\*/.test(refusal.message), unlinkFails, `aviso do temporário ${unlinkFails ? 'presente' : 'ausente'}: ${refusal.message}`);
+  }
+});
+
+/* =============================================================================================================== §5.5.1 item 2 no disco */
+
+const PUBLIC_A = GOLDEN.keys.a.publicRaw;
+
+test('§5.5.1 item 2 no disco: runSign repassa o --key-id; ausente, retired ou revoked ⇒ SIGN_KEY_NOT_ACTIVE sem confirmação, sem abrir a chave e sem gravar nada', async () => {
+  const cases: ReadonlyArray<readonly [string, string, string]> = [
+    ['ausente da lista', RING, GOLDEN.keys.b.keyId],
+    ['retired', `${KEY_ID}:${PUBLIC_A}:retired`, KEY_ID],
+    ['revoked', `${KEY_ID}:${PUBLIC_A}:revoked`, KEY_ID],
+  ];
+  for (const [label, trustKeys, keyId] of cases) {
+    const { station, sealsDir } = world();
+    const spy = spyFs();
+    const deps = signDeps({ fs: spy.fs });
+    refused(await runSign(signInput(station, sealsDir, { trustKeys, keyId }), deps), 'SIGN_KEY_NOT_ACTIVE', label);
+    assert.deepEqual(deps.order(), [], `${label}: nem confirmação nem chave`);
+    assert.deepEqual(writesOf(spy.calls), [], label);
+    assert.deepEqual(listing(sealsDir), [], label);
+  }
+});
+
+test('§5.5.1 item 2 no disco: --key-id fora do padrão ⇒ USAGE, nada gravado e a chave não é aberta', async () => {
+  for (const keyId of ['EK-A', 'ek', 'ek_202611_a']) {
+    const { station, sealsDir } = world();
+    const spy = spyFs();
+    const deps = signDeps({ fs: spy.fs });
+    const refusal = refused(await runSign(signInput(station, sealsDir, { keyId }), deps), 'USAGE', keyId);
+    assert.match(refusal.message, /--key-id/);
+    assert.deepEqual([deps.order(), writesOf(spy.calls), listing(sealsDir)], [[], [], []], keyId);
   }
 });

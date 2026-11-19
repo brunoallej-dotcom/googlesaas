@@ -195,7 +195,7 @@ test('dynamicLoads enxerga import() com nome calculado e require; import() com s
 const SIGN_FILES = FILES.filter((name) => name.startsWith('sign-'));
 
 test('confirmação da revisão da W4.1: nos arquivos do sign, nenhum import() com nome calculado e nenhum require (o grafo de imports fica todo visível)', () => {
-  assert.deepEqual(SIGN_FILES, ['sign-chain.ts', 'sign-core.ts']);
+  assert.deepEqual(SIGN_FILES, ['sign-chain.ts', 'sign-core.ts', 'sign-run.ts']);
   for (const name of SIGN_FILES) assert.deepEqual(dynamicLoads(strip(fs.readFileSync(path.join(LIB, name), 'utf8'))), [], `${name}: carregamento dinâmico`);
 });
 
