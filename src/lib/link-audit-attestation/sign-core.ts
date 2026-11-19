@@ -93,6 +93,8 @@ export interface SignCoreInput {
  */
 export interface ConfirmationFacts {
   readonly auditId: string;
+  /** O `seq` do manifesto a assinar (último verificado + 1, igual a `--expect-seq`; W4.2). */
+  readonly seq: number;
   /** Quantas entradas o manifesto vai atestar (o conjunto exato do pacote). */
   readonly entries: number;
 }
@@ -332,14 +334,14 @@ const CONFIRMATION_MISMATCH = `O texto digitado não confere com os ${CONFIRM_PR
 const CONFIRMATION_UNAVAILABLE = `A confirmação humana não foi obtida (sem terminal interativo, entrada interrompida ou falha da tela). ${NOTHING_SIGNED}`;
 
 /**
- * Passo 11: a tela recebe só `auditId` e o número de entradas (nunca o hash) e devolve o texto digitado, comparado EXATAMENTE com os 12 primeiros
+ * Passo 11: a tela recebe só `auditId`, `seq` e o número de entradas (nunca o hash) e devolve o texto digitado, comparado EXATAMENTE com os 12 primeiros
  * caracteres de `packageSha256`. A porta que lança ou rejeita é recusa do mesmo código (a confirmação não existiu; lado fechado), e o objeto de
  * erro nunca sai daqui. Nenhuma das mensagens repete o esperado nem o digitado.
  */
 async function confirmationRefusal(plan: SignPlan, confirm: SignCoreDeps<unknown>['confirm']): Promise<SignRefusal | null> {
   let typed: unknown;
   try {
-    typed = await confirm({ auditId: plan.auditId, entries: plan.entries.length });
+    typed = await confirm({ auditId: plan.auditId, seq: plan.seq, entries: plan.entries.length });
   } catch {
     return refuse('SIGN_CONFIRMATION_FAILED', CONFIRMATION_UNAVAILABLE);
   }
