@@ -79,7 +79,7 @@ export async function proveEvidenceForRoutes(env: Record<string, string | undefi
   const keys = evidenceKeys();
   for (const auditId of [w.auditId, ...extraAuditIds]) {
     try {
-      await sealAuditForTests({ evidenceDir: w.evidenceDir, auditId, sealsDir, keys });
+      await sealAuditV2ForTests({ evidenceDir: w.evidenceDir, auditId, sealsDir, keys }); // production accepts only v2 (`acceptedVersions: [2]`)
     } catch {
       // auditoria sem base íntegra (sem evidência, corrompida): não há o que atestar; a rota responderá o que responderia sem a prova
     }
@@ -100,6 +100,6 @@ export async function sealAuditsForBrowserSeed(root: string, auditIds: readonly 
   if (encoded.length < 40 || keyId.length < 4) throw new Error('chave de atestação de teste ausente (GMN_SEED_EVIDENCE_SIGNING_KEY / GMN_SEED_EVIDENCE_KEY_ID)');
   const privateKey = createPrivateKey({ key: Buffer.from(encoded, 'base64'), format: 'der', type: 'pkcs8' });
   const keys: EvidenceKeys = { keyId, privateKey, trustKeys: '', publicRaw: '' };
-  for (const auditId of auditIds) await sealAuditForTests({ evidenceDir: path.join(root, 'evidence'), auditId, sealsDir: path.join(root, 'seals'), keys });
+  for (const auditId of auditIds) await sealAuditV2ForTests({ evidenceDir: path.join(root, 'evidence'), auditId, sealsDir: path.join(root, 'seals'), keys }); // the server accepts only v2
 }
 
