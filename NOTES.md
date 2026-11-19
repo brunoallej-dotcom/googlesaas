@@ -1,6 +1,6 @@
 # GMN Intelligence Platform: notas do projeto
 
-Uso **interno** (não é SaaS). Documentação detalhada por fase em `docs/`. Última atualização: 19/11/2026 (**Onda 6C ENCERRADA** em 16/11/2026; **P1 em andamento**: W0, W1 e W2 mergeadas; contrato da W3 aprovado (D14) e fatia W3.1 mergeada, W3.2 em andamento; correção antecipada do defeito RL-32 do livro; repositório **público** desde 17/11/2026, com proteções; plano em `docs/plan/implementation-waves.md`; ver o fim do arquivo).
+Uso **interno** (não é SaaS). Documentação detalhada por fase em `docs/`. Última atualização: 19/11/2026 (**Onda 6C ENCERRADA** em 16/11/2026; **P1 em andamento**: W0, W1, W2 e **W3 (verificador `v2`, cinco fatias) concluídas**; R1 e W4 desbloqueadas; correção antecipada do defeito RL-32 do livro; repositório **público** desde 17/11/2026, com proteções; plano em `docs/plan/implementation-waves.md`; ver o fim do arquivo).
 
 ## Baseline Git local e versão (28/10/2026)
 - **Atualização 07/11/2026:** o repositório agora tem o remoto `origin` (`https://github.com/brunoallej-dotcom/googlesaas.git`); os PRs #1 (`765a93a`, Onda 6B), #2 (`24c19e9`, Onda 6C) e #3 (`7013b2a`, bootstrap/CI/Node 22) estão mergeados na `main`; tag `v1.0.1` mantida. O texto abaixo ("sem remote") é o registro histórico de 28/10/2026.
@@ -246,6 +246,15 @@ Endurecimento de código (antes de expor): bypass `GMN_AUTH_DISABLED` desligado 
 - **Defeito RL-32 corrigido (antecipado da R1):** o fecho de uma decisão que colide com um `CHECKPOINT` intercalado é regravado na nova cauda (releitura com etiquetas, replay e extensão da sessão conferidos; até 5 tentativas; teto de capacidade); a adoção de um `CONFIRMED` concorrente idêntico só vale se quem o gravou é o autor (§16.16). O `ABORTED` e o `CONFIRMED` da fase C gravados no `prepare()` não são regravados: o EEXIST deles volta como nova tentativa e o laço relê e reavalia (divergência deliberada da letra da spec, mais fechada). Fixtures pré-§16.16 de MB2b/MA15/MA16 passaram a gravar como o autor.
 - **Risco residual registrado:** o replay/modelo não confere `actor === autor` num `CONFIRMED` já gravado; um fecho autêntico de não autor, gravado por quem tem a chave do livro, aparece como confirmado. Fora da cobertura declarada no ADR-0002 (quem tem a chave do livro); correção mínima entrou no escopo da R1.
 
+## Rodada de 19/11/2026 (tarde) — W3 concluída: verificador `v2` em cinco fatias
+
+- **W3 concluída**, uma fatia por PR, cada uma com testes antes do código, revisão independente por um worker Codex só de leitura (outro modelo) e o CI verde no próprio commit: W3.1 primitivas puras (#30, `b68df4a`); W3.2 selo único, produção só com `v2` e os seis motivos na tela (#32, `de3fe4a`); W3.3 cadeia (#33, `fc50762`); W3.4 lista de chaves com estado e fecho de aposentadoria fixado por hash (#34, `477fba1`); W3.5 pré-passo de revogação, orçamento de leitura estrito e o §4 do runbook de chaves como procedimento `v2` (#35, `16ff609`). Os testes V2-01…V2-48 do contrato estão cobertos, menos o V2-46, que é critério da W4. O goal command da W3 passa (no Node 24 local só falha a "ORDEM PEQUENA", conhecida).
+- **Vetores-ouro conferidos pelo manager:** os valores esperados da W3.1 e os G1–G6 da W3.2 foram recalculados de forma independente com OpenSSL 3.5.5 e Python (chaves, texto canônico, assinaturas, `sealSha256`, `closureSha256` dos bytes brutos) e bateram.
+- **Achados das revisões que mudaram o código:** guarda estática do V2-19 burlável por alias (W3.2, corrigida); chave de ordem pequena aceita num keyring montado em código (W3.4, MAJOR, corrigida pelo manager com teste); pré-passo de revogação suprimível por representação JSON recusada no parse estrito e por `schemaVersion` desconhecido (W3.5, dois MAJOR, corrigidos com leitura tolerante que só sinaliza com assinatura válida da chave revogada); `trustedKeys` (só de teste) sem a regra de chave fraca (corrigida); orçamento de 16 MiB descontado tarde (W3.3, levado à W3.5 e corrigido).
+- **Contrato do verificador `v2`, três esclarecimentos do manager (dono das specs):** a célula do V2-25 contradizia o §6/V2-47 (signatário do fecho fora da lista ⇒ só a conferência da assinatura é omitida; o hash fixado decide); V2-31 "zero leituras" vale com `[2]` (com `[1,2]`, no máximo a leitura de seleção); `revokedKeyIds` (≤ 2) = os 2 primeiros em ordem lexicográfica.
+- **Produção:** o código agora aceita só manifestos `v2` e a lista de chaves com estado. **Nada foi implantado** (deploy só pelo CI e sob decisão do responsável); o primeiro resultado de produção continua bloqueado até R1, R2 e W5.
+- **Próximas ondas:** R1 (confirmação de resultados pelo livro, ADR-0002) e W4 (comando `sign`) estão desbloqueadas e mexem em arquivos disjuntos; R2 depende da R1.
+
 ## Roadmap P1 (espelho de `docs/plan/implementation-waves.md`, que é a fonte da verdade)
 
 | Onda | Entrega | Status |
@@ -253,9 +262,9 @@ Endurecimento de código (antes de expor): bypass `GMN_AUTH_DISABLED` desligado 
 | W0 | Fundação documental (spec e ameaças aprovadas, contrato P1, ADR-0002 aceito, emenda §16.17 do livro) | ✅ mergeada (PR #26; D9–D13; §16.17 revisada) |
 | W1 | Função única `basis → EvidenceToProve[]`, esquemas e `packageSha256` | ✅ mergeada (PR #24, `bd07e35`) |
 | W2 | CLI `export` (somente leitura) | ✅ mergeada (PR #29, `a5bd321`) |
-| W3 | Verificador `v2` + contrato próprio | 🟡 contrato aprovado (PR #25, D14); W3.1 mergeada (PR #30, `b68df4a`); W3.2 em andamento |
+| W3 | Verificador `v2` + contrato próprio | ✅ concluída (contrato PR #25; W3.1–W3.5: #30, #32, #33, #34, #35; `16ff609`) |
 | R1 | Confirmação de resultados pelo livro (ADR-0002) | ⬜ |
 | R2 | Proveniência registrada no resultado (portão antes do primeiro resultado de produção) | ⬜ |
-| W4 | CLI `sign` (manifesto `v2`) | ⬜ |
+| W4 | CLI `sign` (manifesto `v2`) | ⬜ desbloqueada |
 | W5 | Procedimento, dossiê e ensaio em homologação | ⬜ |
 | W6 | Coleta LIVE nova da TUVAPLAST (autorização escrita específica) | ⬜ |
