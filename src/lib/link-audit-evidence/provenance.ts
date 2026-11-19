@@ -864,17 +864,17 @@ function revocationSignal(reads: readonly ParsedRead[], auditId: string, ring: T
 
 /**
  * The minimum the pre-step needs from a read file, by plain `JSON.parse` (never used to authenticate): an object with string `keyId`, `auditId`
- * and `signature`, an integer `seq` and `schemaVersion` 1 or 2. Both versions sign the same input, UTF-8(canonicalJson(file without `signature`)),
- * exactly as the strict path verifies it (contract §2; `createEvidenceSeal`). Never throws.
+ * and `signature` and an integer `seq`, WHATEVER its `schemaVersion` says (contract §7.2 does not limit row 6 to known versions; row 8 refuses
+ * an unknown one). The signed input is the one of every version, UTF-8(canonicalJson(file without `signature`)), exactly as the strict path
+ * verifies it (contract §2; `createEvidenceSeal`). Never throws.
  */
 function leniently(text: string): { readonly keyId: string; readonly auditId: string; readonly seq: number; readonly signature: string; readonly signingBytes: Buffer } | null {
   try {
     const json = JSON.parse(text) as unknown;
     if (typeof json !== 'object' || json === null || Array.isArray(json)) return null;
     const { signature, ...body } = json as Record<string, unknown>;
-    const { keyId, auditId, seq, schemaVersion } = body;
+    const { keyId, auditId, seq } = body;
     if (typeof signature !== 'string' || typeof keyId !== 'string' || typeof auditId !== 'string' || typeof seq !== 'number' || !Number.isInteger(seq)) return null;
-    if (schemaVersion !== SEAL_SCHEMA_VERSION && schemaVersion !== SEAL_SCHEMA_VERSION_V2) return null;
     return { keyId, auditId, seq, signature, signingBytes: signingBytesOf(body) };
   } catch {
     return null;
