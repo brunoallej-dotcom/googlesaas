@@ -130,6 +130,9 @@ test('V2-09 (IA-21) a missing predecessor or a gap is SEAL_CHAIN_BROKEN; seal-00
     for (const seq of missing) remove(sealsDir, seq);
     await expectFor(sealsDir, E3, UNAUTH('SEAL_CHAIN_BROKEN'), label);
   }
+  // a gap between v1 positions, which carry no link: only the 1…N rule catches it ([1,2] promotion v1(1) v1(3) v2(4))
+  const v1Gap = buildChain([{ entries: E1, version: 1 }, { entries: E2, version: 1, seq: 3 }, { entries: E3, seq: 4 }]);
+  assert.deepEqual(await policy(writeChain(v1Gap), [1, 2]).classify(AUD, E3), UNAUTH('SEAL_CHAIN_BROKEN'), 'gap between v1 positions');
   const zero = writeChain(seals);
   writeNamed(zero, AUD, nameOf(0), JSON.stringify(seals[0]));
   await expectFor(zero, E3, UNAUTH('SEAL_CHAIN_BROKEN'), 'seal-0000 present');
