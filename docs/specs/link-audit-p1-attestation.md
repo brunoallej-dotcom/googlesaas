@@ -198,6 +198,7 @@ Limite declarado: o arquivo **não é assinado** (não é criptograficamente lig
 
 ```
 npm run link-audit:seal -- sign --audit <auditId> --package <pacote.json> --approval <approval.json> --dossier <arquivo> \
+    [--risk-acceptance <arquivo>] \
     --seals-dir <pasta de manifestos> --expect-seq <N> --key-id <ek-AAAAMM-a> \
     --key-source <file:<caminho>|external:<id>> --custodian <rótulo> [--first] [--trust-keys <id:pub,...>] [--json]
 ```
@@ -210,13 +211,14 @@ npm run link-audit:seal -- sign --audit <auditId> --package <pacote.json> --appr
 | `--package` | Pacote que o conferente recebeu |
 | `--approval` | `approval.json` (§5.4) |
 | `--dossier` | Arquivo do dossiê de aprovação; o comando calcula o SHA-256 e compara com `approval.dossier.sha256` (**só existência e hash**; o conteúdo é humano) |
+| `--risk-acceptance` | Opcional (W4.4). Arquivo do aceite formal e escrito de risco citado em `approval.riskAcceptance` (passo 9): **só existência e hash**, o conteúdo é humano. Lido uma vez, como as outras entradas; indicado e ilegível ⇒ recusa. Só conta quando conferente e custodiante coincidem; sem ele, papéis coincidentes são recusados |
 | `--seals-dir` | Pasta de manifestos **da estação** (cópia do servidor + novo arquivo). Fora/não aninhada em pasta de evidências (por `realpath`, inclusive link simbólico) |
 | `--expect-seq N` | **Obrigatório.** `seq` esperado, tirado do registro externo do dossiê/cofre, **não** da pasta. Divergência do calculado (`último + 1`) ⇒ recusa |
 | `--first` | Obrigatório **se e somente se** `N = 1` |
 | `--key-id` | `^[a-z0-9][a-z0-9-]{3,31}$` (rótulo público) |
 | `--key-source` | `file:<caminho>` (K1) ou `external:<id>` (K2). **Nunca** o valor da chave (§8) |
 | `--custodian` | Rótulo de quem assina |
-| `--trust-keys` | Opcional: chaves públicas para verificar o manifesto anterior quando a chave dele foi aposentada |
+| `--trust-keys` | Opcional: chaves públicas para verificar o manifesto anterior quando a chave dele foi aposentada. **Obrigatório desde o §5.5.1 item 2** (lista com estado; fora de forma ⇒ USAGE, notas da W4.4) |
 
 **Ordem das verificações** (cada falha ⇒ código 3, **nada gravado**; a chave só é pedida/aberta **depois** de todas as que não precisam dela):
 
@@ -353,6 +355,59 @@ Fecham lacunas apontadas no mapa da W4; prevalecem sobre o texto acima onde houv
 
 - **Limite declarado da guarda estática (19/11/2026):** o teste de isolamento procura carregamento dinâmico por texto (qualquer `require` solto, `createRequire`, `import()` não literal) em todo o grafo alcançável. É defesa em profundidade contra erro no nosso próprio código, não contra quem escreve código malicioso no repositório: formas ainda mais indiretas de carregar módulos escapam de uma busca textual. O controle forte do artefato é o da W4.6: lista literal de imports do pacote gerado e execução sob `node --permission`.
 
+**Notas da W4.4 (19/11/2026, CLI do `sign`, papéis e chave K1: `sign-args.ts`, `sign-cli.ts`, `sign-key.ts`, `sign-terminal.ts`; onde a spec era ambígua, valeu o lado que falha fechado):**
+
+- **Onde fica:** `scripts/link-audit-seal.ts` só entrega o subcomando `sign` a `sign-cli.ts`, com a raiz do projeto. O caminho de assinatura inteiro fica em `src/lib/link-audit-attestation/`, sem o `export`: é o ponto de partida do artefato da W4.6. O `sign` não usa o logger do projeto (exceção do §5.2, agora registrada): só códigos fixos na saída de erro.
+- **Ordem no CLI**, antes do §5.5 passo 1 propriamente dito:
+  1. relatórios de diagnóstico do Node desligados (`process.report`, RS-13);
+  2. opção com nome de segredo, ou material de chave em qualquer argumento ⇒ `SECRET_VIA_ARGV_FORBIDDEN` (código 3);
+  3. variável de ambiente com nome de segredo ⇒ `SECRET_VIA_ENV_FORBIDDEN` (código 3);
+  4. analisador estrito ⇒ USAGE (código 1);
+  5. `external:` ⇒ `SIGN_KEY_SOURCE_UNSUPPORTED` (código 3), sem ler nada;
+  6. `runSign` (W4.3).
+
+  As barreiras de segredo vêm antes do analisador: um segredo colado nunca vira simples erro de uso. Nenhuma recusa ecoa o valor de uma opção.
+- **Opção com nome de segredo:** o nome contém pass, senha, secret, segredo, pin, token, priv, chave, key, pwd, credential/credencia, seed/semente ou mnemonic, sem diferenciar caixa e também na forma `--x=valor`. Exceções: `--key-id`, `--key-source` e `--trust-keys`, que não recebem segredo.
+- **Material de chave em qualquer argumento:** armadura PEM (`-----BEGIN`, `PRIVATE KEY`) e o prefixo do PKCS#8 Ed25519 em base64/base64url e em hex. `--key-source` fora de `file:`/`external:` também é `SECRET_VIA_ARGV_FORBIDDEN`: pode ser o material colado, e um erro de digitação é recusado do mesmo jeito. `file:` sem caminho é USAGE.
+- **Ambiente (§8.1):** nomes recusados, sem diferenciar caixa:
+  - `GMN_*` com KEY, PASS, PIN, SECRET ou TOKEN. Inclui `GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS`, que só tem públicas: a estação não tem ambiente do projeto e a lista vai por `--trust-keys`;
+  - qualquer nome com PASSPHRASE, PASSWORD, PASSWD ou SENHA;
+  - `LINK_AUDIT*`, `SEAL*`, `SIGN*` e `ATTEST*` com KEY, PASS, PIN ou SECRET.
+
+  Só os NOMES são lidos (até 3 citados na mensagem, para o custodiante limpar o shell); valores, nunca (teste com `Proxy`). O único valor de ambiente lido é TMPDIR/TMP/TEMP, para as pastas temporárias proibidas.
+- **Argumentos:** `--trust-keys` fora de forma ⇒ USAGE, pelo próprio parser do verificador (`isTrustKeyringText`, em `sign-chain.ts`; pendência da W4.2). `--risk-acceptance <arquivo>` entrou na sintaxe e na tabela do §5.5, e o texto do critério IA-02 (5) passou a admiti-lo.
+- **Terminal (§5.5.1 item 8):**
+  - O modo bruto (eco desligado) é ligado na primeira leitura e mantido até o fim do `sign`: confirmação e frase ficam na mesma sessão, e o que for digitado adiantado entre as duas não ecoa. O modo de antes é restaurado no `finally` do CLI, em qualquer resultado.
+  - stdin sem TTY, sem `setRawMode` ou cujo modo bruto não liga ⇒ nada é lido.
+  - Ctrl-C, Ctrl-D, fim de entrada, erro do terminal, outra tecla de controle (setas, Esc) ou texto acima do limite (64 bytes na confirmação, 1024 na frase) ⇒ recusa. Backspace (o caractere UTF-8 inteiro) e Ctrl-U editam.
+  - Limites declarados: um sinal externo (`kill`) com o terminal em modo bruto não restaura o eco (o custodiante usa `reset`); o Node pode manter cópias internas do que foi digitado, que o código não alcança.
+- **Confirmação também sem eco (passo 11):** os 12 caracteres digitados não aparecem na tela, porque o eco mostraria o prefixo correto do hash (lado fechado de "sem mostrar o hash na tela"). A tela mostra só `auditId`, `seq` e o número de entradas. Sem TTY ⇒ `SIGN_CONFIRMATION_FAILED` na posição do passo 11, não antes do passo 1: a ordem das recusas da spec continua valendo.
+- **Pseudo-terminal real:** `link-audit-seal-sign-pty.test.ts` roda o `sign` sob o `script` do util-linux (presente no Linux e no runner do CI; nenhuma dependência nova) e prova que a frase não volta na tela e que o terminal termina fora do modo bruto. Sem `script`, o teste é pulado.
+- **Chave K1 (passo 12)**, tudo depois da confirmação, nesta ordem: custódia → uma leitura do arquivo → formato → frase → chave.
+  - **Custódia (IA-22) ⇒ `SECRET_PATH_UNSAFE`:**
+    - dentro da raiz do projeto;
+    - numa pasta temporária: TMPDIR, TMP, TEMP e sempre `/tmp`, `/var/tmp` e `/dev/shm` (superconjunto de `os.tmpdir()` sem importar `node:os`, que está fora da lista do artefato, item 7);
+    - algum `.git` (pasta, ou arquivo de worktree) numa pasta acima;
+    - o próprio caminho é link simbólico;
+    - arquivo com permissão diferente de exatamente 0600 (0400 também é recusado: leitura literal da IA-22);
+    - pasta do arquivo com permissão diferente de exatamente 0700;
+    - uma pasta acima não pôde ser inspecionada.
+
+    Os lugares valem pelo caminho dado e pelo caminho real (um link numa pasta do caminho não esconde nada). A permissão do arquivo é a do descritor aberto (`O_NOFOLLOW|O_NONBLOCK`, `fstat`), sem corrida entre conferir e ler.
+  - **Formato:** só PEM `ENCRYPTED PRIVATE KEY` (PKCS#8 cifrado). Chave que o Node abre sem frase (PEM, DER PKCS#8/SEC1/PKCS#1 ou JWK) ⇒ `SECRET_NOT_ENCRYPTED`. Outro formato (só pública, lixo, PEM legado), arquivo inexistente, diretório ou acima de 16 KiB ⇒ `SIGN_KEY_REJECTED`.
+  - **`SECRET_NOT_ENCRYPTED` × `SIGN_KEY_UNPROTECTED`** (o §8 e a IA-04 falam em chave "sem proteção", a IA-22 em "texto claro"): texto claro é `SECRET_NOT_ENCRYPTED`; `SIGN_KEY_UNPROTECTED` é o recipiente cifrado que não protege: abre com frase vazia, ou usa cifra que não é PBES2 (PBES1 legado). As duas recusas saem antes de pedir a frase.
+  - **Frase:** pedida uma vez, sem nova tentativa (frase errada ⇒ rodar de novo). Vazia, interrompida ou não obtida ⇒ `SIGN_KEY_REJECTED`. Chave aberta que não é Ed25519 ⇒ `SIGN_KEY_REJECTED`. Os buffers da frase e do arquivo são zerados; o `KeyObject`, não (limite do §8).
+  - **Pendência (W5, runbook do custodiante):** o `sign` exige PBES2, mas não impõe parâmetros mínimos do KDF (iterações do PBKDF2 ou custo do scrypt); a exportação padrão do Node usa PBKDF2 com 2048 iterações. Fixar a forma de geração no runbook.
+- **IA-02 (5) e custódia:** o `sign` só LÊ o arquivo de chave. A custódia faz `lstat` (metadados) do arquivo, da pasta dele e de `<pasta acima>/.git` até a raiz, e `realpath` do arquivo, da raiz do projeto e das pastas temporárias. **Para a W4.6:** sob `node --permission`, esses `lstat` exigem permissão de leitura das pastas acima do arquivo de chave.
+- **Saída:**
+  - recusa: linha `RECUSADO: <mensagem>` seguida de `Código: <código>` (com `chainReason` entre parênteses, quando houver), código 3. As telas do terminal, quando houve, vêm antes, na mesma saída de erro;
+  - `--json`: um objeto `{ok: false, code, message}`, mais `refs`/`chainReason` quando houver;
+  - a pública derivada sai como `<keyId>:<pública base64url>`: na saída padrão, ou na de erro com `--json`;
+  - sucesso com `--json`: UM objeto, o recibo do passo 16, com exatamente os campos e a ordem da spec;
+  - sucesso sem `--json`: o nome do arquivo (nunca a pasta nem o `file` interno da W4.3), os campos do recibo e o recibo em JSON numa linha (para a pasta de recibos da W4.5).
+- **`artifactSha256: null`** até existir o artefato da W4.6 (o comando roda do código-fonte, sem artefato conferido). Um aviso na saída de erro lembra que o autoteste do passo 14 (W4.5) ainda não existe e que o manifesto não deve ser entregue antes dele.
+- **Pergunta aberta mantida:** operador = custodiante continua sem marca (nota da W4.1).
+
 ### 5.6 Manifesto `v2` e verificador `v2` (onda W3, contrato próprio)
 
 **Decisão de 16/11:** `v2` **antes do primeiro resultado de produção**, com `dossier.sha256` e `prevSealSha256` **dentro da parte assinada**.
@@ -381,7 +436,7 @@ Fecham lacunas apontadas no mapa da W4; prevalecem sobre o texto acima onde houv
 Invariantes (i)–(v) do contrato §3:
 
 - [ ] **IA-01 (i) — recusas (a)–(d):** um teste por recusa, fixtures em memória/pasta temporária **sem** chave real: (a) hash mudado e entrada sumida no manifesto anterior ⇒ `SIGN_EVIDENCE_CHANGED`; (b) pacote com item legado ⇒ `SIGN_LEGACY_NOT_ATTESTABLE` (inclusive com dossiê e aprovação válidos); (c) pacote ≠ aprovado ⇒ `SIGN_PACKAGE_MISMATCH`; (d) `FAIL` em verificação ⇒ `SIGN_INTEGRITY_NOT_OK`; integridade ≠ `OK` ⇒ `SIGN_PACKAGE_INVALID` já no passo 1, porque o esquema da W1 fixa `integrity.status = "OK"` (notas da W4.1 e revisão da W4.1 no §5.5.1). Em todas: código 3, **nenhum** manifesto criado, chave **não aberta** (espião no leitor de chave: 0 chamadas).
-- [ ] **IA-02 (ii) — nunca escreve na pasta de evidências, e o `sign` nem a abre:** (1) o `FsOps` do leitor no `export` é um proxy que falha o teste em qualquer escrita; (2) árvore em modo `0444/0555`: `export` funciona; (3) hash da árvore idêntico antes e depois; (4) `--out` dentro da pasta ⇒ `EXPORT_OUT_UNSAFE`; (5) `sign` com `fs` falso que **falha em qualquer caminho fora de pacote, aprovação, dossiê, pasta de manifestos e arquivo de chave** (RS-04).
+- [ ] **IA-02 (ii) — nunca escreve na pasta de evidências, e o `sign` nem a abre:** (1) o `FsOps` do leitor no `export` é um proxy que falha o teste em qualquer escrita; (2) árvore em modo `0444/0555`: `export` funciona; (3) hash da árvore idêntico antes e depois; (4) `--out` dentro da pasta ⇒ `EXPORT_OUT_UNSAFE`; (5) `sign` com `fs` falso que **falha em qualquer caminho fora de pacote, aprovação, dossiê, aceite formal de risco (`--risk-acceptance`, quando indicado), pasta de manifestos e arquivo de chave** (RS-04); a custódia da IA-22 só consulta **metadados** (`lstat`/`realpath`) da pasta do arquivo de chave, dos `.git` das pastas acima dele, da raiz do projeto e das pastas temporárias, sem ler conteúdo (notas da W4.3 e da W4.4 no §5.5.1).
 - [ ] **IA-03 (iii) — ida e volta:** o manifesto `v2` produzido é `AUTHENTICATED` pelo verificador `v2` real, com a pública derivada, sobre as evidências lidas por `readScoringBasis` (layout versionado). **Falha com 1 byte alterado** (a) de qualquer `contentSha256`, (b) de `signature`, (c) de `seq`/`keyId`/`sealedAt`/`dossier`/`prevSealSha256`, (d) do arquivo de evidência ⇒ `UNAUTHENTICATED`. **Vetor-ouro** (RS-09): corpo, bytes canônicos em hex e assinatura de chave de teste, travados em arquivo de teste e verificados pelo verificador **e** pelo artefato do `sign`; mudança de `canonicalJson`/esquema exige nova `schemaVersion`.
 - [ ] **IA-04 (iv) — a chave privada nunca é impressa nem gravada:** com chave e frase-senha sentinela, capturar stdout, stderr, `--json`, mensagens de erro (inclusive exceções forçadas), `argv`, `process.env`, `os.tmpdir()`, diretório de trabalho e **todas** as escritas de arquivo: nenhuma contém a chave em hex/base64/base64url/PEM nem a frase-senha. Forçar erro durante a assinatura ⇒ saída genérica (código fixo). Chave sem proteção ⇒ `SIGN_KEY_UNPROTECTED`. Relatórios de diagnóstico do Node desligados (`process.report`) (RS-13).
 - [ ] **IA-05 (v) — sem rede:** com `fetch`, `net.Socket#connect`, `dns.*`, `http(s).request` trocados por armadilhas, `export` e `sign` completam; teste estático garante que o grafo de imports **não** inclui Supabase, Serper, Redis, `ioredis`, `bullmq` nem leitura de `.env*`; **para o artefato do `sign`:** nenhum `import`/`require` fora de `node:crypto|node:fs|node:path|node:readline|node:process` e sem `child_process`. Roda também em `scripts/run-isolated.sh`.
