@@ -1,6 +1,6 @@
 # Spec: Produtor P1 da Auditoria por Link — atestação offline da coleta (manifesto Ed25519, v2)
 
-> **Status: PROPOSTA — NADA DISTO FOI IMPLEMENTADO.** O responsável aprovou P1 como **direção** (01/11/2026), sujeita ao contrato técnico e à verificação de procedência, e registrou **decisões em 16/11/2026** (§13). Esta spec detalha o contrato `docs/phase6-auditoria-link/onda6c-contrato-p1-atestacao.md` (a base; em caso de dúvida ele prevalece, **exceto** onde a §13 registra decisão posterior do responsável, que exige ajuste do contrato na onda W0) em requisitos testáveis. Foi **conciliada com o modelo de ameaças** (`docs/security/threats/link-audit-p1-atestacao.md`, requisitos RS-01..RS-21; rastreabilidade na §16). Nomes de comandos, formatos e códigos de saída são **propostas pendentes de aprovação**.
+> **Status: APROVADA na onda W0 (17/11/2026)** pelo responsável ("Vamos seguir essa recomendação", em resposta à proposta de registrar as decisões e fechar a W0), com as decisões D1–D13 (§13.1). Implementação por ondas em `docs/plan/implementation-waves.md`. Histórico: **PROPOSTA — NADA DISTO FOI IMPLEMENTADO.** O responsável aprovou P1 como **direção** (01/11/2026), sujeita ao contrato técnico e à verificação de procedência, e registrou **decisões em 16/11/2026** (§13). Esta spec detalha o contrato `docs/phase6-auditoria-link/onda6c-contrato-p1-atestacao.md` (a base; em caso de dúvida ele prevalece, **exceto** onde a §13 registra decisão posterior do responsável, que exige ajuste do contrato na onda W0) em requisitos testáveis. Foi **conciliada com o modelo de ameaças** (`docs/security/threats/link-audit-p1-atestacao.md`, requisitos RS-01..RS-21; rastreabilidade na §16). Nomes de comandos, formatos e códigos de saída são **propostas pendentes de aprovação**.
 >
 > Esta spec **não altera** o coletor, `stack.yml`, `docker-entrypoint.sh`, volumes nem o verificador. A mudança aditiva do verificador (aceitar `v2`) é **onda própria com contrato próprio** (W3, §5.6), a aprovar antes de qualquer código.
 >
@@ -90,7 +90,7 @@ npm run link-audit:seal -- export --evidence-dir <base> --audit <auditId> \
 | `--collector-hash cNNNN=<hex64>` | **sim, uma por captura não legada** | Hash que o operador registrou do relatório impresso pelo coletor em **`--json`** (`source.capture.sha256`, `capture-report.ts:87`; é o `contentSha256` de `capture:cNNNN`). Divergência, captura sem valor ou valor sem captura ⇒ recusa. **Não há opção que dispense** (captura sem esse registro não é atestável) |
 | `--max-gap-hours` | **sim** para captura nova | Limite entre `collectedAt` e a exportação. **Sem valor padrão** (limite ainda não decidido, §13.3). Acima do limite sem `--gap-justification` ⇒ recusa |
 | `--seals-dir` | não | Se dado, inclui o `delta` informativo (adicionadas/alteradas/ausentes). **Não** é lido para decidir nada aqui |
-| `--out` | não | Arquivo novo, criado com `wx`; por `realpath`, **recusado dentro de `--evidence-dir`**. Sem `--out`, o pacote vai para stdout |
+| `--out` | não | Arquivo novo, criado com `wx`; por `realpath`, **recusado dentro de `--evidence-dir`** e, desde a W2, **dentro da árvore do projeto** (§5.3.2). Sem `--out`, o pacote vai para stdout |
 | `--show-summary` | não | Sem ele, a saída humana mostra só `auditId`, contagens, hashes e códigos (RS-21). Com ele, imprime também nome/cidade/UF da empresa. O **arquivo** do pacote sempre contém o resumo |
 | `--json` | não | stdout = um único objeto JSON |
 
@@ -147,9 +147,32 @@ O `export` executa e grava em `checks[]` (`PASS|FAIL|NOT_EXECUTED`) o que for me
 | 3 | `EXPORT_INTEGRITY_NOT_OK` | `readScoringBasis` ≠ `READY` — **nunca** exporta "para conferir mesmo assim" |
 | 3 | `EXPORT_COLLECTOR_HASH_REQUIRED` / `EXPORT_COLLECTOR_HASH_MISMATCH` | RS-05 |
 | 3 | `EXPORT_GAP_EXCEEDED` | RS-06 |
-| 3 | `EXPORT_OUT_UNSAFE` | `--out` existente ou dentro da pasta de evidências |
+| 3 | `EXPORT_OUT_UNSAFE` | `--out` existente, sem pasta, dentro da pasta de evidências ou (W2) dentro da árvore do projeto, inclusive se isso mudar entre a conferência e a gravação |
 | 3 | `EXPORT_TOO_MANY_ENTRIES` | mais de 2000 entradas |
+| 3 | `EXPORT_CLOCK_REGRESSION` | **(acréscimo da W2)** `lastCollectedAt` posterior ao relógio da estação; recusa mesmo com `--gap-justification` |
+| 3 | `EXPORT_OUT_WRITE_FAILED` | **(acréscimo da W2, revisão)** a gravação do `--out` falhou depois de conferido o destino (sem espaço, erro de disco, `EEXIST` por corrida); pode ter ficado um arquivo parcial no caminho informado, que **não** é pacote válido; o `export` nunca apaga |
 | 4 | `UNEXPECTED` | erro não previsto (mensagem genérica) |
+
+#### 5.3.2 Decisões de implementação da W2 (17/11/2026)
+
+Implementado em `src/lib/link-audit-attestation/export.ts` (montagem pura), `export-run.ts` (único arquivo do módulo com disco: só os leitores existentes, `FsOps` injetado, e a criação exclusiva do `--out`) e `scripts/link-audit-seal.ts`; testes `tests/link-audit-seal-export*.test.ts`. Onde a spec era ambígua, valeu a opção que falha fechado:
+
+- **`gap.observedHours`: fica DENTRO do hash, arredondado PARA CIMA à hora.** O limite é conferido em milissegundos exatos; o teto nunca subestima o intervalo e mantém `observedHours ≤ maxHours` ⇔ dentro do limite. Duas exportações na mesma hora dão o mesmo `packageSha256`; em horas diferentes, hashes diferentes, o que a reprodutibilidade do fluxo não proíbe, porque o `sign` nunca reexporta (RS-04): assina os bytes do pacote aprovado. **Consequência para o procedimento:** depois que o conferente revisou o pacote, o operador **não reexporta**; conferência e assinatura usam sempre os mesmos bytes (runbook da W5).
+- **`HTTP_2XX_AND_COLLECTED_AT`** usa o que o leitor de evidências **já expõe** (`VersionEntry.httpStatus`/`collectedAt`, via `getAudit`), sem ampliar leitor nenhum. `PASS` se todas as capturas têm status 2xx e `collectedAt`; `FAIL` se alguma não tem (o pacote sai; quem recusa é o `sign`). Se as duas leituras divergirem (captura a mais ou a menos, ou `collectedAt` diferente), a recusa é `EXPORT_INTEGRITY_NOT_OK`. **Para a W4:** esta verificação não está em `HUMAN_CHECK_IDS`, então um `NOT_EXECUTED` dela nunca seria assinável. Pelo `export` ela nunca sai `NOT_EXECUTED` numa captura nova.
+- **Empresa no resumo:** nome/cidade/UF **informados pelo operador** (`identity.operatorProvided` do relatório mais recente, como o leitor de evidências já expõe). Valor fora de forma vira `null` e nunca é corrigido.
+- **Sem `--out` (tensão §5.3 × IA-14/RS-21):** o pacote contém nome/cidade/UF, então só vai para a saída padrão **com `--show-summary`**; sem os dois, é erro de uso. Nesse modo, a saída padrão traz exatamente os bytes do arquivo do pacote, e o resumo humano vai para stderr. Com `--json`, o objeto único inclui `package`.
+- **Legado:** as 8 verificações são gravadas, **todas** `NOT_EXECUTED`, inclusive `INTEGRITY_LOCAL`, conforme a leitura literal do critério herdado da W1. No legado, todas as verificações saem `NOT_EXECUTED` porque o pacote não é atestável; `integrity.status` informa o resultado da leitura (`OK`, já que um legado com integridade quebrada é recusado com `EXPORT_INTEGRITY_NOT_OK`). Mantido assim na revisão da W2: deixa o esquema da W1 intocado. Além disso, `gap = null`, `--max-gap-hours` não é exigido e `--collector-hash` é recusado com `EXPORT_COLLECTOR_HASH_MISMATCH` ("valor sem captura não legada").
+- **Argumentos:**
+  - `--max-gap-hours` é inteiro de 1 a 8760 (teto de sanidade; continua sem valor padrão);
+  - `--gap-justification` passa pela regra de texto seguro do esquema (sem e-mail, telefone nem controle), exige `--max-gap-hours` e nunca é ecoada (o `--json` só diz `justified`);
+  - `--evidence-dir` na área do projeto dá erro de uso, e inexistente dá `EXPORT_NOT_FOUND`;
+  - `--out` é recusado (`EXPORT_OUT_UNSAFE`) dentro da pasta de evidências **e em qualquer lugar da árvore do projeto** (não só `public/`: o pacote tem nome/cidade/UF), conferido pelo caminho real **e** pelo caminho informado (um link em `public/` apontando para fora continua servido) e reconferido imediatamente antes de gravar (TOCTOU);
+  - falha de gravação depois da conferência dá `EXPORT_OUT_WRITE_FAILED`, distinto de destino inseguro. O `export` nunca apaga nada; a mensagem avisa do possível arquivo parcial, sem imprimir o caminho;
+  - opção desconhecida ecoa só o nome (até 20 caracteres, padrão `--[a-z-]`), nunca o valor da forma `--x=valor`; fora do padrão, texto fixo.
+- **Outros pontos:**
+  - `integrity.checkedFiles` é o número de entradas do pacote;
+  - o `delta` (`--seals-dir`) não confere assinatura e informa `deltaStatus` (`NOT_REQUESTED`, `NO_SEALS`, `COMPUTED` ou `UNREADABLE`); uma pasta de manifestos inexistente conta como `UNREADABLE`, não como "nenhum manifesto";
+  - lixo com nome **fora** do conjunto (ex.: um FIFO `lixo.fifo`) não é aberto nem atestado (§7.2: o comando não acrescenta leitura própria).
 
 ### 5.4 Arquivo de aprovação (entrada do `sign`)
 
@@ -383,20 +406,28 @@ CLI offline, sem métricas nem alertas. Saída estável e testável: `--json` co
 | D4 | **Separação de papéis:** conferente ≠ custodiante como regra padrão; se só uma pessoa operar, exige **aceite formal e escrito do risco** e **revisão posterior** dos dossiês | §5.4, §5.5 passo 9, IA-16 |
 | D5 | **Custódia:** preferência por token de hardware com Ed25519 puro (compatível com `crypto.verify(null, …)`, RS-15); na falta, PKCS#8 cifrado com frase-senha digitada no terminal sem eco. A chave nunca entra por argv, variável de ambiente, log ou arquivo temporário | §8, IA-04, IA-15, IA-22 |
 | D6 | **Hash da coleta via `--json`, sem mudar o coletor** | §3, §5.3, IA-19 |
+| D7 | **Canal do manifesto até a VPS (decidido em princípio, 16/11/2026):** pelo pipeline de CI (deploy só por CI), nunca por cópia manual; o servidor confere a assinatura contra a chave pública fixada, que é o portão. Detalhes (onde o custodiante deposita o manifesto e quem escreve no volume) ficam para a W5 | §13.2 item 3, §14 (W5) |
+| D8 | **Política de rotação da chave de atestação (forma decidida, 16/11/2026; completada pela D12 em 17/11/2026):** troca imediata por comprometimento (revogação do `keyId` na lista de confiança) e troca periódica ~~com período de convivência das duas chaves~~ em que as duas chaves **convivem só na lista** (a antiga apenas verifica; sobreposição de assinatura = 0, D12); limite de chaves que assinam ao mesmo tempo. Os números estão na D12 | §13.2 item 4, §14 (W4) |
+| D9 | **ADR-0002 aceito (17/11/2026)**: a confirmação de resultados passa pelo livro de cabeças (`RUN_INTENT`/`RUN_CONFIRMED`; fase C do resultado só pelo autor). **Condição:** a emenda §16.17 da spec do livro passa por revisão independente antes do código da onda R1 | `docs/adr/0002-authenticate-result-receipts.md`, plano (R1) |
+| D10 | **Pessoas (regra, 17/11/2026):** titular = o responsável, de preferência quem **não** administra a VPS (o administrador edita a lista de chaves); suplente = outra pessoa com **par próprio** registrado na lista (RS-16, nunca cópia). Se ninguém mais operar: titular sem suplente, com o **aceite formal e escrito** da D4, assinado pelo responsável antes de a chave real entrar (fim da W4). Perder a chave não invalida manifestos já assinados (a pública continua verificando); só bloqueia novas atestações até outro par ser gerado e registrado. Backup cifrado em local físico separado, restauração testada uma vez por ano | §8, §9, §14 (W4, W5), RS-16 |
+| D11 | **Dispositivo (17/11/2026):** começar por **K1** (PKCS#8 cifrado, frase longa digitada sem eco) numa **estação dedicada e sem rede** (responde a pergunta 8 do modelo de ameaças). **K2** (token que assine Ed25519 puro pela PIV, ex.: YubiKey 5 com firmware ≥ 5.7) só depois do teste de interoperabilidade da RS-15 **e** de uma exceção escrita e isolada à RS-14 (o utilitário só assina o corpo canônico). A W4 começa com chave de teste em memória; a chave real entra no fim dela | §8, §14 (W4), RS-14, RS-15 |
+| D12 | **Rotação, números (17/11/2026; completa a D8):** troca periódica a cada **12 meses**, junto com o teste anual de restauração; **convivência para assinar = 0** (a antiga para de assinar na troca); a aposentada continua **só verificando** o histórico (**sem validade por data**, que quem assina escolhe). **Mecanismo (revisão adversarial de 17/11/2026):** a regra "posições anteriores à primeira assinada pela nova" não é imponível sozinha (truncar a cadeia ou abrir auditoria nova reabriria a aposentada para quem guardasse a privada); o contrato do verificador `v2` propõe o **fecho de aposentadoria**, assinado por uma chave ativa, que lista as cabeças de cadeia em que a aposentada assinou; fora dele, ela não vale. **A aprovar com o contrato da W3;** no máximo **2 chaves que assinam** ao mesmo tempo (titular e suplente), aposentadas não contam. **Comprometimento:** revogar o `keyId` na hora; os manifestos dele deixam de valer para finalizações **novas** (falha fechada) e os resultados já confirmados com ele ficam **marcados para reconferência humana** (responde a pergunta 12 do modelo de ameaças). Requisitos do verificador `v2` (W3) | §5.6, §14 (W3), contrato do verificador `v2` |
+| D13 | **`--max-gap-hours` = 24** (17/11/2026), igual à validade da autorização de coleta; quanto menor o intervalo, menos tempo a evidência fica sem atestação. Quem monitora: o conferente, no dossiê (o `export` bloqueia acima do limite) | §5.3, §14 (W2) |
+| D14 | **Contrato do verificador `v2` aprovado (17/11/2026)** (`docs/phase6-auditoria-link/p1-contrato-verificador-v2.md`, PR #25): o **fecho de aposentadoria** (`<sealsDir>/_closures/<id>.json`, assinado offline por uma chave `active`, com o hash **fixado na lista de chaves** como `retired:<closureSha256>`) é a implementação da D12; **O2:** no máximo **16** itens na lista, e as aposentadas **permanecem** (item removido ⇒ `SEAL_INVALID`, nunca chave desconhecida tolerada); **O6:** o resultado grava `{headSeq, headSealSha256, keyIds}` (onda R2); **O7:** `MAX_CHAIN_SEALS = 256`, `MAX_CLASSIFY_BYTES = 16 MiB`, padrão do `dossier.id` do contrato, lacuna avaliada depois do pré-passo de revogação | §5.6, §14 (W3, R2), runbook §4 |
 
 ### 13.2 Questões que continuam abertas (do responsável)
 
-1. **Titular e suplente** do custodiante.
-2. **Dispositivo concreto** (e se ele assina Ed25519 puro e como é acessado, ver tensão com RS-14 na §8).
-3. **Canal de entrega do manifesto à VPS** e **quem escreve no volume de manifestos** (o administrador da VPS, que também edita a lista de chaves, está fora da garantia "web comprometido não falsifica").
-4. **Política e prazo de rotação** da chave de atestação (e limite de chaves simultâneas na lista).
-5. **Limite de tempo entre coleta e exportação** (valor de `--max-gap-hours`; quem monitora).
+1. ~~Titular e suplente~~ **regra decidida (D10)**; os **nomes** (e o do conferente) entram no runbook da W5.
+2. ~~Dispositivo concreto~~ **decidido (D11)**: K1 primeiro; K2 só depois do teste da RS-15 e da exceção escrita à RS-14.
+3. ~~Canal de entrega do manifesto à VPS~~ **decidido em princípio (D7)**; continua aberto **quem escreve no volume de manifestos** (o administrador da VPS, que também edita a lista de chaves, está fora da garantia "web comprometido não falsifica"), a fechar na W5.
+4. ~~Política de rotação~~ **decidida**: forma na D8; prazo (12 meses), convivência para assinar (0) e chaves assinando ao mesmo tempo (2) na D12; limite total da lista (16, aposentadas permanecem) na D14.
+5. ~~Limite de tempo entre coleta e exportação~~ **decidido (D13)**: 24 h; o conferente monitora no dossiê.
 
 ### 13.3 Pontos que esta conciliação deixou **sem decisão** (a confirmar)
 
 - **Aprovação assinada pelo conferente (RS-03)**, com segundo par de chaves: não adotada; segue como pergunta 6 do modelo de ameaças.
-- **Estação do custodiante dedicada** (pergunta 8 do modelo de ameaças) e **arquivamento/revisão amostral de dossiês** (pergunta 10).
-- **Resultados já confirmados antes de uma revogação de chave** serem reabertos (pergunta 12).
+- ~~Estação do custodiante dedicada~~ **decidida (D11: dedicada e sem rede)**; continua aberto o **arquivamento/revisão amostral de dossiês** (pergunta 10).
+- ~~Resultados já confirmados antes de uma revogação de chave~~ **decidido (D12)**: marcados para reconferência humana, sem invalidar o histórico em silêncio.
 - **`operator = conferente`:** a decisão D4 trata de conferente ≠ custodiante; aqui o acúmulo operador/conferente só gera `requiresLaterReview`. Confirmar se deve bloquear como no contrato Q2.
 - **`entries[].source`** (RS-10): fora da D1; sem legado atestável, toda entrada é `LIVE`; incluir depois exige `v3`.
 - **Detalhes do `v2`** da W3: `sealSha256` sobre `canonicalJson`, cumulatividade no verificador, anti-rebaixamento, novos motivos em `EvidenceTrustReason`.
@@ -404,7 +435,7 @@ CLI offline, sem métricas nem alertas. Saída estável e testável: `--json` co
 
 ## 14. Fatiamento em ondas
 
-(Sugestão desta spec; **não** cria `docs/plan/`. Cada onda: spec atualizada, testes no `package.json`, `typecheck` + testes do arquivo alterado, sem rede, sem chave real.)
+(Sugestão original desta spec. **Desde 16/11/2026 a fonte da verdade é `docs/plan/implementation-waves.md`**, que detalha estas ondas, acrescenta a onda **R1** (ADR-0002, confirmação de resultados pelo livro, antes do primeiro resultado de produção) e traz critérios verificáveis por onda. Cada onda: spec atualizada, testes no `package.json`, `typecheck` + testes do arquivo alterado, sem rede, sem chave real.)
 
 | Onda | Entrega | Depende de | Observação |
 |---|---|---|---|

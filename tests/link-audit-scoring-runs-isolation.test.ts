@@ -46,7 +46,7 @@ const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   'blockers.ts': new Set(['../link-audit/scoring/input', '../link-audit/scoring/types', './types']),
   'outcome.ts': new Set(['../link-audit/scoring/types']),
   // Onda 6C (I3): o ÚNICO arquivo que executa o motor (pelo índice) e consome decisões (índice público) e a base (só tipos)
-  'preview.ts': new Set(['../link-audit/canonical', '../link-audit/methodology', '../link-audit/scoring/index', '../link-audit/scoring/input', '../link-audit-decisions', '../link-audit-evidence/provenance', '../link-audit-evidence/scoring-basis', './assemble', './audit-id-alias', './blockers', './criteria-sources', './outcome', './types']),
+  'preview.ts': new Set(['../link-audit/canonical', '../link-audit/methodology', '../link-audit/scoring/index', '../link-audit/scoring/input', '../link-audit-decisions', '../link-audit-evidence/evidence-to-prove', '../link-audit-evidence/provenance', '../link-audit-evidence/scoring-basis', './assemble', './audit-id-alias', './blockers', './criteria-sources', './outcome', './types']),
   'index.ts': new Set(['./assemble', './audit-id-alias', './blockers', './criteria-sources', './outcome', './preview', './results', './results-types', './types']),
   // Onda 6C (I4): tipos/esquemas puros do registro e do recibo
   'results-types.ts': new Set(['zod', '../link-audit-origin', '../link-audit-storage', './audit-id-alias']),

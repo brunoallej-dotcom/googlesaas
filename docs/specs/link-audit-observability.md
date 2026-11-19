@@ -434,7 +434,8 @@ Cada fatia é independente, entra com testes e não altera comportamento observ�
   mínimo). Observação LGPD: HMAC é pseudonimização, não anonimização; o `operatorRef` continua dado pessoal (ver Q3).
 - **Q2 — DECIDIDA (16/11/2026): ignorar** `x-correlation-id` do cliente; o id nasce sempre no servidor (Zero Trust).
 - **Q3 — DECIDIDA EM PARTE (16/11/2026): retenção de 90 dias** para os logs da Fase 6, com expurgo automático
-  (prazo proposto; confirmar na implantação). **Continua aberto:** quem tem acesso aos logs e onde ficam (fora da VPS).
+  (prazo proposto; confirmar na implantação). **Acesso decidido (16/11/2026, recomendação AISAC):** privilégio mínimo,
+  só o responsável e quem opera o servidor. **Continua aberto:** onde os logs ficam (fora da VPS).
 - **Q4:** `auditId` é um slug que casa `^[a-z0-9][a-z0-9_-]{7,63}$`; confirmar que **não é derivado do nome da empresa**
   nem do link (se for, tratá-lo como dado sensível e logar apenas um hash dele).
 - **Q5:** `ENOSPC`/`EIO`/`EROFS`: o `errno` chega hoje ao ponto de decisão da rota? Se só vira `STORAGE_UNAVAILABLE`/

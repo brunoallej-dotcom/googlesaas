@@ -232,6 +232,19 @@ const SCORING_RUNS_TARGETS: ReadonlySet<string> = new Set(['canonical.ts', 'meth
 const SCORING_RUNS_STORE_TARGETS: ReadonlyMap<string, ReadonlySet<string>> = new Map([['src/lib/link-audit-scoring-runs/results-store.ts', new Set(['snapshot-store.ts'])]]);
 /** Onda 6C (I3): a rota da prévia (servidor). Só ela e o serviço de prévia consomem o índice do motor; cada arquivo é conferido em `link-audit-scoring-runs-isolation.test.ts`. */
 const SCORING_ROUTES_DIR = 'src/app/api/link-audit/scoring/';
+/** P1 W1: núcleo de atestação (puro). Só o selo canônico (SHA-256 do pacote); nunca o motor, o disco nem as decisões. Conferido arquivo a arquivo em `link-audit-seal-isolation.test.ts`. */
+const ATTESTATION_DIR = 'src/lib/link-audit-attestation/';
+/** Arquivo do núcleo de atestação → arquivos do módulo de evidências que ele pode importar. */
+const ATTESTATION_EVIDENCE_IMPORTS: ReadonlyMap<string, readonly string[]> = new Map([
+  ['src/lib/link-audit-attestation/index.ts', ['evidence-to-prove']],
+  ['src/lib/link-audit-attestation/schemas.ts', ['types']],
+  // P1 W2: a montagem pura do pacote (função única basis → evidências) e o adaptador de disco do `export` (só os leitores e o FsOps)
+  ['src/lib/link-audit-attestation/export.ts', ['evidence-to-prove', 'types']],
+  ['src/lib/link-audit-attestation/export-run.ts', ['provenance', 'reader', 'scoring-basis', 'store']],
+]);
+const ATTESTATION_TARGETS: ReadonlySet<string> = new Set(['canonical.ts']);
+/** P1 W2: só o adaptador de disco do `export` usa também o FsOps (leitura O_NOFOLLOW/O_NONBLOCK e a criação exclusiva do --out). */
+const ATTESTATION_EXTRA_TARGETS: ReadonlyMap<string, ReadonlySet<string>> = new Map([['src/lib/link-audit-attestation/export-run.ts', new Set(['snapshot-store.ts'])]]);
 const CLIENT_DIRS = ['src/components/link-audit/', 'src/app/auditoria-por-link/'];
 /** Único valor (não só tipo) que o navegador pode importar: constantes puras, sem nenhum import. */
 const CLIENT_VALUE_IMPORTS: ReadonlySet<string> = new Set(['methodology']);
@@ -290,6 +303,9 @@ test('isolamento reverso: só os consumidores declarados importam o módulo, e s
       } else if (isOrigin) {
         const withExtension = target.endsWith('.ts') ? target : `${target}.ts`;
         assert.ok(ORIGIN_TARGETS.has(withExtension), `${name} importa "${statement.specifier}", fora da lista fechada do módulo de prova de origem`);
+      } else if (name.startsWith(ATTESTATION_DIR)) {
+        const withExtension = target.endsWith('.ts') ? target : `${target}.ts`;
+        assert.ok(ATTESTATION_TARGETS.has(withExtension) || ATTESTATION_EXTRA_TARGETS.get(name)?.has(withExtension) === true, `${name} importa "${statement.specifier}", fora da lista fechada do núcleo de atestação`);
       } else if (isStorage) {
         const withExtension = target.endsWith('.ts') ? target : `${target}.ts`;
         assert.ok(STORAGE_TARGETS.has(withExtension), `${name} importa "${statement.specifier}", fora da lista fechada do módulo neutro de armazenamento`);
@@ -470,7 +486,7 @@ test('Onda 5A/5B: só o runtime, os comandos e as rotas de leitura importam o se
         const resolved = resolveImport(file, statement.specifier);
         if (resolved === null || !(resolved === evidenceRoot || resolved.startsWith(evidenceRoot + path.sep))) continue;
         // exceção deliberada (R2-MINOR-1): o serviço de prévia usa a POLÍTICA de proveniência das evidências (a fronteira com o motor); mais ninguém do módulo
-        if (name.endsWith('/preview.ts') && resolved === path.join(evidenceRoot, 'provenance')) continue;
+        if (name.endsWith('/preview.ts') && (resolved === path.join(evidenceRoot, 'provenance') || resolved === path.join(evidenceRoot, 'evidence-to-prove'))) continue; // W1 P1: a montagem única base → evidências a provar
         assert.ok(statement.typeOnly && resolved === path.join(evidenceRoot, 'scoring-basis'), `${name} importa "${statement.specifier}": só tipos de scoring-basis são permitidos`);
       }
       continue;
@@ -481,6 +497,16 @@ test('Onda 5A/5B: só o runtime, os comandos e as rotas de leitura importam o se
         const resolved = resolveImport(file, statement.specifier);
         if (resolved === null || !(resolved === evidenceRoot || resolved.startsWith(evidenceRoot + path.sep))) continue;
         assert.ok(resolved === evidenceRoot || resolved === path.join(evidenceRoot, 'scoring-basis') || resolved === path.join(evidenceRoot, 'provenance'), `${name} importa "${statement.specifier}": só o índice público, o leitor de pontuação e a política de proveniência são permitidos`);
+      }
+      continue;
+    }
+    if (name.startsWith(ATTESTATION_DIR)) {
+      // P1 W1: o núcleo de atestação usa SÓ estes dois arquivos do módulo de evidências, e só nestes importadores
+      for (const statement of importStatements(fs.readFileSync(file, 'utf8'))) {
+        const resolved = resolveImport(file, statement.specifier);
+        if (resolved === null || !(resolved === evidenceRoot || resolved.startsWith(evidenceRoot + path.sep))) continue;
+        const allowed = ATTESTATION_EVIDENCE_IMPORTS.get(name);
+        assert.ok(allowed !== undefined && allowed.some((target) => resolved === path.join(evidenceRoot, target)), `${name} importa "${statement.specifier}": fora da lista fechada do núcleo de atestação`);
       }
       continue;
     }
