@@ -12,7 +12,11 @@ const MAX_NOTE_LENGTH = 280;
 const MAX_NAME_LENGTH = 200;
 /** Dígitos demais seguidos (ignorando separadores) parecem telefone. Oito dígitos (ex.: `OP-20261023`) ainda é identificador. */
 const PHONE_DIGIT_RUN = 9;
-const PHONE_SEPARATORS = /[ \-.()]/gu;
+/**
+ * O que separa grupos de dígitos de um telefone. Inclui todo separador que os próprios rótulos e o `dossier.id` aceitam (`_`, `-`, `.`, espaço:
+ * `119_1234_5678` é telefone) e, nas notas de texto livre, `/` (`119/1234/5678`). Revisão da W4.1, notas no §5.5.1 da spec.
+ */
+const PHONE_SEPARATORS = /[ \-.()_\/]/gu;
 const CONTROL_OR_BIDI = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 const SHORT_ID_ALLOWLIST = /^[\p{L}\p{N} ._-]+$/u;
 
