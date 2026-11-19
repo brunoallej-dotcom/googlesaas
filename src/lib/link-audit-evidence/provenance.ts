@@ -46,10 +46,28 @@ export type EvidenceTrustReason =
   | 'EVIDENCE_NOT_SEALED'
   | 'EVIDENCE_MISSING'
   | 'EVIDENCE_HASH_MISMATCH'
-  | 'VERIFICATION_ERROR';
+  | 'VERIFICATION_ERROR'
+  // v2 (contract §8, additive): the chain does not close / omits or changes an earlier entry / a v1 after a v2 / a version the policy refuses /
+  // a retired key outside its pinned closure / an authentic signature of a revoked key
+  | 'SEAL_CHAIN_BROKEN'
+  | 'SEAL_NOT_CUMULATIVE'
+  | 'SEAL_DOWNGRADE'
+  | 'SEAL_VERSION_NOT_ALLOWED'
+  | 'SEAL_KEY_RETIRED_UNCOVERED'
+  | 'SEAL_KEY_REVOKED';
+
+/** Which chain head and which keys authenticated (contract §7.3, O6). Returned ONLY by the v2 path; result recording is wave R2. */
+export interface EvidenceHeadProof {
+  readonly headSeq: number;
+  readonly headSealSha256: string;
+  /** Distinct, sorted ids of the keys of the positions (plus the closure signer used, W3.4). Public labels, no PII. */
+  readonly keyIds: readonly string[];
+}
 
 export type EvidenceTrust =
+  /** v1 (compatible path): EXACTLY this object, as before W3 (contract §8.A, §9). */
   | { readonly status: 'AUTHENTICATED' }
+  | ({ readonly status: 'AUTHENTICATED' } & EvidenceHeadProof)
   /** `missingRefs`: só em `EVIDENCE_MISSING` (no máximo 5 referências, sem conteúdo): o manifesto atesta algo que a base de hoje NÃO tem. */
   | { readonly status: 'UNAUTHENTICATED'; readonly reason: EvidenceTrustReason; readonly missingRefs?: readonly string[] };
 
@@ -178,17 +196,50 @@ export function parseTrustKeys(raw: string | undefined): ReadonlyMap<string, Key
 
 /* ------------------------------------------------------------------------------------------ a política que VERIFICA */
 
+/** Manifest format versions a policy accepts at EVERY position (contract §4.2). */
+export type AcceptedSealVersion = 1 | 2;
+/**
+ * LIBRARY default `[1,2]`, kept only so the v1 suite keeps passing unchanged (contract §4.3, C2). Every caller outside tests/ passes
+ * `acceptedVersions` explicitly; production passes `[2]` (static test V2-19).
+ */
+export const DEFAULT_ACCEPTED_VERSIONS: readonly AcceptedSealVersion[] = Object.freeze([1, 2] as const);
+
+/** Trust-list item with its state (contract §5; `parseTrustKeyring` and the states' semantics arrive in W3.4). */
+export interface TrustKeyringEntry {
+  readonly key: KeyObject;
+  readonly status: 'active' | 'retired' | 'revoked';
+  /** Pinned SHA-256 of the retirement closure bytes (`retired:<hash>`), or null. */
+  readonly closureSha256: string | null;
+}
+export type TrustKeyring = ReadonlyMap<string, TrustKeyringEntry>;
+
 export interface SealedEvidenceOptions {
   /** Pasta DOS MANIFESTOS (somente leitura para o web; NUNCA a pasta de evidências nem aninhada nela). */
   readonly sealsDir: string;
-  readonly trustedKeys: ReadonlyMap<string, KeyObject>;
+  /** TEST-ONLY trust list, every key `active` (contract §5). Together with `keyring` ⇒ closed policy. */
+  readonly trustedKeys?: ReadonlyMap<string, KeyObject>;
+  /** Production trust list with key states (contract §5). W3.2 hook: verified from W3.4 on; until then the policy is CLOSED (fail-closed). */
+  readonly keyring?: TrustKeyring;
+  /** Versions accepted at every position; absent ⇒ library default `[1,2]`. Empty, unknown or repeated ⇒ closed policy (contract §4.2). */
+  readonly acceptedVersions?: readonly AcceptedSealVersion[];
   readonly fs?: FsOps;
   /** Outras pastas (evidências, decisões, recibos, resultados): a de manifestos não pode ser nenhuma delas nem estar aninhada (considera link simbólico). */
   readonly otherDirs?: readonly string[];
 }
 
+/** `undefined` ⇒ library default; anything else must be a non-empty set of {1, 2} without repetition, or the policy is closed (fail-closed). */
+function acceptedVersionsOf(value: unknown): readonly AcceptedSealVersion[] | null {
+  if (value === undefined) return DEFAULT_ACCEPTED_VERSIONS;
+  if (!Array.isArray(value) || value.length === 0 || new Set(value).size !== value.length) return null;
+  return value.every((version) => version === 1 || version === 2) ? Object.freeze([...(value as AcceptedSealVersion[])]) : null;
+}
+
 /** Política que só autentica o que um manifesto ASSINADO por uma chave de confiança cobre, com os MESMOS hashes. */
 export function createSealedEvidenceProvenance(options: SealedEvidenceOptions): EvidenceProvenancePolicy {
+  const versions = acceptedVersionsOf(options.acceptedVersions);
+  const trustedKeys = options.trustedKeys;
+  // keyring + trustedKeys together, neither, or a keyring before W3.4 implements its states ⇒ nothing is authentic (contract §5, §8 row 1)
+  if (versions === null || options.keyring !== undefined || trustedKeys === undefined) return CLOSED_EVIDENCE_PROVENANCE;
   const ops = options.fs ?? nodeFsOps;
   const real = async (target: string): Promise<string> => {
     try {
@@ -225,27 +276,13 @@ export function createSealedEvidenceProvenance(options: SealedEvidenceOptions): 
         if (sealed.length === 0) return unauthenticated(legacy ? 'LEGACY_NO_SEAL' : 'NO_SEAL');
         // o de MAIOR seq: se ele não valer, não se recua para um mais antigo (o atacante escolheria qual versão do passado vale)
         const latest = sealed.reduce((best, item) => (item.seq > best.seq ? item : best));
-        const parsed = sealFileSchema.safeParse(JSON.parse(await ops.readFile(path.join(dir, latest.name), MAX_SEAL_BYTES)));
-        if (!parsed.success) return unauthenticated('SEAL_INVALID');
-        const { signature, ...body } = parsed.data;
-        const key = options.trustedKeys.get(body.keyId);
-        if (!key || body.auditId !== auditId || body.seq !== latest.seq) return unauthenticated('SEAL_INVALID');
-        const refs = body.entries.map((entry) => entry.ref);
-        if (new Set(refs).size !== refs.length || refs.some((ref, index) => index > 0 && (refs[index - 1] as string) >= ref)) return unauthenticated('SEAL_INVALID'); // ordenado e sem repetição
-        if (!cryptoVerify(null, Buffer.from(canonicalJson(body), 'utf8'), key, Buffer.from(signature, 'base64url'))) return unauthenticated('SEAL_INVALID');
-        const byRef = new Map(body.entries.map((entry) => [entry.ref, entry.contentSha256]));
-        // (1) base ⊆ manifesto: tudo que é usado está atestado, com o MESMO hash
-        for (const evidence of evidences) {
-          const attested = byRef.get(evidence.ref);
-          if (attested === undefined) return unauthenticated('EVIDENCE_NOT_SEALED');
-          if (attested !== evidence.contentSha256) return unauthenticated('EVIDENCE_HASH_MISMATCH');
-        }
-        // (2) manifesto ⊆ base: nada que foi atestado pode ter DESAPARECIDO. Sem isto, apagar a captura mais recente faria uma captura antiga voltar a ser a "situação atual"
-        // ainda autêntica (R3-MINOR-1). O manifesto é cumulativo: ele define o conjunto exato de capturas, relatórios e artefatos cobertos.
-        const present = new Set(evidences.map((evidence) => evidence.ref));
-        const missing = body.entries.map((entry) => entry.ref).filter((ref) => !present.has(ref));
-        if (missing.length > 0) return { status: 'UNAUTHENTICATED', reason: 'EVIDENCE_MISSING', missingRefs: missing.slice(0, 5) };
-        return { status: 'AUTHENTICATED' };
+        const text = await ops.readFile(path.join(dir, latest.name), MAX_SEAL_BYTES); // read ONCE; reused by whichever path is taken
+        const declared = declaredSeal(text);
+        // Path choice (contract §8): `[1]` emulates the old verifier, always. `[1,2]` with a v1 latest is path A, exactly today's behavior.
+        // Everything else (latest v2, `[2]`, or a latest that is unreadable or of another version) is the WALKED path B (fail-closed).
+        if (!versions.includes(2)) return declared ? classifyLatestV1(declared.json, latest.seq, auditId, evidences, trustedKeys) : unauthenticated('VERIFICATION_ERROR');
+        if (versions.includes(1) && declared?.schemaVersion === SEAL_SCHEMA_VERSION) return classifyLatestV1(declared.json, latest.seq, auditId, evidences, trustedKeys);
+        return classifyWalked(text, sealed, auditId, evidences, trustedKeys, versions);
       } catch {
         return unauthenticated('VERIFICATION_ERROR');
       }
@@ -253,11 +290,53 @@ export function createSealedEvidenceProvenance(options: SealedEvidenceOptions): 
   };
 }
 
+/** The latest file as JSON.parse sees it (as the v1 verifier always did), only to choose the path. `null` = not JSON. Never throws. */
+function declaredSeal(text: string): { readonly json: unknown; readonly schemaVersion: unknown } | null {
+  try {
+    const json = JSON.parse(text) as unknown;
+    return { json, schemaVersion: typeof json === 'object' && json !== null && !Array.isArray(json) ? (json as { readonly schemaVersion?: unknown }).schemaVersion : undefined };
+  } catch {
+    return null;
+  }
+}
+
+/** Path A (contract §8.A, §9): the v1 verifier of before W3, unchanged: only the latest manifest, answer EXACTLY `{status:'AUTHENTICATED'}`. */
+function classifyLatestV1(json: unknown, latestSeq: number, auditId: string, evidences: readonly EvidenceToProve[], trustedKeys: ReadonlyMap<string, KeyObject>): EvidenceTrust {
+  const parsed = sealFileSchema.safeParse(json);
+  if (!parsed.success) return unauthenticated('SEAL_INVALID');
+  const { signature, ...body } = parsed.data;
+  const key = trustedKeys.get(body.keyId);
+  if (!key || body.auditId !== auditId || body.seq !== latestSeq) return unauthenticated('SEAL_INVALID');
+  const refs = body.entries.map((entry) => entry.ref);
+  if (new Set(refs).size !== refs.length || refs.some((ref, index) => index > 0 && (refs[index - 1] as string) >= ref)) return unauthenticated('SEAL_INVALID'); // ordenado e sem repetição
+  if (!cryptoVerify(null, Buffer.from(canonicalJson(body), 'utf8'), key, Buffer.from(signature, 'base64url'))) return unauthenticated('SEAL_INVALID');
+  return coverageVerdict(body.entries, evidences) ?? { status: 'AUTHENTICATED' };
+}
+
+/** Two-way coverage over the head manifest (`null` = covered). Same rule for v1 and v2 (contract §3, last paragraph). */
+function coverageVerdict(entries: ReadonlyArray<{ readonly ref: string; readonly contentSha256: string }>, evidences: readonly EvidenceToProve[]): EvidenceTrust | null {
+  const byRef = new Map(entries.map((entry) => [entry.ref, entry.contentSha256]));
+  // (1) base ⊆ manifesto: tudo que é usado está atestado, com o MESMO hash
+  for (const evidence of evidences) {
+    const attested = byRef.get(evidence.ref);
+    if (attested === undefined) return unauthenticated('EVIDENCE_NOT_SEALED');
+    if (attested !== evidence.contentSha256) return unauthenticated('EVIDENCE_HASH_MISMATCH');
+  }
+  // (2) manifesto ⊆ base: nada que foi atestado pode ter DESAPARECIDO. Sem isto, apagar a captura mais recente faria uma captura antiga voltar a ser a "situação atual"
+  // ainda autêntica (R3-MINOR-1). O manifesto é cumulativo: ele define o conjunto exato de capturas, relatórios e artefatos cobertos.
+  const present = new Set(evidences.map((evidence) => evidence.ref));
+  const missing = entries.map((entry) => entry.ref).filter((ref) => !present.has(ref));
+  return missing.length > 0 ? { status: 'UNAUTHENTICATED', reason: 'EVIDENCE_MISSING', missingRefs: missing.slice(0, 5) } : null;
+}
+
 /**
  * Política a partir da CONFIGURAÇÃO do servidor (variáveis lidas por quem chama): pasta de manifestos + chaves públicas de confiança. Faltando
  * qualquer uma, ou chave malformada, a política é a FECHADA. Não existe valor que "confie em tudo".
  */
-export function evidenceProvenanceFromConfig(config: { readonly sealsDir: string | null; readonly trustKeys: string | undefined; readonly otherDirs?: ReadonlyArray<string | null | undefined> }, fsOps?: FsOps): EvidenceProvenancePolicy {
+export function evidenceProvenanceFromConfig(
+  config: { readonly sealsDir: string | null; readonly trustKeys: string | undefined; readonly otherDirs?: ReadonlyArray<string | null | undefined>; readonly acceptedVersions?: readonly AcceptedSealVersion[] },
+  fsOps?: FsOps,
+): EvidenceProvenancePolicy {
   const keys = parseTrustKeys(config.trustKeys);
   if (!config.sealsDir || !keys) return CLOSED_EVIDENCE_PROVENANCE;
   // os manifestos NÃO podem morar em nenhuma outra pasta de dados (nem elas dentro deles): quem escreve lá não pode tocar na prova (nem para apagá-la).
@@ -268,14 +347,16 @@ export function evidenceProvenanceFromConfig(config: { readonly sealsDir: string
     const b = path.resolve(dir).toLowerCase();
     if (a === b || a.startsWith(b + path.sep) || b.startsWith(a + path.sep)) return CLOSED_EVIDENCE_PROVENANCE;
   }
-  return createSealedEvidenceProvenance({ sealsDir: config.sealsDir, trustedKeys: keys, otherDirs: others, ...(fsOps ? { fs: fsOps } : {}) });
+  // `acceptedVersions` is forwarded as given (absent ⇒ library default [1,2]; production passes [2], V2-19). `trustedKeys` here until W3.4
+  // moves this function to `parseTrustKeyring` (contract §5).
+  return createSealedEvidenceProvenance({ sealsDir: config.sealsDir, trustedKeys: keys, acceptedVersions: config.acceptedVersions, otherDirs: others, ...(fsOps ? { fs: fsOps } : {}) });
 }
 
 /* ============================================================================== manifest v2 and key-retirement closure (wave W3.1) */
 /*
  * PURE, ADDITIVE primitives of the v2 manifest and of the key-retirement closure (contract `p1-contrato-verificador-v2.md` §2 and §6).
  * Nothing above changes: the v1 schemas, `createEvidenceSeal`, `parseTrustKeys` and the v1 `classify` path stay exactly as they were.
- * The verifier that USES these primitives (`classify` v2, chain, keyring, closure logic, revocation) belongs to waves W3.2–W3.5.
+ * `classify` uses them for ONE v2 manifest since W3.2 (`classifyWalked`); the chain is W3.3, keyring states and closures W3.4, revocation W3.5.
  *
  * Signed bytes = UTF-8(canonicalJson(file without `signature`)); Ed25519 PURE (`crypto.sign/verify(null, …)`), no pre-hash, no context: the
  * same framing as v1 and the only one a K2 device can reproduce (RS-15). `schemaVersion` and `kind` are inside the signed bytes.
@@ -353,8 +434,8 @@ const sealFileSchemaV2 = z.object({ ...sealBodyShapeV2, signature: signatureSche
 export type EvidenceSealBodyV2 = z.infer<typeof sealBodySchemaV2>;
 export type EvidenceSealFileV2 = z.infer<typeof sealFileSchemaV2>;
 
-/** v1 as `sealSha256` accepts it: the UNCHANGED v1 schema plus canonical signature and strictly ordered entries (fail-closed; v1 itself untouched). */
-const sealFileSchemaV1ForHash = sealFileSchema.refine((file) => isCanonicalSignatureText(file.signature) && isStrictlyOrdered(file.entries, (entry) => entry.ref));
+/** v1 as the v2-era code accepts it (`sealSha256`, walked path B): the UNCHANGED v1 schema plus canonical signature and strictly ordered entries. */
+const sealFileSchemaV1Strict = sealFileSchema.refine((file) => isCanonicalSignatureText(file.signature) && isStrictlyOrdered(file.entries, (entry) => entry.ref));
 
 const closureHeadSchema = z.object({ auditId: z.string().regex(AUDIT_ID_PATTERN), seq: chainSeqSchema, sealSha256: z.string().regex(HEX64) }).strict();
 const closureBodyShape = {
@@ -503,9 +584,49 @@ export function parseKeyRetirementClosureText(raw: Uint8Array): SealTextParse<Ke
  */
 export function sealSha256(file: EvidenceSealFile | EvidenceSealFileV2): string {
   const version = typeof file === 'object' && file !== null ? (file as { readonly schemaVersion?: unknown }).schemaVersion : undefined;
-  const parsed = version === SEAL_SCHEMA_VERSION_V2 ? sealFileSchemaV2.safeParse(file) : version === SEAL_SCHEMA_VERSION ? sealFileSchemaV1ForHash.safeParse(file) : null;
+  const parsed = version === SEAL_SCHEMA_VERSION_V2 ? sealFileSchemaV2.safeParse(file) : version === SEAL_SCHEMA_VERSION ? sealFileSchemaV1Strict.safeParse(file) : null;
   if (!parsed?.success) throw new EvidenceSealError('SCHEMA_INVALID');
   return sha256Hex(canonicalJson(parsed.data));
+}
+
+/* ----------------------------------------------------------------------------------------- walked path B (W3.2: one manifest) */
+
+type SealPosition = { readonly version: 1; readonly file: EvidenceSealFile } | { readonly version: 2; readonly file: EvidenceSealFileV2 };
+
+/** One position of the walked path: raw-text gate, then the strict schema of ITS version (v1 or v2); any other version is refused. */
+function parseSealPositionText(raw: Uint8Array): SealTextParse<SealPosition> {
+  const read = readStrictJsonText(raw, MAX_SEAL_BYTES);
+  if (!read.ok) return read;
+  const version = typeof read.json === 'object' && read.json !== null ? (read.json as { readonly schemaVersion?: unknown }).schemaVersion : undefined;
+  if (version === SEAL_SCHEMA_VERSION_V2) {
+    const parsed = sealFileSchemaV2.safeParse(read.json);
+    return parsed.success ? { ok: true, value: { version: 2, file: parsed.data } } : textRejected('SCHEMA');
+  }
+  if (version === SEAL_SCHEMA_VERSION) {
+    const parsed = sealFileSchemaV1Strict.safeParse(read.json);
+    return parsed.success ? { ok: true, value: { version: 1, file: parsed.data } } : textRejected('SCHEMA');
+  }
+  return textRejected('SCHEMA');
+}
+
+/**
+ * Path B (contract §8 rows 8, 10, 11, 14) for the layout W3.2 verifies: exactly ONE manifest, `seal-0001`. Any other layout (a chain, `seal-0000`,
+ * gaps, more than 256) is walked from W3.3 on; until then it FAILS CLOSED as VERIFICATION_ERROR ("could not be completed"), never authenticates.
+ * The text comes from `FsOps.readFile` (a lossy UTF-8 decode): an invalid byte can only become U+FFFD, which no ASCII-only field or JSON token
+ * accepts, so the verdict is SEAL_INVALID as with a strict decode; reading raw bytes is a W3.3/W3.5 read-layer concern.
+ */
+function classifyWalked(text: string, sealed: ReadonlyArray<{ readonly seq: number }>, auditId: string, evidences: readonly EvidenceToProve[], trustedKeys: ReadonlyMap<string, KeyObject>, versions: readonly AcceptedSealVersion[]): EvidenceTrust {
+  if (sealed.length !== 1 || sealed[0]?.seq !== 1) return unauthenticated('VERIFICATION_ERROR');
+  const position = parseSealPositionText(Buffer.from(text, 'utf8'));
+  if (!position.ok) return unauthenticated('SEAL_INVALID'); // row 8: raw text (backslash, duplicate key, BOM), JSON, strict schema
+  const { version, file } = position.value;
+  const key = trustedKeys.get(file.keyId);
+  if (!key || file.auditId !== auditId || file.seq !== 1) return unauthenticated('SEAL_INVALID'); // row 8: key in the list, same audit, seq = name
+  const { signature, ...body } = file;
+  if (!verifyEd25519PureSignature(signingBytesOf(body), signature, key)) return unauthenticated('SEAL_INVALID'); // row 8 BEFORE rows 9–10
+  if (!versions.includes(version)) return unauthenticated('SEAL_VERSION_NOT_ALLOWED'); // row 10
+  if (version === SEAL_SCHEMA_VERSION_V2 && file.prevSealSha256 !== null) return unauthenticated('SEAL_CHAIN_BROKEN'); // row 11 (7b): seq 1 ⇔ prev null
+  return coverageVerdict(file.entries, evidences) ?? { status: 'AUTHENTICATED', headSeq: file.seq, headSealSha256: sealSha256(file), keyIds: [file.keyId] };
 }
 
 /* ----------------------------------------------------------------------------------------- v2 manifest: build / assemble / create */
