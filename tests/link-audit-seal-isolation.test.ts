@@ -18,7 +18,7 @@ const importsOf = (source: string): string[] => {
     ...[...code.matchAll(/\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1] ?? ''),
   ];
 };
-const FILES = ['export-run.ts', 'export.ts', 'index.ts', 'package-hash.ts', 'schemas.ts'];
+const FILES = ['export-run.ts', 'export.ts', 'index.ts', 'package-hash.ts', 'schemas.ts', 'sign-core.ts'];
 const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   'index.ts': new Set(['../link-audit-evidence/evidence-to-prove', './package-hash', './schemas']),
   'package-hash.ts': new Set(['../link-audit/canonical', './schemas']),
@@ -27,12 +27,15 @@ const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   'export.ts': new Set(['../link-audit-evidence/evidence-to-prove', '../link-audit-evidence/types', './package-hash', './schemas']),
   // P1 W2: o ÚNICO arquivo do módulo com disco: lê pelos leitores existentes (FsOps injetado) e cria só o --out; fora do índice público
   'export-run.ts': new Set(['node:path', 'zod', '../link-audit/snapshot-store', '../link-audit-evidence/provenance', '../link-audit-evidence/reader', '../link-audit-evidence/scoring-basis', '../link-audit-evidence/store', './export', './schemas']),
+  // P1 W4.1: núcleo PURO das recusas do `sign` (só o hash do dossiê vem de node:crypto); nunca o verificador, o leitor nem disco
+  'sign-core.ts': new Set(['node:crypto', './package-hash', './schemas']),
 };
 /** Exceções por arquivo às proibições abaixo, cada uma trocada por uma regra mais estreita (P1 W2). */
 const NO_IMPLICIT_CLOCK: readonly [RegExp, string] = [/Date\.now|new Date\s*\(\s*\)|performance\.now/, 'relógio implícito'];
 const EXCEPTIONS: Readonly<Record<string, ReadonlySet<string>>> = {
   'export.ts': new Set(['Date']), // Date.parse/toISOString de datas recebidas (normalização); o instante vem de quem chama
   'export-run.ts': new Set(['Date', 'módulo node']), // só node:path (lista acima); o instante vem de quem chama
+  'sign-core.ts': new Set(['Date', 'módulo node']), // relógio INJETADO (tipo Date); só createHash de node:crypto (teste abaixo)
 };
 
 test('importsOf enxerga import de efeito colateral, import() dinâmico, require e export from', () => {
@@ -74,6 +77,68 @@ test('P1 W2: export-run.ts só escreve por UMA criação exclusiva (o --out) e n
   assert.equal([...code.matchAll(/\.writeExclusive\s*\(/g)].length, 1);
   assert.ok(!/\.(?:mkdir|link|unlink|chmod|syncDirectory|rename|rm|truncate)\s*\(|publishExclusive|withLock|node:fs/.test(code));
   assert.equal(strip(fs.readFileSync(path.join(LIB, 'index.ts'), 'utf8')).includes('export-run'), false, 'o adaptador de disco fica fora do índice público');
+});
+
+test('P1 W4.1: sign-core.ts usa de node:crypto SÓ createHash (hash do dossiê): nunca assina, abre, gera nem deriva chave', () => {
+  const code = strip(fs.readFileSync(path.join(LIB, 'sign-core.ts'), 'utf8'));
+  assert.deepEqual([...code.matchAll(/import\s*\{([^}]*)\}\s*from\s*'node:crypto'/g)].map((m) => (m[1] ?? '').trim()), ['createHash']);
+  assert.ok(!/\b(?:sign|verify|createPrivateKey|createPublicKey|generateKeyPair\w*|randomBytes|scrypt\w*|pbkdf2\w*)\s*\(/.test(code) && !/\bKeyObject\b/.test(code), 'operação de chave no núcleo');
+  assert.ok(!/node:(?!crypto')/.test(code), 'outro módulo node');
+});
+
+/** Arquivo `.ts` de um import relativo ou `@/` (= `src/`); `null` para pacote externo ou módulo `node:`. Import local que não resolve falha o teste. */
+function resolveLocal(from: string, specifier: string): string | null {
+  const base = specifier.startsWith('@/') ? path.join(ROOT, 'src', specifier.slice(2)) : specifier.startsWith('.') ? path.resolve(path.dirname(from), specifier) : null;
+  if (base === null) return null;
+  const found = [`${base}.ts`, `${base}.tsx`, path.join(base, 'index.ts'), base].find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile());
+  return found ?? assert.fail(`import local não resolvido: "${specifier}" em ${path.relative(ROOT, from)}`);
+}
+
+/** Todos os arquivos locais alcançáveis a partir de `entry` (imports relativos, inclusive `import type`, que só deixam o teste mais estrito). */
+function reachableFrom(entry: string): ReadonlyMap<string, readonly string[]> {
+  const seen = new Map<string, readonly string[]>();
+  const pending = [entry];
+  for (let file = pending.pop(); file !== undefined; file = pending.pop()) {
+    if (seen.has(file)) continue;
+    const specifiers = importsOf(fs.readFileSync(file, 'utf8'));
+    seen.set(file, specifiers);
+    for (const specifier of specifiers) {
+      const local = resolveLocal(file, specifier);
+      if (local !== null) pending.push(local);
+    }
+  }
+  return seen;
+}
+
+/** O que nenhum arquivo alcançável pelo núcleo do `sign` pode importar: o verificador, disco, rede, processos ou o armazenamento. */
+const SIGN_CORE_FORBIDDEN: ReadonlyArray<readonly [RegExp, string]> = [
+  [/link-audit-evidence\/provenance$/, 'o verificador'],
+  [/^(?:node:)?fs(?:\/promises)?$/, 'disco'],
+  [/^(?:node:)?(?:net|dns|http|https|http2|tls|dgram)(?:\/|$)|^(?:undici|ioredis|bullmq|@supabase\/)/, 'rede'],
+  [/^(?:node:)?(?:child_process|worker_threads|cluster)$/, 'processo'],
+  [/snapshot-store$/, 'o armazenamento (snapshot-store)'],
+];
+
+test('P1 W4.1 (revisão): o núcleo sign-core.ts, por TODO import local alcançável (não só os diretos), nunca chega ao verificador, a disco, rede nem ao snapshot-store', () => {
+  const graph = reachableFrom(path.join(LIB, 'sign-core.ts'));
+  const files = [...graph.keys()].map((file) => path.relative(ROOT, file).split(path.sep).join('/')).sort();
+  assert.deepEqual(files, [
+    'src/lib/link-audit-attestation/package-hash.ts',
+    'src/lib/link-audit-attestation/schemas.ts',
+    'src/lib/link-audit-attestation/sign-core.ts',
+    'src/lib/link-audit-evidence/types.ts',
+    'src/lib/link-audit/canonical.ts',
+  ], 'arquivo novo no grafo do núcleo exige decisão e revisão deste teste');
+  for (const [file, specifiers] of graph) {
+    const where = path.relative(ROOT, file);
+    for (const specifier of specifiers) {
+      for (const [pattern, label] of SIGN_CORE_FORBIDDEN) assert.ok(!pattern.test(specifier), `${where} importa ${label} ("${specifier}")`);
+      const local = resolveLocal(file, specifier);
+      if (local !== null) assert.ok(!/(?:provenance|snapshot-store)\.ts$/.test(local), `${where} alcança ${path.relative(ROOT, local)}`);
+    }
+  }
+  const external = new Set([...graph].flatMap(([file, specifiers]) => specifiers.filter((specifier) => resolveLocal(file, specifier) === null)));
+  assert.deepEqual([...external].sort(), ['node:crypto', 'zod'], 'de fora do repositório, só node:crypto e zod');
 });
 
 /** P1 W2: o CLI `scripts/link-audit-seal.ts` é o ÚNICO consumidor (o `sign` chega na W4), e só destes arquivos. */
