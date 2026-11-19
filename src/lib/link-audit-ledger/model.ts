@@ -1,6 +1,7 @@
 import type { OriginAuthenticator } from '../link-audit-origin';
 import {
   CHECKPOINT_EVERY,
+  isRunEvent,
   LEDGER_CAPACITY_POLICY,
   MAX_LEDGER_RECORDS,
   RECORDS_PER_OPERATION,
@@ -16,6 +17,7 @@ import {
   type LedgerOp,
   type LedgerReason,
   type LedgerRecord,
+  type LedgerRun,
   type LedgerView,
   type OpenOperation,
   type ResultsEvidence,
@@ -41,6 +43,19 @@ export interface AbortedOp {
   readonly intentSeq: number;
   readonly abortedSeq: number;
 }
+/** Resultado confirmado pelo livro (`RUN_CONFIRMED`, spec §16.17.2). */
+export interface ConfirmedRun {
+  readonly runSeq: number;
+  readonly runSha256: string;
+  readonly intentSeq: number;
+  readonly confirmedSeq: number;
+  readonly run: LedgerRun;
+}
+export interface AbortedRun {
+  readonly run: LedgerRun;
+  readonly intentSeq: number;
+  readonly abortedSeq: number;
+}
 export interface LedgerReplay {
   readonly records: readonly LedgerRecord[];
   readonly head: LedgerHead;
@@ -49,6 +64,11 @@ export interface LedgerReplay {
   /** O `INTENT` ainda sem `CONFIRMED`/`ABORTED` (no máximo um). */
   readonly open: LedgerRecord | null;
   readonly aborted: readonly AbortedOp[];
+  /** Resultados confirmados pelo livro, em ordem de `runSeq` (1..n). */
+  readonly confirmedRuns: readonly ConfirmedRun[];
+  /** O `RUN_INTENT` ainda sem `RUN_CONFIRMED`/`RUN_ABORTED` (no máximo um). Slot INDEPENDENTE de `open` (D-8). */
+  readonly openRun: LedgerRecord | null;
+  readonly abortedRuns: readonly AbortedRun[];
 }
 export type ReplayResult = { readonly ok: true; readonly value: LedgerReplay } | { readonly ok: false; readonly issues: readonly string[] };
 
@@ -60,7 +80,25 @@ const sameOp = (a: LedgerOp, b: LedgerOp): boolean =>
   (a.prevDecisionsHead?.seq ?? null) === (b.prevDecisionsHead?.seq ?? null) &&
   (a.prevDecisionsHead?.sha256 ?? null) === (b.prevDecisionsHead?.sha256 ?? null);
 
-/** Estrutura da cadeia: contígua, encadeada, uma única operação aberta, `CONFIRMED`/`ABORTED` casando com o `INTENT`. NÃO confere etiquetas. */
+/** I-5: o fecho de resultado repete os campos do `RUN_INTENT` (espelho de `sameOp`). */
+const SAME_RUN_FIELDS = ['runOpId', 'runSeq', 'prevRunSha256', 'runSha256', 'author'] as const;
+const sameRun = (a: LedgerRun, b: LedgerRun): boolean =>
+  SAME_RUN_FIELDS.every((field) => a[field] === b[field]) &&
+  a.citedLedgerHead.ledgerSeq === b.citedLedgerHead.ledgerSeq &&
+  a.citedLedgerHead.sha256 === b.citedLedgerHead.sha256 &&
+  (a.decisionsHead?.seq ?? null) === (b.decisionsHead?.seq ?? null) &&
+  (a.decisionsHead?.sha256 ?? null) === (b.decisionsHead?.sha256 ?? null);
+
+/**
+ * D-R1-1 (§16.17.13): quem grava o fecho que CONFIRMA (`CONFIRMED`, `RUN_CONFIRMED`) é o AUTOR da operação. Identidades normalizadas como na fronteira (`operatorOf`:
+ * sem espaços nas pontas, minúsculas). Livro autêntico com fecho de não autor é código com a chave fazendo o que a regra proíbe ⇒ replay inválido (`UNTRUSTED`).
+ */
+const sameIdentity = (a: string, b: string): boolean => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/**
+ * Estrutura da cadeia: contígua, encadeada, no máximo UMA operação de decisão aberta e UMA de resultado aberta (slots independentes, D-8), fechos casando com a
+ * abertura (I-5, `sameOp`) e gravados pelo autor quando confirmam (D-R1-1), e os `RUN_INTENT` amarrados ao prefixo (I-1…I-4). NÃO confere etiquetas.
+ */
 export function replayLedger(records: readonly LedgerRecord[], auditId: string): ReplayResult {
   const issues: string[] = [];
   const fail = (message: string): ReplayResult => ({ ok: false, issues: [...issues, message] });
@@ -68,6 +106,11 @@ export function replayLedger(records: readonly LedgerRecord[], auditId: string):
   const confirmed: ConfirmedOp[] = [];
   const aborted: AbortedOp[] = [];
   let open: LedgerRecord | null = null;
+  const confirmedRuns: ConfirmedRun[] = [];
+  const abortedRuns: AbortedRun[] = [];
+  let openRun: LedgerRecord | null = null;
+  /** Cabeça de decisões do PREFIXO: último registro que NÃO é `RUN_*` (decisão, GENESIS, ABORTED, RECEIPT_REISSUED, CHECKPOINT; D-6). */
+  let decisionHead: LedgerHead | null = null;
   let previous: LedgerRecord | null = null;
   for (const [index, record] of records.entries()) {
     const where = `registro ${record.ledgerSeq}`;
@@ -101,6 +144,7 @@ export function replayLedger(records: readonly LedgerRecord[], auditId: string):
       case 'ABORTED': {
         if (!open || !op || !open.op) return fail(`${where}: ${record.event} sem INTENT aberto`);
         if (op.intentSeq !== open.ledgerSeq || !sameOp(op, open.op)) return fail(`${where}: ${record.event} não casa com o INTENT ${open.ledgerSeq}`);
+        if (record.event === 'CONFIRMED' && !sameIdentity(record.actor, open.op.author)) return fail(`${where}: CONFIRMED gravado por quem não é o autor da INTENT ${open.ledgerSeq}`);
         if (record.event === 'CONFIRMED') confirmed.push({ decisionSeq: op.decisionSeq, sha256: op.newDecisionsHead.sha256, intentSeq: open.ledgerSeq, confirmedSeq: record.ledgerSeq, op });
         else aborted.push({ op, intentSeq: open.ledgerSeq, abortedSeq: record.ledgerSeq });
         open = null;
@@ -112,11 +156,46 @@ export function replayLedger(records: readonly LedgerRecord[], auditId: string):
         if (!target || op.decisionSeq !== target.decisionSeq || op.intentSeq !== target.intentSeq || !sameOp(op, target.op)) return fail(`${where}: reemissão não casa com a última operação confirmada`);
         break;
       }
+      case 'RUN_INTENT': {
+        const run = record.run;
+        if (!run) return fail(`${where}: sem operação de resultado`);
+        // I-1: nenhuma operação aberta, de NENHUMA família (o contrário não vale: um INTENT de decisão entra com resultado aberto, D-8)
+        if (openRun || open) return fail(`${where}: RUN_INTENT com outra operação aberta`);
+        // I-2: próximo resultado da cadeia confirmada pelo livro
+        const lastRun = confirmedRuns[confirmedRuns.length - 1];
+        if (run.runSeq !== confirmedRuns.length + 1) return fail(`${where}: runSeq ${run.runSeq} difere do esperado ${confirmedRuns.length + 1}`);
+        if (run.prevRunSha256 !== (lastRun?.runSha256 ?? null)) return fail(`${where}: o resultado anterior não é o do último RUN_CONFIRMED`);
+        // I-3: o resultado cita a cabeça de DECISÕES do prefixo, nunca uma posição RUN_*
+        if (!decisionHead || run.citedLedgerHead.ledgerSeq !== decisionHead.ledgerSeq || run.citedLedgerHead.sha256 !== decisionHead.sha256) return fail(`${where}: a cabeça citada não é a cabeça de decisões do prefixo`);
+        // I-4: a cabeça das decisões gravada no resultado é a do último CONFIRMED
+        const lastDecision = confirmed[confirmed.length - 1];
+        if ((run.decisionsHead?.seq ?? null) !== (lastDecision?.decisionSeq ?? null) || (run.decisionsHead?.sha256 ?? null) !== (lastDecision?.sha256 ?? null)) return fail(`${where}: a cabeça das decisões não é a do último CONFIRMED`);
+        openRun = record;
+        break;
+      }
+      case 'RUN_CONFIRMED':
+      case 'RUN_ABORTED': {
+        const run = record.run;
+        const intent = openRun?.run;
+        if (!openRun || !run || !intent) return fail(`${where}: ${record.event} sem RUN_INTENT aberto`);
+        // I-5: fecha o RUN_INTENT aberto e repete os campos dele
+        if (run.intentSeq !== openRun.ledgerSeq || !sameRun(run, intent)) return fail(`${where}: ${record.event} não casa com o RUN_INTENT ${openRun.ledgerSeq}`);
+        // D-R1-1: só o AUTOR confirma; o RUN_ABORTED (fase A vencida) continua de qualquer operador
+        if (record.event === 'RUN_CONFIRMED' && !sameIdentity(record.actor, intent.author)) return fail(`${where}: RUN_CONFIRMED gravado por quem não é o autor do RUN_INTENT ${openRun.ledgerSeq}`);
+        if (record.event === 'RUN_CONFIRMED') confirmedRuns.push({ runSeq: run.runSeq, runSha256: run.runSha256, intentSeq: openRun.ledgerSeq, confirmedSeq: record.ledgerSeq, run });
+        else abortedRuns.push({ run, intentSeq: openRun.ledgerSeq, abortedSeq: record.ledgerSeq });
+        openRun = null;
+        break;
+      }
+      default:
+        return fail(`${where}: evento desconhecido`);
     }
+    // I-6: CHECKPOINT e RECEIPT_REISSUED não olham `openRun` (a capacidade deles é regra do escritor, 16.17.6)
+    if (!isRunEvent(record.event)) decisionHead = { ledgerSeq: record.ledgerSeq, sha256: record.contentSha256 };
     previous = record;
   }
   const last = records[records.length - 1] as LedgerRecord;
-  return { ok: true, value: { records, head: { ledgerSeq: last.ledgerSeq, sha256: last.contentSha256 }, confirmed, open, aborted } };
+  return { ok: true, value: { records, head: { ledgerSeq: last.ledgerSeq, sha256: last.contentSha256 }, confirmed, open, aborted, confirmedRuns, openRun, abortedRuns } };
 }
 
 export type TagFailure = { readonly reason: Extract<LedgerReason, 'UNTRUSTED' | 'KEY_REVOKED' | 'KEY_EXPIRED' | 'KEY_UNKNOWN'>; readonly seq: number };
@@ -215,23 +294,57 @@ export function simulateOperations(used: number, since: number, rotationDue: boo
   return count;
 }
 
-/** Registros que UMA operação da classe ainda consumirá agora (ponto de verificação devido + INTENT + fecho); `null` quando não cabe no limite da classe. */
+/**
+ * Fechos ainda devidos pelas operações ABERTAS das duas famílias (spec §16.17.6): `(open ? 1 : 0) + (openRun ? 1 : 0)`. Todo registro que não fecha operação só
+ * entra se deixar esse espaço (`len + 1 + closing ≤ MAX`); as admissões de `INTENT` e `RUN_INTENT` também o descontam. Os registros já passaram pelo replay.
+ */
+export function pendingClosings(records: readonly LedgerRecord[]): number {
+  let open = false;
+  let openRun = false;
+  for (const record of records) {
+    if (record.event === 'INTENT') open = true;
+    else if (record.event === 'CONFIRMED' || record.event === 'ABORTED') open = false;
+    else if (record.event === 'RUN_INTENT') openRun = true;
+    else if (record.event === 'RUN_CONFIRMED' || record.event === 'RUN_ABORTED') openRun = false;
+  }
+  return (open ? 1 : 0) + (openRun ? 1 : 0);
+}
+
+/** Registros que UMA operação da classe ainda consumirá agora (ponto de verificação devido + INTENT + fecho); `null` quando não cabe no limite da classe — que também guarda o fecho de um resultado aberto (§16.17.6). */
 export function operationCost(records: readonly LedgerRecord[], currentKeyId: string, every: number, cls: CapacityClassName, policy: LedgerCapacityPolicy = LEDGER_CAPACITY_POLICY): { readonly checkpoint: boolean; readonly records: number } | null {
   const checkpoint = needsCheckpoint(records, currentKeyId, every);
   const cost = (checkpoint ? 1 : 0) + RECORDS_PER_OPERATION;
-  return records.length + cost <= policy[cls] ? { checkpoint, records: cost } : null;
+  return records.length + cost + pendingClosings(records) <= policy[cls] ? { checkpoint, records: cost } : null;
+}
+
+/** Classe RUN = limite `RECORD` (D-9): uma única fonte; nenhum valor da política permite a resultados entrar na região das revogações. */
+const runLimit = (policy: LedgerCapacityPolicy): number => policy.RECORD;
+
+/**
+ * Resultados COMPLETOS (`RUN_INTENT` + fecho = 2 registros) que ainda cabem na classe RUN, descontando os fechos devidos. Um resultado nunca grava nem reserva
+ * `CHECKPOINT` (D-7). É a MESMA conta que a vista anuncia (`capacity.runsAvailable`) e que a admissão impõe (`runIntentFits`).
+ */
+export function runsAvailableOf(used: number, closing: number, policy: LedgerCapacityPolicy = LEDGER_CAPACITY_POLICY): number {
+  return Math.max(0, Math.floor((runLimit(policy) - used - closing) / RECORDS_PER_OPERATION));
+}
+
+/** Admissão do `RUN_INTENT` (16.17.6): ele e o fecho cabem na classe RUN sobre os registros lidos (o escritor confere na posição que o registro vai ocupar). */
+export function runIntentFits(records: readonly LedgerRecord[], policy: LedgerCapacityPolicy = LEDGER_CAPACITY_POLICY): boolean {
+  return runsAvailableOf(records.length, pendingClosings(records), policy) >= 1;
 }
 
 export function ledgerCapacity(records: readonly LedgerRecord[], currentKeyId: string, every: number = CHECKPOINT_EVERY, policy: LedgerCapacityPolicy = LEDGER_CAPACITY_POLICY, closing = 0): LedgerCapacity {
-  // `closing`: a operação ABERTA ainda vai consumir 1 registro (o fecho) — a vista não anuncia espaço que ela vai ocupar
+  // `closing`: cada operação ABERTA (decisão e/ou resultado) ainda vai consumir 1 registro (o fecho) — a vista não anuncia espaço que elas vão ocupar
   // `usedRecords`/`remainingRecords` descrevem o que EXISTE (a tela confere que fecham em `maxRecords`); só as contagens de operações descontam o fecho
   const used = records.length + closing;
   const since = recordsSinceCheckpoint(records);
   const rotation = rotationCheckpointDue(records, currentKeyId);
   const decisionsAvailable = simulateOperations(used, since, rotation, every, policy.RECORD);
   const revocationsAvailable = simulateOperations(used, since, rotation, every, policy.REVOKE);
+  const runsAvailable = runsAvailableOf(records.length, closing, policy);
+  // o nível continua definido só por decisões e revogações (16.17.6); em REVOKE_ONLY ainda podem caber resultados, sem tocar a reserva
   const level: CapacityLevel = decisionsAvailable > 0 ? 'OK' : revocationsAvailable > 0 ? 'REVOKE_ONLY' : 'EXHAUSTED';
-  return { maxRecords: policy.max, usedRecords: records.length, remainingRecords: Math.max(0, policy.max - records.length), decisionsAvailable, revocationsAvailable, level };
+  return { maxRecords: policy.max, usedRecords: records.length, remainingRecords: Math.max(0, policy.max - records.length), decisionsAvailable, revocationsAvailable, runsAvailable, level };
 }
 
 export function keyCoverageOf(records: readonly LedgerRecord[], currentKeyId: string): LedgerKeyCoverage {
@@ -314,7 +427,8 @@ export function evaluateProtection(input: ProtectionInput): Evaluation {
       recoverable: false,
       receiptReissuable: false,
       externalGuard: guardStatus,
-      ...(replay && input.currentKeyId ? { capacity: ledgerCapacity(replay.records, input.currentKeyId, input.checkpointEvery ?? CHECKPOINT_EVERY, input.capacityPolicy ?? LEDGER_CAPACITY_POLICY, replay.open ? 1 : 0), keyCoverage: keyCoverageOf(replay.records, input.currentKeyId) } : {}),
+      // `closing` dos DOIS slots (16.17.6): o fecho da operação de decisão aberta e o do resultado aberto
+      ...(replay && input.currentKeyId ? { capacity: ledgerCapacity(replay.records, input.currentKeyId, input.checkpointEvery ?? CHECKPOINT_EVERY, input.capacityPolicy ?? LEDGER_CAPACITY_POLICY, (replay.open ? 1 : 0) + (replay.openRun ? 1 : 0)), keyCoverage: keyCoverageOf(replay.records, input.currentKeyId) } : {}),
       ...extra,
     },
     replay,
