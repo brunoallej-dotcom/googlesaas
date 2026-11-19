@@ -10,18 +10,19 @@ import {
   parseEvidenceSealV2Text,
   parseTrustKeyring,
   SEAL_FILE,
+  sealSha256,
   type EvidenceSealBodyV2,
   type EvidenceSealFileV2,
   type EvidenceToProve,
 } from '../link-audit-evidence/provenance';
-import { auditId as auditIdSchema } from './schemas';
+import { auditId as auditIdSchema, MAX_PACKAGE_ENTRIES } from './schemas';
 import { runSignCore, type SealChainFacts, type SignCoreDeps, type SignCoreInput, type SignCoreResult, type SigningKeyStatus, type SignPlan, type SignRefusal } from './sign-core';
 
 /*
  * P1 W4.2 — a CADEIA e o MANIFESTO do `sign` (spec §5.5 passos 7 e 13; §5.5.1 item 2; §7.1; contrato do verificador v2 §2–§6). Único arquivo do
  * `sign` que importa o verificador: o núcleo (`sign-core.ts`) recebe daqui só FATOS estruturais (§5.5.1 item 7; o artefato único separa o núcleo
- * do verificador na W4.6). Disco SÓ pelo `FsOps` injetado e só leitura; a gravação (temporário + `link()` exclusivo) é da W4.3, a chave real e o
- * CLI da W4.4, o autoteste da W4.5.
+ * do verificador na W4.6). Disco SÓ pelo `FsOps` injetado e só leitura; a gravação (temporário + `link()` exclusivo) está em `sign-run.ts` (W4.3),
+ * que recebe daqui o texto já conferido (`serializeSealFile`); a chave real e o CLI são da W4.4, o autoteste da W4.5.
  *
  * A cadeia é verificada pelo VERIFICADOR v2 REAL em modo produção: a lista de chaves com estado (`--trust-keys`, `parseTrustKeyring`), os fechos
  * de `<seals-dir>/_closures/` e `acceptedVersions: [2]`, com as evidências = entradas da própria cabeça (prova formato, cadeia, estados e fechos;
@@ -183,6 +184,27 @@ const BAD_KEY_ID: SignRefusal = { ok: false, code: 'USAGE', message: '--key-id i
 export function signingKeyStatus(trustKeys: string, keyId: string): SigningKeyStatus {
   return parseTrustKeyring(trustKeys)?.get(keyId)?.status ?? 'absent';
 }
+
+const KEY_MISMATCH: SignRefusal = {
+  ok: false,
+  code: 'SIGN_KEY_MISMATCH',
+  message: 'A chave aberta não corresponde à chave pública de --key-id na lista --trust-keys (outra chave, outro arquivo ou outro tipo). Nada foi assinado.',
+};
+const spkiOf = (key: KeyObject): Buffer => key.export({ format: 'der', type: 'spki' });
+
+/**
+ * §5.5.1 item 2, logo depois do passo 12 (chave aberta) e antes da assinatura (13): a pública DERIVADA da chave aberta tem de ser, byte a byte (SPKI),
+ * a pública de `--key-id` na lista, e não a de outra chave da lista. Qualquer falha (lista, id, chave que nem deriva pública) é recusa. Nunca lança e
+ * nunca repassa o objeto de erro (pode carregar material da chave, RS-13).
+ */
+export function keyMismatchRefusal(trustKeys: string, keyId: string, privateKey: KeyObject): SignRefusal | null {
+  try {
+    const listed = parseTrustKeyring(trustKeys)?.get(keyId);
+    return listed !== undefined && spkiOf(createPublicKey(privateKey)).equals(spkiOf(listed.key)) ? null : KEY_MISMATCH;
+  } catch {
+    return KEY_MISMATCH;
+  }
+}
 export interface SignWithChainDeps<K> extends SignCoreDeps<K> {
   /** Leitura da cópia da estação (nunca escreve). */
   readonly fs: FsOps;
@@ -243,3 +265,30 @@ export function signSealManifest(plan: SignPlan, keyId: string, privateKey: KeyO
 
 /** Nome do arquivo = `seq` ASSINADO (`seal-NNNN.json`, o que `SEAL_FILE` casa e o verificador confere contra o corpo). */
 export const sealFileName = (seal: { readonly seq: number }): string => `seal-${String(seal.seq).padStart(4, '0')}.json`;
+
+/* ------------------------------------------------------------------------------------------------------------------- passo 15: o texto gravado */
+
+/** O manifesto `v2` assinado, como a gravação (`sign-run.ts`) o recebe: o tipo vem daqui para nenhum outro arquivo do `sign` importar o verificador. */
+export type SealManifest = EvidenceSealFileV2;
+export type SealTextResult = { readonly ok: true; readonly text: string } | SignRefusal;
+
+const TOO_MANY_ENTRIES: SignRefusal = { ok: false, code: 'SIGN_TOO_MANY_ENTRIES', message: `Manifesto com mais de ${MAX_PACKAGE_ENTRIES} entradas ou acima de ${MAX_SEAL_BYTES} bytes não é gravado (o verificador o recusaria). Nada foi gravado.` };
+const TEXT_FAILED: SignRefusal = { ok: false, code: 'UNEXPECTED', message: 'O texto do manifesto não seria lido de volta pelo verificador v2. Nada foi gravado.' };
+
+/**
+ * Os BYTES de `seal-NNNN.json` (JSON compacto + quebra de linha, como as cópias da estação), conferidos ANTES de qualquer escrita (§7.1; nota da W4.2):
+ * mais de 2000 entradas ou mais de 256 KiB ⇒ `SIGN_TOO_MANY_ENTRIES`; e o texto tem de voltar, pelo parser estrito do verificador (sem `\`, sem chave
+ * repetida, UTF-8), ao MESMO manifesto (`sealSha256`). Nunca lança.
+ */
+export function serializeSealFile(seal: SealManifest): SealTextResult {
+  try {
+    if (!Array.isArray(seal.entries) || seal.entries.length > MAX_PACKAGE_ENTRIES) return TOO_MANY_ENTRIES;
+    const text = `${JSON.stringify(seal)}\n`;
+    const bytes = Buffer.from(text, 'utf8');
+    if (bytes.byteLength > MAX_SEAL_BYTES) return TOO_MANY_ENTRIES;
+    const back = parseEvidenceSealV2Text(bytes);
+    return back.ok && sealSha256(back.value) === sealSha256(seal) ? { ok: true, text } : TEXT_FAILED;
+  } catch {
+    return TEXT_FAILED;
+  }
+}
