@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { after } from 'node:test';
-import { createEvidenceSeal, type EvidenceProvenancePolicy, type EvidenceSealFile } from '../../src/lib/link-audit-evidence/provenance';
+import { evidenceToProveFromBasis } from '../../src/lib/link-audit-evidence/evidence-to-prove';
+import { createEvidenceSeal, createEvidenceSealV2, type EvidenceProvenancePolicy, type EvidenceSealFile, type EvidenceSealFileV2 } from '../../src/lib/link-audit-evidence/provenance';
 import { createScoringBasisReader } from '../../src/lib/link-audit-evidence/scoring-basis';
 
 /*
@@ -41,6 +42,23 @@ export async function sealAuditForTests(input: { readonly evidenceDir: string; r
   return seal;
 }
 
+/** Fabricated dossier of the test seals (contract §2: short label, no PII; the hash is a fixed test value). */
+export const TEST_DOSSIER = { id: 'dossie-teste-0001', sha256: '0f'.repeat(32) } as const;
+
+/**
+ * v2 (a single manifest, `seq` 1, `prevSealSha256` null) over EVERY evidence the reader delivers today, through the one mapping the verifier
+ * receives (`evidenceToProveFromBasis`). This is what production accepts (`acceptedVersions: [2]`, wave W3.2).
+ */
+export async function sealAuditV2ForTests(input: { readonly evidenceDir: string; readonly auditId: string; readonly sealsDir: string; readonly keys: EvidenceKeys }): Promise<EvidenceSealFileV2> {
+  const reader = createScoringBasisReader({ baseDir: input.evidenceDir, authorize: () => true });
+  const basis = await reader.readScoringBasis({ email: 'selador@teste.invalid' }, input.auditId);
+  if (basis.status !== 'READY') throw new Error(`não há base íntegra para atestar (${basis.status})`);
+  const entries = evidenceToProveFromBasis(basis.basis).map((e) => ({ ref: e.ref, contentSha256: e.contentSha256 }));
+  const seal = createEvidenceSealV2({ auditId: input.auditId, seq: 1, sealedAt: '2026-10-30T12:00:00.000Z', keyId: input.keys.keyId, privateKey: input.keys.privateKey, entries, dossier: TEST_DOSSIER, prevSealSha256: null });
+  writeSealFile(input.sealsDir, input.auditId, 1, seal);
+  return seal;
+}
+
 export function writeSealFile(sealsDir: string, auditId: string, seq: number, content: unknown): string {
   const dir = path.join(sealsDir, auditId);
   fs.mkdirSync(dir, { recursive: true });
@@ -61,7 +79,7 @@ export async function proveEvidenceForRoutes(env: Record<string, string | undefi
   const keys = evidenceKeys();
   for (const auditId of [w.auditId, ...extraAuditIds]) {
     try {
-      await sealAuditForTests({ evidenceDir: w.evidenceDir, auditId, sealsDir, keys });
+      await sealAuditV2ForTests({ evidenceDir: w.evidenceDir, auditId, sealsDir, keys }); // production accepts only v2 (`acceptedVersions: [2]`)
     } catch {
       // auditoria sem base íntegra (sem evidência, corrompida): não há o que atestar; a rota responderá o que responderia sem a prova
     }
@@ -82,6 +100,6 @@ export async function sealAuditsForBrowserSeed(root: string, auditIds: readonly 
   if (encoded.length < 40 || keyId.length < 4) throw new Error('chave de atestação de teste ausente (GMN_SEED_EVIDENCE_SIGNING_KEY / GMN_SEED_EVIDENCE_KEY_ID)');
   const privateKey = createPrivateKey({ key: Buffer.from(encoded, 'base64'), format: 'der', type: 'pkcs8' });
   const keys: EvidenceKeys = { keyId, privateKey, trustKeys: '', publicRaw: '' };
-  for (const auditId of auditIds) await sealAuditForTests({ evidenceDir: path.join(root, 'evidence'), auditId, sealsDir: path.join(root, 'seals'), keys });
+  for (const auditId of auditIds) await sealAuditV2ForTests({ evidenceDir: path.join(root, 'evidence'), auditId, sealsDir: path.join(root, 'seals'), keys }); // the server accepts only v2
 }
 

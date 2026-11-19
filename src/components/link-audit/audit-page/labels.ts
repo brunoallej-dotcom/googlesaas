@@ -82,6 +82,12 @@ export const PROVENANCE_REASON_LABELS: Readonly<Record<string, string>> = {
   EVIDENCE_MISSING: 'o manifesto assinado atesta evidência que NÃO existe mais na coleta (captura, relatório ou arquivo removido): os dados exibidos podem ser de uma coleta ANTERIOR e não devem ser tomados como a situação atual',
   EVIDENCE_HASH_MISMATCH: 'o conteúdo de uma evidência difere do que o manifesto assinado atesta',
   VERIFICATION_ERROR: 'a verificação não pôde ser concluída (tratada como não comprovada)',
+  SEAL_CHAIN_BROKEN: 'a cadeia de manifestos assinados não fecha (um manifesto anterior está ausente ou foi trocado, ou a numeração tem lacuna)',
+  SEAL_NOT_CUMULATIVE: 'um manifesto assinado omite ou altera uma evidência que um manifesto anterior já atestava',
+  SEAL_DOWNGRADE: 'há um manifesto no formato antigo depois de um no formato novo (tentativa de rebaixamento, recusada)',
+  SEAL_VERSION_NOT_ALLOWED: 'este servidor só aceita manifestos no formato novo e há manifesto em formato não aceito',
+  SEAL_KEY_RETIRED_UNCOVERED: 'há manifesto assinado por chave aposentada fora do fecho de aposentadoria registrado (a chave aposentada só confirma o que o fecho congelou)',
+  SEAL_KEY_REVOKED: 'há assinatura autêntica de chave REVOGADA nesta coleta: não vale para nova finalização, e resultados já confirmados com ela exigem revisão humana',
 };
 
 export const DECISION_STATUS_LABELS: Readonly<Record<string, string>> = { ACTIVE: 'Vigente', SUPERSEDED: 'Substituída', REVOKED: 'Revogada', AMBIGUOUS: 'Em dúvida (operação pendente)' };

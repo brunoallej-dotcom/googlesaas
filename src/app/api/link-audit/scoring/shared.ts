@@ -89,7 +89,13 @@ async function prepare(request: Request, limiter: SlidingWindowLimiter): Promise
   const basisReader = createScoringBasisReader({ baseDir: evidenceDir, authorize });
   // PROVA de que as evidências vieram da coleta: manifestos assinados FORA da pasta de evidências (somente leitura) + chaves PÚBLICAS de confiança. Sem as duas
   // coisas a política é a FECHADA (nada é autêntico ⇒ nenhuma finalização). Não existe valor que "confie em tudo".
-  const evidenceProvenance = evidenceProvenanceFromConfig({ sealsDir: configuredDir(process.env.GMN_LINK_AUDIT_EVIDENCE_SEALS_DIR), trustKeys: process.env.GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS, otherDirs: [evidenceDir, decisionsDir, anchorDir, configuredDir(process.env.GMN_LINK_AUDIT_RESULTS_DIR), configuredDir(process.env.GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR)] });
+  // Production accepts ONLY v2 manifests, at every position (contract of the v2 verifier §4.2, V2-19): v1 only by an explicit homologation option.
+  const evidenceProvenance = evidenceProvenanceFromConfig({
+    sealsDir: configuredDir(process.env.GMN_LINK_AUDIT_EVIDENCE_SEALS_DIR),
+    trustKeys: process.env.GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS,
+    otherDirs: [evidenceDir, decisionsDir, anchorDir, configuredDir(process.env.GMN_LINK_AUDIT_RESULTS_DIR), configuredDir(process.env.GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR)],
+    acceptedVersions: [2],
+  });
   const prepareOrigin = originConfigFromEnv(undefined, () => new Date());
   const resultsDir = configuredDir(process.env.GMN_LINK_AUDIT_RESULTS_DIR);
   const resultsAnchorDir = configuredDir(process.env.GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR);
