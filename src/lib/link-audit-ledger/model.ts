@@ -317,7 +317,8 @@ export function operationCost(records: readonly LedgerRecord[], currentKeyId: st
   return records.length + cost + pendingClosings(records) <= policy[cls] ? { checkpoint, records: cost } : null;
 }
 
-const runLimit = (policy: LedgerCapacityPolicy): number => policy.RUN ?? policy.RECORD;
+/** Classe RUN = limite `RECORD` (D-9): uma única fonte; nenhum valor da política permite a resultados entrar na região das revogações. */
+const runLimit = (policy: LedgerCapacityPolicy): number => policy.RECORD;
 
 /**
  * Resultados COMPLETOS (`RUN_INTENT` + fecho = 2 registros) que ainda cabem na classe RUN, descontando os fechos devidos. Um resultado nunca grava nem reserva

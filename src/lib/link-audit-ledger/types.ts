@@ -60,12 +60,8 @@ export const RUN_CLOSING_ALLOWANCE = 1;
 /** Limites (total de registros depois de concluída a operação), por classe. `max` é a capacidade total. */
 export interface LedgerCapacityPolicy {
   readonly max: number;
+  /** Decisões novas E resultados (`RUN_INTENT` + fecho): D-9 fixa o MESMO limite, então não existe um segundo campo que possa divergir (revisão da R1.1). */
   readonly RECORD: number;
-  /**
-   * Resultados (`RUN_INTENT` + fecho): o MESMO limite de `RECORD` (D-9). `deriveCapacityPolicy` sempre o define; uma política escrita à mão (só testes) sem ele
-   * usa `RECORD`, que é a definição.
-   */
-  readonly RUN?: number;
   readonly REVOKE: number;
   readonly MAINTENANCE: number;
 }
@@ -74,13 +70,13 @@ export const revocationReserveRecords = (revocations: number, every: number): nu
   const worst = revocations * (RECORDS_PER_OPERATION + REISSUE_ALLOWANCE);
   return worst + Math.ceil(worst / every) + 2;
 };
-/** `RECORD = RUN = max − manutenção − reserva de revogação − RUN_CLOSING_ALLOWANCE`; `REVOKE = max − manutenção`; `MAINTENANCE = max` (§16.12, §16.17.6). */
-export function deriveCapacityPolicy(max: number, revocations: number, every: number, maintenance: number = MAINTENANCE_RESERVE): Required<LedgerCapacityPolicy> {
+/** `RECORD` (limite de decisões novas e de resultados, D-9) `= max − manutenção − reserva de revogação − RUN_CLOSING_ALLOWANCE`; `REVOKE = max − manutenção`; `MAINTENANCE = max` (§16.12, §16.17.6). */
+export function deriveCapacityPolicy(max: number, revocations: number, every: number, maintenance: number = MAINTENANCE_RESERVE): LedgerCapacityPolicy {
   const decisionsAndRuns = max - maintenance - revocationReserveRecords(revocations, every) - RUN_CLOSING_ALLOWANCE;
-  return Object.freeze({ max, RECORD: decisionsAndRuns, RUN: decisionsAndRuns, REVOKE: max - maintenance, MAINTENANCE: max });
+  return Object.freeze({ max, RECORD: decisionsAndRuns, REVOKE: max - maintenance, MAINTENANCE: max });
 }
 export const REVOCATION_RESERVE_RECORDS = revocationReserveRecords(REVOCATIONS_RESERVED, CHECKPOINT_EVERY);
-export const LEDGER_CAPACITY_POLICY: Required<LedgerCapacityPolicy> = deriveCapacityPolicy(MAX_LEDGER_RECORDS, REVOCATIONS_RESERVED, CHECKPOINT_EVERY);
+export const LEDGER_CAPACITY_POLICY: LedgerCapacityPolicy = deriveCapacityPolicy(MAX_LEDGER_RECORDS, REVOCATIONS_RESERVED, CHECKPOINT_EVERY);
 
 const hex64 = z.string().regex(/^[0-9a-f]{64}$/);
 const hex32 = z.string().regex(/^[0-9a-f]{32}$/);
