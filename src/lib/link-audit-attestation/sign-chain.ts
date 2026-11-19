@@ -61,6 +61,7 @@ export async function readSealChain(input: SealChainInput, deps: { readonly fs: 
     if (!keyring) return reason('PROOF_NOT_CONFIGURED');
     const ops = readOnceSnapshot(deps.fs);
     const root = await sealsRoot(ops, input.sealsDir);
+    if (root === ROOT_IO_ERROR) return reason('VERIFICATION_ERROR'); // EACCES/EIO na raiz nunca viram "inexistente"
     if (root === null) return reason('SEALS_DIR_UNREADABLE');
     const dir = path.join(root, input.auditId);
     const listed = await listSeals(ops, dir);
@@ -80,13 +81,18 @@ export async function readSealChain(input: SealChainInput, deps: { readonly fs: 
 const evidencesOf = (head: EvidenceSealFileV2): EvidenceToProve[] => head.entries.map((entry) => ({ ref: entry.ref, contentSha256: entry.contentSha256, legacy: false }));
 const errorCode = (error: unknown): unknown => (typeof error === 'object' && error !== null ? (error as { readonly code?: unknown }).code : undefined);
 
-/** Raiz da cópia da estação pelo caminho real (como o `delta` do `export`); `null` se não existe ou não é diretório. */
-async function sealsRoot(ops: FsOps, sealsDir: string): Promise<string | null> {
+const ROOT_IO_ERROR = Symbol('ROOT_IO_ERROR');
+/**
+ * Raiz da cópia da estação pelo caminho real (como o `delta` do `export`): `null` só quando não existe ou não é diretório (ENOENT/ENOTDIR, provável
+ * erro de digitação); qualquer outra falha (EACCES, EIO…) é `ROOT_IO_ERROR`, recusada como `VERIFICATION_ERROR` (revisão da W4.2).
+ */
+async function sealsRoot(ops: FsOps, sealsDir: string): Promise<string | null | typeof ROOT_IO_ERROR> {
   try {
     const real = await ops.realpath(path.resolve(sealsDir));
     return (await ops.lstat(real)).isDirectory() ? real : null;
-  } catch {
-    return null;
+  } catch (error) {
+    const code = errorCode(error);
+    return code === 'ENOENT' || code === 'ENOTDIR' ? null : ROOT_IO_ERROR;
   }
 }
 

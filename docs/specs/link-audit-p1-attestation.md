@@ -286,6 +286,8 @@ Fecham lacunas apontadas no mapa da W4; prevalecem sobre o texto acima onde houv
   - a gravação (com o nome de `sealFileName`): W4.3;
   - `SIGN_TOO_MANY_ENTRIES` do §7.1: hoje é inalcançável (pacote ≤ 2000 entradas ⇒ manifesto < 256 KiB); a W4.3 confere sobre os bytes gravados.
 
+- **Revisão independente da W4.2 (19/11/2026, `junin-02`, aprovar com mudanças):** (i) erro de E/S na própria raiz `--seals-dir` (EACCES, EIO em `realpath` ou `lstat`) passou a ser `VERIFICATION_ERROR`; só ENOENT/ENOTDIR ou "não é diretório" continuam `SEALS_DIR_UNREADABLE` (antes, toda falha da raiz virava "inexistente"; a recusa já era fechada, o motivo é que estava errado). (ii) Limite declarado: a leitura da cabeça feita pelo `sign` antes do verificador fica fora do orçamento de 16 MiB dele quando o verificador recusa antes de lê-la; o acréscimo é de no máximo 256 KiB (um manifesto), e em todos os outros casos a fotografia somente leitura faz o verificador contar os mesmos bytes.
+
 ### 5.6 Manifesto `v2` e verificador `v2` (onda W3, contrato próprio)
 
 **Decisão de 16/11:** `v2` **antes do primeiro resultado de produção**, com `dossier.sha256` e `prevSealSha256` **dentro da parte assinada**.
