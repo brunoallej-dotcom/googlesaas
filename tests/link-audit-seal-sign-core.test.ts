@@ -78,7 +78,7 @@ const makePackage = (variant: PackageVariant = {}): CandidatePackage => {
   return { ...body, packageSha256: computePackageSha256(body) };
 };
 /** Hash "na mão" (sem o esquema): para pacotes que o esquema recusa, mas que um atacante aprovaria. */
-const rawHashed = (body: Record<string, unknown>): Record<string, unknown> => {
+const rawHashed = (body: Record<string, unknown>): Record<string, unknown> & { readonly packageSha256: string } => {
   const { delta: _delta, generatedAt: _generatedAt, ...hashed } = body;
   return { ...body, packageSha256: sha256Hex(canonicalJson(hashed)) };
 };
@@ -266,6 +266,18 @@ test('passo 1: bytes do pacote/aprovação fora de forma (não JSON, BOM, UTF-8 
   ];
   for (const packageBytes of badPackages) assertRefused({ ...validInput(), packageBytes, approvalBytes: approval }, 'SIGN_PACKAGE_INVALID');
   for (const approvalBytes of [Buffer.from('{'), bytes({ ...makeApproval(pkg), extra: true }), bytes(null)]) assertRefused({ ...validInput(), approvalBytes }, 'SIGN_APPROVAL_INVALID');
+});
+
+test('passo 1: UTF-8 inválido é recusado mesmo onde a troca por U+FFFD daria um pacote coerente (decodificação estrita)', () => {
+  const body = packageBody();
+  const named = { ...body, summary: { ...body.summary, company: { ...body.summary.company, name: 'Empresa �' } } };
+  const pkg = { ...named, packageSha256: computePackageSha256(named) };
+  assertSigned(inputFor(pkg, makeApproval(pkg)));
+  const raw = Buffer.from(bytes(pkg));
+  const at = raw.indexOf(Buffer.from('�', 'utf8'));
+  assert.ok(at > 0);
+  const broken = Buffer.concat([raw.subarray(0, at), Buffer.from([0xff]), raw.subarray(at + 3)]);
+  assertRefused({ ...inputFor(pkg, makeApproval(pkg)), packageBytes: broken }, 'SIGN_PACKAGE_INVALID');
 });
 
 test('entrada do núcleo: --audit fora do padrão ou --custodian fora de rótulo curto ⇒ USAGE, antes de ler qualquer coisa', () => {

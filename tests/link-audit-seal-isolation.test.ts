@@ -28,7 +28,7 @@ const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   // P1 W2: o ÚNICO arquivo do módulo com disco: lê pelos leitores existentes (FsOps injetado) e cria só o --out; fora do índice público
   'export-run.ts': new Set(['node:path', 'zod', '../link-audit/snapshot-store', '../link-audit-evidence/provenance', '../link-audit-evidence/reader', '../link-audit-evidence/scoring-basis', '../link-audit-evidence/store', './export', './schemas']),
   // P1 W4.1: núcleo PURO das recusas do `sign` (só o hash do dossiê vem de node:crypto); nunca o verificador, o leitor nem disco
-  'sign-core.ts': new Set(['node:crypto', '../link-audit-evidence/types', './package-hash', './schemas']),
+  'sign-core.ts': new Set(['node:crypto', './package-hash', './schemas']),
 };
 /** Exceções por arquivo às proibições abaixo, cada uma trocada por uma regra mais estreita (P1 W2). */
 const NO_IMPLICIT_CLOCK: readonly [RegExp, string] = [/Date\.now|new Date\s*\(\s*\)|performance\.now/, 'relógio implícito'];

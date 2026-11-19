@@ -39,13 +39,13 @@ const NON_MECHANICAL_CHECK_IDS = ['AUTHORIZATION_CONSUMED', 'PROVIDER_PANEL_CRED
 /** O que `approval.json` pode atestar: os não mecanizáveis e `REPORT_REPRODUCES` (enquanto a viabilidade não for confirmada, §5.3.1). */
 export const HUMAN_CHECK_IDS = [...NON_MECHANICAL_CHECK_IDS, 'REPORT_REPRODUCES'] as const;
 
-const hex64 = z.string().regex(/^[0-9a-f]{64}$/);
+export const hex64 = z.string().regex(/^[0-9a-f]{64}$/);
 /** Precisão fixa de milissegundos em UTC: assim a ordem lexicográfica é a ordem cronológica (sem `Date` neste módulo puro). */
-const isoInstant = z.iso.datetime({ precision: 3 });
-const auditId = z.string().regex(AUDIT_ID_PATTERN);
+export const isoInstant = z.iso.datetime({ precision: 3 });
+export const auditId = z.string().regex(AUDIT_ID_PATTERN);
 export const entryRef = z.string().regex(/^(?:capture:c\d{4}|report:c\d{4}-r\d{4}|legacy-status:c\d{4})$/);
 /** Rótulo/identificador curto: lista de permissão E texto seguro (NFKC). */
-const shortLabel = z.string().min(1).max(MAX_LABEL_LENGTH).regex(SHORT_ID_ALLOWLIST).refine(isSafeText, 'não pode conter e-mail, telefone nem caracteres de controle');
+export const shortLabel = z.string().min(1).max(MAX_LABEL_LENGTH).regex(SHORT_ID_ALLOWLIST).refine(isSafeText, 'não pode conter e-mail, telefone nem caracteres de controle');
 const safeNote = z.string().max(MAX_NOTE_LENGTH).refine(isSafeText, 'não pode conter e-mail, telefone nem caracteres de controle');
 const checkId = z.enum(CHECK_IDS);
 const humanCheckId = z.enum(HUMAN_CHECK_IDS);
@@ -124,6 +124,15 @@ export const candidatePackageSchema = z
 export type CandidatePackage = z.infer<typeof candidatePackageSchema>;
 
 const evidenceRefSchema = z.object({ id: shortLabel, sha256: hex64 }).strict();
+/**
+ * `dossier.id` no padrão do contrato do verificador `v2` (§2 e O7; spec §5.5.1 item 3) E texto seguro (sem sequência de telefone): tudo o que a
+ * aprovação aceita o manifesto `v2` também aceita. Cópia deliberada do padrão (o verificador não o exporta e este esquema não importa o
+ * verificador); a paridade é travada por teste contra `buildEvidenceSealBodyV2`.
+ */
+export const DOSSIER_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{2,63}$/;
+const dossierRefSchema = z
+  .object({ id: z.string().regex(DOSSIER_ID_PATTERN).refine(isSafeText, 'não pode parecer telefone'), sha256: hex64 })
+  .strict();
 
 export const approvalSchema = z
   .object({
@@ -136,8 +145,8 @@ export const approvalSchema = z
     approvedBy: shortLabel,
     operator: shortLabel,
     approvedAt: isoInstant,
-    dossier: evidenceRefSchema,
-    /** Cruzar com o pacote ("resultado humano só para verificação NOT_EXECUTED") é do `sign` (W4), não deste esquema. */
+    dossier: dossierRefSchema,
+    /** Cruzar com o pacote ("resultado humano só para verificação NOT_EXECUTED") é do `sign` (`sign-core.ts`, W4.1), não deste esquema. */
     humanChecks: z.array(z.object({ id: humanCheckId, result: z.enum(['PASS', 'FAIL']), note: safeNote }).strict()).max(HUMAN_CHECK_IDS.length),
     riskAcceptance: evidenceRefSchema.nullable(),
   })
