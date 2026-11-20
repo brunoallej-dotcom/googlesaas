@@ -6,6 +6,7 @@ import { runSealCli } from '../../scripts/link-audit-seal';
 import type { BytesFsOps } from '../../src/lib/link-audit/snapshot-store';
 import type { CandidatePackage } from '../../src/lib/link-audit-attestation';
 import type { KeyFileOps } from '../../src/lib/link-audit-attestation/sign-key';
+import type { CloseFsOps } from '../../src/lib/link-audit-attestation/sign-receipts';
 import { tmpDir } from './link-audit-evidence-fixtures';
 import { AUD, CONFIRM_LENGTH, E1, makePackage, NOW, writeStation, type StationFiles } from './link-audit-seal-sign-disk-fixtures';
 
@@ -312,6 +313,11 @@ export interface SignCliOptions {
   readonly projectRoot?: string | null;
   readonly fs?: BytesFsOps;
   readonly keyFs?: KeyFileOps;
+  /** W4.5: `process.execArgv` visto pelo comando. Padrão: nenhum (o do processo de teste é o carregador dos TESTES, não o do produto). */
+  readonly execArgv?: readonly string[];
+  /** W4.5: o disco do `close-key` (pasta de recibos por descritor) e o usuário dono esperado. */
+  readonly closeFs?: CloseFsOps;
+  readonly uid?: number;
   readonly now?: Date;
   readonly out?: (line: string) => void;
 }
@@ -336,6 +342,9 @@ export async function runSealSubcommand(subcommand: 'sign' | 'close-key', argv: 
     ...(options.defaultTempRoots ? {} : { tempRoots: options.tempRoots ?? [] }),
     ...(options.fs ? { fs: options.fs } : {}),
     ...(options.keyFs ? { keyFs: options.keyFs } : {}),
+    execArgv: options.execArgv ?? [],
+    ...(options.closeFs ? { closeFs: options.closeFs } : {}),
+    ...(options.uid !== undefined ? { uid: options.uid } : {}),
   };
   const code = await runSealCli(
     [subcommand, ...argv],

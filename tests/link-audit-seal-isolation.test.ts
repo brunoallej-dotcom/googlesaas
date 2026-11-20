@@ -46,10 +46,10 @@ const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   'sign-args.ts': new Set(['./schemas', './sign-chain', './sign-core', './sign-key']),
   // P1 W4.4: o comando `sign` (composição: argumentos → leitura única/cadeia/núcleo/gravação de sign-run.ts, terminal, chave K1, recibo); o disco
   // padrão é o nodeFsOps (o mesmo FsOps injetável de sign-run.ts); nunca o verificador direto
-  'sign-cli.ts': new Set(['../link-audit/snapshot-store', './sign-args', './sign-chain', './sign-closure', './sign-core', './sign-key', './sign-run', './sign-terminal']),
-  // P1 W4.5: o REGISTRO EXTERNO do fecho (pasta de recibos do passo 16: leitura sem seguir link, esquema zod estrito, limites) e a escolha das cabeças;
-  // disco SÓ leitura pelo FsOps injetado; nunca o verificador (o padrão do id de chave vem de sign-chain.ts)
-  'sign-receipts.ts': new Set(['node:path', 'zod', '../link-audit/snapshot-store', './schemas', './sign-chain', './sign-core']),
+  'sign-cli.ts': new Set(['../link-audit/snapshot-store', './sign-args', './sign-chain', './sign-closure', './sign-core', './sign-key', './sign-receipts', './sign-run', './sign-terminal']),
+  // P1 W4.5: o REGISTRO EXTERNO do fecho (pasta de recibos do passo 16, aberta UMA vez e lida só pelo descritor; esquema zod estrito, limites) e a
+  // escolha das cabeças; disco SÓ leitura (node:fs/promises, regra estreita abaixo); nunca o verificador, nem por transitividade (revisão da W4.5)
+  'sign-receipts.ts': new Set(['node:fs/promises', 'node:path', 'zod', './schemas', './sign-core']),
   // P1 W4.5: o lado VERIFICADOR do close-key (varredura somente leitura da cópia do servidor, fecho montado e assinado, autoteste com R
   // retired:<hash>); o segundo e último arquivo do sign que importa o verificador (a W4.6 separa o núcleo dele do FsOps de disco para os dois);
   // a gravação é a de sign-run.ts (temporário + link() exclusivo)
@@ -64,7 +64,7 @@ const EXCEPTIONS: Readonly<Record<string, ReadonlySet<string>>> = {
   'sign-chain.ts': new Set(['módulo node']), // só node:crypto (assinar/derivar a pública) e node:path (lista acima); sem relógio
   'sign-run.ts': new Set(['módulo node', 'escrita']), // node:crypto (só randomBytes do nome do temporário) e node:path; escrita SÓ pela regra estreita abaixo
   'sign-key.ts': new Set(['módulo node']), // node:crypto (abrir a chave e derivar a pública), node:fs/promises SÓ leitura (regra estreita abaixo) e node:path
-  'sign-receipts.ts': new Set(['módulo node']), // só node:path (lista acima); leitura pelo FsOps injetado
+  'sign-receipts.ts': new Set(['módulo node']), // node:fs/promises SÓ leitura pelo descritor (regra estreita abaixo) e node:path
   'sign-closure.ts': new Set(['módulo node', 'Date']), // node:crypto (assinar o fecho, derivar a pública, SHA-256 dos bytes) e node:path; relógio INJETADO (tipo Date)
   'sign-cli.ts': new Set(['process', 'ambiente', 'Date']), // padrões injetáveis process.env/stdin/report (regra estreita abaixo: nomes do ambiente, nunca arquivo de ambiente); relógio INJETADO (tipo Date)
 };
@@ -135,10 +135,24 @@ test('P1 W4.5: sign-closure.ts autotesta o fecho com o verificador REAL em modo 
   assert.ok(/\bpublishClosure\s*\(/.test(code), 'o fecho é gravado pela criação exclusiva de sign-run.ts');
 });
 
-test('P1 W4.5: sign-receipts.ts só LÊ (pelo FsOps injetado) e nunca importa o verificador nem escreve', () => {
+test('P1 W4.5 (revisão, TOCTOU): sign-receipts.ts só LÊ, e a pasta de recibos é aberta UMA vez (O_RDONLY|O_DIRECTORY|O_NOFOLLOW) e enumerada e lida SÓ por /proc/self/fd/<fd>; cada recibo aberto O_RDONLY|O_NOFOLLOW|O_NONBLOCK; nunca o verificador, por import direto ou transitivo', () => {
   const code = strip(fs.readFileSync(path.join(LIB, 'sign-receipts.ts'), 'utf8'));
-  assert.ok(!/\.(?:mkdir|writeExclusive|link|unlink|chmod|syncDirectory|rename|rm|truncate)\s*\(|publishExclusive|withLock|nodeFsOps|node:fs|provenance/.test(code), 'escrita, disco implícito ou verificador');
-  assert.ok(/readFileBytes\s*\(/.test(code), 'recibos lidos como BYTES (UTF-8 estrito)');
+  assert.ok(!/writeFile|appendFile|\.write\s*\(|\.mkdir|\.mkdtemp|\.unlink|\.rm\s*\(|\.rmdir|\.rename|\.chmod|\.chown|\.link\s*\(|\.symlink|\.copyFile|\.truncate|createWriteStream|provenance|nodeFsOps/.test(code), 'escrita, disco implícito ou verificador');
+  assert.ok(!/readFile\b|readFileBytes|\.realpath\s*\(/.test(code), 'nunca lê nem resolve por caminho (a leitura é pelo descritor)');
+  const opens = [...code.matchAll(/\.open\s*\(([^;]*?)\)\s*;/g)].map((m) => (m[1] ?? '').replace(/\s+/g, ' ').trim());
+  assert.deepEqual(opens, ['target, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW', '`${base}/${name}`, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK'], 'dois opens: a pasta e cada recibo DENTRO dela');
+  assert.ok(/const base = `\/proc\/self\/fd\/\$\{handle\.fd\}`/.test(code), 'a base de toda consulta é o descritor aberto');
+  assert.deepEqual([...code.matchAll(/\.readlink\s*\(([^)]*)\)/g)].map((m) => (m[1] ?? '').trim()), ['base'], 'readlink só do descritor');
+  assert.deepEqual([...code.matchAll(/\.opendir\s*\(([^)]*)\)/g)].map((m) => (m[1] ?? '').trim()).sort(), ['base', 'target'], 'opendir da pasta aberta (pelo descritor) e da raiz da cópia do servidor');
+  const graph = reachableFrom(path.join(LIB, 'sign-receipts.ts'));
+  for (const file of graph.keys()) assert.ok(!/(?:provenance|snapshot-store)\.ts$/.test(file), `sign-receipts.ts alcança ${path.relative(ROOT, file)}`);
+});
+
+test('P1 W4.5 (revisão, NIT): o padrão do id de chave mora no núcleo sem verificador (sign-core.ts); sign-chain.ts só o reexporta', async () => {
+  const core = await import('../src/lib/link-audit-attestation/sign-core');
+  const chain = await import('../src/lib/link-audit-attestation/sign-chain');
+  assert.equal(chain.SIGN_KEY_ID_PATTERN, core.SIGN_KEY_ID_PATTERN);
+  assert.ok(!/SIGN_KEY_ID_PATTERN\s*=/.test(strip(fs.readFileSync(path.join(LIB, 'sign-chain.ts'), 'utf8'))), 'sign-chain.ts não redefine o padrão');
 });
 
 test('P1 W4.3: sign-run.ts escreve SÓ pelo FsOps injetado: uma subpasta, um temporário exclusivo, um link() para o nome final, remove só o próprio temporário e sincroniza; nunca apaga um manifesto, renomeia, muda permissão nem usa o disco padrão', () => {
@@ -175,10 +189,10 @@ test('P1 W4.4: só sign-key.ts abre chave privada (createPrivateKey); a frase e 
   }
 });
 
-test('P1 W4.4: sign-cli.ts só usa de process os PADRÕES injetáveis (process.env, process.stdin, process.report), e do ambiente lê os NOMES (Object.keys)', () => {
+test('P1 W4.4/W4.5: sign-cli.ts só usa de process os PADRÕES injetáveis (process.env, process.stdin, process.report e, na W4.5, process.execArgv e process.getuid), e do ambiente lê os NOMES (Object.keys)', () => {
   const code = signCode('sign-cli.ts');
   const uses = [...code.matchAll(/process\.(\w+)/g)].map((m) => m[1]);
-  assert.ok(uses.length > 0 && uses.every((use) => use === 'env' || use === 'stdin' || use === 'report'), `process.${uses.join(', process.')}`);
+  assert.ok(uses.length > 0 && uses.every((use) => use === 'env' || use === 'stdin' || use === 'report' || use === 'execArgv' || use === 'getuid'), `process.${uses.join(', process.')}`);
   assert.ok(/Object\.keys\(env\)/.test(code), 'a barreira do §8.1 olha os nomes');
   const fileOfEnvironment = new RegExp(['dot' + 'env', 'loadEnvConfig', `['"\`]\\.${'env'}`].join('|'));
   assert.ok(!fileOfEnvironment.test(code), 'nunca lê arquivo de ambiente');

@@ -7,8 +7,8 @@ import path from 'node:path';
 import test from 'node:test';
 import { canonicalJson } from '../src/lib/link-audit/canonical';
 import { nodeFsOps, type BytesFsOps } from '../src/lib/link-audit/snapshot-store';
-import { runCloseKey, type CloseKeyResult } from '../src/lib/link-audit-attestation/sign-closure';
-import { MAX_RECEIPT_BYTES, MAX_RECEIPT_FILES } from '../src/lib/link-audit-attestation/sign-receipts';
+import { MAX_SERVER_ENTRIES, runCloseKey, type CloseKeyResult } from '../src/lib/link-audit-attestation/sign-closure';
+import { collectUpTo, MAX_RECEIPT_BYTES, MAX_RECEIPT_FILES, nodeCloseFsOps, readReceipts, type CloseFsOps } from '../src/lib/link-audit-attestation/sign-receipts';
 import {
   createEvidenceSealV2,
   createSealedEvidenceProvenance,
@@ -281,39 +281,201 @@ test('§5.5.1 item 9: a pasta de recibos só tem arquivos comuns *.json lidos SE
   }
 });
 
-test('§5.5.1 item 9: --receipts-dir inexistente, arquivo, link simbólico, VAZIA ou sobreposta à cópia do servidor (dentro dela ou contendo-a) ⇒ CLOSE_RECEIPTS_INVALID; o registro externo nunca é a pasta do servidor', async () => {
+test('§5.5.1 item 9: --receipts-dir inexistente, arquivo, link simbólico, VAZIA ou sobreposta à cópia do servidor (dentro dela ou contendo-a, pela identidade dev/ino do descritor) ⇒ CLOSE_RECEIPTS_INVALID; o registro externo nunca é a pasta do servidor', async () => {
   const R = signer('ek-fecho-r');
   const S = signer('ek-fecho-s');
-  const cases: ReadonlyArray<readonly [string, (world: CloseWorld) => string]> = [
-    ['inexistente', (world) => path.join(world.receiptsDir, 'nao-existe')],
-    ['arquivo', (world) => writeReceipt(world.receiptsDir, 'um.json', {})],
+  const OVERLAP = /não pode estar dentro da cópia do servidor/;
+  const cases: ReadonlyArray<readonly [string, (world: CloseWorld) => { readonly receiptsDir: string; readonly sealsDir?: string }, RegExp?]> = [
+    ['inexistente', (world) => ({ receiptsDir: path.join(world.receiptsDir, 'nao-existe') })],
+    ['arquivo', (world) => ({ receiptsDir: writeReceipt(world.receiptsDir, 'um.json', {}) })],
     ['link simbólico', (world) => {
       const link = path.join(tmpDir('lack-ln-'), 'recibos');
       fs.symlinkSync(world.receiptsDir, link);
-      return link;
+      return { receiptsDir: link };
     }],
-    ['vazia', () => tmpDir('lack-vazia-')],
+    ['vazia', () => ({ receiptsDir: tmpDir('lack-vazia-') })],
     ['dentro da cópia do servidor', (world) => {
       const inside = path.join(world.sealsDir, 'recibos');
       fs.mkdirSync(inside);
       for (const name of fs.readdirSync(world.receiptsDir)) fs.copyFileSync(path.join(world.receiptsDir, name), path.join(inside, name));
-      return inside;
-    }],
-    ['contendo a cópia do servidor', (world) => path.dirname(world.sealsDir)],
+      return { receiptsDir: inside };
+    }, OVERLAP],
+    ['contendo a cópia do servidor', (world) => {
+      const parent = tmpDir('lack-pai-');
+      fs.cpSync(world.sealsDir, path.join(parent, 'copia'), { recursive: true });
+      for (const name of fs.readdirSync(world.receiptsDir)) fs.copyFileSync(path.join(world.receiptsDir, name), path.join(parent, name));
+      return { receiptsDir: parent, sealsDir: path.join(parent, 'copia') };
+    }, OVERLAP],
+    ['a mesma pasta por outro caminho (link no caminho da cópia)', (world) => {
+      const link = path.join(tmpDir('lack-ln2-'), 'copia');
+      fs.symlinkSync(world.receiptsDir, link);
+      return { receiptsDir: world.receiptsDir, sealsDir: link };
+    }, OVERLAP],
   ];
-  for (const [label, receiptsDirOf] of cases) {
+  for (const [label, setup, message] of cases) {
     const world = closeWorld({ retired: R, closer: S });
     writeReceipts(world.receiptsDir, chainOn(world.sealsDir, X, [R]));
-    refused(world, await runCloseKey(world.input({ receiptsDir: receiptsDirOf(world) }), closeDeps(world)), 'CLOSE_RECEIPTS_INVALID', label);
+    const over = setup(world);
+    const refusal = refused(world, await runCloseKey(world.input(over), closeDeps(world)), 'CLOSE_RECEIPTS_INVALID', label);
+    if (message) assert.match(refusal.message, message, label);
   }
 });
 
-test(`§5.5.1 item 9: mais de ${MAX_RECEIPT_FILES} arquivos na pasta de recibos ⇒ CLOSE_RECEIPTS_INVALID antes de ler qualquer recibo`, async () => {
+test('revisão da W4.5 (TOCTOU, MAJOR): a pasta de recibos é aberta UMA vez (O_DIRECTORY|O_NOFOLLOW) e enumerada e lida SÓ pelo descritor: trocá-la por um link para recibos forjados depois de aberta não muda o que é lido', async () => {
   const world = closeWorld();
-  for (let index = 0; index <= MAX_RECEIPT_FILES; index += 1) fs.writeFileSync(path.join(world.receiptsDir, `r${index}.json`), '');
-  const spy = spyFs();
-  refused(world, await runCloseKey(world.input(), closeDeps(world, { fs: spy.fs })), 'CLOSE_RECEIPTS_INVALID');
-  assert.ok(!spy.calls.some((call) => call.op.startsWith('readFile') && call.target.startsWith(fs.realpathSync(world.receiptsDir))), 'nenhum recibo lido');
+  const { retired: R } = world;
+  const x = chainOn(world.sealsDir, X, [R, R]);
+  writeReceipts(world.receiptsDir, x);
+  const forged = chainOn(world.sealsDir, Y, [R]); // no servidor sem recibo: só um recibo FORJADO a faria cabeça
+  const evil = tmpDir('lack-forjados-');
+  writeReceipts(evil, [...x, ...forged]);
+  const moved = `${world.receiptsDir}-movida`;
+  let swaps = 0;
+  const swapping: CloseFsOps = {
+    ...nodeCloseFsOps,
+    async openDir(target) {
+      const opened = await nodeCloseFsOps.openDir(target);
+      fs.renameSync(world.receiptsDir, moved); // entre abrir e enumerar/ler: a pasta some e um link aponta para os forjados
+      fs.symlinkSync(evil, world.receiptsDir);
+      swaps += 1;
+      return opened;
+    },
+  };
+  let result: CloseKeyResult;
+  try {
+    result = await runCloseKey(world.input(), closeDeps(world, { closeFs: swapping }));
+  } finally {
+    fs.rmSync(moved, { recursive: true, force: true });
+  }
+  const done = closed(result);
+  assert.equal(swaps, 1);
+  assert.deepEqual(done.heads, [{ auditId: X, seq: 2, sealSha256: sealSha256(at(x[1])) }], 'só os recibos da pasta ABERTA');
+  assert.deepEqual(done.unknownSealsOnServer, [{ auditId: Y, seqs: [1] }], 'o recibo forjado nunca foi lido: Y continua desconhecida');
+});
+
+test('revisão da W4.5 (TOCTOU): a pasta e os recibos só são consultados pelo descritor; por caminho, só os METADADOS das pastas ACIMA (e da cópia do servidor e das dela), nunca a própria pasta nem um recibo', async () => {
+  const world = closeWorld();
+  writeReceipts(world.receiptsDir, chainOn(world.sealsDir, X, [world.retired]));
+  const calls: Array<{ readonly op: string; readonly target: string }> = [];
+  const spied: CloseFsOps = {
+    lstat: (target) => (calls.push({ op: 'lstat', target }), nodeCloseFsOps.lstat(target)),
+    listDir: (target, limit) => (calls.push({ op: 'listDir', target }), nodeCloseFsOps.listDir(target, limit)),
+    openDir: (target) => (calls.push({ op: 'openDir', target }), nodeCloseFsOps.openDir(target)),
+  };
+  closed(await runCloseKey(world.input(), closeDeps(world, { closeFs: spied })));
+  const receipts = fs.realpathSync(world.receiptsDir);
+  const seals = fs.realpathSync(world.sealsDir);
+  assert.deepEqual(calls.filter((call) => call.op === 'openDir').map((call) => call.target), [path.resolve(world.receiptsDir)], 'aberta uma vez');
+  const ancestors = (dir: string): string[] => (dir === path.dirname(dir) ? [dir] : [dir, ...ancestors(path.dirname(dir))]);
+  const allowed = new Set([...ancestors(path.dirname(receipts)), ...ancestors(seals)]);
+  for (const call of calls.filter((entry) => entry.op === 'lstat')) assert.ok(allowed.has(call.target), `lstat(${call.target}) fora das pastas acima e da cópia do servidor`);
+  assert.ok(!calls.some((call) => call.target.startsWith(receipts + path.sep) || (call.op !== 'openDir' && call.target === receipts)), 'nada da pasta de recibos por caminho');
+});
+
+test('revisão da W4.5 (TOCTOU): pasta de recibos gravável por grupo ou outros, ou com pasta ACIMA gravável por outros sem sticky bit ⇒ CLOSE_RECEIPTS_INVALID; acima com sticky bit (como /tmp) passa; recibo gravável por grupo ou outros ⇒ recusado', async () => {
+  const R = signer('ek-fecho-r');
+  const S = signer('ek-fecho-s');
+  const setups: ReadonlyArray<readonly [string, (world: CloseWorld) => string, boolean]> = [
+    ['pasta 0775', (world) => (fs.chmodSync(world.receiptsDir, 0o775), world.receiptsDir), false],
+    ['pasta 0757', (world) => (fs.chmodSync(world.receiptsDir, 0o757), world.receiptsDir), false],
+    ['pasta 0755', (world) => (fs.chmodSync(world.receiptsDir, 0o755), world.receiptsDir), true],
+    ['acima 0777 sem sticky', (world) => nested(world, 0o777), false],
+    ['acima 0770', (world) => nested(world, 0o770), false],
+    ['acima 1777 (sticky, como /tmp)', (world) => nested(world, 0o1777), true],
+    ['recibo 0664', (world) => (fs.readdirSync(world.receiptsDir).forEach((name) => fs.chmodSync(path.join(world.receiptsDir, name), 0o664)), world.receiptsDir), false],
+    ['recibo 0646', (world) => (fs.readdirSync(world.receiptsDir).forEach((name) => fs.chmodSync(path.join(world.receiptsDir, name), 0o646)), world.receiptsDir), false],
+  ];
+  function nested(world: CloseWorld, mode: number): string {
+    const parent = tmpDir('lack-acima-');
+    const inner = path.join(parent, 'recibos');
+    fs.cpSync(world.receiptsDir, inner, { recursive: true });
+    fs.chmodSync(parent, mode);
+    return inner;
+  }
+  for (const [label, setup, accepted] of setups) {
+    const world = closeWorld({ retired: R, closer: S });
+    writeReceipts(world.receiptsDir, chainOn(world.sealsDir, X, [R]));
+    const receiptsDir = setup(world);
+    const result = await runCloseKey(world.input({ receiptsDir }), closeDeps(world));
+    if (accepted) assert.equal(closed(result).heads.length, 1, label);
+    else refused(world, result, 'CLOSE_RECEIPTS_INVALID', label);
+  }
+  const noUid = closeWorld({ retired: R, closer: S });
+  writeReceipts(noUid.receiptsDir, chainOn(noUid.sealsDir, X, [R]));
+  refused(noUid, await runCloseKey(noUid.input(), closeDeps(noUid, { uid: undefined })), 'CLOSE_RECEIPTS_INVALID', 'sem como conferir o dono (fora do Linux): recusa');
+  refused(noUid, await runCloseKey(noUid.input(), closeDeps(noUid, { uid: (process.getuid?.() ?? 0) + 1 })), 'CLOSE_RECEIPTS_INVALID', 'pasta de outro usuário');
+});
+
+test('revisão da W4.5 (MINOR): as recusas da pasta de recibos nunca ecoam o NOME de um arquivo (pode trazer dado de cliente); citam a posição ordinal', async () => {
+  const R = signer('ek-fecho-r');
+  const S = signer('ek-fecho-s');
+  for (const [name, content] of [['ACME-SP-123.json', 'não é JSON'], ['cliente-acme-sp.txt', '{}'], ['ACME-SP-123.JSON', '{}']] as const) {
+    const world = closeWorld({ retired: R, closer: S });
+    writeReceipts(world.receiptsDir, chainOn(world.sealsDir, X, [R]));
+    fs.writeFileSync(path.join(world.receiptsDir, name), content);
+    const refusal = refused(world, await runCloseKey(world.input(), closeDeps(world)), 'CLOSE_RECEIPTS_INVALID', name);
+    assert.ok(!/ACME|acme|cliente/.test(refusal.message), `${name}: nome nunca ecoado (${refusal.message})`);
+    assert.match(refusal.message, /\d+º arquivo/, `${name}: posição ordinal`);
+  }
+});
+
+test(`§5.5.1 item 9 (limite exato, revisão da W4.5): exatamente ${MAX_RECEIPT_FILES} arquivos não esbarram no teto; ${MAX_RECEIPT_FILES + 1} ⇒ CLOSE_RECEIPTS_INVALID antes de ler qualquer recibo`, async () => {
+  assert.equal(MAX_RECEIPT_FILES, 10_000, 'valor de produção');
+  const world = closeWorld();
+  for (let index = 0; index < MAX_RECEIPT_FILES; index += 1) fs.writeFileSync(path.join(world.receiptsDir, `r${String(index).padStart(5, '0')}.json`), '');
+  const atLimit = refused(world, await runCloseKey(world.input(), closeDeps(world)), 'CLOSE_RECEIPTS_INVALID', 'no teto');
+  assert.doesNotMatch(atLimit.message, /mais de/, `no teto a recusa é do 1º recibo (vazio), não do número de arquivos: ${atLimit.message}`);
+  fs.writeFileSync(path.join(world.receiptsDir, 'r99999.json'), '');
+  let reads = 0;
+  const counting: CloseFsOps = {
+    ...nodeCloseFsOps,
+    async openDir(target) {
+      const opened = await nodeCloseFsOps.openDir(target);
+      return { ...opened, read: (name, maxBytes) => ((reads += 1), opened.read(name, maxBytes)) };
+    },
+  };
+  const over = refused(world, await runCloseKey(world.input(), closeDeps(world, { closeFs: counting })), 'CLOSE_RECEIPTS_INVALID', 'acima do teto');
+  assert.match(over.message, new RegExp(`mais de ${MAX_RECEIPT_FILES}`));
+  assert.equal(reads, 0, 'nenhum recibo lido');
+});
+
+test('revisão da W4.5 (MINOR): os tetos valem DURANTE a enumeração (opendir iterativo, para na entrada máximo + 1): recibos com limite injetado (limite aceito, limite + 1 recusado) e a raiz da cópia do servidor', async () => {
+  const pulls = { count: 0 };
+  async function* names(total: number): AsyncGenerator<{ readonly name: string }> {
+    for (let index = 0; index < total; index += 1) {
+      pulls.count += 1;
+      yield { name: `n${index}` };
+    }
+  }
+  assert.deepEqual(await collectUpTo(names(3), 3), ['n0', 'n1', 'n2']);
+  pulls.count = 0;
+  assert.equal(await collectUpTo(names(50_000), 5), null);
+  assert.equal(pulls.count, 6, 'para na entrada máximo + 1');
+  const R = signer('ek-fecho-r');
+  const world = closeWorld({ retired: R });
+  const seals = chainOn(world.sealsDir, X, [R, R, R]);
+  writeReceipts(world.receiptsDir, seals);
+  const sealsRoot = fs.realpathSync(world.sealsDir);
+  const uid = process.getuid?.();
+  const read = await readReceipts(nodeCloseFsOps, { receiptsDir: world.receiptsDir, sealsRoot, uid, maxFiles: 3 });
+  assert.ok(read.ok && read.receipts.length === 3, 'limite injetado aceito');
+  writeReceipt(world.receiptsDir, 'extra.json', receiptFor(at(seals[0])));
+  const limits: number[] = [];
+  const recording: CloseFsOps = {
+    ...nodeCloseFsOps,
+    async openDir(target) {
+      const opened = await nodeCloseFsOps.openDir(target);
+      return { ...opened, list: (limit) => (limits.push(limit), opened.list(limit)) };
+    },
+  };
+  const over = await readReceipts(recording, { receiptsDir: world.receiptsDir, sealsRoot, uid, maxFiles: 3 });
+  assert.equal(over.ok ? 'OK' : over.code, 'CLOSE_RECEIPTS_INVALID', 'limite + 1 recusado');
+  assert.deepEqual(limits, [3], 'o teto vai para a enumeração (não é conferido depois de listar tudo)');
+  const rootLimits: number[] = [];
+  const crowded: CloseFsOps = { ...nodeCloseFsOps, listDir: async (target, limit) => (rootLimits.push(limit), null) };
+  const refusal = refused(world, await runCloseKey(world.input(), closeDeps(world, { closeFs: crowded })), 'CLOSE_SERVER_COPY_INVALID', 'raiz da cópia acima do teto');
+  assert.equal(refusal.chainReason, 'TOO_MANY_AUDITS');
+  assert.deepEqual(rootLimits, [MAX_SERVER_ENTRIES], 'a raiz é enumerada com o teto');
 });
 
 /* =============================================================================================================== chaves e argumentos */
@@ -334,11 +496,17 @@ test('§5.5.1 item 9 / §6: R ausente da lista ou REVOGADA ⇒ CLOSE_KEY_STATE_I
     ['lista fora de forma', { trustKeys: 'lixo' }, 'USAGE'],
     ['custodiante com e-mail', { custodian: 'cust@exemplo.invalid' }, 'USAGE'],
   ];
+  const closeCalls: string[] = [];
+  const untouchable: CloseFsOps = {
+    lstat: async (target) => (closeCalls.push(target), nodeCloseFsOps.lstat(target)),
+    listDir: async (target, limit) => (closeCalls.push(target), nodeCloseFsOps.listDir(target, limit)),
+    openDir: async (target) => (closeCalls.push(target), nodeCloseFsOps.openDir(target)),
+  };
   for (const [label, over, code] of cases) {
     const spy = spyFs();
-    const deps = closeDeps(world, { fs: spy.fs });
+    const deps = closeDeps(world, { fs: spy.fs, closeFs: untouchable });
     refused(world, await runCloseKey(world.input(over), deps), code, label);
-    assert.deepEqual(spy.calls, [], `${label}: nada lido`);
+    assert.deepEqual([spy.calls, closeCalls], [[], []], `${label}: nada lido`);
     assert.deepEqual(deps.order(), [], `${label}: nem confirmação nem chave`);
   }
   for (const state of ['active', 'retired', `retired:${'c'.repeat(64)}`]) {
@@ -348,9 +516,13 @@ test('§5.5.1 item 9 / §6: R ausente da lista ou REVOGADA ⇒ CLOSE_KEY_STATE_I
   }
 });
 
-test(`§6: mais de ${MAX_CLOSURE_HEADS} auditorias cobertas ⇒ CLOSE_TOO_MANY_HEADS antes da confirmação e da chave`, async () => {
+test(`§6 (limite exato, revisão da W4.5): exatamente ${MAX_CLOSURE_HEADS} auditorias cobertas ⇒ fecho gravado com ${MAX_CLOSURE_HEADS} heads; ${MAX_CLOSURE_HEADS + 1} ⇒ CLOSE_TOO_MANY_HEADS antes da confirmação e da chave`, async () => {
   const world = closeWorld();
-  for (let index = 0; index <= MAX_CLOSURE_HEADS; index += 1) writeReceipts(world.receiptsDir, chainOn(world.sealsDir, `auditoria-muitas-${String(index).padStart(4, '0')}`, [world.retired]));
+  for (let index = 0; index < MAX_CLOSURE_HEADS; index += 1) writeReceipts(world.receiptsDir, chainOn(world.sealsDir, `auditoria-muitas-${String(index).padStart(4, '0')}`, [world.retired]));
+  const done = closed(await runCloseKey(world.input(), closeDeps(world)));
+  assert.equal(done.heads.length, MAX_CLOSURE_HEADS);
+  fs.rmSync(path.join(world.sealsDir, '_closures'), { recursive: true, force: true });
+  writeReceipts(world.receiptsDir, chainOn(world.sealsDir, 'auditoria-muitas-9999', [world.retired]));
   const deps = closeDeps(world);
   refused(world, await runCloseKey(world.input(), deps), 'CLOSE_TOO_MANY_HEADS');
   assert.deepEqual(deps.order(), []);

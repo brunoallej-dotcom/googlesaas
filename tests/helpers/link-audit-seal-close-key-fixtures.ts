@@ -4,6 +4,7 @@ import path from 'node:path';
 import { nodeFsOps } from '../../src/lib/link-audit/snapshot-store';
 import type { CloseKeyDeps, CloseKeyInput } from '../../src/lib/link-audit-attestation/sign-closure';
 import type { CloseConfirmationFacts } from '../../src/lib/link-audit-attestation/sign-core';
+import { nodeCloseFsOps } from '../../src/lib/link-audit-attestation/sign-receipts';
 import { createEvidenceSealV2, sealSha256, type EvidenceSealFileV2 } from '../../src/lib/link-audit-evidence/provenance';
 import { tmpDir } from './link-audit-evidence-fixtures';
 import { GOLDEN } from './link-audit-seal-v2-golden';
@@ -163,6 +164,8 @@ export function closeDeps(world: CloseWorld, over: Partial<CloseKeyDeps> = {}): 
   const openKey = over.openKey ?? (() => world.closer.privateKey);
   return {
     fs: nodeFsOps,
+    closeFs: nodeCloseFsOps,
+    uid: process.getuid?.(),
     now: () => new Date(CLOSE_NOW),
     ...over,
     confirm: (seen) => {
