@@ -394,7 +394,7 @@ test('subcomando sign (W4.4) com argumentos incompletos: erro de uso do sign, se
   }
   const none = await runCli(['--json']);
   assert.equal(none.code, 1);
-  assert.match(String(jsonOf(none).message), /export ou sign/);
+  assert.match(String(jsonOf(none).message), /export, sign ou close-key/);
 });
 
 /* -------------------------------------------------------------------- saída estável (humana e --json) */

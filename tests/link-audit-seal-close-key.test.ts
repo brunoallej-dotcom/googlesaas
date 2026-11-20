@@ -381,7 +381,7 @@ test('criação exclusiva: _closures/<R>.json já existente ⇒ CLOSE_ALREADY_EX
 test('cópia do servidor: --seals-dir inexistente ou arquivo, erro de E/S ao ler uma posição, ou nome de manifesto em outra caixa ⇒ CLOSE_SERVER_COPY_INVALID antes da confirmação e da chave', async () => {
   const cases: ReadonlyArray<readonly [string, (world: CloseWorld) => { readonly sealsDir?: string; readonly fs?: BytesFsOps }]> = [
     ['inexistente', (world) => ({ sealsDir: path.join(world.sealsDir, 'nao-existe') })],
-    ['arquivo', (world) => ({ sealsDir: writeReceipt(tmpDir('lack-arq-'), 'x.json', {}) })],
+    ['arquivo', () => ({ sealsDir: writeReceipt(tmpDir('lack-arq-'), 'x.json', {}) })],
     ['E/S ao ler um manifesto', () => ({ fs: { ...nodeFsOps, readFile: async () => Promise.reject(errno('EIO')) } })],
     ['E/S ao listar a cópia', (world) => ({ fs: { ...nodeFsOps, readdir: async (dir: string) => (dir === fs.realpathSync(world.sealsDir) ? Promise.reject(errno('EACCES')) : nodeFsOps.readdir(dir)) } })],
     ['nome em outra caixa', (world) => (fs.copyFileSync(path.join(world.sealsDir, X, 'seal-0001.json'), path.join(world.sealsDir, X, 'SEAL-0002.json')), {})],
