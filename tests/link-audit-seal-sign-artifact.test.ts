@@ -5,9 +5,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { ARTIFACT_FILE_NAME, ARTIFACT_NODE_MODULES, ArtifactBuildError, buildSignArtifact, checkArtifactText, hashLine, VERSIONED_HASH_FILE, versionedSha256, type BuiltArtifact } from '../scripts/build-sign-artifact';
+import { ARTIFACT_FILE_NAME, ARTIFACT_NODE_MODULES, ArtifactBuildError, buildSignArtifact, checkArtifactText, hashLine, VERSIONED_HASH_FILE, versionedSha256, ZOD_FUNCTION_EXCEPTIONS, type BuiltArtifact } from '../scripts/build-sign-artifact';
 import { runSignArtifact } from '../scripts/link-audit-sign-artifact';
 import { createSealedEvidenceProvenance, parseTrustKeyring, type TrustKeyring } from '../src/lib/link-audit-evidence/provenance';
+import { nodeFsOps } from '../src/lib/link-audit/node-fs-ops';
+import { nodeKeyFileOps, type KeyFileOps } from '../src/lib/link-audit-attestation/sign-key';
 import { registerCleanup, tmpDir } from './helpers/link-audit-evidence-fixtures';
 import { AUD, cliWorld, CUSTODIAN, FakeTerminal, makeKeyFile, makePackage, type TestKeyFile } from './helpers/link-audit-seal-sign-cli-fixtures';
 import { CONFIRM_LENGTH, E1, writeStation } from './helpers/link-audit-seal-sign-disk-fixtures';
@@ -31,7 +33,8 @@ const LIMIT_MS = 90_000;
 const LITERAL_LIST = ['node:crypto', 'node:fs', 'node:fs/promises', 'node:path', 'node:readline', 'node:process'];
 /** As opções do node da linha do runbook (antes dos grants de caminho). */
 const RUNBOOK_FLAGS = ['--disable-sigusr1', '--permission'];
-const PROC_GRANTS = ['/proc/self/cmdline', '/proc/self/environ'].map((file) => `--allow-fs-read=${file}`);
+/** O bloco original do exec e `/proc/self/fd` (caminho real dos descritores do artefato e da chave). */
+const PROC_GRANTS = ['/proc/self/cmdline', '/proc/self/environ', '/proc/self/fd'].map((file) => `--allow-fs-read=${file}`);
 
 let shared: Promise<BuiltArtifact> | null = null;
 /** Um build por arquivo de teste (as guardas e o hash são do mesmo arquivo que os processos reais executam). */
@@ -91,6 +94,19 @@ test('guardas do build (mutações): módulo fora da lista (node:os, node:net, f
     ['fs sem prefixo', "import fs from 'fs';\nconsole.log(typeof fs.readFileSync);\n", 'IMPORT_NOT_ALLOWED'],
     ['import() dinâmico', "void import('node:crypto').then((m) => console.log(typeof m));\n", 'DYNAMIC_LOAD'],
     ['require calculado', "declare const require: (name: string) => unknown;\nconst name = ['node', 'net'].join(':');\nconsole.log(require(name));\n", 'DYNAMIC_LOAD'],
+    // revisão independente da W4.6 (2): no Node 22 o modelo de permissões não restringe rede; esta guarda é o controle
+    ['getBuiltinModule', "console.log(typeof process.getBuiltinModule('node:net'));\n", 'DYNAMIC_LOAD'],
+    ['require como valor', "declare const require: (name: string) => unknown;\nconst load = require;\nconsole.log(load('node:net'));\n", 'DYNAMIC_LOAD'],
+    ['require entre parênteses', "declare const require: (name: string) => unknown;\nconsole.log((require)('node:crypto'));\n", 'DYNAMIC_LOAD'],
+    ['module.require', "declare const module: { require(name: string): unknown };\nconsole.log(module.require('node:crypto'));\n", 'DYNAMIC_LOAD'],
+    ['process.binding', "console.log((process as unknown as { binding(name: string): unknown }).binding('fs'));\n", 'DYNAMIC_LOAD'],
+    ['_linkedBinding', "console.log((process as unknown as { _linkedBinding(name: string): unknown })._linkedBinding('x'));\n", 'DYNAMIC_LOAD'],
+    ['createRequire', "declare const createRequire: (url: string) => (name: string) => unknown;\nconsole.log(createRequire('/x')('node:net'));\n", 'DYNAMIC_LOAD'],
+    ['Module._load', "declare const module: { constructor: { _load(name: string): unknown } };\nconsole.log(module.constructor._load('node:net'));\n", 'DYNAMIC_LOAD'],
+    ['mainModule', "console.log((process as unknown as { mainModule: unknown }).mainModule);\n", 'DYNAMIC_LOAD'],
+    ['eval', "console.log(eval('1 + 1'));\n", 'DYNAMIC_LOAD'],
+    ['new Function', "console.log(new Function('return 1')());\n", 'DYNAMIC_LOAD'],
+    ['Function como valor', "const F = Function;\nconsole.log(new F('return 1')());\n", 'DYNAMIC_LOAD'],
   ];
   for (const [label, source, code] of cases) {
     const outDir = tmpDir('lasa-out-');
@@ -99,6 +115,22 @@ test('guardas do build (mutações): módulo fora da lista (node:os, node:net, f
   }
   assert.throws(() => checkArtifactText('console.log("/home/estacao/repo/x")', ['/home/estacao/repo']), (error: unknown) => error instanceof ArtifactBuildError && error.code === 'ABSOLUTE_PATH');
   assert.throws(() => checkArtifactText('const a = require("node:crypto"); const b = require("node:os");', []), (error: unknown) => error instanceof ArtifactBuildError && error.code === 'IMPORT_NOT_ALLOWED');
+  // no texto final: toda ocorrência do identificador require é exatamente require("<módulo da lista>"); e os carregadores indiretos recusados
+  for (const text of ['const r = require;', 'x.require("node:crypto")', 'require . resolve("x")', 'const m = import.meta;', 'import("node:net")', 'const e = eval;', 'globalThis.eval("1")', 'Function("return 1")', 'new Function("x")', 'process.getBuiltinModule("node:net")', 'process.binding("fs")', 'process._linkedBinding("x")', 'module.constructor._load("x")', 'process.mainModule', 'createRequire("/x")']) {
+    assert.throws(() => checkArtifactText(text, []), (error: unknown) => error instanceof ArtifactBuildError && error.code === 'DYNAMIC_LOAD', text);
+  }
+  assert.deepEqual(checkArtifactText('var c = require("node:crypto"), p = require( "node:path" );', []), ['node:crypto', 'node:path']);
+});
+
+test('revisão independente da W4.6 (2): exceções EXATAS e justificadas do zod embutido ao identificador Function (aliases para o teste de eval e para o JIT do Doc.compile, e uma mensagem); cada uma tem de aparecer exatamente uma vez, e qualquer outro uso de Function é recusado', async () => {
+  assert.deepEqual([...ZOD_FUNCTION_EXCEPTIONS], [
+    'try{const F=Function;new F("");return true}catch(_){return false}',
+    'compile(){const F=Function;',
+    '"Function types cannot be represented in JSON Schema"',
+  ]);
+  const text = fs.readFileSync((await built()).file, 'utf8');
+  for (const exception of ZOD_FUNCTION_EXCEPTIONS) assert.equal(text.split(exception).length - 1, 1, `exceção presente exatamente uma vez: ${exception}`);
+  assert.throws(() => checkArtifactText(`${ZOD_FUNCTION_EXCEPTIONS[1]}${ZOD_FUNCTION_EXCEPTIONS[1]}`, []), (error: unknown) => error instanceof ArtifactBuildError && error.code === 'DYNAMIC_LOAD', 'uma exceção repetida não esconde a segunda');
 });
 
 /* =============================================================================================================== recibo (em processo) */
@@ -136,6 +168,140 @@ test('§5.5.1 item 6: no artefato, o recibo leva artifactSha256 = SHA-256 dos by
   assert.equal((JSON.parse(unreadable.out[0] ?? '{}') as Record<string, unknown>).code, 'SIGN_ARTIFACT_UNREADABLE');
   const usage = await runSignArtifact(['export', '--json'], () => undefined, () => undefined);
   assert.equal(usage, 1, 'o export não faz parte do artefato');
+});
+
+/** O artefato numa pasta própria (0700, criada por mkdtemp), arquivo 0444: a custódia que a linha do runbook pressupõe. */
+async function custodiedCopy(): Promise<string> {
+  const dir = tmpDir('lasa-custodia-');
+  const file = path.join(dir, ARTIFACT_FILE_NAME);
+  fs.copyFileSync((await built()).file, file);
+  fs.chmodSync(file, 0o444);
+  return file;
+}
+interface ArtifactRun {
+  readonly code: number;
+  readonly out: string[];
+  readonly err: string[];
+}
+/** O CLI do artefato em processo, como se rodasse da linha do runbook (opções do node, bloco original e ambiente vazio injetados). */
+async function runAsArtifact(subcommand: 'sign' | 'close-key', file: string, argv: readonly string[], options: { readonly typed?: ReturnType<ReturnType<typeof cliWorld>['typed']>; readonly nodeOptions?: readonly string[]; readonly keyFs?: KeyFileOps; readonly uid?: number; readonly fs?: unknown } = {}): Promise<ArtifactRun> {
+  const out: string[] = [];
+  const err: string[] = [];
+  const flags = options.nodeOptions ?? [...RUNBOOK_FLAGS, `--allow-fs-read=${path.dirname(file)}`];
+  const deps = {
+    projectRoot: path.dirname(file),
+    artifact: { file },
+    execArgv: flags,
+    execBlock: { cmdline: async () => block(['/usr/bin/node', ...flags, file, subcommand]), environ: async () => block([]) },
+    env: {},
+    terminal: new FakeTerminal(options.typed ?? []),
+    report: { reportOnFatalError: true, reportOnSignal: true, reportOnUncaughtException: true },
+    tempRoots: [],
+    ...(options.keyFs ? { keyFs: options.keyFs } : {}),
+    ...(options.uid !== undefined ? { uid: options.uid } : {}),
+    ...(options.fs ? { fs: options.fs as never } : {}),
+  };
+  const code = await runSignArtifact([subcommand, ...argv, '--json'], (line) => out.push(line), (line) => err.push(line), () => new Date(), deps);
+  return { code, out, err };
+}
+const codeOf = (run: ArtifactRun): unknown => (JSON.parse(run.out[0] ?? '{}') as Record<string, unknown>).code;
+
+test('revisão independente da W4.6 (1): o hash do recibo sai do DESCRITOR do próprio artefato, aberto uma vez (O_NOFOLLOW), sob custódia: arquivo comum, sem escrita para ninguém, do usuário ou do root, numa pasta sem escrita para grupo e outros (salvo sticky); qualquer violação ⇒ SIGN_ARTIFACT_UNSAFE antes de ler qualquer entrada', async () => {
+  const world = cliWorld();
+  const reads: string[] = [];
+  const counting: KeyFileOps = {
+    ...nodeKeyFileOps,
+    openKeyFile: async (target) => {
+      const opened = await nodeKeyFileOps.openKeyFile(target);
+      return { ...opened, read: (...args) => (reads.push('descritor'), opened.read(...args)) };
+    },
+  };
+  const good = await custodiedCopy();
+  const ok = await runAsArtifact('sign', good, world.argv(), { typed: world.typed(), keyFs: counting });
+  assert.equal(ok.code, 0, ok.err.join('\n'));
+  assert.equal((JSON.parse(ok.out[0] ?? '{}') as Record<string, unknown>).artifactSha256, sha256Of(fs.readFileSync(good)));
+  assert.ok(reads.length > 0, 'o hash é lido pelo descritor aberto');
+  const refusedBeforeInputs = async (file: string, label: string, options: Parameters<typeof runAsArtifact>[3] = {}): Promise<void> => {
+    const data: string[] = [];
+    const spy = new Proxy(nodeFsOps, { get: (target, property, receiver) => (typeof Reflect.get(target, property, receiver) === 'function' ? (...args: unknown[]) => (data.push(String(property)), (Reflect.get(target, property, receiver) as (...a: unknown[]) => unknown).apply(target, args)) : Reflect.get(target, property, receiver)) });
+    const run = await runAsArtifact('sign', file, world.argv(), { typed: world.typed(), fs: spy, ...options });
+    assert.equal(run.code, 3, `${label}: ${run.err.join('\n')}`);
+    assert.equal(codeOf(run), 'SIGN_ARTIFACT_UNSAFE', label);
+    assert.deepEqual(data, [], `${label}: nenhuma entrada lida`);
+  };
+  const writable = await custodiedCopy();
+  fs.chmodSync(writable, 0o644);
+  await refusedBeforeInputs(writable, 'arquivo com escrita para o dono');
+  const groupWritable = await custodiedCopy();
+  fs.chmodSync(groupWritable, 0o464);
+  await refusedBeforeInputs(groupWritable, 'arquivo com escrita para o grupo');
+  const openDir = await custodiedCopy();
+  fs.chmodSync(path.dirname(openDir), 0o777);
+  await refusedBeforeInputs(openDir, 'pasta gravável por grupo e outros, sem sticky');
+  const sticky = await custodiedCopy();
+  fs.chmodSync(path.dirname(sticky), 0o1777);
+  const stickyRun = await runAsArtifact('sign', sticky, world.argv(), { typed: world.typed() });
+  assert.notEqual(codeOf(stickyRun), 'SIGN_ARTIFACT_UNSAFE', 'pasta com sticky bit (como /tmp) é aceita, como na W4.5');
+  const link = path.join(tmpDir('lasa-link-'), ARTIFACT_FILE_NAME);
+  fs.symlinkSync(await custodiedCopy(), link);
+  await refusedBeforeInputs(link, 'o caminho do artefato é link simbólico');
+  const otherOwner: KeyFileOps = {
+    ...nodeKeyFileOps,
+    openKeyFile: async (target) => {
+      const opened = await nodeKeyFileOps.openKeyFile(target);
+      return { ...opened, stat: async () => ({ ...pick(await opened.stat()), uid: 4242 }) };
+    },
+  };
+  await refusedBeforeInputs(await custodiedCopy(), 'dono que não é o usuário nem o root', { keyFs: otherOwner, uid: 4243 });
+  // troca do arquivo depois da abertura: o descritor aponta para o inode original (apagado do nome) ⇒ recusa; nunca o hash do arquivo novo
+  const swapped = await custodiedCopy();
+  const swapping: KeyFileOps = {
+    ...nodeKeyFileOps,
+    openKeyFile: async (target) => {
+      const opened = await nodeKeyFileOps.openKeyFile(target);
+      const replacement = `${target}.novo`;
+      fs.writeFileSync(replacement, 'trocado depois da abertura', { mode: 0o444 });
+      fs.renameSync(replacement, target);
+      return opened;
+    },
+  };
+  await refusedBeforeInputs(swapped, 'arquivo trocado depois da abertura', { keyFs: swapping });
+});
+/** Os campos de `KeyFileStat` de um `fstat` real (o spread perderia os métodos do Stats). */
+const pick = (info: Awaited<ReturnType<Awaited<ReturnType<KeyFileOps['openKeyFile']>>['stat']>>) => ({ isFile: () => info.isFile(), mode: info.mode, nlink: info.nlink, size: info.size, uid: info.uid });
+
+test('revisão independente da W4.6 (3): no artefato, --allow-fs-write só na raiz real de --seals-dir ou dentro dela (no close-key, só _closures); grant igual a / ou com *, relativo, não normalizado, com vírgula, ou leitura rasa (menos de dois componentes, salvo /tmp e os .git da custódia) ⇒ SIGN_RUNTIME_UNSAFE antes de ler qualquer entrada', async () => {
+  const file = await custodiedCopy();
+  const world = cliWorld();
+  const seals = fs.realpathSync(world.sealsDir);
+  const base = [...RUNBOOK_FLAGS, `--allow-fs-read=${path.dirname(file)}`];
+  const signWith = (extra: readonly string[], on = world) => runAsArtifact('sign', file, on.argv(), { typed: on.typed(), nodeOptions: [...base, ...extra] });
+  const passing: ReadonlyArray<(root: string) => string[]> = [
+    (root) => [`--allow-fs-write=${root}`, `--allow-fs-read=${root}`],
+    (root) => [`--allow-fs-write=${path.join(root, AUD)}`],
+    () => ['--allow-fs-read=/tmp', '--allow-fs-read=/.git', '--allow-fs-read=/home/.git', '--allow-fs-read=/var/tmp', '--allow-fs-read=/dev/shm'],
+  ];
+  for (const grants of passing) {
+    const fresh = cliWorld();
+    const extra = grants(fs.realpathSync(fresh.sealsDir));
+    const run = await signWith(extra, fresh);
+    assert.equal(run.code, 0, `${JSON.stringify(extra)}: ${run.err.join('\n')}`);
+  }
+  const outside = tmpDir('lasa-fora-');
+  for (const extra of [['--allow-fs-write=/'], ['--allow-fs-write=*'], [`--allow-fs-write=${outside}`], [`--allow-fs-write=${path.dirname(seals)}`], [`--allow-fs-write=${seals}x`], ['--allow-fs-read=/'], ['--allow-fs-read=*'], [`--allow-fs-read=${outside}/*`], ['--allow-fs-read=/home'], ['--allow-fs-read=/etc'], ['--allow-fs-read=relativo/pasta'], [`--allow-fs-read=${seals}/../x`], [`--allow-fs-read=${seals}/`], [`--allow-fs-read=${seals},/etc`]]) {
+    const run = await signWith(extra);
+    assert.equal(run.code, 3, `${JSON.stringify(extra)}: ${run.err.join('\n')}`);
+    assert.equal(codeOf(run), 'SIGN_RUNTIME_UNSAFE', JSON.stringify(extra));
+    assert.match(String((JSON.parse(run.out[0] ?? '{}') as Record<string, unknown>).message), /grants/);
+  }
+  const closeArgv = ['--retired-key-id', 'ek-cli-fecho-r', '--seals-dir', world.sealsDir, '--receipts-dir', tmpDir('lasa-rec-'), '--key-id', world.key.keyId, '--key-source', `file:${world.key.keyPath}`, '--custodian', 'CUST-01', '--trust-keys', world.key.ring];
+  const closeWith = (extra: readonly string[]) => runAsArtifact('close-key', file, closeArgv, { nodeOptions: [...base, ...extra] });
+  for (const extra of [[`--allow-fs-write=${seals}`], ['--allow-fs-write=/'], ['--allow-fs-read=/'], [`--allow-fs-write=${outside}`]]) {
+    const run = await closeWith(extra);
+    assert.equal(codeOf(run), 'SIGN_RUNTIME_UNSAFE', `close-key ${JSON.stringify(extra)}`);
+  }
+  const closures = await closeWith([`--allow-fs-write=${path.join(seals, '_closures')}`, '--allow-fs-read=/home']);
+  assert.notEqual(codeOf(closures), 'SIGN_RUNTIME_UNSAFE', `close-key: escrita só em _closures passa (a leitura ampla é limite declarado até a W5): ${closures.out.join('\n')}`);
 });
 
 /* =============================================================================================================== processo REAL (env -i, --permission) */
@@ -199,6 +365,9 @@ test('decisão 3 em processo REAL: com a linha do runbook, a sondagem de fsync n
   }
   assert.ok(!/12 primeiros caracteres|Frase-senha/.test(run.stderr), 'nem confirmação nem frase');
   assert.deepEqual(fs.readdirSync(seals), [], 'a sondagem não grava nada');
+  // revisão independente da W4.6 (3): escrita fora de --seals-dir (aqui, a raiz inteira) ⇒ recusa antes da sondagem e de qualquer entrada
+  const wide = viaEnvI([...line, '--allow-fs-write=/'], artifact.file, args);
+  refusedBarrier(wide, '--allow-fs-write=/', /grants/);
 });
 
 /* =============================================================================================================== assinatura completa (PTY) */

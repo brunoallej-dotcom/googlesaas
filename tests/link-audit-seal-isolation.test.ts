@@ -50,8 +50,9 @@ const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   // (fs-ops), sem o snapshot-store; o bloco original do exec e o hash do artefato vêm de sign-runtime.ts
   'sign-cli.ts': new Set(['../link-audit/fs-ops', '../link-audit/node-fs-ops', './sign-args', './sign-chain', './sign-closure', './sign-core', './sign-key', './sign-receipts', './sign-run', './sign-runtime', './sign-terminal']),
   // P1 W4.6: a LEITURA do bloco original do exec (/proc/self/cmdline e /proc/self/environ, que um preload não altera ao limpar process.env) e o
-  // SHA-256 dos bytes do próprio artefato (recibo); só leitura (node:fs/promises, regra estreita abaixo) e node:crypto (só o hash)
-  'sign-runtime.ts': new Set(['node:crypto', 'node:fs/promises']),
+  // SHA-256 dos bytes do próprio artefato (recibo); só leitura (node:fs/promises, regra estreita abaixo) e node:crypto (só o hash). Revisão
+  // independente da W4.6 (1): o artefato é aberto e conferido pelas rotinas de custódia que já existem (sign-key: descritor; sign-receipts: pasta)
+  'sign-runtime.ts': new Set(['node:crypto', 'node:fs/promises', 'node:path', './sign-key', './sign-receipts']),
   // P1 W4.5: o REGISTRO EXTERNO do fecho (pasta de recibos do passo 16, aberta UMA vez e lida só pelo descritor; esquema zod estrito, limites) e a
   // escolha das cabeças; disco SÓ leitura (node:fs/promises, regra estreita abaixo); nunca o verificador, nem por transitividade (revisão da W4.5)
   'sign-receipts.ts': new Set(['node:fs/promises', 'node:path', 'zod', './schemas', './sign-core']),
