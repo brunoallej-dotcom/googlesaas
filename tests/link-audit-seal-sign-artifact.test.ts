@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import test from 'node:test';
+import test, { after } from 'node:test';
 import { ARTIFACT_FILE_NAME, ARTIFACT_NODE_MODULES, ArtifactBuildError, buildSignArtifact, checkArtifactText, hashLine, VERSIONED_HASH_FILE, versionedSha256, ZOD_FUNCTION_EXCEPTIONS, type BuiltArtifact } from '../scripts/build-sign-artifact';
 import { runSignArtifact } from '../scripts/link-audit-sign-artifact';
 import { config as zodConfig } from 'zod';
@@ -55,6 +55,28 @@ const skipOrFail = (reason: string): string | false => {
   if (STRICT) assert.fail(`LINK_AUDIT_ARTIFACT_STRICT=1: ${reason}`);
   return reason;
 };
+
+/**
+ * Segunda confirmação da revisão da W4.6 (a): no artefato, a pasta de manifestos nunca fica numa pasta temporária. As estações dos testes em modo
+ * artefato ficam numa pasta do HOME (fora das temporárias), criada uma vez por arquivo e apagada no fim.
+ */
+let homeBase: string | null | undefined;
+function homeSealsDir(): string {
+  if (homeBase === undefined) {
+    homeBase = stationDir();
+    after(() => {
+      if (homeBase) fs.rmSync(homeBase, { recursive: true, force: true });
+    });
+  }
+  if (homeBase === null) return assert.fail('sem pasta no HOME fora das temporárias para a pasta de manifestos do artefato');
+  return fs.realpathSync(fs.mkdtempSync(path.join(homeBase, 'manifestos-')));
+}
+/** Um `cliWorld` com a pasta de manifestos fora das temporárias (as entradas e a chave continuam em pastas temporárias, como antes). */
+function homeWorld(): ReturnType<typeof cliWorld> {
+  const world = cliWorld();
+  const sealsDir = homeSealsDir();
+  return { ...world, sealsDir, argv: (over = {}, extra = []) => world.argv({ 'seals-dir': sealsDir, ...over }, extra) };
+}
 
 /* =============================================================================================================== build e hash */
 
@@ -168,7 +190,7 @@ const block = (records: readonly string[]): Uint8Array => Buffer.from(records.ma
 
 test('§5.5.1 item 6: no artefato, o recibo leva artifactSha256 = SHA-256 dos bytes do próprio arquivo; artefato ilegível ⇒ SIGN_ARTIFACT_UNREADABLE (código 3) antes de ler qualquer entrada; pelo código-fonte, null', async () => {
   const artifact = await built();
-  const world = cliWorld();
+  const world = homeWorld();
   const flags = [...RUNBOOK_FLAGS, `--allow-fs-read=${path.dirname(artifact.file)}`];
   const asArtifact = (file: string, typed: ReturnType<typeof world.typed>) => {
     const out: string[] = [];
@@ -235,7 +257,7 @@ async function runAsArtifact(subcommand: 'sign' | 'close-key', file: string, arg
 const codeOf = (run: ArtifactRun): unknown => (JSON.parse(run.out[0] ?? '{}') as Record<string, unknown>).code;
 
 test('revisão independente da W4.6 (1): o hash do recibo sai do DESCRITOR do próprio artefato, aberto uma vez (O_NOFOLLOW), sob custódia: arquivo comum, sem escrita para ninguém, do usuário ou do root, numa pasta sem escrita para grupo e outros (salvo sticky); qualquer violação ⇒ SIGN_ARTIFACT_UNSAFE antes de ler qualquer entrada', async () => {
-  const world = cliWorld();
+  const world = homeWorld();
   const reads: string[] = [];
   const counting: KeyFileOps = {
     ...nodeKeyFileOps,
@@ -321,8 +343,8 @@ const pick = (info: Awaited<ReturnType<Awaited<ReturnType<KeyFileOps['openKeyFil
 
 test('revisão independente da W4.6 (3): no artefato, --allow-fs-write só na raiz real de --seals-dir ou dentro dela (no close-key, só _closures); grant igual a / ou com *, relativo, não normalizado, com vírgula, ou leitura rasa (menos de dois componentes, salvo /tmp e os .git da custódia) ⇒ SIGN_RUNTIME_UNSAFE antes de ler qualquer entrada', async () => {
   const file = await custodiedCopy();
-  const world = cliWorld();
-  const seals = fs.realpathSync(world.sealsDir);
+  const world = homeWorld();
+  const seals = world.sealsDir;
   const base = [...RUNBOOK_FLAGS, `--allow-fs-read=${path.dirname(file)}`];
   const signWith = (extra: readonly string[], on = world) => runAsArtifact('sign', file, on.argv(), { typed: on.typed(), nodeOptions: [...base, ...extra] });
   const passing: ReadonlyArray<(root: string) => string[]> = [
@@ -331,8 +353,8 @@ test('revisão independente da W4.6 (3): no artefato, --allow-fs-write só na ra
     () => ['--allow-fs-read=/tmp', '--allow-fs-read=/.git', '--allow-fs-read=/home/.git', '--allow-fs-read=/var/tmp', '--allow-fs-read=/dev/shm', '--allow-fs-read=/proc/self/fd'],
   ];
   for (const grants of passing) {
-    const fresh = cliWorld();
-    const extra = grants(fs.realpathSync(fresh.sealsDir));
+    const fresh = homeWorld();
+    const extra = grants(fresh.sealsDir);
     const run = await signWith(extra, fresh);
     assert.equal(run.code, 0, `${JSON.stringify(extra)}: ${run.err.join('\n')}`);
   }
@@ -362,8 +384,8 @@ test('confirmação da revisão da W4.6 (3): no artefato, cada grant é o própr
   fs.symlinkSync(outside, linkOut);
   fs.mkdirSync(path.join(outside, 'sub'));
   const refusedSign = async (extra: (seals: string) => string[], label: string, sealsArg?: (seals: string) => string): Promise<void> => {
-    const world = cliWorld();
-    const seals = fs.realpathSync(world.sealsDir);
+    const world = homeWorld();
+    const seals = world.sealsDir;
     const argv = sealsArg ? world.argv({ 'seals-dir': sealsArg(seals) }) : world.argv();
     const run = await runAsArtifact('sign', file, argv, { typed: world.typed(), nodeOptions: [...base, ...extra(seals)] });
     assert.equal(run.code, 3, `${label}: ${run.err.join('\n')}`);
@@ -386,13 +408,46 @@ test('confirmação da revisão da W4.6 (3): no artefato, cada grant é o própr
   fs.mkdirSync(gitLink);
   fs.symlinkSync(outside, path.join(gitLink, '.git'));
   await refusedSign(() => [`--allow-fs-read=${path.join(gitLink, '.git')}`], '.git que existe e é link');
+  // segunda confirmação (b): .git AUSENTE sob um pai que é link (o pai tem de existir e ser o próprio caminho real)
+  await refusedSign(() => [`--allow-fs-read=${path.join(linkOut, '.git')}`], '.git ausente sob pai que é link');
+  await refusedSign(() => [`--allow-fs-read=${path.join(outside, 'nao-existe', '.git')}`], '.git ausente sob pai que não existe');
   // --seals-dir dado por um link: a comparação é entre caminhos REAIS (o grant do caminho real passa)
-  const world = cliWorld();
-  const seals = fs.realpathSync(world.sealsDir);
+  const world = homeWorld();
+  const seals = world.sealsDir;
   const sealsAlias = path.join(holder, 'manifestos-apelido');
   fs.symlinkSync(seals, sealsAlias);
   const viaAlias = await runAsArtifact('sign', file, world.argv({ 'seals-dir': sealsAlias }), { typed: world.typed(), nodeOptions: [...base, `--allow-fs-write=${seals}`, `--allow-fs-read=${seals}`] });
   assert.notEqual(codeOf(viaAlias), 'SIGN_RUNTIME_UNSAFE', `--seals-dir por link, grant pelo caminho real: ${viaAlias.out.join('\n')} ${viaAlias.err.join('\n')}`);
+});
+
+test('segunda confirmação da revisão da W4.6 (a): no artefato, --seals-dir numa raiz temporária (/tmp, /var/tmp, /dev/shm, pelo caminho dado ou real) ou dentro dela, e grant de escrita numa raiz temporária ⇒ SIGN_RUNTIME_UNSAFE: manifesto nunca em pasta temporária', async () => {
+  const file = await custodiedCopy();
+  const base = [...RUNBOOK_FLAGS, `--allow-fs-read=${path.dirname(file)}`];
+  const roots = ['/tmp', '/var/tmp', '/dev/shm'].filter((root) => fs.existsSync(root));
+  assert.ok(roots.includes('/tmp'));
+  for (const root of roots) {
+    const real = fs.realpathSync(root);
+    const inside = fs.realpathSync(fs.mkdtempSync(path.join(real, 'lasa-manifesto-temp-')));
+    try {
+      for (const [label, sealsDir, extra] of [
+        [`${root} como --seals-dir`, root, [`--allow-fs-write=${real}`]],
+        [`pasta dentro de ${root}`, inside, [`--allow-fs-write=${inside}`]],
+        [`pasta dentro de ${root}, sem grant de escrita`, inside, []],
+      ] as const) {
+        const world = cliWorld();
+        const run = await runAsArtifact('sign', file, world.argv({ 'seals-dir': sealsDir }), { typed: world.typed(), nodeOptions: [...base, ...extra] });
+        assert.equal(run.code, 3, `${label}: ${run.err.join('\n')}`);
+        assert.equal(codeOf(run), 'SIGN_RUNTIME_UNSAFE', label);
+        assert.match(String((JSON.parse(run.out[0] ?? '{}') as Record<string, unknown>).message), /temporária/, label);
+        assert.deepEqual(fs.readdirSync(inside), [], `${label}: nada gravado`);
+      }
+    } finally {
+      fs.rmSync(inside, { recursive: true, force: true });
+    }
+  }
+  const world = homeWorld();
+  const okRun = await runAsArtifact('sign', file, world.argv(), { typed: world.typed(), nodeOptions: [...base, `--allow-fs-write=${world.sealsDir}`] });
+  assert.equal(okRun.code, 0, `pasta de manifestos fora das temporárias assina: ${okRun.err.join('\n')}`);
 });
 
 /* =============================================================================================================== processo REAL (env -i, --permission) */
@@ -441,11 +496,11 @@ test('critérios i e ii em processo REAL: por env -i com o node por caminho abso
 
 test('decisão 3 em processo REAL: com a linha do runbook, a sondagem de fsync na raiz de --seals-dir vem logo depois do analisador: node que bloqueia fsync sob --permission ⇒ SIGN_RUNTIME_NO_FSYNC antes de ler qualquer entrada; node que permite ⇒ segue e só então recusa a entrada inexistente (SIGN_INPUT_UNREADABLE)', { timeout: LIMIT_MS }, async () => {
   const artifact = await built();
-  const seals = realTmpDir('lasa-manifestos-');
+  const seals = homeSealsDir();
   const key = makeKeyFile();
   const missing = path.join(tmpDir('lasa-vazia-'), 'nao-existe.json');
   const args = ['sign', '--audit', AUD, '--package', missing, '--approval', missing, '--dossier', missing, '--seals-dir', seals, '--expect-seq', '1', '--first', '--key-id', key.keyId, '--key-source', `file:${key.keyPath}`, '--custodian', CUSTODIAN, '--trust-keys', key.ring];
-  const line = [...RUNBOOK_FLAGS, `--allow-fs-read=${path.dirname(artifact.file)}`, ...PROC_GRANTS, `--allow-fs-read=${seals}`, `--allow-fs-write=${seals}`];
+  const line = [...RUNBOOK_FLAGS, `--allow-fs-read=${path.dirname(artifact.file)}`, ...PROC_GRANTS, '--allow-fs-read=/tmp', '--allow-fs-read=/var/tmp', '--allow-fs-read=/dev/shm', `--allow-fs-read=${seals}`, `--allow-fs-write=${seals}`];
   const run = viaEnvI(line, artifact.file, args);
   assert.equal(run.status, 3, run.stderr);
   if (permissionFsync() === 'denied') {
@@ -459,6 +514,11 @@ test('decisão 3 em processo REAL: com a linha do runbook, a sondagem de fsync n
   // revisão independente da W4.6 (3): escrita fora de --seals-dir (aqui, a raiz inteira) ⇒ recusa antes da sondagem e de qualquer entrada
   const wide = viaEnvI([...line, '--allow-fs-write=/'], artifact.file, args);
   refusedBarrier(wide, '--allow-fs-write=/', /grants/);
+  // segunda confirmação (b) sob --permission: o pai de um .git ausente não é concedido; ele só vale como ancestral de um grant conferido real
+  const holder = realTmpDir('lasa-links-');
+  fs.symlinkSync(realTmpDir('lasa-alvo-'), path.join(holder, 'pai-link'));
+  refusedBarrier(viaEnvI([...line, `--allow-fs-read=${path.join(holder, 'pai-link', '.git')}`], artifact.file, args), '.git ausente sob pai que é link (sob --permission)', /grants/);
+  assert.notEqual(viaEnvI([...line, `--allow-fs-read=${path.join(path.dirname(seals), '.git')}`], artifact.file, args).stderr.includes('Código: SIGN_RUNTIME_UNSAFE'), true, '.git ausente cujo pai é ancestral de um grant real passa');
 });
 
 /* =============================================================================================================== assinatura completa (PTY) */
