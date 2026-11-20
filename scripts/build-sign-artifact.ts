@@ -7,8 +7,11 @@
  * sourcemap, sem comentários, ASCII, só o espaço em branco minificado, zod embutido, caminhos relativos à raiz do repositório, sem ler o
  * tsconfig.json), e só grava o arquivo depois das guardas sobre a SAÍDA:
  *  - pelo `metafile`, todo import que sobrou no arquivo é externo, por `require` estático, e está na lista LITERAL do §5.5.1 item 7;
- *  - pelo texto do arquivo final, todo `require(` tem como argumento uma dessas strings literais; nenhum `import(`, `require.resolve`,
- *    `module.require`, `createRequire`, `process.binding` ou `process.dlopen`;
+ *  - pelo texto do arquivo final, TODA ocorrência do identificador `require` é exatamente `require("<módulo da lista>")` (nunca como valor, membro
+ *    ou com nome calculado), e não há outra forma de carregar código: `getBuiltinModule`, `process.binding`, `_linkedBinding`, `createRequire`,
+ *    `module.constructor`, `_load`, `mainModule`, `process.dlopen`, `import(`, `import.meta`, `eval` nem `Function` (revisão independente da W4.6: no
+ *    Node 22 o modelo de permissões não restringe rede, e esta guarda é o controle). O zod embutido tem quatro usos exatos de `Function`, cada um
+ *    aceito uma única vez (`ZOD_FUNCTION_EXCEPTIONS`);
  *  - nenhum caminho absoluto da máquina do build no arquivo (build reprodutível em qualquer pasta).
  * Imprime `<sha256>  link-audit-sign.cjs` (formato do `sha256sum`). `--check` compara com o hash versionado em
  * `docs/phase6-auditoria-link/p1-sign-artifact.sha256` e falha se diferir. Sem rede: o esbuild roda localmente.
@@ -25,10 +28,38 @@ export const REPO_ROOT = path.resolve(__dirname, '..');
 export const ARTIFACT_ENTRY = path.join(REPO_ROOT, 'scripts', 'link-audit-sign-artifact.ts');
 export const VERSIONED_HASH_FILE = path.join(REPO_ROOT, 'docs', 'phase6-auditoria-link', 'p1-sign-artifact.sha256');
 const DEFAULT_OUT_DIR = path.join(REPO_ROOT, '.cache', 'sign-artifact');
-/** Formas de carregar código que a lista de imports não enxerga; nenhuma pode aparecer no arquivo final. */
-const FORBIDDEN_LOADERS: readonly RegExp[] = [/\bimport\s*\(/, /\brequire\s*\.\s*resolve\b/, /\bmodule\s*\.\s*require\b/, /\bcreateRequire\b/, /\bprocess\s*\.\s*binding\b/, /\bprocess\s*\.\s*dlopen\b/];
-const REQUIRE_CALL = /\brequire\s*\(/g;
+/** Formas de carregar ou gerar código que a lista de imports não enxerga; nenhuma pode aparecer no arquivo final (fora das exceções do zod). */
+const FORBIDDEN_LOADERS: readonly RegExp[] = [
+  /\bimport\s*\(/,
+  /\bimport\s*\.\s*meta\b/,
+  /\bgetBuiltinModule\b/,
+  /\bprocess\s*\.\s*binding\b/,
+  /\b_linkedBinding\b/,
+  /\bcreateRequire\b/,
+  /\bmodule\s*\.\s*constructor\b/,
+  /\b_load\b/,
+  /\bmainModule\b/,
+  /\bprocess\s*\.\s*dlopen\b/,
+  /\beval\b/,
+  /\bFunction\b/,
+];
+/**
+ * Os ÚNICOS usos de `Function` aceitos, todos do zod embutido, cada um exatamente uma vez (o teste confere a contagem; uma versão nova do zod que
+ * mude isso faz o build falhar e exige revisão):
+ *  1. `util.allowsEval`: testa se o runtime permite gerar código (`new F("")`), para escolher o caminho sem JIT quando não permite;
+ *  2. `Doc.compile` (`core/doc.js`): o JIT dos validadores de objeto do zod (gera a checagem a partir do próprio esquema, não de dado externo);
+ *  3. `z.compile` (`core/compile.js`): o compilador de esquema do zod, no mesmo molde (o `sign` não o chama; vem com o namespace `z`);
+ *  4. uma mensagem de erro do conversor para JSON Schema (texto, não código).
+ */
+export const ZOD_FUNCTION_EXCEPTIONS: readonly string[] = [
+  'try{const F=Function;new F("");return true}catch(_){return false}',
+  'compile(){const F=Function;',
+  'const F=Function;const factoryCode=',
+  '"Function types cannot be represented in JSON Schema"',
+];
+const REQUIRE_IDENTIFIER = /\brequire\b/g;
 const LITERAL_REQUIRE = /^require\s*\(\s*"([^"\\]+)"\s*\)/;
+const MEMBER_ACCESS = /[.?]\s*$/;
 
 export type ArtifactBuildErrorCode = 'IMPORT_NOT_ALLOWED' | 'DYNAMIC_LOAD' | 'ABSOLUTE_PATH' | 'BUILD_FAILED' | 'HASH_MISMATCH';
 
@@ -84,13 +115,17 @@ function checkMetafileImports(metafile: Metafile): string[] {
   return [...new Set(imports.map((item) => item.path))].sort();
 }
 
-/** Pelo texto do arquivo final: cada `require(` com string literal da lista; nenhuma outra forma de carregar código; nenhum caminho absoluto. */
+/**
+ * Pelo texto do arquivo final: toda ocorrência do identificador `require` é uma chamada direta com string literal da lista; nenhuma outra forma de
+ * carregar ou gerar código (cada exceção do zod é retirada UMA vez antes da busca); nenhum caminho absoluto.
+ */
 export function checkArtifactText(text: string, absolutePaths: readonly string[]): string[] {
-  for (const pattern of FORBIDDEN_LOADERS) if (pattern.test(text)) throw new ArtifactBuildError('DYNAMIC_LOAD', `carregamento dinâmico no artefato (${pattern.source})`);
+  const searched = ZOD_FUNCTION_EXCEPTIONS.reduce((current, exception) => current.replace(exception, ''), text);
+  for (const pattern of FORBIDDEN_LOADERS) if (pattern.test(searched)) throw new ArtifactBuildError('DYNAMIC_LOAD', `carregamento ou geração de código no artefato (${pattern.source})`);
   const required = new Set<string>();
-  for (const match of text.matchAll(REQUIRE_CALL)) {
+  for (const match of text.matchAll(REQUIRE_IDENTIFIER)) {
     const literal = LITERAL_REQUIRE.exec(text.slice(match.index));
-    if (!literal) throw new ArtifactBuildError('DYNAMIC_LOAD', 'require com argumento que não é string literal no artefato');
+    if (!literal || MEMBER_ACCESS.test(text.slice(0, match.index))) throw new ArtifactBuildError('DYNAMIC_LOAD', 'require como valor, membro ou com argumento que não é string literal no artefato');
     const specifier = literal[1] as string;
     if (!ARTIFACT_NODE_MODULES.includes(specifier)) throw new ArtifactBuildError('IMPORT_NOT_ALLOWED', `require("${specifier}") fora da lista literal do §5.5.1 item 7`);
     required.add(specifier);

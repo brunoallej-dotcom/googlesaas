@@ -212,15 +212,23 @@ const selfAndAncestors = (dir: string): string[] => (dir === path.dirname(dir) ?
 const isRealAbsolute = (value: string): boolean => path.isAbsolute(value) && path.normalize(value) === value && !value.endsWith(' (deleted)');
 
 /**
- * As pastas ACIMA da pasta aberta (pelo caminho real do descritor): diretórios sem escrita para grupo e outros, salvo com sticky bit (como `/tmp`,
- * onde ninguém troca a entrada de outro usuário). Devolve as identidades delas (para a sobreposição) ou `null` se alguma falhou.
+ * Uma pasta que outro usuário não troca: diretório (não link) sem escrita para grupo e outros, salvo com sticky bit (como `/tmp`, onde ninguém troca
+ * a entrada de outro usuário). Regra da revisão da W4.5, reaproveitada pela custódia do artefato (revisão independente da W4.6).
+ */
+export function isProtectedDir(info: { isDirectory(): boolean; isSymbolicLink(): boolean; readonly mode: number }): boolean {
+  const writableByOthers = (info.mode & GROUP_OR_OTHER_WRITE) !== 0 && (info.mode & STICKY) === 0;
+  return info.isDirectory() && !info.isSymbolicLink() && !writableByOthers;
+}
+
+/**
+ * As pastas ACIMA da pasta aberta (pelo caminho real do descritor), todas protegidas (`isProtectedDir`). Devolve as identidades delas (para a
+ * sobreposição) ou `null` se alguma falhou.
  */
 async function ancestorIdentities(ops: CloseFsOps, real: string): Promise<DirEntryStat[] | null> {
   const found: DirEntryStat[] = [];
   for (const dir of selfAndAncestors(path.dirname(real))) {
     const info = await ops.lstat(dir);
-    const writableByOthers = (info.mode & GROUP_OR_OTHER_WRITE) !== 0 && (info.mode & STICKY) === 0;
-    if (info.isSymbolicLink() || !info.isDirectory() || writableByOthers) return null;
+    if (!isProtectedDir(info)) return null;
     found.push(info);
   }
   return found;

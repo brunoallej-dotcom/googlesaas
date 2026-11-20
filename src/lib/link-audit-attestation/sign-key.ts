@@ -43,6 +43,8 @@ export interface KeyFileStat {
   readonly mode: number;
   readonly nlink: number;
   readonly size: number;
+  /** Dono do arquivo (revisão independente da W4.6: a custódia do artefato exige o usuário ou o root). */
+  readonly uid: number;
 }
 /** O arquivo de chave ABERTO: tudo o que se confere dele e a leitura saem deste descritor (revisão da W4.4). */
 export interface OpenedKeyFile {
@@ -132,7 +134,8 @@ export function defaultTempRoots(env: Readonly<Record<string, string | undefined
   return [...new Set([...fromEnv, ...FIXED_TEMP_ROOTS].map((dir) => path.resolve(dir)))];
 }
 
-const isInside = (child: string, root: string): boolean => {
+/** `child` é `root` ou fica dentro dela (caminhos absolutos). Também usado pelos grants do artefato (W4.6). */
+export const isInside = (child: string, root: string): boolean => {
   const relative = path.relative(root, child);
   return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 };
@@ -192,8 +195,8 @@ async function dirModeRefusal(fs: KeyFileOps, dir: string): Promise<SignRefusal 
 type Roots = { readonly project: readonly string[]; readonly temp: readonly string[] };
 const DELETED_SUFFIX = ' (deleted)';
 
-/** Caminho real do DESCRITOR: absoluto, normalizado, de arquivo não apagado; senão `null` (a custódia não é provada). */
-async function descriptorPath(opened: OpenedKeyFile): Promise<string | null> {
+/** Caminho real do DESCRITOR: absoluto, normalizado, de arquivo não apagado; senão `null` (a custódia não é provada). Também usado pela custódia do artefato (W4.6). */
+export async function descriptorPath(opened: OpenedKeyFile): Promise<string | null> {
   try {
     const real = await opened.realPath();
     const usable = typeof real === 'string' && path.isAbsolute(real) && path.normalize(real) === real && !real.includes('\0') && !real.endsWith(DELETED_SUFFIX);
@@ -203,8 +206,8 @@ async function descriptorPath(opened: OpenedKeyFile): Promise<string | null> {
   }
 }
 
-/** Lê pelo descritor até o fim; um byte a mais que o `fstat` declarou denuncia um arquivo que cresceu (quem chama recusa). */
-async function readAll(opened: OpenedKeyFile, buffer: Buffer): Promise<number> {
+/** Lê pelo descritor até o fim; um byte a mais que o `fstat` declarou denuncia um arquivo que cresceu (quem chama recusa). Também usado pelo artefato (W4.6). */
+export async function readAll(opened: OpenedKeyFile, buffer: Buffer): Promise<number> {
   let length = 0;
   while (length < buffer.length) {
     const { bytesRead } = await opened.read(buffer, length, buffer.length - length, length);

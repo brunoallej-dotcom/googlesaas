@@ -1,7 +1,8 @@
+import path from 'node:path';
 import { auditId as auditIdSchema, shortLabel } from './schemas';
 import { isTrustKeyringText, SIGN_KEY_ID_PATTERN } from './sign-chain';
 import { MAX_SEAL_SEQ, type SignRefusal } from './sign-core';
-import { parseKeySource, type KeySource } from './sign-key';
+import { isInside, parseKeySource, type KeySource } from './sign-key';
 
 /*
  * P1 W4.4 — os ARGUMENTOS do `sign` (spec §5.2 "analisador próprio e estrito", §5.5 sintaxe e tabela, passo 1; §8, §8.1; IA-15; RS-11). Antes de
@@ -417,6 +418,55 @@ async function originalExecRefusal(facts: RuntimeFacts): Promise<SignRefusal | n
   if (!hasArtifactFlags(facts.execArgv) || !hasArtifactFlags(original.options)) return ARTIFACT_NO_PERMISSION;
   const names = [...new Set([...original.envNames, ...facts.envNames])];
   return names.length > 0 ? artifactEnvNotEmpty(names) : null;
+}
+
+/* ------------------------------------------------------------------------------------------------------------------- grants do artefato (W4.6) */
+
+const GRANT = /^--allow-fs-(read|write)=(.*)$/;
+const CLOSURES_SUBDIR = '_closures';
+/** Revisão independente da W4.6 (3): leituras rasas (`/home`, `/etc`, `/usr`…) dão a subárvore inteira; só estas são aceitas com um componente. */
+const SHALLOW_READS_ALLOWED: ReadonlySet<string> = new Set(['/tmp']);
+const MIN_READ_DEPTH = 2;
+const GIT_NAME = '.git';
+const grantsRefusal = (why: string): SignRefusal => ({
+  ok: false,
+  code: 'SIGN_RUNTIME_UNSAFE',
+  message: `O artefato único só aceita grants estreitos do modelo de permissões: ${why}. Rode pela linha fixada no runbook. ${RUNTIME_NOTHING}`,
+});
+const GRANT_SHAPE = grantsRefusal('cada --allow-fs-read/--allow-fs-write é um caminho absoluto, normalizado, sem vírgula, diferente de / e sem *');
+const GRANT_WRITE_OUTSIDE = grantsRefusal('--allow-fs-write só na raiz real de --seals-dir ou dentro dela (no close-key, só em <seals-dir>/_closures)');
+const GRANT_READ_SHALLOW = grantsRefusal('leitura com pelo menos dois componentes (/a/b), salvo /tmp e os .git que a custódia da chave consulta');
+const GRANT_ROOT_UNPROVEN = grantsRefusal('o caminho real de --seals-dir não pôde ser resolvido para conferir os grants de escrita');
+
+/** Um grant aceitável na forma: absoluto, normalizado (sem `..`, sem barra final), sem vírgula (lista) e sem `*` (curinga), diferente de `/`. */
+const isNarrowPath = (value: string): boolean => value.length > 1 && path.isAbsolute(value) && path.resolve(value) === value && !/[,*\0]/.test(value);
+const depthOf = (value: string): number => value.split('/').filter(Boolean).length;
+
+/**
+ * Revisão independente da W4.6 (3), só no ARTEFATO, depois do analisador: os grants de `execArgv` E da linha original do exec. Critério simples que
+ * falha fechado: forma estreita (acima); escrita só na raiz REAL de `--seals-dir` ou dentro dela (`close-key`: só `_closures`); leitura no `sign` com
+ * pelo menos dois componentes, salvo `/tmp` (raiz temporária da custódia) e caminhos que terminam em `.git` (os `lstat` da custódia da chave). No
+ * `close-key`, a leitura ampla continua limite declarado até a W5 (as pastas acima dos recibos), mas `/` e `*` são recusados também lá.
+ */
+export async function artifactGrantsRefusal(input: { readonly subcommand: 'sign' | 'close-key'; readonly sealsDir: string; readonly execArgv: readonly string[]; readonly execBlock: ExecBlockReader; readonly realpath: (target: string) => Promise<string> }): Promise<SignRefusal | null> {
+  const original = await originalExec(input.execBlock);
+  if (original === null) return EXEC_BLOCK_UNREADABLE;
+  const grants = [...input.execArgv, ...original.options].flatMap((token) => {
+    const match = GRANT.exec(token);
+    return match ? [{ kind: match[1] as 'read' | 'write', value: match[2] as string }] : [];
+  });
+  if (grants.some((grant) => !isNarrowPath(grant.value))) return GRANT_SHAPE;
+  let root: string;
+  try {
+    root = await input.realpath(path.resolve(input.sealsDir));
+  } catch {
+    return GRANT_ROOT_UNPROVEN;
+  }
+  const writable = input.subcommand === 'sign' ? root : path.join(root, CLOSURES_SUBDIR);
+  if (grants.some((grant) => grant.kind === 'write' && !isInside(grant.value, writable))) return GRANT_WRITE_OUTSIDE;
+  if (input.subcommand === 'close-key') return null;
+  const shallow = (value: string): boolean => depthOf(value) < MIN_READ_DEPTH && !SHALLOW_READS_ALLOWED.has(value) && path.basename(value) !== GIT_NAME;
+  return grants.some((grant) => grant.kind === 'read' && shallow(grant.value)) ? GRANT_READ_SHALLOW : null;
 }
 
 /**

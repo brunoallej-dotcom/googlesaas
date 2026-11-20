@@ -1,13 +1,13 @@
 import type { BytesFsOps } from '../link-audit/fs-ops';
 import { nodeFsOps } from '../link-audit/node-fs-ops';
-import { parseCloseKeyArgs, parseSignArgs, runtimeRefusal, secretArgvRefusal, secretEnvRefusal, type CloseKeyArgs, type ExecBlockReader, type SignArgs } from './sign-args';
+import { artifactGrantsRefusal, parseCloseKeyArgs, parseSignArgs, runtimeRefusal, secretArgvRefusal, secretEnvRefusal, type CloseKeyArgs, type ExecBlockReader, type SignArgs } from './sign-args';
 import { sealDigest } from './sign-chain';
 import { runCloseKey, type CloseKeyDone, type CloseKeyResult } from './sign-closure';
 import type { SignRefusal } from './sign-core';
 import { defaultTempRoots, nodeKeyFileOps, openK1Key, publicKeyText, type KeyFileOps, type KeySource } from './sign-key';
 import { nodeCloseFsOps, type CloseFsOps } from './sign-receipts';
 import { runSign, type SignRunDeps, type SignRunResult } from './sign-run';
-import { artifactDigest, nodeExecBlock, nodeFsyncProbe, type FsyncProbeResult } from './sign-runtime';
+import { artifactDigestUnderCustody, nodeExecBlock, nodeFsyncProbe, type FsyncProbeResult } from './sign-runtime';
 import { openHiddenInput, terminalCloseConfirm, terminalConfirm, terminalPassphrase, type HiddenInput, type SignTerminal } from './sign-terminal';
 
 /*
@@ -167,7 +167,12 @@ const artifactLine = (sha256: string): string => `Artefato único: artifactSha25
 const ARTIFACT_UNREADABLE: SignRefusal = {
   ok: false,
   code: 'SIGN_ARTIFACT_UNREADABLE',
-  message: 'O artefato único não conseguiu ler os próprios bytes para o artifactSha256 (sob --permission, a linha do runbook dá --allow-fs-read à pasta do artefato). Nada foi lido, assinado nem gravado.',
+  message: 'O artefato único não conseguiu ler os próprios bytes para o artifactSha256 (sob --permission, a linha do runbook dá --allow-fs-read à pasta do artefato e a /proc/self/fd). Nada foi lido, assinado nem gravado.',
+};
+const ARTIFACT_UNSAFE: SignRefusal = {
+  ok: false,
+  code: 'SIGN_ARTIFACT_UNSAFE',
+  message: 'O artefato único está fora da custódia: tem de ser um arquivo comum sem permissão de escrita, do usuário que roda o comando ou do root, numa pasta sem escrita para grupo e outros, e não pode ser link nem ser trocado durante a conferência. Confira-o com sha256sum -c antes de rodar (runbook). Nada foi lido, assinado nem gravado.',
 };
 
 const NO_FSYNC: SignRefusal = {
@@ -177,6 +182,15 @@ const NO_FSYNC: SignRefusal = {
 };
 
 /**
+ * Revisão independente da W4.6 (3): no artefato, logo depois do analisador, os grants do modelo de permissões ficam limitados (escrita só em
+ * `--seals-dir`; sem `/`, `*` nem leitura rasa). Fora do artefato, nada a conferir.
+ */
+async function grantsRefusal(subcommand: 'sign' | 'close-key', sealsDir: string, deps: SignCliDeps): Promise<SignRefusal | null> {
+  if (deps.artifact === undefined) return null;
+  return artifactGrantsRefusal({ subcommand, sealsDir, execArgv: deps.execArgv ?? process.execArgv, execBlock: deps.execBlock ?? nodeExecBlock, realpath: (deps.keyFs ?? nodeKeyFileOps).realpath });
+}
+
+/**
  * W4.6 (decisão do manager): logo depois do analisador, antes de ler qualquer entrada, da confirmação, da custódia e da frase, sonda fsync na raiz de
  * `--seals-dir`. Só `blocked` recusa; `unprobed` (pasta inexistente, sem grant…) segue para as recusas próprias do fluxo. A sonda nunca grava.
  */
@@ -184,14 +198,12 @@ async function fsyncRefusal(sealsDir: string, deps: SignCliDeps): Promise<SignRe
   return (await (deps.fsyncProbe ?? nodeFsyncProbe)(sealsDir)) === 'blocked' ? NO_FSYNC : null;
 }
 
-/** W4.6: no artefato, o SHA-256 dos próprios bytes (falha ⇒ recusa); fora dele, `null`. */
+/** W4.6: no artefato, o SHA-256 dos próprios bytes pelo descritor, sob custódia (falha ⇒ recusa); fora dele, `null`. */
 async function artifactHash(deps: SignCliDeps): Promise<string | null | SignRefusal> {
   if (deps.artifact === undefined) return null;
-  try {
-    return await artifactDigest(deps.artifact.file);
-  } catch {
-    return ARTIFACT_UNREADABLE;
-  }
+  const digest = await artifactDigestUnderCustody(deps.artifact.file, { fs: deps.keyFs ?? nodeKeyFileOps, uid: deps.uid ?? process.getuid?.() });
+  if (digest.ok) return digest.sha256;
+  return digest.reason === 'UNSAFE' ? ARTIFACT_UNSAFE : ARTIFACT_UNREADABLE;
 }
 const SELFTEST_LINE = 'Autoteste (passo 14): o verificador v2 autenticou a cadeia com o manifesto novo antes da gravação (lista completa com estado, fechos da pasta, só v2).';
 
@@ -268,8 +280,8 @@ export async function runSignCli(tokens: readonly string[], out: Line, err: Line
     const args = parseSignArgs(tokens);
     if ('ok' in args) return refusalOut(args, json, out, err);
     if (args.keySource.kind === 'external') return refusalOut(KEY_SOURCE_UNSUPPORTED, args.json, out, err);
-    const noFsync = await fsyncRefusal(args.sealsDir, deps);
-    if (noFsync) return refusalOut(noFsync, args.json, out, err);
+    const narrow = (await grantsRefusal('sign', args.sealsDir, deps)) ?? (await fsyncRefusal(args.sealsDir, deps));
+    if (narrow) return refusalOut(narrow, args.json, out, err);
     const result = await signWithTerminal(args, out, err, now, deps, env);
     return result.ok ? successOut(result, args.json, out, err, artifactSha256) : refusalOut(result, args.json, out, err);
   } catch {
@@ -347,8 +359,8 @@ export async function runCloseKeyCli(tokens: readonly string[], out: Line, err: 
     const args = parseCloseKeyArgs(tokens);
     if ('ok' in args) return refusalOut(args, json, out, err, CLOSE_KEY_USAGE);
     if (args.keySource.kind === 'external') return refusalOut(KEY_SOURCE_UNSUPPORTED, args.json, out, err, CLOSE_KEY_USAGE);
-    const noFsync = await fsyncRefusal(args.sealsDir, deps);
-    if (noFsync) return refusalOut(noFsync, args.json, out, err, CLOSE_KEY_USAGE);
+    const narrow = (await grantsRefusal('close-key', args.sealsDir, deps)) ?? (await fsyncRefusal(args.sealsDir, deps));
+    if (narrow) return refusalOut(narrow, args.json, out, err, CLOSE_KEY_USAGE);
     const result = await closeWithTerminal(args, out, err, now, deps, env);
     return result.ok ? closeSuccessOut(result, args.json, out, err, artifactSha256) : refusalOut(result, args.json, out, err, CLOSE_KEY_USAGE);
   } catch {

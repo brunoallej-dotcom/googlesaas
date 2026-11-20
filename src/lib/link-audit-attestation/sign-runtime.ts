@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto';
 import fsPromises from 'node:fs/promises';
+import path from 'node:path';
+import { descriptorPath, readAll, type KeyFileOps } from './sign-key';
+import { isProtectedDir } from './sign-receipts';
 
 /*
  * P1 W4.6 — LEITURAS do runtime do `sign` e do `close-key` (confirmação da revisão da W4.5, critério ii; spec §5.5.1 item 6):
@@ -7,7 +10,10 @@ import fsPromises from 'node:fs/promises';
  *    do comando e pode limpar `process.env` e `process.execArgv`, mas não muda esse bloco: a barreira do runtime (`sign-args.ts`) o confere. Aqui só
  *    os BYTES são lidos; quem os interpreta tira só as opções do node ANTES do script e só os NOMES das variáveis (nenhum valor é decodificado);
  *  - os bytes do próprio ARTEFATO ÚNICO em execução, para o `artifactSha256` do recibo (passo 16). O hash esperado NÃO é embutido no artefato (seria
- *    autorreferência): a estação e o CI o comparam com o versionado em `docs/phase6-auditoria-link/p1-sign-artifact.sha256`.
+ *    autorreferência): a estação e o CI o comparam com o versionado em `docs/phase6-auditoria-link/p1-sign-artifact.sha256`. Revisão independente da
+ *    W4.6: o arquivo é aberto UMA vez (`O_NOFOLLOW`) pelas rotinas de custódia da chave, conferido no descritor (comum, sem escrita para ninguém, do
+ *    usuário ou do root), na pasta pela regra da W4.5 (sem escrita para grupo e outros, salvo sticky), e o hash sai desse descritor. O hash é uma
+ *    ANOTAÇÃO do próprio processo, não prova: o controle é o `sha256sum -c` da linha do runbook, antes da execução, sobre o arquivo sob custódia.
  * Só LEITURA, por UM descritor aberto sem seguir link no último componente e sem travar em FIFO, com teto. Sob `node --permission`, cada caminho
  * precisa de `--allow-fs-read` (o runbook fixa a linha); sem ele a leitura falha e quem chama recusa (falha fechada).
  *  - a SONDAGEM antecipada de fsync (decisão do manager na W4.6): desde o Node 24.22.0 o modelo de permissões bloqueia `fsync`/`fdatasync`
@@ -86,9 +92,42 @@ export async function nodeFsyncProbe(dir: string): Promise<FsyncProbeResult> {
   }
 }
 
-/** SHA-256 (hex minúsculo) dos bytes do arquivo do artefato em execução. Falha de leitura ⇒ lança (quem chama recusa, sem repassar o erro). */
-export async function artifactDigest(file: string): Promise<string> {
-  const bytes = await readBounded(file, MAX_ARTIFACT_BYTES);
-  if (bytes.length === 0) throw readFailure('EEMPTY', 'artefato vazio');
-  return createHash('sha256').update(bytes).digest('hex');
+const NO_WRITE_BITS = 0o222;
+const ROOT_UID = 0;
+export type ArtifactDigest = { readonly ok: true; readonly sha256: string } | { readonly ok: false; readonly reason: 'UNREADABLE' | 'UNSAFE' };
+const UNSAFE: ArtifactDigest = { ok: false, reason: 'UNSAFE' };
+const UNREADABLE: ArtifactDigest = { ok: false, reason: 'UNREADABLE' };
+
+/**
+ * SHA-256 do artefato pelo DESCRITOR, sob custódia (revisão independente da W4.6): abre UMA vez (`KeyFileOps.openKeyFile`: `O_NOFOLLOW`, sem travar
+ * em FIFO), confere no `fstat` (arquivo comum, nenhum bit de escrita, dono = `uid` ou root, tamanho até o teto), resolve o caminho real do descritor
+ * (`/proc/self/fd`), confere a pasta dele (`isProtectedDir`), lê tudo pelo MESMO descritor e confere que o caminho do descritor não mudou. Link,
+ * permissão, dono, pasta, caminho apagado ou trocado ⇒ `UNSAFE`; falha de leitura ⇒ `UNREADABLE`. As pastas acima da pasta do artefato ficam com o
+ * runbook (sob `--permission` elas estão fora dos grants, que a W4.6 limita). Nunca lança.
+ */
+export async function artifactDigestUnderCustody(file: string, deps: { readonly fs: KeyFileOps; readonly uid: number | undefined }): Promise<ArtifactDigest> {
+  let opened: Awaited<ReturnType<KeyFileOps['openKeyFile']>>;
+  try {
+    opened = await deps.fs.openKeyFile(file);
+  } catch (error) {
+    return codeOf(error) === 'ELOOP' ? UNSAFE : UNREADABLE;
+  }
+  try {
+    const info = await opened.stat();
+    if (!info.isFile() || (info.mode & NO_WRITE_BITS) !== 0 || deps.uid === undefined || (info.uid !== deps.uid && info.uid !== ROOT_UID)) return UNSAFE;
+    if (info.size <= 0 || info.size > MAX_ARTIFACT_BYTES) return UNREADABLE;
+    const real = await descriptorPath(opened);
+    if (real === null || !isProtectedDir(await deps.fs.lstat(path.dirname(real)))) return UNSAFE;
+    // `size + 1`: um byte a mais denuncia crescimento depois do fstat
+    const buffer = Buffer.alloc(info.size + 1);
+    const length = await readAll(opened, buffer);
+    if (length !== info.size) return UNREADABLE;
+    if ((await descriptorPath(opened)) !== real) return UNSAFE;
+    return { ok: true, sha256: createHash('sha256').update(buffer.subarray(0, length)).digest('hex') };
+  } catch {
+    return UNSAFE;
+  } finally {
+    // fechar o descritor só de leitura que falha não muda o resultado já conferido
+    await opened.close().catch(() => undefined);
+  }
 }
