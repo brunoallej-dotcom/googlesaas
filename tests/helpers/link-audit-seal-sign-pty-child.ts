@@ -1,4 +1,5 @@
 import { runSealCli } from '../../scripts/link-audit-seal';
+import { nodeExecBlock } from '../../src/lib/link-audit-attestation/sign-runtime';
 
 /*
  * FILHO do teste em PSEUDO-TERMINAL da W4.4 (`link-audit-seal-sign-pty.test.ts`): roda o `sign` com o terminal, o ambiente e os relatórios de
@@ -14,7 +15,11 @@ interface Payload {
 }
 const payload = JSON.parse(process.argv[2] ?? '{}') as Payload;
 
-runSealCli(['sign', ...payload.argv], (line) => console.log(line), (line) => console.error(line), () => new Date(payload.now), { sign: { tempRoots: payload.tempRoots, execArgv: [] } }).then(
+// W4.6: a linha ORIGINAL deste filho tem o carregador dos TESTES (`--require tests/register-typescript.cjs`), que a barreira recusaria; o ambiente
+// ORIGINAL é o real (/proc/self/environ: PATH, HOME, TMPDIR e LANG que o pai passou ao `script`)
+const execBlock = { cmdline: async () => Buffer.from([process.execPath, 'scripts/link-audit-seal.ts', 'sign', ''].join('\0'), 'utf8'), environ: nodeExecBlock.environ };
+
+runSealCli(['sign', ...payload.argv], (line) => console.log(line), (line) => console.error(line), () => new Date(payload.now), { sign: { tempRoots: payload.tempRoots, execArgv: [], execBlock } }).then(
   (code) => {
     console.error(`MODO_BRUTO_NO_FIM=${String(process.stdin.isRaw)}`);
     process.exitCode = code;

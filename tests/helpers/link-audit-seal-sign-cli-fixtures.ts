@@ -5,6 +5,7 @@ import path from 'node:path';
 import { runSealCli } from '../../scripts/link-audit-seal';
 import type { BytesFsOps } from '../../src/lib/link-audit/snapshot-store';
 import type { CandidatePackage } from '../../src/lib/link-audit-attestation';
+import type { ExecBlockReader } from '../../src/lib/link-audit-attestation/sign-args';
 import type { KeyFileOps } from '../../src/lib/link-audit-attestation/sign-key';
 import type { CloseFsOps } from '../../src/lib/link-audit-attestation/sign-receipts';
 import { tmpDir } from './link-audit-evidence-fixtures';
@@ -315,11 +316,29 @@ export interface SignCliOptions {
   readonly keyFs?: KeyFileOps;
   /** W4.5: `process.execArgv` visto pelo comando. Padrão: nenhum (o do processo de teste é o carregador dos TESTES, não o do produto). */
   readonly execArgv?: readonly string[];
+  /**
+   * W4.6: o bloco ORIGINAL do exec (`/proc/self/cmdline`, `/proc/self/environ`) visto pela barreira. Padrão: o de um processo que começou
+   * EXATAMENTE com `execArgv` e `env` acima (o do processo de teste tem o carregador dos TESTES e o NODE_TEST_CONTEXT do `node --test`).
+   */
+  readonly execBlock?: ExecBlockReader;
   /** W4.5: o disco do `close-key` (pasta de recibos por descritor) e o usuário dono esperado. */
   readonly closeFs?: CloseFsOps;
   readonly uid?: number;
   readonly now?: Date;
   readonly out?: (line: string) => void;
+}
+
+const nulRecords = (records: readonly string[]): Uint8Array => Buffer.from(records.map((record) => `${record}\0`).join(''), 'utf8');
+
+/**
+ * W4.6: o bloco original de um processo `node <execArgv> scripts/link-audit-seal.ts <subcomando> <argv>` com as MESMAS variáveis de `env` (só os nomes:
+ * o valor de cada uma é fictício, para a fixture também não ler valores; o teste da IA-15 vigia isso com um Proxy).
+ */
+export function faithfulExecBlock(execArgv: readonly string[], env: Readonly<Record<string, string | undefined>>, command: readonly string[]): ExecBlockReader {
+  return {
+    cmdline: async () => nulRecords([process.execPath, ...execArgv, path.join(ROOT, 'scripts', 'link-audit-seal.ts'), ...command]),
+    environ: async () => nulRecords(Object.keys(env).map((name) => `${name}=valor-ficticio`)),
+  };
 }
 
 /** `npm run link-audit:seal -- sign …` em processo, com terminal falso, ambiente vazio e relatórios de diagnóstico falsos (todos ligados). */
@@ -335,14 +354,17 @@ export async function runSealSubcommand(subcommand: 'sign' | 'close-key', argv: 
   const screen = (): string => [...err, ...out].join('\n');
   const terminal = options.terminal ?? new FakeTerminal(options.typed ?? [], screen);
   const report = { reportOnFatalError: true, reportOnSignal: true, reportOnUncaughtException: true };
+  const env = options.env ?? {};
+  const execArgv = options.execArgv ?? [];
   const sign = {
     terminal,
-    env: options.env ?? {},
+    env,
     report,
     ...(options.defaultTempRoots ? {} : { tempRoots: options.tempRoots ?? [] }),
     ...(options.fs ? { fs: options.fs } : {}),
     ...(options.keyFs ? { keyFs: options.keyFs } : {}),
-    execArgv: options.execArgv ?? [],
+    execArgv,
+    execBlock: options.execBlock ?? faithfulExecBlock(execArgv, env, [subcommand, ...argv]),
     ...(options.closeFs ? { closeFs: options.closeFs } : {}),
     ...(options.uid !== undefined ? { uid: options.uid } : {}),
   };

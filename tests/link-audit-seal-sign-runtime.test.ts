@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { nodeFsOps, type BytesFsOps } from '../src/lib/link-audit/snapshot-store';
-import { runtimeRefusal } from '../src/lib/link-audit-attestation/sign-args';
+import { runtimeRefusal, type ExecBlockReader } from '../src/lib/link-audit-attestation/sign-args';
 import { nodeKeyFileOps, type KeyFileOps } from '../src/lib/link-audit-attestation/sign-key';
 import { registerCleanup, tmpDir } from './helpers/link-audit-evidence-fixtures';
 import { cliWorld, runSealSubcommand, type SignCliRun } from './helpers/link-audit-seal-sign-cli-fixtures';
@@ -27,7 +27,16 @@ const LOADER_URL = `file://${fs.realpathSync(path.join(ROOT, 'node_modules', 'ts
 /** O que o `tsx` (o `npm run link-audit:seal`) põe em `process.execArgv`, conferido num processo real: o par do carregador, nesta ordem. */
 const TSX_ARGV = ['--require', PREFLIGHT, '--import', LOADER_URL];
 const realpath = (target: string): Promise<string> => fs.promises.realpath(target);
-const check = (execArgv: readonly string[], envNames: readonly string[] = []) => runtimeRefusal({ execArgv, envNames, projectRoot: ROOT, realpath });
+const NUL = '\0';
+/** O bloco ORIGINAL do exec como o Linux o guarda (`/proc/self/cmdline` e `/proc/self/environ`): registros terminados por NUL. */
+const nulBlock = (records: readonly string[]): Uint8Array => Buffer.from(records.map((record) => `${record}${NUL}`).join(''), 'utf8');
+function execBlockOf(cmdline: readonly string[], environ: readonly string[]): ExecBlockReader {
+  return { cmdline: async () => nulBlock(cmdline), environ: async () => nulBlock(environ) };
+}
+/** O bloco de um processo que começou EXATAMENTE com este execArgv e este ambiente (nada escondido por pré-carga). */
+const faithful = (execArgv: readonly string[], envNames: readonly string[]): ExecBlockReader => execBlockOf([process.execPath, ...execArgv, SCRIPT, 'sign', '--json'], envNames.map((name) => `${name}=valor-ficticio`));
+const check = (execArgv: readonly string[], envNames: readonly string[] = [], execBlock: ExecBlockReader = faithful(execArgv, envNames), artifact = false) =>
+  runtimeRefusal({ execArgv, envNames, projectRoot: ROOT, realpath, execBlock, artifact });
 
 /* =============================================================================================================== a barreira, por injeção */
 
@@ -97,6 +106,75 @@ test('T-008: NODE_OPTIONS (mesmo vazio: só os NOMES do ambiente são olhados) e
   assert.equal(await check([], ['NODE_ENV', 'NODE', 'node_options_doc']), null, 'só NODE_* em maiúsculas é configuração do Node');
 });
 
+/* =============================================================================================================== W4.6: o bloco ORIGINAL do exec */
+
+test('W4.6 (ii): opção do node na linha ORIGINAL (/proc/self/cmdline) que uma pré-carga tirou de execArgv ⇒ SIGN_RUNTIME_UNSAFE; só as opções ANTES do script contam (o que vem depois é argumento do comando)', async () => {
+  const sentinela = 'VALOR-SENTINELA-CMDLINE';
+  for (const hidden of [['--heapsnapshot-signal=SIGUSR2'], ['--inspect'], ['--require', `/tmp/${sentinela}.cjs`], ['--expose-gc'], ['--'], ['-'], ['--permission-audit']]) {
+    const refusal = await check([], [], execBlockOf([process.execPath, ...hidden, SCRIPT, 'sign'], []));
+    assert.equal(refusal?.code, 'SIGN_RUNTIME_UNSAFE', JSON.stringify(hidden));
+    assert.ok(!refusal?.message.includes(sentinela), 'valor nunca ecoado');
+  }
+  // depois do script, tudo é argumento do comando (o analisador do sign o julga), inclusive algo com cara de opção do node
+  assert.equal(await check([], [], execBlockOf([process.execPath, SCRIPT, 'sign', '--expose-gc', '--inspect', `--x=${sentinela}`], [])), null);
+  assert.equal(await check(TSX_ARGV, [], execBlockOf([process.execPath, ...TSX_ARGV, SCRIPT, 'close-key'], [])), null, 'o carregador do projeto na linha original passa');
+  const fake = await check(TSX_ARGV, [], execBlockOf([process.execPath, '--require', '/tmp/preflight.cjs', '--import', 'file:///tmp/loader.mjs', SCRIPT], []));
+  assert.equal(fake?.code, 'SIGN_RUNTIME_UNSAFE', 'carregador falso na linha original');
+});
+
+test('W4.6 (ii): NODE_OPTIONS (ou outro NODE_*) no ambiente ORIGINAL (/proc/self/environ) que uma pré-carga apagou de process.env ⇒ SIGN_RUNTIME_UNSAFE, citando só o NOME; nome de segredo no ambiente original ⇒ SECRET_VIA_ENV_FORBIDDEN; valores nunca ecoados', async () => {
+  const sentinela = 'VALOR-SENTINELA-ENVIRON';
+  for (const name of ['NODE_OPTIONS', 'NODE_DEBUG', 'NODE_V8_COVERAGE']) {
+    const refusal = await check([], ['PATH'], execBlockOf([process.execPath, SCRIPT, 'sign'], ['PATH=/usr/bin', `${name}=--require /tmp/${sentinela}.cjs`]));
+    assert.equal(refusal?.code, 'SIGN_RUNTIME_UNSAFE', name);
+    assert.ok(refusal?.message.includes(name) && !refusal.message.includes(sentinela), `${name}: o nome, nunca o valor`);
+  }
+  const secret = await check([], [], execBlockOf([process.execPath, SCRIPT, 'sign'], [`GITHUB_TOKEN=${sentinela}`]));
+  assert.equal(secret?.code, 'SECRET_VIA_ENV_FORBIDDEN');
+  assert.ok(secret?.message.includes('GITHUB_TOKEN') && !secret.message.includes(sentinela));
+  // registro sem "=" conta inteiro como nome; valor com bytes que não são UTF-8 nem é decodificado
+  const raw = Buffer.concat([Buffer.from('PATH=/usr/bin\0NODE_OPTIONS=', 'latin1'), Buffer.from([0xff, 0xfe, 0x00])]);
+  const binary = await check([], [], { cmdline: async () => nulBlock([process.execPath, SCRIPT]), environ: async () => raw });
+  assert.equal(binary?.code, 'SIGN_RUNTIME_UNSAFE');
+  assert.equal(await check([], ['NODE_ENV'], execBlockOf([process.execPath, SCRIPT, 'sign'], ['NODE_ENV=production', 'NODE=/usr/bin/node', 'PATH=/usr/bin'])), null, 'NODE_ENV e NODE continuam passando');
+});
+
+test('W4.6 (ii): bloco original ilegível (fora do Linux, ou sem --allow-fs-read para /proc/self/cmdline e /proc/self/environ sob --permission), vazio ou sem o nome do programa ⇒ SIGN_RUNTIME_UNSAFE (recusa fechada), sem o objeto de erro', async () => {
+  const failing = (which: 'cmdline' | 'environ'): ExecBlockReader => ({
+    cmdline: async () => (which === 'cmdline' ? Promise.reject(Object.assign(new Error('falha simulada /proc'), { code: 'ERR_ACCESS_DENIED' })) : nulBlock([process.execPath, SCRIPT])),
+    environ: async () => (which === 'environ' ? Promise.reject(Object.assign(new Error('falha simulada /proc'), { code: 'ENOENT' })) : nulBlock([])),
+  });
+  for (const reader of [failing('cmdline'), failing('environ'), { cmdline: async () => new Uint8Array(0), environ: async () => new Uint8Array(0) }, { cmdline: async () => nulBlock(['']), environ: async () => new Uint8Array(0) }]) {
+    const refusal = await check([], [], reader);
+    assert.equal(refusal?.code, 'SIGN_RUNTIME_UNSAFE');
+    assert.match(refusal?.message ?? '', /\/proc\/self/);
+    assert.ok(!refusal?.message.includes('falha simulada'));
+  }
+});
+
+test('W4.6 artefato único: sem o carregador do tsx; exige --permission (ou --experimental-permission) e --disable-sigusr1 em execArgv E na linha original, e o ambiente VAZIO (env -i) no original e em process.env', async () => {
+  const ARTIFACT = '/srv/estacao/artefato/link-audit-sign.cjs';
+  const line = ['--disable-sigusr1', '--permission', '--allow-fs-read=/srv/estacao/artefato', '--allow-fs-write=/srv/estacao/manifestos'];
+  const artifact = (execArgv: readonly string[], cmdlineOptions: readonly string[] = execArgv, environ: readonly string[] = [], envNames: readonly string[] = []) => check(execArgv, envNames, execBlockOf(['/usr/bin/node', ...cmdlineOptions, ARTIFACT, 'sign', '--json'], environ), true);
+  assert.equal(await artifact(line), null, 'a linha do runbook passa');
+  assert.equal(await artifact(['--experimental-permission', '--disable-sigusr1', '--allow-fs-read=/srv/estacao/artefato']), null, 'o nome antigo do modelo de permissões');
+  const refused: ReadonlyArray<readonly [string, Promise<Awaited<ReturnType<typeof check>>>, RegExp]> = [
+    ['sem --permission', artifact(['--disable-sigusr1', '--allow-fs-read=/srv/a']), /--permission/],
+    ['sem --disable-sigusr1', artifact(['--permission', '--allow-fs-read=/srv/a']), /--disable-sigusr1/],
+    ['--permission só em execArgv (a linha original não tem)', artifact(line, ['--disable-sigusr1', '--allow-fs-read=/srv/a']), /--permission/],
+    ['carregador do tsx', artifact([...line, ...TSX_ARGV]), /opções além/],
+    ['ambiente original não vazio', artifact(line, line, ['PATH=/usr/bin', 'LANG=C.UTF-8']), /env -i/],
+    ['process.env não vazio', artifact(line, line, [], ['HOME']), /env -i/],
+  ];
+  for (const [label, pending, message] of refused) {
+    const refusal = await pending;
+    assert.equal(refusal?.code, 'SIGN_RUNTIME_UNSAFE', label);
+    assert.match(refusal?.message ?? '', message, label);
+  }
+  const named = await artifact(line, line, ['PATH=/usr/bin', 'LANG=C.UTF-8', 'TERM=xterm', 'SHELL=/bin/sh']);
+  assert.ok(named?.message.includes('PATH') && !named.message.includes('/usr/bin'), 'cita até 3 nomes, nunca valores');
+});
+
 /* =============================================================================================================== pelo CLI (sign e close-key) */
 
 type Call = { readonly op: string };
@@ -141,6 +219,17 @@ test('T-008 pelo CLI: sign e close-key com --heapsnapshot-signal em execArgv ou 
   }
 });
 
+test('W4.6 (ii) pelo CLI: o padrão do bloco original é /proc/self; injetado com NODE_OPTIONS só no ambiente ORIGINAL (process.env limpo) ⇒ SIGN_RUNTIME_UNSAFE antes de ler qualquer arquivo, do terminal e da chave', async () => {
+  const world = cliWorld();
+  for (const subcommand of ['sign', 'close-key'] as const) {
+    const data = spyOps<BytesFsOps>(nodeFsOps);
+    const run = await runSealSubcommand(subcommand, world.argv(), { typed: world.typed(), fs: data.ops, execBlock: execBlockOf([process.execPath, SCRIPT, subcommand], ['NODE_OPTIONS=--heapsnapshot-signal=SIGUSR2']) });
+    refusedRuntime(run, `${subcommand}: NODE_OPTIONS só no ambiente original`);
+    assert.equal(data.calls.length, 0, `${subcommand}: nada lido`);
+    assert.ok(run.stderr.includes('NODE_OPTIONS') && !run.stderr.includes('heapsnapshot'));
+  }
+});
+
 /* =============================================================================================================== processo REAL (tsx) */
 
 const hasTsx = fs.existsSync(TSX);
@@ -160,4 +249,18 @@ test('T-008 em processo REAL: pelo tsx (o que o npm run link-audit:seal usa), o 
   const extra = realRun(['--expose-gc', SCRIPT, 'sign'], {});
   assert.equal(extra.status, 3, extra.stderr);
   assert.match(extra.stderr, /Código: SIGN_RUNTIME_UNSAFE/);
+});
+
+test('W4.6 (ii) em processo REAL: uma pré-carga (NODE_OPTIONS=--require …) que apaga NODE_OPTIONS de process.env antes do comando não engana a barreira: o ambiente ORIGINAL (/proc/self/environ) ainda o tem ⇒ SIGN_RUNTIME_UNSAFE (código 3)', { skip: !hasTsx && 'tsx ausente' }, () => {
+  const dir = tmpDir('lasr-preload-');
+  const preload = path.join(dir, 'limpa-ambiente.cjs');
+  fs.writeFileSync(preload, "delete process.env.NODE_OPTIONS;\nprocess.stderr.write('PRELOAD_RODOU\\n');\n");
+  // exatamente o que o tsx põe no processo filho (o par do carregador), mais a pré-carga por NODE_OPTIONS
+  const result = spawnSync(process.execPath, [...TSX_ARGV, SCRIPT, 'sign'], { cwd: ROOT, env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', NODE_OPTIONS: `--require ${preload}` } as unknown as NodeJS.ProcessEnv, encoding: 'utf8', timeout: 60_000 });
+  assert.match(result.stderr, /PRELOAD_RODOU/, 'a pré-carga rodou antes do comando');
+  assert.equal(result.status, 3, result.stderr);
+  assert.match(result.stderr, /Código: SIGN_RUNTIME_UNSAFE/);
+  assert.ok(result.stderr.includes('NODE_OPTIONS') && !result.stderr.includes(preload), 'cita o nome, nunca o valor');
+  const clean = spawnSync(process.execPath, [...TSX_ARGV, SCRIPT, 'sign'], { cwd: ROOT, env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '' } as unknown as NodeJS.ProcessEnv, encoding: 'utf8', timeout: 60_000 });
+  assert.equal(clean.status, 1, `sem a pré-carga, o mesmo processo passa pela barreira (USAGE): ${clean.stderr}`);
 });
