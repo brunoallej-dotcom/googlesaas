@@ -437,6 +437,37 @@ const GRANT_SHAPE = grantsRefusal('cada --allow-fs-read/--allow-fs-write é um c
 const GRANT_WRITE_OUTSIDE = grantsRefusal('--allow-fs-write só na raiz real de --seals-dir ou dentro dela (no close-key, só em <seals-dir>/_closures)');
 const GRANT_READ_SHALLOW = grantsRefusal('leitura com pelo menos dois componentes (/a/b), salvo /tmp e os .git que a custódia da chave consulta');
 const GRANT_ROOT_UNPROVEN = grantsRefusal('o caminho real de --seals-dir não pôde ser resolvido para conferir os grants de escrita');
+const GRANT_NOT_REAL = grantsRefusal('cada caminho concedido tem de existir e ser o próprio caminho real (nenhum componente é link simbólico), salvo /proc/self/*, as raízes temporárias e os .git da custódia, que podem não existir');
+/**
+ * Confirmação da revisão da W4.6 (3): caminhos concedidos LITERALMENTE, sem conferir o caminho real. `/proc/self/*` são links do próprio kernel (o
+ * Node confere o texto do caminho); `/tmp`, `/var/tmp` e `/dev/shm` são as raízes que a custódia resolve (podem faltar ou ser link numa
+ * distribuição), concedidas só para leitura.
+ */
+const LITERAL_READ_GRANTS: ReadonlySet<string> = new Set(['/proc/self/cmdline', '/proc/self/environ', '/proc/self/fd', '/tmp', '/var/tmp', '/dev/shm']);
+const ABSENT = 'ENOENT';
+const errnoOf = (error: unknown): unknown => (typeof error === 'object' && error !== null ? (error as { readonly code?: unknown }).code : undefined);
+
+/**
+ * O grant é o próprio caminho real? Existe e `realpath` devolve o mesmo texto (nenhum componente é link). Caminho que não existe só passa (falha
+ * fechada para todo o resto): na leitura, um `.git` da custódia (ela consulta a AUSÊNCIA); na escrita, a pasta que o `sign` ainda vai criar, desde que
+ * a pasta existente mais próxima acima seja o próprio caminho real.
+ */
+async function isOwnRealPath(grant: { readonly kind: 'read' | 'write'; readonly value: string }, realpath: (target: string) => Promise<string>): Promise<boolean> {
+  if (grant.kind === 'read' && LITERAL_READ_GRANTS.has(grant.value)) return true;
+  try {
+    return (await realpath(grant.value)) === grant.value;
+  } catch (error) {
+    if (errnoOf(error) !== ABSENT) return false;
+    if (grant.kind === 'read') return path.basename(grant.value) === GIT_NAME;
+  }
+  for (let dir = path.dirname(grant.value); ; dir = path.dirname(dir)) {
+    try {
+      return (await realpath(dir)) === dir;
+    } catch (error) {
+      if (errnoOf(error) !== ABSENT || path.dirname(dir) === dir) return false;
+    }
+  }
+}
 
 /** Um grant aceitável na forma: absoluto, normalizado (sem `..`, sem barra final), sem vírgula (lista) e sem `*` (curinga), diferente de `/`. */
 const isNarrowPath = (value: string): boolean => value.length > 1 && path.isAbsolute(value) && path.resolve(value) === value && !/[,*\0]/.test(value);
@@ -444,7 +475,8 @@ const depthOf = (value: string): number => value.split('/').filter(Boolean).leng
 
 /**
  * Revisão independente da W4.6 (3), só no ARTEFATO, depois do analisador: os grants de `execArgv` E da linha original do exec. Critério simples que
- * falha fechado: forma estreita (acima); escrita só na raiz REAL de `--seals-dir` ou dentro dela (`close-key`: só `_closures`); leitura no `sign` com
+ * falha fechado: forma estreita (acima); cada grant é o próprio caminho real (`isOwnRealPath`, confirmação da revisão); escrita só na raiz REAL de
+ * `--seals-dir` ou dentro dela (`close-key`: só `_closures`); leitura no `sign` com
  * pelo menos dois componentes, salvo `/tmp` (raiz temporária da custódia) e caminhos que terminam em `.git` (os `lstat` da custódia da chave). No
  * `close-key`, a leitura ampla continua limite declarado até a W5 (as pastas acima dos recibos), mas `/` e `*` são recusados também lá.
  */
@@ -462,6 +494,8 @@ export async function artifactGrantsRefusal(input: { readonly subcommand: 'sign'
   } catch {
     return GRANT_ROOT_UNPROVEN;
   }
+  for (const grant of grants) if (!(await isOwnRealPath(grant, input.realpath))) return GRANT_NOT_REAL;
+  // a comparação é entre caminhos REAIS: cada grant já é o próprio caminho real, e a raiz vem do realpath de --seals-dir
   const writable = input.subcommand === 'sign' ? root : path.join(root, CLOSURES_SUBDIR);
   if (grants.some((grant) => grant.kind === 'write' && !isInside(grant.value, writable))) return GRANT_WRITE_OUTSIDE;
   if (input.subcommand === 'close-key') return null;

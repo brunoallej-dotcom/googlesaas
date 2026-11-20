@@ -11,6 +11,8 @@
  * runtime exige essa linha, e o recibo leva o SHA-256 dos bytes deste arquivo em execução (o esperado NÃO é embutido: seria autorreferência). Pelo
  * código-fonte (testes, `tsx`), é o mesmo comando do `npm run link-audit:seal`, com `artifactSha256` nulo.
  */
+// PRIMEIRO import: desliga o JIT do zod antes de qualquer esquema do `sign` ser construído (confirmação da revisão da W4.6)
+import './link-audit-sign-artifact-zod';
 import path from 'node:path';
 import { CLOSE_KEY_USAGE, runCloseKeyCli, runSignCli, SIGN_USAGE, type SignCliDeps } from '../src/lib/link-audit-attestation/sign-cli';
 

@@ -11,7 +11,7 @@
  *    ou com nome calculado), e não há outra forma de carregar código: `getBuiltinModule`, `process.binding`, `_linkedBinding`, `createRequire`,
  *    `module.constructor`, `_load`, `mainModule`, `process.dlopen`, `import(`, `import.meta`, `eval` nem `Function` (revisão independente da W4.6: no
  *    Node 22 o modelo de permissões não restringe rede, e esta guarda é o controle). O zod embutido tem quatro usos exatos de `Function`, cada um
- *    aceito uma única vez (`ZOD_FUNCTION_EXCEPTIONS`);
+ *    aceito uma única vez, pela função inteira, com texto exato e SHA-256 (`ZOD_FUNCTION_EXCEPTIONS`);
  *  - nenhum caminho absoluto da máquina do build no arquivo (build reprodutível em qualquer pasta).
  * Imprime `<sha256>  link-audit-sign.cjs` (formato do `sha256sum`). `--check` compara com o hash versionado em
  * `docs/phase6-auditoria-link/p1-sign-artifact.sha256` e falha se diferir. Sem rede: o esbuild roda localmente.
@@ -44,18 +44,26 @@ const FORBIDDEN_LOADERS: readonly RegExp[] = [
   /\bFunction\b/,
 ];
 /**
- * Os ÚNICOS usos de `Function` aceitos, todos do zod embutido, cada um exatamente uma vez (o teste confere a contagem; uma versão nova do zod que
- * mude isso faz o build falhar e exige revisão):
- *  1. `util.allowsEval`: testa se o runtime permite gerar código (`new F("")`), para escolher o caminho sem JIT quando não permite;
- *  2. `Doc.compile` (`core/doc.js`): o JIT dos validadores de objeto do zod (gera a checagem a partir do próprio esquema, não de dado externo);
- *  3. `z.compile` (`core/compile.js`): o compilador de esquema do zod, no mesmo molde (o `sign` não o chama; vem com o namespace `z`);
+ * Os ÚNICOS usos de `Function` aceitos, todos do zod embutido. Cada exceção fixa a função (ou o trecho) INTEIRA, do começo ao fim, pelo texto exato
+ * da saída e pelo SHA-256 dele (confirmação da revisão da W4.6): qualquer caractere diferente, inclusive um uso a mais do apelido `F`, deixa o trecho
+ * sem exceção e a guarda recusa. Cada uma é retirada UMA vez (o teste confere que aparece exatamente uma vez). Uma versão nova do zod que mude esses
+ * trechos faz o build falhar e exige revisão. Em execução o JIT do zod fica desligado (`jitless`, na entrada do artefato): `Function` não é chamado.
+ *  1. `util.allowsEval`: testa se o runtime permite gerar código (com `jitless`, devolve `false` sem testar);
+ *  2. `Doc.compile` (`core/doc.js`): o JIT dos validadores de objeto (gera a checagem a partir do próprio esquema, não de dado externo);
+ *  3. `compileFn` (`core/compile.js`, o `z.compile`): o compilador de esquema, no mesmo molde (o `sign` não o chama; vem com o namespace `z`);
  *  4. uma mensagem de erro do conversor para JSON Schema (texto, não código).
  */
-export const ZOD_FUNCTION_EXCEPTIONS: readonly string[] = [
-  'try{const F=Function;new F("");return true}catch(_){return false}',
-  'compile(){const F=Function;',
-  'const F=Function;const factoryCode=',
-  '"Function types cannot be represented in JSON Schema"',
+export interface ZodFunctionException {
+  readonly name: string;
+  /** SHA-256 (hex) do texto exato, conferido antes de usar a exceção. */
+  readonly sha256: string;
+  readonly text: string;
+}
+export const ZOD_FUNCTION_EXCEPTIONS: readonly ZodFunctionException[] = [
+  { name: "util.allowsEval", sha256: 'fa7e25cf83d803b31a5a54bac35f61b4b40801e8681aae5841ab747f4826adc1', text: "var allowsEval=cached(()=>{if(globalConfig.jitless){return false}if(typeof navigator!==\"undefined\"&&navigator?.userAgent?.includes(\"Cloudflare\")){return false}try{const F=Function;new F(\"\");return true}catch(_){return false}});" },
+  { name: "Doc.compile", sha256: '376c0306f6ed21873e7c3d92ccac27654c762627d1cdfb0295b3be2ffc0c503b', text: "compile(){const F=Function;const content=this?.content??[``];const factory=new F(...Object.keys(this.closed),`return function (${this.args.join(\", \")}) {\n${content.join(\"\\n\")}\n};`);return factory(...Object.values(this.closed))}" },
+  { name: "z.compile (compileFn)", sha256: '8c9b3de26386ed6dd195497338074a654204def27b5fbc63c1d2aaffd106e05f', text: "function compileFn(schema,options){let recursive2=true;try{recursive2=isRecursiveSchema(schema)}catch{}if(recursive2){throw new ZodCompileUnsupportedError(\"a schema whose subtree contains a reference cycle\")}const ctx={constants:new Map,constantCounter:0,varCounter:0,definite:true};const doc=new Doc([\"input\"]);const outputAccessor=generateCheck(doc,ctx,schema,\"input\",!options?.assertOnly);doc.write(outputAccessor===null?`return true;`:`return ${outputAccessor};`);const constantNames=[\"INVALID\",...ctx.constants.keys()];const constantValues=[INVALID,...ctx.constants.values()];const code=doc.content.join(\"\\n\");const fullCode=options?.debug?constantNames.length>0?`// Constants: ${constantNames.join(\", \")}\n${code}`:code:\"\";const F=Function;const factoryCode=`return (input) => {\n${code}\n}`;let fn;try{const factory=new F(...constantNames,factoryCode);fn=factory(...constantValues)}catch(err){throw new ZodCompileUnsupportedError(`this schema (generated code failed to evaluate: ${err.message})`)}if(options?.debug){fn.code=fullCode}fn.definite=ctx.definite;return fn}" },
+  { name: "mensagem do JSON Schema", sha256: '7e8d10bad68261d6821a3ddf11bba04395bdb48b9a729d9c572af427d9631de0', text: "\"Function types cannot be represented in JSON Schema\"" },
 ];
 const REQUIRE_IDENTIFIER = /\brequire\b/g;
 const LITERAL_REQUIRE = /^require\s*\(\s*"([^"\\]+)"\s*\)/;
@@ -117,10 +125,13 @@ function checkMetafileImports(metafile: Metafile): string[] {
 
 /**
  * Pelo texto do arquivo final: toda ocorrência do identificador `require` é uma chamada direta com string literal da lista; nenhuma outra forma de
- * carregar ou gerar código (cada exceção do zod é retirada UMA vez antes da busca); nenhum caminho absoluto.
+ * carregar ou gerar código (cada exceção do zod, inteira e conferida pelo SHA-256, é retirada UMA vez antes da busca); nenhum caminho absoluto.
  */
 export function checkArtifactText(text: string, absolutePaths: readonly string[]): string[] {
-  const searched = ZOD_FUNCTION_EXCEPTIONS.reduce((current, exception) => current.replace(exception, ''), text);
+  for (const exception of ZOD_FUNCTION_EXCEPTIONS) {
+    if (createHash('sha256').update(exception.text, 'utf8').digest('hex') !== exception.sha256) throw new ArtifactBuildError('BUILD_FAILED', `exceção do zod "${exception.name}" com texto que não confere com o SHA-256 fixado`);
+  }
+  const searched = ZOD_FUNCTION_EXCEPTIONS.reduce((current, exception) => current.replace(exception.text, ''), text);
   for (const pattern of FORBIDDEN_LOADERS) if (pattern.test(searched)) throw new ArtifactBuildError('DYNAMIC_LOAD', `carregamento ou geração de código no artefato (${pattern.source})`);
   const required = new Set<string>();
   for (const match of text.matchAll(REQUIRE_IDENTIFIER)) {
