@@ -179,7 +179,7 @@ const ledgerOk = (l: unknown): boolean => {
   if (l.state === 'PROTECTED' && (l.reason !== null || l.head === null || l.receiptReissuable !== false)) return false;
   return true;
 };
-export const isLedgerActionPayload = (value: unknown): value is LedgerActionResult => isObj(value) && oneOf(value.action, ['ENROLL', 'RECOVER'] as const) && ledgerOk(value.ledger);
+export const isLedgerActionPayload = (value: unknown): value is LedgerActionResult => isObj(value) && oneOf(value.action, ['ENROLL', 'RECOVER', 'REISSUE_RECEIPT'] as const) && ledgerOk(value.ledger);
 const ledgerBlocks = (l: unknown): boolean => isObj(l) && l.state !== 'PROTECTED' && l.state !== 'NOT_REQUIRED';
 /** O que a PRÉVIA informa do livro (sem operação detalhada). */
 const previewLedgerOk = (l: unknown): boolean =>

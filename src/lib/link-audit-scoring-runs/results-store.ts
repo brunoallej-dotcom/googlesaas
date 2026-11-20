@@ -303,9 +303,37 @@ export interface RunLedgerHooks<F> {
   confirmed(sealed: ScoreRun): Promise<RunLedgerGate<F>>;
   /** Conclusão B/C (R1.4): `RUN_CONFIRMED` da operação aberta, pelo autor, depois do recibo (gravado na B, adotado na C) e do sync estrito. */
   conclude(sealed: ScoreRun): Promise<RunLedgerGate<F>>;
+  /** Passo 11b (R1.6): o livro desta auditoria comprovadamente durável AGORA (pasta e raiz), antes do 200 do reenvio de um resultado já confirmado. */
+  sync(): Promise<RunLedgerGate<F>>;
 }
 /** A falha é de durabilidade NÃO comprovada (fsync estrito): nunca sucesso, as bases travaram (R6-07, D-15). */
 export const isDurabilityUnknown = (failure: { readonly code: string; readonly issues: readonly string[] }): boolean => failure.code === 'STORAGE_FATAL' && failure.issues.includes(DURABILITY_UNPROVEN_MESSAGE);
+
+/**
+ * FSYNC ESTRITO das pastas de resultados e de recibos (D-15): `ops` observado (`watchDurability`), `sync` sincroniza AGORA os diretórios dados e `unproven` diz se alguma falha de
+ * fsync já foi vista nesta gravação. Falha ⇒ as DUAS bases travam (depois de um erro de fsync não se presume nada) e a resposta é "durabilidade desconhecida", nunca sucesso.
+ */
+function strictDurability(ops: FsOps, roots: readonly string[]): { readonly ops: FsOps; readonly sync: (dirs: readonly string[]) => Promise<StoreFailure | null>; readonly unproven: () => StoreFailure | null } {
+  const watch = watchDurability(ops);
+  const durabilityUnknown = (): StoreFailure => {
+    for (const root of roots) tripBase(root);
+    return fail('STORAGE_FATAL', DURABILITY_UNPROVEN_MESSAGE);
+  };
+  return {
+    ops: watch.ops,
+    async sync(dirs) {
+      for (const target of dirs) {
+        try {
+          await watch.ops.syncDirectory(target);
+        } catch {
+          /* registrado por `watchDurability`; a decisão vem logo abaixo */
+        }
+      }
+      return watch.failure() === null ? null : durabilityUnknown();
+    },
+    unproven: () => (watch.failure() !== null ? durabilityUnknown() : null),
+  };
+}
 
 /**
  * Acrescenta UM resultado, sob trava por auditoria, em dois tempos: (1) publica `sNNNN.json`; (2) grava o recibo `aNNNN.json` na pasta
@@ -326,27 +354,12 @@ export async function appendRun<F>(baseDir: unknown, auditId: unknown, build: (c
   const ledger = options.ledger;
   // D-15 (R1.3): com o livro, o fsync das pastas de resultados e de recibos é ESTRITO (um RUN_CONFIRMED durável sobre resultado ou recibo não durável viraria regressão falsa depois
   // de uma queda de energia). Sem o livro (6C isolada, só testes) continua o melhor-esforço de sempre (P-4).
-  const watch = ledger ? watchDurability(ops) : null;
-  const io = watch?.ops ?? ops;
+  const strict = ledger ? strictDurability(ops, [root, anchorLocated.value.root]) : null;
+  const io = strict?.ops ?? ops;
   const atomic = atomicOnly(io);
-  const durabilityUnknown = (): StoreFailure => {
-    tripBase(root);
-    tripBase(anchorLocated.value.root);
-    return fail('STORAGE_FATAL', DURABILITY_UNPROVEN_MESSAGE);
-  };
   /** Sincroniza AGORA os diretórios dados; `null` só se todos ficaram comprovadamente duráveis (e nenhuma falha anterior desta gravação foi vista). */
-  const syncStrict = async (dirs: readonly string[]): Promise<StoreFailure | null> => {
-    if (!watch) return null;
-    for (const target of dirs) {
-      try {
-        await watch.ops.syncDirectory(target);
-      } catch {
-        /* registrado por `watchDurability`; a decisão vem logo abaixo */
-      }
-    }
-    return watch.failure() === null ? null : durabilityUnknown();
-  };
-  const unproven = (): StoreFailure | null => (watch && watch.failure() !== null ? durabilityUnknown() : null);
+  const syncStrict = async (dirs: readonly string[]): Promise<StoreFailure | null> => (strict ? strict.sync(dirs) : null);
+  const unproven = (): StoreFailure | null => strict?.unproven() ?? null;
 
   return withLock(`results:${dir.toLowerCase()}`, async (): Promise<AppendResult<F>> => {
     for (let attempt = 0; attempt < WRITE_RETRIES; attempt++) {
@@ -400,7 +413,18 @@ export async function appendRun<F>(baseDir: unknown, auditId: unknown, build: (c
       if ('replayOf' in built) {
         const target = all[built.replayOf - 1];
         if (!target) return fail('INTERNAL', 'Reenvio aponta para um resultado que não existe (erro interno).');
-        if (target !== effective) return { ok: true, run: target, runs: settled, anchored: true, replayed: true, anchors: confirmedSummary(settled.length) };
+        if (target !== effective) {
+          if (ledger) {
+            // PASSO 11b (R1.6; §16.17.3): reenvio de um resultado JÁ confirmado pelo livro (o `build` só chega aqui depois de 1b). Nada é gravado, mas "existe" não prova "sobrevive a
+            // uma queda" (o fsync de alguma pasta pode ter falhado antes de um reinício): espelho de R7-04 (4) e (6), sincroniza ESTRITAMENTE as pastas da auditoria em resultados e
+            // em recibos, os diretórios-pai das duas e o livro (pasta e raiz) ANTES do 200. Falha ⇒ durabilidade desconhecida (bases travadas), nunca sucesso.
+            const durable = await syncStrict([dir, anchorLocated.value.dir, root, anchorLocated.value.root]);
+            if (durable) return durable;
+            const ledgerDurable = await ledger.sync();
+            if (ledgerDurable.kind !== 'OK') return ledgerDurable.kind === 'REFUSED' ? { ok: false, code: 'REJECTED', failure: ledgerDurable.failure } : fail('INTERNAL', 'Passo do livro inesperado no reenvio (erro interno).');
+          }
+          return { ok: true, run: target, runs: settled, anchored: true, replayed: true, anchors: confirmedSummary(settled.length) };
+        }
         // Reenvio da PENDENTE: antes de dar o RECIBO, exige a PROVA DE ORIGEM (o arquivo vive numa pasta que quem escreve nela controla
         // por inteiro: autor, conteúdo e selo são afirmações dele). Sem prova válida o recibo NÃO é dado e nada é gravado.
         const verdict = judgeOrigin(options.origin, 'RUN', target);
@@ -497,6 +521,72 @@ export async function appendRun<F>(baseDir: unknown, auditId: unknown, build: (c
       return { ok: true, run: checked.data, runs: [...confirmed, checked.data], anchored: true, replayed: false, anchors: confirmedSummary(seq) };
     }
     return fail('CONFLICT', 'Outro processo gravou continuamente nesta auditoria; nada foi sobrescrito. Tente novamente.');
+  });
+}
+
+/* ------------------------------------------------------------------ reemissão do recibo de resultado confirmado (R1.6; spec do livro §16.17.5) */
+
+/**
+ * Passos 1 e 1b da reemissão sobre a leitura R0 (estrutural: este armazenamento não conhece o livro). `OK` diz QUAL resultado (`seq`, que precisa ser a cauda de R0) e se o recibo
+ * dele falta (`MISSING`: é gravado, com o MESMO `headSha256`) ou já existe (`PRESENT`: é ADOTADO, nunca regravado); `RESTART` = R0 e a vista não concordam (relê).
+ */
+export type RunReissueGate<F> = { readonly kind: 'OK'; readonly seq: number; readonly receipt: 'MISSING' | 'PRESENT' } | { readonly kind: 'RESTART' } | { readonly kind: 'REFUSED'; readonly failure: F };
+export interface RunReissueHooks<F> {
+  context(read: { readonly runs: readonly ScoreRun[]; readonly pending: ScoreRun | null; readonly all: readonly ScoreRun[] }): Promise<RunReissueGate<F>>;
+  /** O livro desta auditoria comprovadamente durável AGORA (pasta e raiz), depois do recibo e das pastas. */
+  sync(): Promise<RunLedgerGate<F>>;
+}
+export type ReissueResult<F> = { readonly ok: true; readonly run: ScoreRun } | StoreFailure | { readonly ok: false; readonly code: 'REJECTED'; readonly failure: F };
+
+/**
+ * REEMISSÃO DO RECIBO de um resultado JÁ CONFIRMADO PELO LIVRO (R1.6; spec do livro §16.17.5, MAJOR-3, D-10, D-12): sob a MESMA trava da finalização, lê R0 (resultados e recibos),
+ * pede ao livro (passos 1 e 1b, pelo serviço) o resultado cujo recibo foi removido e regrava o recibo de MESMO `headSha256` (`confirmReceipt`; num EEXIST de outro operador, adota o
+ * idêntico) — ou adota o que já existe —; então sincroniza ESTRITAMENTE recibos, resultados, os diretórios-pai das duas e o livro. Nenhum resultado é escrito, nenhuma origem é
+ * exigida (o conteúdo do recibo é o `anchorRef` do `RUN_CONFIRMED`), nada é gravado no livro.
+ */
+export async function reissueRunReceipt<F>(baseDir: unknown, auditId: unknown, hooks: RunReissueHooks<F>, options: ReadOptions & { readonly now: () => string }): Promise<ReissueResult<F>> {
+  const ops = options.fs ?? nodeFsOps;
+  const projectRoot = options.projectRoot ?? process.cwd();
+  const located = locateRuns(baseDir, auditId, projectRoot);
+  if (!located.ok) return located;
+  const anchorLocated = locateRunAnchors(options.anchorDir, auditId, projectRoot);
+  if (!anchorLocated.ok) return anchorLocated;
+  const { root, dir } = located.value;
+  const anchors = anchorLocated.value;
+  const strict = strictDurability(ops, [root, anchors.root]);
+  return withLock(`results:${dir.toLowerCase()}`, async (): Promise<ReissueResult<F>> => {
+    for (let attempt = 0; attempt < WRITE_RETRIES; attempt++) {
+      if (isBaseTripped(root) || isBaseTripped(anchors.root)) return fail('STORAGE_FATAL', 'Erro fatal de disco anterior: todas as escritas estão interrompidas até reiniciar o servidor.');
+      const base = await dirStatus(ops, root);
+      if (base === 'MISSING') return fail('STORAGE_MISSING', 'O armazenamento de resultados não existe neste servidor.');
+      if (base !== 'EXISTS') return fail('UNSAFE_PATH', 'O armazenamento de resultados não é um diretório comum.');
+      // passo 0: R0
+      const read = await readVerified(ops, located.value, anchors, auditId as string);
+      if (!read.ok) return read;
+      const { runs, pending, all, anchorFiles } = read.value;
+      // passos 1 e 1b (o serviço confere R0 com a vista do livro)
+      const gate = await hooks.context({ runs, pending, all });
+      if (gate.kind === 'RESTART') continue;
+      if (gate.kind === 'REFUSED') return { ok: false, code: 'REJECTED', failure: gate.failure };
+      // defesa: o alvo é a CAUDA de R0, sem recibo (MISSING) ou com ele (PRESENT); qualquer outra forma é erro de montagem (nada gravado)
+      const run = all[gate.seq - 1];
+      if (!run || gate.seq !== all.length || (gate.receipt === 'MISSING') !== (pending === run) || anchorFiles.length !== (gate.receipt === 'MISSING' ? gate.seq - 1 : gate.seq)) {
+        return fail('INTERNAL', 'O resultado apontado pelo livro não é a cauda lida (erro interno): nada foi gravado.');
+      }
+      let receipt: StoreResult<RunAnchor>;
+      if (gate.receipt === 'MISSING') {
+        const anchorReady = await prepareReceiptDirectory(RUN_ANCHORS, ops, anchors);
+        if (anchorReady) return anchorReady;
+        receipt = await confirmReceipt(RUN_ANCHORS, strict.ops, anchors, run, anchorFiles[anchorFiles.length - 1], laterOf(options.now(), run.finalizedAt));
+      } else receipt = await adoptReceipt(RUN_ANCHORS, strict.ops, anchors, run);
+      if (!receipt.ok) return strict.unproven() ?? receipt;
+      const durable = await strict.sync([anchors.dir, dir, anchors.root, root]);
+      if (durable) return durable;
+      const ledgerDurable = await hooks.sync();
+      if (ledgerDurable.kind !== 'OK') return ledgerDurable.kind === 'REFUSED' ? { ok: false, code: 'REJECTED', failure: ledgerDurable.failure } : fail('INTERNAL', 'Passo do livro inesperado na reemissão (erro interno).');
+      return { ok: true, run };
+    }
+    return fail('CONFLICT', 'Os resultados mudaram a cada tentativa de reemitir o recibo; nada foi sobrescrito. Tente novamente.');
   });
 }
 

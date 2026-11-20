@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import type { LedgerView, ResultsLedgerPort, ResultsLedgerRead } from '../src/lib/link-audit-decisions';
-import { RESULTS_HTTP_STATUS, type ResultsFailure } from '../src/lib/link-audit-scoring-runs/results';
+import { RESULT_RECEIPT_REMOVED_REMEDY, RESULTS_HTTP_STATUS, type ResultsFailure } from '../src/lib/link-audit-scoring-runs/results';
 import type { ScoreRun } from '../src/lib/link-audit-scoring-runs/results-types';
 import { seal, serialize } from '../src/lib/link-audit-storage';
 import { clearStorageFatal } from '../src/lib/link-audit-storage/files';
@@ -177,7 +177,7 @@ const portSaying = (read: ResultsLedgerRead | (() => Promise<ResultsLedgerRead>)
   const never = async (): Promise<never> => {
     throw new Error('as consultas não gravam');
   };
-  return { view: typeof read === 'function' ? read : async () => read, context: never, intent: never, gate: never, confirmed: never, conclude: never };
+  return { view: typeof read === 'function' ? read : async () => read, context: never, intent: never, gate: never, confirmed: never, conclude: never, reissue: never, sync: never };
 };
 
 test('RL-39 / M-R34: cada razão de DISPONIBILIDADE ⇒ 503 RESULTS_STORAGE_UNAVAILABLE e cada razão de INTEGRIDADE ⇒ 409 RESULT_INTEGRITY, com `livro: <razão>` e nenhum dado; razão de decisão com runs resolvido segue consultável', async () => {
@@ -187,7 +187,8 @@ test('RL-39 / M-R34: cada razão de DISPONIBILIDADE ⇒ 503 RESULTS_STORAGE_UNAV
   const cases: Array<[string, ResultsLedgerRead, 'RESULTS_STORAGE_UNAVAILABLE' | 'RESULT_INTEGRITY' | 'OK', string | null]> = [
     ...(['NOT_CONFIGURED', 'UNAVAILABLE', 'DURABILITY_UNKNOWN', 'GUARD_UNAVAILABLE', 'RESULTS_EVIDENCE_UNAVAILABLE'] as const).map((reason): [string, ResultsLedgerRead, 'RESULTS_STORAGE_UNAVAILABLE', string] => [reason, { kind: 'VIEW', view: view({ reason }) }, 'RESULTS_STORAGE_UNAVAILABLE', `livro: ${reason}`]),
     ...(['UNTRUSTED', 'KEY_REVOKED', 'KEY_EXPIRED', 'KEY_UNKNOWN', 'LEDGER_REMOVED_WITNESSED', 'RESULT_LEDGER_MISMATCH', 'GUARD_MISMATCH', 'UNLEDGERED_RESULT', 'RESULT_DIVERGES', 'RESULT_PUBLISHED_AFTER_ABORT'] as const).map((reason): [string, ResultsLedgerRead, 'RESULT_INTEGRITY', string] => [reason, { kind: 'VIEW', view: view({ reason }) }, 'RESULT_INTEGRITY', `livro: ${reason}`]),
-    ...(['RESULT_REGRESSED', 'RESULT_RECEIPT_REMOVED'] as const).map((reason): [string, ResultsLedgerRead, 'RESULT_INTEGRITY', string] => [`runs.${reason}`, { kind: 'VIEW', view: view({ state: 'PROTECTED', runs: { ...OK_RUNS, state: 'UNRESOLVED', reason, receiptReissuable: reason === 'RESULT_RECEIPT_REMOVED' } }) }, 'RESULT_INTEGRITY', `livro: ${reason}`]),
+    // R1.6 (nota (3) da R1.5): RESULT_RECEIPT_REMOVED sai com o TEXTO DE REMÉDIO da 16.17.5 (começa com `livro: RESULT_RECEIPT_REMOVED` e cita a ação de reemissão)
+    ...(['RESULT_REGRESSED', 'RESULT_RECEIPT_REMOVED'] as const).map((reason): [string, ResultsLedgerRead, 'RESULT_INTEGRITY', string] => [`runs.${reason}`, { kind: 'VIEW', view: view({ state: 'PROTECTED', runs: { ...OK_RUNS, state: 'UNRESOLVED', reason, receiptReissuable: reason === 'RESULT_RECEIPT_REMOVED' } }) }, 'RESULT_INTEGRITY', reason === 'RESULT_RECEIPT_REMOVED' ? RESULT_RECEIPT_REMOVED_REMEDY : `livro: ${reason}`]),
     ['razão de decisão SEM runs (falha fechada)', { kind: 'VIEW', view: view({ reason: 'HISTORY_REGRESSED' }) }, 'RESULT_INTEGRITY', 'livro: HISTORY_REGRESSED'],
     ['HISTORY_UNRESOLVED sem razão', { kind: 'VIEW', view: view({ reason: null }) }, 'RESULT_INTEGRITY', 'livro: UNRESOLVED'],
     ['razão de decisão que não admite consulta (LIMIT_REACHED) mesmo com runs', { kind: 'VIEW', view: view({ reason: 'LIMIT_REACHED', runs: OK_RUNS }) }, 'RESULT_INTEGRITY', 'livro: LIMIT_REACHED'],

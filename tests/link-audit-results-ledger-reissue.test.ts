@@ -3,11 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import type { KnownHeadsProvider, ResultsLedgerPort } from '../src/lib/link-audit-decisions';
-import { evaluateProtection, verifyTags, type DecisionRef, type LedgerRecord, type ProtectionInput, type ResultsEvidence } from '../src/lib/link-audit-ledger';
+import { createUnconfiguredLedger, evaluateProtection, verifyTags, type DecisionRef, type LedgerRecord, type ProtectionInput, type ResultsEvidence } from '../src/lib/link-audit-ledger';
 import { createOriginAuthenticator } from '../src/lib/link-audit-origin';
 import { RESULTS_HTTP_STATUS } from '../src/lib/link-audit-scoring-runs/results';
 import type { ScoreRun } from '../src/lib/link-audit-scoring-runs/results-types';
-import { clearStorageFatal, seal, serialize } from '../src/lib/link-audit-storage';
+import { clearStorageFatal, seal, serialize, tripBase } from '../src/lib/link-audit-storage';
 import { nodeFsOps, type FsOps } from '../src/lib/link-audit/snapshot-store';
 import { ANA, BIA, clock, hashTree, must, rec, registerCleanup, withAutoHead } from './helpers/link-audit-decisions-fixtures';
 import { decisionsOver, LEDGER_AUTH_A, ledgerFor, ledgerRecords, ledgerWorld, refOf, type LedgerWorld } from './helpers/link-audit-ledger-fixtures';
@@ -16,7 +16,7 @@ import { OTHER_ORIGIN_KEY, TEST_ORIGIN_KEY } from './helpers/link-audit-origin-f
 import { previewOver } from './helpers/link-audit-preview-fixtures';
 import { makeService, OP_A, OP_B, receiptPath, runPath, type ResultsEnv } from './helpers/link-audit-results-fixtures';
 import { chainOf, runRefOf, type Chain, type RunBody } from './helpers/link-audit-results-ledger-fixtures';
-import { bodyNow, everythingOf, finalizeAs, finalizerOver, openRunWorld, protectedWorld, runsOf, type FinalizerOver } from './helpers/link-audit-results-ledger-finalize-fixtures';
+import { bodyNow, everythingOf, failingLink, finalizeAs, finalizerOver, openRunWorld, protectedWorld, runsOf, type FinalizerOver } from './helpers/link-audit-results-ledger-finalize-fixtures';
 
 /*
  * R1.6 — REEMISSÃO DO RECIBO DE RESULTADO CONFIRMADO (spec do livro §16.17.5, "Reemissão do recibo de resultado confirmado", MAJOR-3; D-10, D-12, D-R1-2). Um recibo `ak`
@@ -118,6 +118,9 @@ test('modelo / M-R15 / M-R20: REISSUE_RUN_RECEIPT só com RESULT_RECEIPT_REMOVED
   const [first, second] = runsIn(two);
   const lastRemoved = evaluate(two, NONE, { resultsAfterLedger: seen([runRefOf(1, first?.runSha256 as string)], runRefOf(2, second?.runSha256 as string, { prevSha256: first?.runSha256 })) });
   assert.deepEqual(planOf(lastRemoved), { kind: 'REISSUE_RUN_RECEIPT', runSeq: 2, runSha256: second?.runSha256 });
+  // o recibo sem par é o de um resultado do MEIO (forma que o armazenamento não produz): sem receita — só o ÚLTIMO confirmado é reemitido
+  const middle = evaluate(two, NONE, { resultsAfterLedger: seen([runRefOf(2, second?.runSha256 as string, { prevSha256: first?.runSha256 })], runRefOf(1, first?.runSha256 as string)) });
+  assert.deepEqual([middle.view.runs?.reason, planOf(middle).kind], ['RESULT_RECEIPT_REMOVED', 'NONE']);
 });
 
 test('modelo (16.17.5: "vale mesmo com HISTORY_UNRESOLVED por razão de DECISÃO"; RL-24): com razão de decisão a receita existe; sem runs (testemunha que não confere, contradição de R1) não há receita', () => {
@@ -220,6 +223,20 @@ test('M-R20: sem RUN_CONFIRMED a reemitir (nenhum resultado; operação aberta e
     assert.equal(codeOf(refused), 'LEDGER_ACTION_INVALID', `fase ${phase}: a pendente só é concluída pelo autor (R1.4), nunca reemitida: ${show(refused)}`);
     assert.deepEqual(await everythingOf(open.w, open.e), was, `fase ${phase}: nada gravado`);
   }
+  // um resultado confirmado e o seguinte parado em B ou C: a pendente é do autor (R1.4); a ação recusa pelo LIVRO (nada a reemitir), antes de qualquer releitura de R0
+  for (const phase of ['B', 'C'] as const) {
+    const { w, e } = await confirmedWorld();
+    await must(w.protectedService.create(ANA, w.auditId, { record: rec.naModel() }, clock()));
+    const stuck = phase === 'B' ? finalizerOver(w, e, { resultsFs: failingLink(receiptPath(e, 2, w.auditId)) }) : finalizerOver(w, e, { ledger: { fs: failingLink(path.join(w.ledgerDir, w.auditId, 'l000009.json')) } });
+    const parked = await finalizeAs(stuck, OP_A, w.auditId);
+    assert.equal(codeOf(parked), 'RESULT_ANCHOR_PENDING', show(parked));
+    assert.equal((await viewOf(w, e)).runs?.open?.phase, phase);
+    const was = await everythingOf(w, e);
+    const refused = await reissueAs(w, e);
+    assert.equal(codeOf(refused), 'LEDGER_ACTION_INVALID', `1 confirmado + fase ${phase}: ${show(refused)}`);
+    assert.ok(issuesOf(refused).some((issue) => /Não há recibo de resultado a reemitir/.test(issue)), `recusa do livro, não da releitura: ${show(refused)}`);
+    assert.deepEqual(await everythingOf(w, e), was, `1 confirmado + fase ${phase}: nada gravado`);
+  }
   const pendingEnrollment = await ledgerWorld({ enroll: false });
   const notEnrolled = await finalizerOver(pendingEnrollment, (await protectedWorld()).e).results.reissueReceipt(OP_B, pendingEnrollment.auditId, ACTION);
   assert.equal(codeOf(notEnrolled), 'LEDGER_ACTION_INVALID', show(notEnrolled));
@@ -274,6 +291,28 @@ test('16.17.5: a reemissão vale mesmo com ledger HISTORY_UNRESOLVED por razão 
   assert.deepEqual(hashTree(w.ledgerDir), ledgerBefore, 'nenhum registro no livro (o RECEIPT_REISSUED da decisão é outra ação, só do autor)');
 });
 
+test('16.17.9 (MINOR-3) na ação: disponibilidade continua disponibilidade — testemunha dos resultados ilegível ⇒ 503 RESULTS_STORAGE_UNAVAILABLE; livro com durabilidade desconhecida ⇒ 503 RESULT_DURABILITY_UNKNOWN; livro não configurado ⇒ 503 LEDGER_NOT_CONFIGURED; nada gravado', async () => {
+  const { w, e } = await confirmedWorld();
+  removeReceipt(e, w.auditId, 1);
+  const before = await everythingOf(w, e);
+  const unreadable: KnownHeadsProvider = async () => ({ ok: false, reason: 'STORAGE_UNAVAILABLE' });
+  const blind = decisionsOver(w, { ledger: ledgerFor(w, { guard: null }), knownHeads: unreadable });
+  const viaBlind = await makeService(e, previewOver({ evidenceDir: w.evidenceDir, raw: blind }), { ledger: blind.resultsLedger as ResultsLedgerPort }).reissueReceipt(OP_B, w.auditId, ACTION);
+  assert.equal(codeOf(viaBlind), 'RESULTS_STORAGE_UNAVAILABLE', show(viaBlind));
+  assert.equal(RESULTS_HTTP_STATUS.RESULTS_STORAGE_UNAVAILABLE, 503);
+  const unconfigured = decisionsOver(w, { ledger: createUnconfiguredLedger(), knownHeads: witnessOver(w, e) });
+  const viaUnconfigured = await makeService(e, previewOver({ evidenceDir: w.evidenceDir, raw: unconfigured }), { ledger: unconfigured.resultsLedger as ResultsLedgerPort }).reissueReceipt(OP_B, w.auditId, ACTION);
+  assert.equal(codeOf(viaUnconfigured), 'LEDGER_NOT_CONFIGURED', show(viaUnconfigured));
+  tripBase(w.ledgerDir); // falha de fsync anterior do livro neste processo (M2): nada é lido como protegido até reiniciar
+  try {
+    const tripped = await reissueAs(w, e);
+    assert.equal(codeOf(tripped), 'RESULT_DURABILITY_UNKNOWN', show(tripped));
+  } finally {
+    clearStorageFatal();
+  }
+  assert.deepEqual(await everythingOf(w, e), before, 'nada gravado');
+});
+
 /* ============================================================================ M-R22: conferência objeto × livro da ação (passo 1b) */
 
 /** O MESMO número com outro conteúdo VÁLIDO e encadeado (sem chave), para a leitura R0 do serviço de resultados; a testemunha do livro (outro FsOps) vê o genuíno. */
@@ -321,6 +360,46 @@ test('M-R22 (transitório): a troca só na primeira leitura é resolvida pela re
   const swap = swappingRun(e, w.auditId, 1, forgeX(g), 1);
   await assertReissued(w, e, await reissueAs(w, e, OP_B, { resultsFs: swap.fs }), g, ledgerBefore, 'troca transitória');
   assert.ok(swap.reads() >= 2, 'houve releitura');
+});
+
+/**
+ * R0 com arquivos que a vista do livro não vê (só o FsOps do serviço de resultados): `hide` some com nomes da listagem; `ghost` devolve, para um nome já removido do disco, os bytes
+ * guardados antes (o recibo que R0 ainda "vê").
+ */
+function phantomR0(over: { readonly hide?: ReadonlySet<string>; readonly ghost?: { readonly file: string; readonly bytes: string } }): FsOps {
+  return {
+    ...nodeFsOps,
+    async readdir(dir) {
+      const names = await nodeFsOps.readdir(dir);
+      const ghost = over.ghost && path.dirname(over.ghost.file) === dir ? [path.basename(over.ghost.file)] : [];
+      return [...names.filter((name) => !over.hide?.has(path.join(dir, name))), ...ghost.filter((name) => !names.includes(name))];
+    },
+    async readFile(target, maxBytes) {
+      return over.ghost && target === over.ghost.file ? over.ghost.bytes : nodeFsOps.readFile(target, maxBytes);
+    },
+  };
+}
+
+test('M-R22 (R0 sem o resultado que a vista vê): com o recibo presente, R0 sem s0001/a0001 ⇒ relê até 3 vezes e recusa (LEDGER_ACTION_INVALID), nada gravado — nunca "grava sobre o que não leu"', async () => {
+  const { w, e } = await confirmedWorld();
+  const hidden = new Set([runPath(e, 1, w.auditId), receiptPath(e, 1, w.auditId)]);
+  const before = await everythingOf(w, e);
+  const refused = await reissueAs(w, e, OP_B, { resultsFs: phantomR0({ hide: hidden }) });
+  assert.equal(codeOf(refused), 'LEDGER_ACTION_INVALID', show(refused));
+  assert.ok(issuesOf(refused).some((issue) => /não são os que o livro de cabeças confirma/.test(issue)), show(refused));
+  assert.deepEqual(await everythingOf(w, e), before);
+});
+
+test('M-R22 (R0 ainda com o recibo que a vista diz removido): a fase que R0 mostra tem de ser a da vista ⇒ relê até 3 vezes e recusa, nenhum recibo gravado', async () => {
+  const { w, e } = await confirmedWorld();
+  const file = receiptPath(e, 1, w.auditId);
+  const bytes = fs.readFileSync(file, 'utf8');
+  removeReceipt(e, w.auditId, 1);
+  const before = await everythingOf(w, e);
+  const refused = await reissueAs(w, e, OP_B, { resultsFs: phantomR0({ ghost: { file, bytes } }) });
+  assert.equal(codeOf(refused), 'LEDGER_ACTION_INVALID', show(refused));
+  assert.ok(issuesOf(refused).some((issue) => /não são os que o livro de cabeças confirma/.test(issue)), show(refused));
+  assert.deepEqual(await everythingOf(w, e), before, 'nenhum recibo gravado');
 });
 
 /* ============================================================================ RL-33: chave de origem vencida e autor ausente */
@@ -416,13 +495,25 @@ test('RL-20 / M-R17 (reemissão): fsync falho na pasta de recibos, na de resulta
   }
 });
 
-test('R7-04 / D1 (espelho): com o recibo já presente (runs OK) a ação não grava nada, mas só responde 200 depois de sincronizar recibos, resultados, os pais e o livro AGORA', async () => {
+test('R7-04 / D1 (espelho): com o recibo já presente (runs OK) a ação não grava nada (nem temporário), mas só responde 200 depois de sincronizar recibos, resultados, os pais e o livro AGORA', async () => {
   const { w, e } = await confirmedWorld();
   const synced: string[] = [];
-  const spy = (inner: FsOps): FsOps => ({ ...inner, async syncDirectory(target) { synced.push(target); return inner.syncDirectory(target); } });
+  const written: string[] = [];
+  const spy = (inner: FsOps): FsOps => ({
+    ...inner,
+    async syncDirectory(target) {
+      synced.push(target);
+      return inner.syncDirectory(target);
+    },
+    async writeExclusive(target, data, mode) {
+      written.push(target);
+      return inner.writeExclusive(target, data, mode);
+    },
+  });
   const before = await everythingOf(w, e);
   const done = await reissueAs(w, e, OP_B, { resultsFs: spy(nodeFsOps), ledger: { fs: spy(nodeFsOps) } });
   assert.ok(done.ok && done.value.ledger.runs?.state === 'OK', show(done));
   assert.deepEqual(await everythingOf(w, e), before, 'nada gravado (o recibo existente é ADOTADO, nunca regravado)');
+  assert.deepEqual(written, [], 'nem um temporário na pasta de recibos');
   for (const dir of [path.join(e.anchors, w.auditId), path.join(e.base, w.auditId), e.anchors, e.base, path.join(w.ledgerDir, w.auditId), w.ledgerDir]) assert.ok(synced.includes(dir), `sincronizou ${path.basename(dir)}: ${show(synced.map((d) => path.basename(d)))}`);
 });

@@ -46,6 +46,8 @@ function buttonsOf(node: ReactNode): Array<{ label: string; onClick: () => void;
   const visit = (value: ReactNode): void => {
     if (Array.isArray(value)) return value.forEach(visit);
     if (!isValidElement(value)) return;
+    // componentes internos do painel (funções puras, sem estado): expandidos como o React os renderizaria
+    if (typeof value.type === 'function') return visit((value.type as (props: unknown) => ReactNode)(value.props));
     const props = value.props as { children?: ReactNode; onClick?: () => void; disabled?: boolean };
     if (value.type === 'button') found.push({ label: renderToStaticMarkup(createElement('span', null, props.children)).replace(/<[^>]+>/g, ''), onClick: props.onClick ?? (() => undefined), disabled: props.disabled === true });
     visit(props.children);

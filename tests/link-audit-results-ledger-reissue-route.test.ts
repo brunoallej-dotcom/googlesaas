@@ -102,13 +102,31 @@ test('RL-33 pela rota: chave de origem rotacionada e aposentada VENCIDA, autora 
   assert.equal(listed.status, 200);
   assert.equal((await json(listed)).confirmation, 'LEDGER');
 
-  // de novo, agora SEM chave de origem nenhuma: a finalização exigiria a chave (503); a reemissão não depende dela
+  // de novo, agora SEM chave de origem nenhuma e com o armazenamento de EVIDÊNCIAS ilegível: a finalização exigiria os dois (503); a reemissão não depende de nenhum
   fs.rmSync(receipt);
   delete env.GMN_LINK_AUDIT_ORIGIN_KEY;
   delete env.GMN_LINK_AUDIT_ORIGIN_RETIRED_KEYS;
-  const noKey = await resultsActionRoute(req(`${base(w.auditId)}/results`, { method: 'POST', cookie: await cookie('davi@empresa.com'), body: { action: 'REISSUE_RECEIPT' } }), ctx(w.auditId));
-  assert.equal(noKey.status, 200, JSON.stringify(await json(noKey.clone())).slice(0, 300));
-  assert.equal((JSON.parse(fs.readFileSync(receipt, 'utf8')) as { headSha256: string }).headSha256, original.headSha256);
+  const aside = `${w.evidenceDir}-fora`;
+  fs.renameSync(w.evidenceDir, aside);
+  try {
+    const noKey = await resultsActionRoute(req(`${base(w.auditId)}/results`, { method: 'POST', cookie: await cookie('davi@empresa.com'), body: { action: 'REISSUE_RECEIPT' } }), ctx(w.auditId));
+    assert.equal(noKey.status, 200, JSON.stringify(await json(noKey.clone())).slice(0, 300));
+    assert.equal((JSON.parse(fs.readFileSync(receipt, 'utf8')) as { headSha256: string }).headSha256, original.headSha256);
+  } finally {
+    fs.renameSync(aside, w.evidenceDir);
+  }
+});
+
+test('limitador da FINALIZAÇÃO também na reemissão (6/min por operador): a 7ª tentativa do mesmo operador ⇒ 429 com Retry-After, sem tocar o disco', async () => {
+  const w = await routeWorld();
+  await proveEvidenceForRoutes(env, w);
+  const dirs = { results: tmpDir('lad-r16c-rs-'), anchors: tmpDir('lad-r16c-ra-') };
+  setEnv(w, dirs, OPERATORS);
+  const who = await cookie('carla@empresa.com');
+  const statuses: number[] = [];
+  for (let attempt = 0; attempt < 7; attempt += 1) statuses.push((await resultsActionRoute(req(`${base(w.auditId)}/results`, { method: 'POST', cookie: who, body: { action: 'REISSUE_RECEIPT' } }), ctx(w.auditId))).status);
+  assert.deepEqual(statuses, [409, 409, 409, 409, 409, 409, 429], 'nada a reemitir (409) até o limite; depois 429');
+  assert.deepEqual([hashTree(dirs.results), hashTree(dirs.anchors)], [{}, {}]);
 });
 
 test('corpo da ação ESTRITO pela rota (tipo, JSON, campos a mais, outra ação, parâmetros de consulta) e sem sessão ⇒ recusa sem gravar nada; o middleware também barra', async () => {

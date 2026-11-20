@@ -212,9 +212,14 @@ export interface PreviewLedgerInfo {
   readonly operationOpen: boolean;
   readonly externalGuard: LedgerGuardStatus;
 }
-/** Resposta de `POST …/ledger`. */
+/**
+ * Ações sobre o livro que a tela oferece: inscrever e recuperar (`POST …/decisions/{id}/ledger`) e, desde a R1.6, reemitir o recibo de um resultado já confirmado pelo livro
+ * (`POST …/scoring/{id}/results`, spec do livro §16.17.5; qualquer operador).
+ */
+export type LedgerActionKind = 'ENROLL' | 'RECOVER' | 'REISSUE_RECEIPT';
+/** Resposta das ações sobre o livro (D-R1-2: a reemissão responde no MESMO formato, com a vista atualizada). */
 export interface LedgerActionResult {
-  readonly action: 'ENROLL' | 'RECOVER';
+  readonly action: LedgerActionKind;
   readonly ledger: LedgerInfo;
 }
 export const isBlockingLedger = (state: LedgerState): boolean => state !== 'PROTECTED' && state !== 'NOT_REQUIRED';

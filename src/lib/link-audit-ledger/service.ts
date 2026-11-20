@@ -10,6 +10,7 @@ import type {
   LedgerRunInput,
   LedgerRunPrepareInput,
   LedgerRunPrepareStep,
+  LedgerRunReissueStep,
   LedgerRunWriteInput,
   LedgerStep,
   LedgerView,
@@ -165,6 +166,16 @@ const RUN_REPLAY_MESSAGE = 'O registro de resultado montado violaria as invarian
 const RUN_CONCLUDE_NOT_AUTHOR_MESSAGE = 'Há um resultado gravado e ainda não confirmado nesta auditoria; somente o autor dele o conclui, reenviando o mesmo pedido. Nada foi gravado.';
 const RUN_CLOSING_CHANGED_MESSAGE = 'Outro processo alterou o livro durante a confirmação do resultado; a confirmação não foi gravada (o resultado e o recibo existem; o autor conclui reenviando o mesmo pedido).';
 const RUN_CLOSING_RETRIES_MESSAGE = 'O livro mudou a cada tentativa de gravar a confirmação do resultado; ela não foi gravada (o resultado e o recibo existem; o autor conclui reenviando o mesmo pedido).';
+/* Textos fixos da reemissão do recibo de resultado (R1.6; nunca caminho nem identidade). */
+const REISSUE_NOTHING_MESSAGE = 'Não há recibo de resultado a reemitir: o livro não aponta resultado confirmado com o recibo removido; nada foi gravado.';
+/** Razões de DISPONIBILIDADE com que a reemissão não é avaliada (16.17.9, MINOR-3): o operador tenta de novo depois, nunca "ação inválida". */
+const REISSUE_AVAILABILITY: Readonly<Partial<Record<LedgerReason, RunRefusalCode>>> = {
+  DURABILITY_UNKNOWN: 'DURABILITY_UNKNOWN',
+  NOT_CONFIGURED: 'LEDGER_NOT_CONFIGURED',
+  UNAVAILABLE: 'LEDGER_UNAVAILABLE',
+  GUARD_UNAVAILABLE: 'LEDGER_UNAVAILABLE',
+  RESULTS_EVIDENCE_UNAVAILABLE: 'LEDGER_UNAVAILABLE',
+};
 /** O rascunho do `RUN_INTENT` com EXATAMENTE os campos do contrato (o esquema é estrito; nada do chamador passa além deles). */
 const runFieldsOf = (run: RunDraft) => ({
   runSeq: run.runSeq,
@@ -954,6 +965,42 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
       return closeRun(session, intent, input.actor, input.nowIso);
     },
 
+    /**
+     * R1.6 — REEMISSÃO DO RECIBO DE RESULTADO CONFIRMADO (§16.17.5, MAJOR-3; D-10, D-12): só os passos 1 e 1b; QUALQUER operador; nunca grava nem autoriza gravação no livro. A leitura
+     * é o "sanduíche" (§16.17.8): o recibo removido só é julgado sobre a releitura R2, POSTERIOR ao livro (a receita exige R2; M-R15), e `runs` só existe depois das testemunhas
+     * (R6-05, RL-24) e sem contradição de resultado. Espelho da reemissão do recibo de DECISÃO depois da revisão da R1.2 (R7-06): com a testemunha das DECISÕES não resolvida, nada
+     * é gravado por este caminho. Autoria e origem não entram (o conteúdo do recibo é o `anchorRef` do `RUN_CONFIRMED`, autenticado pela chave do livro).
+     */
+    async runReissue(input: LedgerRunPrepareInput): Promise<LedgerRunReissueStep> {
+      const session = input.session as Session;
+      session.grant = null;
+      session.runIntent = null;
+      session.runMark = null;
+      session.concludeIntent = null;
+      const evaluation = await evaluateSandwich(session, input);
+      const view = evaluation.view;
+      const runs = view.runs;
+      if (!runs) {
+        const availability = view.reason !== null ? REISSUE_AVAILABILITY[view.reason] : undefined;
+        if (availability) return runRefused(availability, view.reason);
+        return runRefused('LEDGER_ACTION_INVALID', view.reason, [...(view.reason === null ? [`livro: ${view.state}`] : []), REISSUE_NOTHING_MESSAGE]);
+      }
+      const plan = evaluation.runPlan;
+      const last = runs.confirmed[runs.confirmed.length - 1];
+      // MISSING: a receita (recibo do último confirmado removido, julgado sobre R2). PRESENT: o recibo do último confirmado já existe e nada está pendente depois dele — o reenvio da
+      // ação (p.ex. depois de um fsync falho e do reinício) só ADOTA e sincroniza (R7-04, espelho do reuso da reemissão de decisão); B/C aberta é do autor (R1.4), nunca daqui
+      const target: { readonly run: { readonly runSeq: number; readonly runSha256: string }; readonly receipt: 'MISSING' | 'PRESENT' } | null =
+        plan.kind === 'REISSUE_RUN_RECEIPT'
+          ? { run: { runSeq: plan.confirmed.runSeq, runSha256: plan.confirmed.runSha256 }, receipt: 'MISSING' }
+          : runs.state === 'OK' && last !== undefined && (runs.open === null || runs.open.phase === 'A')
+            ? { run: { runSeq: last.runSeq, runSha256: last.runSha256 }, receipt: 'PRESENT' }
+            : null;
+      if (!target) return runRefused('LEDGER_ACTION_INVALID', runs.reason, [REISSUE_NOTHING_MESSAGE]);
+      // R7-06 (1): a testemunha das DECISÕES não resolvida impede qualquer gravação deste caminho (o recibo tornaria testemunha a cabeça de decisões do resultado)
+      if (input.decisionsWitness) return runRefused('DECISIONS_HISTORY_UNRESOLVED', null, [`testemunha: ${input.decisionsWitness}`]);
+      return { kind: 'OK', view, run: target.run, receipt: target.receipt };
+    },
+
     async sync(auditId: string) {
       const synced = await syncLedgerDirectory(options.dir, auditId, storeOptions);
       return synced.ok ? { ok: true as const } : { ok: false as const, refusal: refusal('LEDGER_UNAVAILABLE', null, null, [...synced.issues]) };
@@ -1025,6 +1072,9 @@ export function createUnconfiguredLedger(): LedgerPort {
       return runStep;
     },
     async runConclude() {
+      return runStep;
+    },
+    async runReissue() {
       return runStep;
     },
     async sync() {
