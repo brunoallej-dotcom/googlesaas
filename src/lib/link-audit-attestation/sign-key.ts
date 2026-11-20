@@ -93,6 +93,7 @@ const UNSAFE_HARDLINK = unsafe('o arquivo tem mais de um nome (hardlink): outro 
 const UNSAFE_NO_DESCRIPTOR_PATH = unsafe('não foi possível obter o caminho real do arquivo ABERTO (/proc/self/fd indisponível: sistema sem /proc ou fora do Linux); sem ele a custódia não é provada');
 const UNSAFE_MOVED = unsafe('o arquivo mudou de lugar durante a conferência (o caminho real do descritor mudou)');
 const UNPROVABLE = unsafe('não foi possível conferir o caminho (erro ao inspecionar uma pasta acima do arquivo)');
+const UNPROVABLE_ROOT = unsafe('não foi possível resolver o caminho real de uma raiz proibida (projeto ou pasta temporária: permissão negada, erro de E/S ou laço de links); sem ele a custódia não é provada');
 const NOT_ENCRYPTED = refuse('SECRET_NOT_ENCRYPTED', 'O arquivo da chave está em TEXTO CLARO (chave privada sem cifra): trate-a como exposta, gere/cifre outra numa estação limpa (PKCS#8 com frase) e destrua a cópia em claro.');
 const UNPROTECTED_EMPTY = refuse('SIGN_KEY_UNPROTECTED', 'A chave cifrada abre com frase VAZIA: está sem proteção.');
 const UNPROTECTED_LEGACY = refuse('SIGN_KEY_UNPROTECTED', 'A chave usa cifra legada (não PBES2): proteção insuficiente; recifre-a em PKCS#8 com PBES2.');
@@ -137,16 +138,23 @@ const isInside = (child: string, root: string): boolean => {
 };
 const errorCode = (error: unknown): unknown => (typeof error === 'object' && error !== null ? (error as { readonly code?: unknown }).code : undefined);
 
-/** Cada raiz pelo caminho dado E pelo caminho real (quando existe): um link no caminho da raiz não a esconde. */
-async function bothForms(fs: KeyFileOps, roots: readonly string[]): Promise<string[]> {
+/** Raiz que não existe (ex.: /dev/shm ausente): a forma dada basta, porque nenhum arquivo real pode estar dentro dela. */
+const ROOT_ABSENT_CODES: ReadonlySet<unknown> = new Set(['ENOENT', 'ENOTDIR']);
+
+/**
+ * Cada raiz pelo caminho dado E pelo caminho real: um link no caminho da raiz não a esconde. Confirmação da revisão da W4.5 (iii), W4.6: só a raiz
+ * INEXISTENTE (ENOENT/ENOTDIR) segue com a forma dada; qualquer outra falha (EACCES, EIO, EPERM, ELOOP, `ERR_ACCESS_DENIED` do modelo de permissões
+ * do Node, erro sem código) deixa a raiz sem caminho real conhecido e a custódia NÃO é provada ⇒ `null` (quem chama recusa).
+ */
+async function bothForms(fs: KeyFileOps, roots: readonly string[]): Promise<string[] | null> {
   const forms: string[] = [];
   for (const root of roots) {
     const resolved = path.resolve(root);
     forms.push(resolved);
     try {
       forms.push(await fs.realpath(resolved));
-    } catch {
-      // raiz inexistente (ex.: /dev/shm ausente): basta a forma dada
+    } catch (error) {
+      if (!ROOT_ABSENT_CODES.has(errorCode(error))) return null;
     }
   }
   return forms;
@@ -425,7 +433,10 @@ export interface OpenK1Deps {
 export async function openK1Key(keyPath: string, keyId: string, deps: OpenK1Deps): Promise<KeyObject | SignRefusal> {
   try {
     const file = path.resolve(keyPath);
-    const roots: Roots = { project: await bothForms(deps.fs, [deps.custody.projectRoot]), temp: await bothForms(deps.fs, deps.custody.tempRoots) };
+    const project = await bothForms(deps.fs, [deps.custody.projectRoot]);
+    const temp = await bothForms(deps.fs, deps.custody.tempRoots);
+    if (project === null || temp === null) return UNPROVABLE_ROOT;
+    const roots: Roots = { project, temp };
     const byGivenPath = await locationRefusal(deps.fs, file, roots);
     if (byGivenPath) return byGivenPath;
     const bytes = await readThroughDescriptor(deps.fs, file, roots);
