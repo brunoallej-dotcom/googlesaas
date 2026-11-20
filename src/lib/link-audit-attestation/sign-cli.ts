@@ -1,4 +1,5 @@
-import { nodeFsOps, type BytesFsOps } from '../link-audit/snapshot-store';
+import type { BytesFsOps } from '../link-audit/fs-ops';
+import { nodeFsOps } from '../link-audit/node-fs-ops';
 import { parseCloseKeyArgs, parseSignArgs, runtimeRefusal, secretArgvRefusal, secretEnvRefusal, type CloseKeyArgs, type SignArgs } from './sign-args';
 import { sealDigest } from './sign-chain';
 import { runCloseKey, type CloseKeyDone, type CloseKeyResult } from './sign-closure';

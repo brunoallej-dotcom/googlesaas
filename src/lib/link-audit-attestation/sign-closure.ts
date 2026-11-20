@@ -1,10 +1,10 @@
 import { createHash, createPublicKey, sign as cryptoSign, type KeyObject } from 'node:crypto';
 import path from 'node:path';
-import { errorCode, type BytesFsOps, type FileInfo, type FsOps } from '../link-audit/snapshot-store';
+import { errorCode, type BytesFsOps, type FileInfo, type FsOps } from '../link-audit/fs-ops';
 import {
   assembleKeyRetirementClosure,
   buildKeyRetirementClosureBody,
-  createSealedEvidenceProvenance,
+  createSealedEvidenceProvenanceOver,
   MAX_CLOSURE_BYTES,
   MAX_CLOSURE_HEADS,
   MAX_SEAL_BYTES,
@@ -18,7 +18,7 @@ import {
   type EvidenceSealFileV2,
   type EvidenceToProve,
   type TrustKeyring,
-} from '../link-audit-evidence/provenance';
+} from '../link-audit-evidence/provenance-core';
 import { auditId as auditIdSchema, shortLabel } from './schemas';
 import { chainSnapshot, isTrustKeyringText, keyMismatchRefusal, resolveSealsRoot, SIGN_KEY_ID_PATTERN, withVirtualFile } from './sign-chain';
 import type { CloseConfirmationFacts, SignRefusal, SignRefusalCode } from './sign-core';
@@ -35,7 +35,7 @@ import { CLOSURES_DIR, publishClosure } from './sign-run';
  *   cabeças (`closureHeads`) → relógio → confirmação humana (porta `confirm`: o custodiante digita o id de R, que a tela não mostra) → chave
  *   (porta `openKey`, K1 da W4.4) e `SIGN_KEY_MISMATCH` → fecho montado e assinado → AUTOTESTE (o fecho e cada cadeia coberta pelo verificador v2
  *   real com R `retired:<closureSha256>`, `acceptedVersions: [2]`) → gravação exclusiva (`publishClosure`, `sign-run.ts`).
- * Segundo e último arquivo do `sign` que importa o verificador (a W4.6 separa o núcleo dele do `FsOps` de disco). Nunca escreve por conta própria.
+ * Segundo e último arquivo do `sign` que importa o verificador, pelo NÚCLEO (`provenance-core.ts`, W4.6: sem disco padrão; a porta é a fotografia). Nunca escreve por conta própria.
  */
 
 /** Teto de ENTRADAS na raiz da cópia do servidor (auditorias, `_closures` e o resto), contado DURANTE a enumeração (revisão da W4.5). */
@@ -327,7 +327,7 @@ async function selfTestClosure(ops: FsOps, root: string, input: CloseKeyInput, c
     const itself = closureItselfRefusal(closure.text, input, closure.heads, keyring);
     if (itself || !keyring) return itself ?? selfTestFailed('SELFTEST_CLOSURE_INVALID');
     const overlay = withVirtualFile(ops, path.join(root, CLOSURES_DIR), `${input.retiredKeyId}.json`, closure.text);
-    const verifier = createSealedEvidenceProvenance({ sealsDir: root, keyring, acceptedVersions: [2], fs: overlay });
+    const verifier = createSealedEvidenceProvenanceOver({ sealsDir: root, keyring, acceptedVersions: [2], fs: overlay });
     for (const head of closure.heads) {
       const last = lastSealOf(audits.get(head.auditId));
       const evidences = last ? last.entries.map((entry) => ({ ref: entry.ref, contentSha256: entry.contentSha256, legacy: false })) : PLACEHOLDER_EVIDENCE;
