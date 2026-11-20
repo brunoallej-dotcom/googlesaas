@@ -484,3 +484,78 @@ test('passo 11 que falha (fase C pelo livro): RESULT_ANCHOR_PENDING com a penden
   assert.ok(!first.ok && first.code === 'RESULT_ANCHOR_PENDING', show(first));
   assert.deepEqual([first.pending?.seq, first.pending?.receipt, first.pending?.blocksFinalization], [1, 'PRESENT', true]);
 });
+
+/* ------------------------------------------------------------------ revisão independente da R1.5 (`junin-01`) */
+
+/** FsOps de R0 que falha com `code` na listagem (`readdir`) ou na leitura (`readFile`) de `target` (pasta da auditoria ou arquivo). */
+function ioFailing(target: string, on: 'readdir' | 'readFile', code: string): FsOps {
+  return {
+    ...nodeFsOps,
+    async readdir(dir) {
+      if (on === 'readdir' && dir === target) throw errno(code);
+      return nodeFsOps.readdir(dir);
+    },
+    async readFile(file, maxBytes) {
+      if (on === 'readFile' && file === target) throw errno(code);
+      return nodeFsOps.readFile(file, maxBytes);
+    },
+  };
+}
+
+test('revisão R1.5 (MAJOR): erro de E/S na listagem ou na leitura de resultados e de recibos ⇒ 503 RESULTS_STORAGE_UNAVAILABLE sem dado (nunca 409); conteúdo inválido continua 409; a finalização recusa sem gravar', async () => {
+  const { w, e } = await protectedWorld();
+  assert.ok((await finalizeAs(finalizerOver(w, e), OP_A, w.auditId)).ok);
+  const targets: Array<[string, string, 'readdir' | 'readFile']> = [
+    ['listagem dos resultados', path.join(e.base, w.auditId), 'readdir'],
+    ['listagem dos recibos', path.join(e.anchors, w.auditId), 'readdir'],
+    ['leitura de s0001', runPath(e, 1, w.auditId), 'readFile'],
+    ['leitura de a0001', receiptPath(e, 1, w.auditId), 'readFile'],
+  ];
+  const before = { ledger: hashTree(w.ledgerDir), results: hashTree(e.base), anchors: hashTree(e.anchors) };
+  for (const [label, target, on] of targets) {
+    for (const code of ['EIO', 'EACCES']) {
+      const f = finalizerOver(w, e, { resultsFs: ioFailing(target, on, code) });
+      for (const [name, read] of [['list', await f.results.list(OP_B, w.auditId)], ['get', await f.results.get(OP_B, w.auditId, 1)]] as const) {
+        const refusal = failed(read);
+        assert.deepEqual([refusal.code, RESULTS_HTTP_STATUS[refusal.code], refusal.issues, refusal.pending], ['RESULTS_STORAGE_UNAVAILABLE', 503, [], undefined], `${label}/${code}/${name}: ${show(refusal)}`);
+      }
+      const write = await f.results.finalize(OP_A, w.auditId, await bodyNow(f, OP_A, w.auditId));
+      assert.ok(!write.ok && write.code === 'RESULTS_STORAGE_UNAVAILABLE', `${label}/${code}/finalize: recusa com o código de disponibilidade (${show(write)})`);
+    }
+  }
+  assert.deepEqual({ ledger: hashTree(w.ledgerDir), results: hashTree(e.base), anchors: hashTree(e.anchors) }, before, 'nada gravado em canal algum');
+  // forma hostil no lugar do arquivo (FIFO, link, grande demais) é integridade, nunca indisponibilidade (como no livro, R7-07)
+  for (const code of ['ENOTFILE', 'ELOOP', 'ETOOBIG']) {
+    const hostile = failed(await finalizerOver(w, e, { resultsFs: ioFailing(runPath(e, 1, w.auditId), 'readFile', code) }).results.list(OP_B, w.auditId));
+    assert.equal(hostile.code, 'RESULT_INTEGRITY', `${code}: ${show(hostile)}`);
+  }
+  // conteúdo inválido (bytes trocados) continua 409
+  const file = runPath(e, 1, w.auditId);
+  const original = fs.readFileSync(file, 'utf8');
+  fs.chmodSync(file, 0o644);
+  fs.writeFileSync(file, original.replace('"outcome"', '"outcome" '));
+  try {
+    assert.equal(failed(await finalizerOver(w, e).results.list(OP_B, w.auditId)).code, 'RESULT_INTEGRITY');
+  } finally {
+    fs.writeFileSync(file, original);
+  }
+});
+
+test('revisão R1.5 (MINOR): sem a porta do livro, RECEIPT_ONLY só com TODOS os registros v1 sem ledgerHead; um v2 (que cita o livro) ⇒ 409 RESULT_INTEGRITY, sem dado', async () => {
+  const { w, e } = await protectedWorld();
+  assert.ok((await finalizeAs(finalizerOver(w, e), OP_A, w.auditId)).ok);
+  const blind = finalizerOver(w, e, { port: false });
+  for (const read of [await blind.results.list(OP_B, w.auditId), await blind.results.get(OP_B, w.auditId, 1)]) {
+    const refusal = failed(read);
+    assert.equal(refusal.code, 'RESULT_INTEGRITY', show(refusal));
+    assert.ok(!JSON.stringify(refusal).includes('"results"') && refusal.pending === undefined, 'nenhum dado');
+  }
+  // a pendente v2 (sem recibo) também não sai como "confirmada só por recibo"
+  fs.rmSync(receiptPath(e, 1, w.auditId));
+  assert.equal(failed(await blind.results.list(OP_B, w.auditId)).code, 'RESULT_INTEGRITY');
+  // o outro lado: v1 sem livro continua consultável, marcado RECEIPT_ONLY (RL-26)
+  const legacy = await protectedWorld();
+  await plantV1(legacy.w, legacy.e);
+  const list = await finalizerOver(legacy.w, legacy.e, { port: false }).results.list(OP_B, legacy.w.auditId);
+  assert.ok(list.ok && list.value.confirmation === 'RECEIPT_ONLY' && list.value.results.length === 1, show(list));
+});
