@@ -554,3 +554,16 @@ test('R1.5 pela API: consultas confirmadas pelo livro (confirmation LEDGER); evi
     applyLedgerEnv(env, c.w);
   }
 });
+
+test('R1.5 pela API: evidências em pasta INSEGURA (dentro do projeto) continuam recusadas também nas consultas (só a ilegibilidade é tolerada)', async () => {
+  const c = await setup();
+  const seen = await preview(c);
+  assert.equal((await post(c, seen)).status, 201);
+  env.GMN_LINK_AUDIT_EVIDENCE_DIR = path.resolve(__dirname, '..', 'public');
+  try {
+    const r = await list(c);
+    assert.deepEqual([r.status, (await json(r)).code], [503, 'EVIDENCE_STORAGE_UNAVAILABLE']);
+  } finally {
+    env.GMN_LINK_AUDIT_EVIDENCE_DIR = c.w.evidenceDir;
+  }
+});

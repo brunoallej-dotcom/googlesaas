@@ -10,10 +10,11 @@ import { clearStorageFatal } from '../src/lib/link-audit-storage/files';
 import { nodeFsOps, type FsOps } from '../src/lib/link-audit/snapshot-store';
 import { ANA, BIA, clock, hashTree, must, rec, registerCleanup } from './helpers/link-audit-decisions-fixtures';
 import { errno, faulty } from './helpers/link-audit-evidence-fixtures';
-import { decisionsOver, ledgerFor, ledgerRecords, ledgerWorld, type LedgerWorld } from './helpers/link-audit-ledger-fixtures';
+import { decisionsOver, LEDGER_AUTH_A, ledgerFor, ledgerRecords, ledgerWorld, type LedgerWorld } from './helpers/link-audit-ledger-fixtures';
 import { servicesOver, witnessOver } from './helpers/link-audit-ledger-results-fixtures';
 import { previewOver } from './helpers/link-audit-preview-fixtures';
-import { bodyNow, finalizeAs, finalizerOver, openRunWorld, protectedWorld, runsOf } from './helpers/link-audit-results-ledger-finalize-fixtures';
+import { bodyNow, failingLink, finalizeAs, finalizerOver, openRunWorld, protectedWorld, runsOf } from './helpers/link-audit-results-ledger-finalize-fixtures';
+import { appendLedger, runIntentMaker } from './helpers/link-audit-results-ledger-fixtures';
 import { buildEvaluation, FakeEvaluator, makeService, OP_A, OP_B, receiptPath, resultsEnv, runPath, type ResultsEnv } from './helpers/link-audit-results-fixtures';
 
 /*
@@ -388,4 +389,98 @@ test('fase C pelo livro na finalização: RUN_CONFIRMED que falha responde RESUL
   const b = await openRunWorld('B');
   const otherB = await finalizerOver(b.w, b.e).results.finalize(OP_B, b.w.auditId, b.body);
   assert.ok(!otherB.ok && otherB.code === 'RESULT_PENDING_UNCONFIRMED' && otherB.pending?.receipt === 'MISSING', show(otherB));
+});
+
+/* ------------------------------------------------------------------ casos de borda da conferência (acrescentados na campanha de mutações) */
+
+test('fase A aberta: a consulta mostra só os confirmados, sem pendente; R0 com o número da fase A (que a vista não vê) ⇒ relê e termina em RESULT_INTEGRITY', async () => {
+  const { w, e } = await protectedWorld();
+  assert.ok((await finalizeAs(finalizerOver(w, e), OP_A, w.auditId)).ok);
+  await must(w.protectedService.create(ANA, w.auditId, { record: rec.naModel() }, clock()));
+  const [first] = (await runsOf(e, w.auditId)).runs;
+  await appendLedger(w, LEDGER_AUTH_A, runIntentMaker({ runSha256: 'c'.repeat(64), author: 'ana@empresa.com' }));
+  const view = await must(servicesOver(w, e).list(BIA, w.auditId, clock()));
+  assert.deepEqual([view.ledger.state, view.ledger.runs?.open?.phase, view.ledger.runs?.open?.runSeq], ['PROTECTED', 'A', 2]);
+  const list = await finalizerOver(w, e).results.list(OP_B, w.auditId);
+  assert.ok(list.ok, show(list));
+  assert.deepEqual([list.value.results.map((r) => r.contentSha256), list.value.pending, list.value.confirmation], [[(first as ScoreRun).contentSha256], null, 'LEDGER']);
+  // R0 vê um s0002 (com recibo) que a vista (fase A, lugar vazio) não vê: nunca devolvido
+  const { contentSha256: _hash, ...body } = first as unknown as Record<string, unknown>;
+  void _hash;
+  const ghost = seal({ ...body, seq: 2, prevSha256: (first as ScoreRun).contentSha256, finalizedAt: (first as ScoreRun).finalizedAt.replace(/\.\d{3}Z$/, '.998Z') }) as unknown as ScoreRun;
+  const firstReceipt = JSON.parse(fs.readFileSync(receiptPath(e, 1, w.auditId), 'utf8')) as { contentSha256: string };
+  const ghostReceipt = seal({ schemaVersion: 1, kind: 'LINK_AUDIT_SCORE_RUN_ANCHOR', auditId: w.auditId, seq: 2, headSha256: ghost.contentSha256, anchoredAt: ghost.finalizedAt, prevAnchorSha256: firstReceipt.contentSha256 });
+  const ghostFs: FsOps = {
+    ...nodeFsOps,
+    async readdir(target) {
+      const names = await nodeFsOps.readdir(target);
+      if (target === path.join(e.base, w.auditId)) return [...names, 's0002.json'];
+      if (target === path.join(e.anchors, w.auditId)) return [...names, 'a0002.json'];
+      return names;
+    },
+    async readFile(target, maxBytes) {
+      if (target === runPath(e, 2, w.auditId)) return serialize(ghost);
+      if (target === receiptPath(e, 2, w.auditId)) return serialize(ghostReceipt);
+      return nodeFsOps.readFile(target, maxBytes);
+    },
+    async lstat(target) {
+      if (target === runPath(e, 2, w.auditId) || target === receiptPath(e, 2, w.auditId)) return nodeFsOps.lstat(runPath(e, 1, w.auditId));
+      return nodeFsOps.lstat(target);
+    },
+  };
+  const refused = failed(await finalizerOver(w, e, { resultsFs: ghostFs }).results.list(OP_B, w.auditId));
+  assert.equal(refused.code, 'RESULT_INTEGRITY', show(refused));
+  assert.ok(!JSON.stringify(refused).includes(ghost.contentSha256));
+});
+
+test('fase B na vista e R0 com um recibo que a vista não vê (recibo só para R0) ⇒ relê; persistente ⇒ RESULT_INTEGRITY — "PRESENT" só quando R0 e a vista concordam com a fase C', async () => {
+  const { w, e, run } = await openRunWorld('B');
+  const receipt = seal({ schemaVersion: 1, kind: 'LINK_AUDIT_SCORE_RUN_ANCHOR', auditId: w.auditId, seq: 1, headSha256: run.contentSha256, anchoredAt: run.finalizedAt, prevAnchorSha256: null });
+  const anchorDir = path.join(e.anchors, w.auditId);
+  const onlyForR0: FsOps = {
+    ...nodeFsOps,
+    async readdir(target) {
+      const names: string[] = await nodeFsOps.readdir(target).catch((error: NodeJS.ErrnoException): string[] | Promise<never> => (target === anchorDir && error.code === 'ENOENT' ? [] : Promise.reject(error)));
+      return target === anchorDir && !names.includes('a0001.json') ? [...names, 'a0001.json'] : names;
+    },
+    async readFile(target, maxBytes) {
+      return target === receiptPath(e, 1, w.auditId) ? serialize(receipt) : nodeFsOps.readFile(target, maxBytes);
+    },
+    async lstat(target) {
+      if (target === anchorDir || target === receiptPath(e, 1, w.auditId)) return nodeFsOps.lstat(target === anchorDir ? e.anchors : runPath(e, 1, w.auditId));
+      return nodeFsOps.lstat(target);
+    },
+  };
+  const refused = failed(await finalizerOver(w, e, { resultsFs: onlyForR0 }).results.list(OP_B, w.auditId));
+  assert.equal(refused.code, 'RESULT_INTEGRITY', show(refused));
+});
+
+test('vista LEGACY ou ENROLLMENT_PENDING com um resultado v2 em R0 (leituras que não concordam) ⇒ relê e termina em RESULT_INTEGRITY, nunca RECEIPT_ONLY', async () => {
+  const { w, e } = await protectedWorld();
+  assert.ok((await finalizeAs(finalizerOver(w, e), OP_A, w.auditId)).ok);
+  const evaluation = buildEvaluation({ auditId: w.auditId });
+  for (const state of ['LEGACY_READ_ONLY', 'ENROLLMENT_PENDING'] as const) {
+    let calls = 0;
+    const port = portSaying(async () => {
+      calls += 1;
+      return { kind: 'VIEW', view: view({ state, reason: state === 'LEGACY_READ_ONLY' ? 'LEDGER_ABSENT_WITH_HISTORY' : null }) };
+    });
+    const refused = failed(await makeService(e, new FakeEvaluator(evaluation), { ledger: port }).list(OP_B, w.auditId));
+    assert.deepEqual([refused.code, calls], ['RESULT_INTEGRITY', 3], `${state}: ${show(refused)}`);
+  }
+});
+
+test('a vista das consultas confere a configuração das decisões: pastas sobrepostas ⇒ UNAVAILABLE (503), nunca uma vista', async () => {
+  const { w, e } = await protectedWorld();
+  const overlapped = decisionsOver({ ...w, evidenceDir: w.decisionsDir }, { ledger: ledgerFor(w, { guard: null }), knownHeads: witnessOver(w, e) });
+  const read = await (overlapped.resultsLedger as ResultsLedgerPort).view({ auditId: w.auditId, nowIso: clock() });
+  assert.equal(read.kind, 'UNAVAILABLE', show(read));
+});
+
+test('passo 11 que falha (fase C pelo livro): RESULT_ANCHOR_PENDING com a pendente, receipt PRESENT (o recibo já é durável; ainda NÃO é confirmação)', async () => {
+  const { w, e } = await protectedWorld();
+  const owner = finalizerOver(w, e, { ledger: { fs: failingLink(path.join(w.ledgerDir, w.auditId, 'l000005.json')) } });
+  const first = await finalizeAs(owner, OP_A, w.auditId);
+  assert.ok(!first.ok && first.code === 'RESULT_ANCHOR_PENDING', show(first));
+  assert.deepEqual([first.pending?.seq, first.pending?.receipt, first.pending?.blocksFinalization], [1, 'PRESENT', true]);
 });

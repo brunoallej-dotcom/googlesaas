@@ -10,6 +10,7 @@ import { sealResult, servicesOver } from './helpers/link-audit-ledger-results-fi
 import { bodyNow, finalizeAs, finalizerOver, openRunWorld, plantForgedRunReceipt, protectedWorld, runsOf } from './helpers/link-audit-results-ledger-finalize-fixtures';
 import { appendLedger, chainOf, hashOf, runClosingMaker, runMakersFor, runRefOf, type Chain, type RunBody } from './helpers/link-audit-results-ledger-fixtures';
 import { buildEvaluation, FakeEvaluator, makeService, OP_A, OP_B, receiptPath, resultsEnv, runPath, type ResultsEnv } from './helpers/link-audit-results-fixtures';
+import { TEST_ORIGIN } from './helpers/link-audit-origin-fixtures';
 
 /*
  * R1.5 — CONTRADIÇÕES DE RESULTADO julgadas SÓ sobre R1 (spec §16.17.5; D-21): `UNLEDGERED_RESULT` (RL-08), `RESULT_DIVERGES` (RL-10) e `RESULT_PUBLISHED_AFTER_ABORT`
@@ -128,6 +129,7 @@ test('ordem: testemunhas (R6-05) antes; cruzamento de resultados antes do livro 
   // decisões também em desacordo: a razão de RESULTADO vem antes da de decisão
   assertFrozen(evaluate(plain, seen([forged]), {}, []), 'UNLEDGERED_RESULT', 'com as decisões regredidas');
   assertFrozen(evaluate(plain, seen([forged]), {}, [D1], D2), 'UNLEDGERED_RESULT', 'com decisão pendente sem INTENT');
+  assertFrozen(evaluate(plain, seen([forged]), {}, [refOf(1, null, 'outra')]), 'UNLEDGERED_RESULT', 'com decisão divergente do livro (HISTORY_DIVERGES viria depois)');
   // a contradição julgada sobre R1 não depende de R2 (nem de ela ter falhado)
   assertFrozen(evaluate(plain, seen([forged]), { resultsAfterLedger: { ok: false } }), 'UNLEDGERED_RESULT', 'R2 indisponível');
   // R2 mostrando um resultado que R1 não mostrava (gravado depois da leitura do livro): nunca acusado
@@ -314,6 +316,8 @@ test('RL-03 (espelho do RV3A-1, sem ação nenhuma): recibo FORJADO da pendente 
   plantForgedRunReceipt(e, w.auditId, run);
   const view = await must(servicesOver(w, e).list(BIA, w.auditId, clock()));
   assert.deepEqual([view.ledger.state, view.ledger.runs?.open?.phase, view.ledger.runs?.confirmed], ['PROTECTED', 'C', []]);
+  // D-R1-6 (portão do runbook §2.1): a consulta das DECISÕES (a mesma vista que GET /api/link-audit/decisions/{id} devolve) traz o kid PÚBLICO da chave que assinou a pendente
+  assert.deepEqual([view.ledger.runs?.open?.originKid, run.origin?.kid], [TEST_ORIGIN.keyId, TEST_ORIGIN.keyId]);
   const { list, get } = await readsOf(w, e);
   assert.ok(list.ok, show(list));
   assert.deepEqual([list.value.results, list.value.head, list.value.pending?.seq, list.value.pending?.receipt, list.value.pending?.contentSha256, list.value.confirmation], [[], null, 1, 'PRESENT', run.contentSha256, 'LEDGER']);

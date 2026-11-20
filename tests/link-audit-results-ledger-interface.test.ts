@@ -97,7 +97,8 @@ test('vista do livro na tela: runs e decisionHead coerentes (kid de origem só c
   ]);
   // runs só existe com o livro lido e autenticado: nunca no legado, na inscrição pendente ou sem livro
   for (const state of ['NOT_REQUIRED', 'LEGACY_READ_ONLY', 'ENROLLMENT_PENDING'] as const) {
-    const ledger = { ...protectedLedger(), state, reason: state === 'LEGACY_READ_ONLY' ? 'LEDGER_ABSENT_WITH_HISTORY' : null, head: null, decisionHead: null, confirmedDecisions: 0 };
+    // runs "inofensivo" (sem operação aberta nem receita): a recusa tem de vir do estado, não de outra regra
+    const ledger = { ...protectedLedger(), state, reason: state === 'LEGACY_READ_ONLY' ? 'LEDGER_ABSENT_WITH_HISTORY' : null, head: null, decisionHead: null, confirmedDecisions: 0, runs: { state: 'OK' as const, reason: null, confirmed: [], open: null, receiptReissuable: false } };
     const finalizable = state === 'NOT_REQUIRED'; // fora de PROTECTED/NOT_REQUIRED nada é finalizável (contrato da 6B)
     assert.equal(isDecisionsPayload(clone(decisionsFixture({ finalizable, ledger })), AUDIT), false, `${state} com runs`);
     assert.equal(isDecisionsPayload(clone(decisionsFixture({ finalizable, ledger: { ...ledger, runs: undefined } })), AUDIT), true, `${state} sem runs`);
