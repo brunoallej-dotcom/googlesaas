@@ -232,8 +232,8 @@ Endurecimento de código (antes de expor): bypass `GMN_AUTH_DISABLED` desligado 
 - **Aviso novo do `npm audit` (17/11/2026): GHSA-fc5q-39xc-vjpf**, ReDoS no `picomatch` sem versão corrigida, só pela cadeia do Tailwind 3 (build/dev; fora das imagens de produção). PR #27 mergeado (`c069acb`): 11 exceções presas ao GHSA até 17/12/2026, e o gate passou a seguir a cadeia `via` dos pacotes que só herdam o aviso. Análise em `docs/phase5/dependency-audit.md`.
 - **Pendências do responsável:**
   - reavaliar a exceção do `picomatch` até 17/12/2026 (removê-la quando sair versão corrigida);
-  - nomes de titular, suplente e conferente e o local dos backups (runbook da W5);
-  - `entries[].source`, aprovação assinada pelo conferente e revisão amostral de dossiês (spec §13.3);
+  - ~~nomes de titular, suplente e conferente e o local dos backups~~ regras decididas na D15 (os nomes e os locais reais ficam só no dossiê offline); falta o responsável **assinar o aceite formal de risco** e fazer a **cerimônia da chave real** (D15.7);
+  - ~~`entries[].source`, aprovação assinada pelo conferente e revisão amostral de dossiês~~ decididos na D15.6;
   - ligar o e-mail privado nos commits (configuração da conta, *Settings → Emails*);
   - PR #14 (G5) e os PRs do Dependabot que exigem migração (#8 Tailwind 4, #9 @types/node 26, #10 bullmq 6, #11 TypeScript 7) e o #13 (grupo de atualizações pequenas).
 
@@ -272,6 +272,7 @@ Endurecimento de código (antes de expor): bypass `GMN_AUTH_DISABLED` desligado 
   - **Dependabot #47** (`9a69acf`): `next` 15.5.28 → 15.5.29 (três avisos de segurança moderados). Só código na `main`; **nada foi implantado**.
   - **W4.5** (#48, `e4a10a6`): autoteste do passo 14 com a lista completa, os fechos e `acceptedVersions: [2]`; subcomando `close-key` (heads só dos recibos externos, `UNKNOWN_SEAL_ON_SERVER` excluída, gravação exclusiva em `_closures/<R>.json`). A revisão **bloqueou** (frase exposta a diagnóstico do runtime via `NODE_OPTIONS`/`execArgv`; TOCTOU na pasta de recibos); corrigido com barreira `SIGN_RUNTIME_UNSAFE` e recibos lidos por descritor. Preload via `NODE_OPTIONS=--require` ficou como limite declarado; o controle forte é critério da W4.6/W5 (`env -i`, `--permission`, `/proc/self/cmdline` e `environ`).
   - **R1.5** (este PR): leituras estritas pelo livro (`list`/`get` conferem o hash de cada objeto contra o `RUN_CONFIRMED`, releitura limitada), contradições `UNLEDGERED_RESULT`/`RESULT_DIVERGES`/`RESULT_PUBLISHED_AFTER_ABORT`, `confirmation: 'LEDGER' | 'RECEIPT_ONLY'`, 503 × 409, leituras independentes das evidências (RL-27), `runs.open.originKid` na vista (o runbook §2.1 passa a usá-lo) e a interface.
+- **Decisões de 20/11/2026 (spec do P1 §13.4):** o responsável delegou ao manager as decisões da W5 (D15.1–D15.7: titular = o responsável, sem suplente e sem conferente distinto por ora, com aceite formal de risco e `requiresLaterReview`; duas cópias offline da chave; estação Linux sem rede, Node 22 e artefato conferido; scrypt N = 2^17; volume de manifestos só pelo CI; `operator = custodiante` passa a marcar revisão) e **autorizou a W6** (D16: uma coleta LIVE da TUVAPLAST, depois do ensaio da W5; o responsável executa a consulta paga e a cerimônia da chave real).
 - **Em andamento:** W4.6 (artefato único do `sign`: núcleo do verificador separado, esbuild reprodutível, lista literal de imports, `node --permission` e hash versionado no CI). Depois: R1.6 (reemissão do recibo de resultado e sync estrito do reenvio confirmado), R2, W5 e W6 (W6 só com autorização escrita).
 - **Pergunta nova para o responsável (junto da §13.3):** operador = custodiante não marca `requiresLaterReview`; a spec não trata o caso.
 

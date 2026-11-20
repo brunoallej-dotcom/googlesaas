@@ -18,8 +18,8 @@
 | R1 | ADR-0002: confirmação de resultados pelo livro de cabeças (fase C do resultado só pelo autor) | W0 (§16.17 revisada), W1, W3 | W2 | 🟡 R1.1 (#39), R1.2 (#41), R1.3 (#45), R1.4 (#46) e R1.5 mergeadas; R1.6 a seguir |
 | R2 | Resultado confirmado registra a proveniência que o atestou (`headSeq`, `headSealSha256`, `keyIds`); `UNAUTHENTICATED` na releitura ⇒ revisão humana | W3, R1 | W4 | ⬜ |
 | W4 | CLI `sign` (manifesto `v2`) | W1, W3, decisões §13.2 itens 1, 2 e 4 (tomadas: D10, D11, D12/D14) | — | 🟡 W4.1 (#38), W4.2 (#40), W4.3 (#42) e W4.4 (#44) mergeadas; W4.5 em revisão |
-| W5 | Procedimento, dossiê e ensaio ponta a ponta em homologação com chave descartável | W4, R1, R2 | — | ⬜ |
-| W6 | Coleta LIVE nova da TUVAPLAST (fora do código) | W5 + autorização escrita específica | — | ⬜ |
+| W5 | Procedimento, dossiê e ensaio ponta a ponta em homologação com chave descartável | W4, R1, R2 | — | ⬜ decisões tomadas (D15, spec §13.4) |
+| W6 | Coleta LIVE nova da TUVAPLAST (fora do código) | W5 + autorização escrita específica (**dada em 20/11/2026, D16**) | — | ⬜ autorizada; roda depois do ensaio da W5 |
 
 Ordem prática: W0 → {W1 ∥ W3} → {W2 ∥ R1} → {R2 ∥ W4} → W5 → W6. A R1 espera a W3 porque as duas mexem nos validadores da
 interface (`audit-page/validators.ts`).
