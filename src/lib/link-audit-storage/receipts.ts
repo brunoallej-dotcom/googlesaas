@@ -216,14 +216,19 @@ export async function confirmReceipt<R extends ReceiptShape>(profile: ReceiptPro
   for (let attempt = 0; attempt < profile.attempts; attempt++) {
     const written = await writeReceipt(profile, ops, located, receiptBody(profile, entry, previous, anchoredAt));
     if (written.ok) return written;
-    if (written.code === 'CONFLICT') return adoptExistingReceipt(profile, ops, located, entry);
+    if (written.code === 'CONFLICT') return adoptReceipt(profile, ops, located, entry);
     if (written.code === 'STORAGE_FATAL' || written.code === 'ATOMIC_WRITE_UNAVAILABLE') return written;
     last = written;
   }
   return last;
 }
 
-async function adoptExistingReceipt<R extends ReceiptShape>(profile: ReceiptProfile<R>, ops: FsOps, located: Location, entry: ReceiptSubject): Promise<StoreResult<R>> {
+/**
+ * ADOTA o recibo que JÁ EXISTE para a entrada (nunca grava): relê os recibos (selo, esquema, encadeamento) e exige que a pasta termine EXATAMENTE no recibo desta entrada, com o
+ * mesmo hash. Usado pelo `EEXIST` de `confirmReceipt` e, nos resultados protegidos pelo livro, pela conclusão da fase C (o recibo existente é adotado, nunca regravado; spec do
+ * livro §16.17.4).
+ */
+export async function adoptReceipt<R extends ReceiptShape>(profile: ReceiptProfile<R>, ops: FsOps, located: Location, entry: ReceiptSubject): Promise<StoreResult<R>> {
   const m = profile.messages;
   const read = await readReceipts(profile, ops, located, entry.auditId);
   if (!read.ok) return read;

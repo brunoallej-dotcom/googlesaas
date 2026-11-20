@@ -310,9 +310,13 @@ export interface RunRefusal {
 }
 /** Passo de gravação do livro numa finalização. `RESTART` = o prefixo mudou (outra finalização, R0 atrasado): recomeça do passo 0, consumindo tentativa. */
 export type RunStep = { readonly kind: 'OK' } | { readonly kind: 'RESTART' } | { readonly kind: 'REFUSED'; readonly refusal: RunRefusal };
-/** Passo 1 dentro do livro (`runPrepare`): `OK` traz a vista (com `runs`) da leitura avaliada e deixa na sessão a autorização de UM `RUN_INTENT` quando não há resultado aberto. */
+/**
+ * Passo 1 dentro do livro (`runPrepare`): `OK` traz a vista (com `runs`) da leitura avaliada e deixa na sessão a autorização de UM `RUN_INTENT` quando não há resultado aberto, ou
+ * (R1.4) de UMA conclusão quando o resultado aberto está em B/C com receita (origem comprovada, `PROTECTED`, `runs.state = OK`, testemunha das decisões resolvida) e quem pede é
+ * o AUTOR dele. `concludable` diz se esta sessão recebeu a autorização da conclusão (nunca revela a identidade do autor a quem não é ele).
+ */
 export type LedgerRunPrepareStep =
-  | { readonly kind: 'OK'; readonly view: LedgerView }
+  | { readonly kind: 'OK'; readonly view: LedgerView; readonly concludable?: boolean }
   | { readonly kind: 'WAIT'; readonly ms: number }
   | { readonly kind: 'RETRY'; readonly ms: number; readonly transient: boolean }
   | { readonly kind: 'REFUSED'; readonly refusal: RunRefusal };
@@ -339,7 +343,10 @@ export interface LedgerRunWriteInput extends LedgerRunInput {
  * O que o serviço de RESULTADOS recebe (`ResultsDeps.ledger`, opcional; D-R1-3). O LIVRO implementa as gravações (`LedgerPort.run*`); quem conhece as decisões (o serviço de
  * decisões) liga o contexto na ordem da §16.17.8 — R1 (testemunha dos resultados) → guarda → livro → decisões → R2 condicional — e a testemunha das decisões, e repassa os passos.
  */
-export type ResultsLedgerContext = { readonly kind: 'OK'; readonly session: unknown; readonly view: LedgerView } | { readonly kind: 'REFUSED'; readonly refusal: RunRefusal };
+export type ResultsLedgerContext =
+  /** `concludable` (R1.4): esta sessão tem a autorização de UMA conclusão B/C (só o autor, com receita). Sem ela, o serviço de resultados recusa ANTES de gravar qualquer coisa. */
+  | { readonly kind: 'OK'; readonly session: unknown; readonly view: LedgerView; readonly concludable: boolean }
+  | { readonly kind: 'REFUSED'; readonly refusal: RunRefusal };
 export interface ResultsLedgerPort {
   /** Passo 1: contexto do livro e a receita da fase A (vencida ⇒ `RUN_ABORTED` depois da releitura TOCTOU; recente ⇒ espera limitada e então `LEDGER_OPERATION_IN_PROGRESS`). */
   context(input: { readonly auditId: string; readonly actor: string; readonly nowIso: string }): Promise<ResultsLedgerContext>;
@@ -349,6 +356,11 @@ export interface ResultsLedgerPort {
   gate(input: LedgerRunInput): Promise<RunStep>;
   /** Passo 11: `RUN_CONFIRMED` (DEPOIS do recibo durável), gravado pelo autor. */
   confirmed(input: LedgerRunWriteInput): Promise<RunStep>;
+  /**
+   * Conclusão B/C (R1.4; §16.17.4): `RUN_CONFIRMED` da operação de resultado ABERTA (não desta finalização), pelo AUTOR, depois do recibo (gravado na B, adotado na C) e do sync
+   * estrito. Exige (e consome) a autorização do `context` desta sessão.
+   */
+  conclude(input: LedgerRunWriteInput): Promise<RunStep>;
 }
 
 export interface LedgerPort {
@@ -370,6 +382,8 @@ export interface LedgerPort {
   runGate(input: LedgerRunInput): Promise<RunStep>;
   /** Finalização, passo 11: `RUN_CONFIRMED` do `RUN_INTENT` desta sessão, pelo autor. */
   runConfirmed(input: LedgerRunWriteInput): Promise<RunStep>;
+  /** Conclusão B/C (R1.4): `RUN_CONFIRMED` do `RUN_INTENT` ABERTO que o `runPrepare` desta sessão autorizou concluir (só o autor). Exige (e consome) a autorização. */
+  runConclude(input: LedgerRunWriteInput): Promise<RunStep>;
   /** `CONFIRMED`: DEPOIS do recibo. Só então a resposta de sucesso. */
   confirmed(input: LedgerEntryInput): Promise<LedgerStep>;
   /**

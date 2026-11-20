@@ -16,8 +16,8 @@ import { OP_A, type ResultsEnv } from './helpers/link-audit-results-fixtures';
  *  - passo 5: as RAÍZES (pais dos nomes das pastas da auditoria) antes do RUN_INTENT; passo 6/11: a publicação do livro (já estrita); passo 8: a pasta de resultados da auditoria
  *    depois de `sk`; passo 10: a pasta de recibos da auditoria depois de `ak`;
  *  - falha (EIO/EINVAL/ENOTSUP) ⇒ NUNCA sucesso: RESULT_DURABILITY_UNKNOWN, as bases travam (escritas recusadas até reiniciar), a mensagem nunca diz "Nada foi gravado" nem cita
- *    caminho; depois do reinício o MESMO pedido conclui sem duplicar (antes do RUN_INTENT, na fase A já vencida e depois do RUN_CONFIRMED). Falhas que deixam a operação em B/C
- *    ficam abertas e PROTECTED até a R1.4 (conclusão pelo autor).
+ *    caminho; depois do reinício o MESMO pedido conclui sem duplicar (antes do RUN_INTENT, na fase A já vencida, em B/C pela conclusão do autor — R1.4; na R1.3 a operação ficava
+ *    aberta e este teste fixava isso — e depois do RUN_CONFIRMED).
  * Falhas injetadas por `FsOps` (nenhum disco real quebrado); "reinício" = `clearStorageFatal()` + serviços novos.
  */
 registerCleanup();
@@ -46,20 +46,20 @@ interface Case {
   readonly events: readonly string[];
   readonly run: boolean;
   readonly receipt: boolean;
-  /** O que o MESMO pedido faz depois do reinício. */
-  readonly afterRestart: 'CONCLUDES' | 'REPLAYED' | 'OPEN';
+  /** O que o MESMO pedido faz depois do reinício (`RECOVERS`: conclui a pendente B/C pelo autor, R1.4). */
+  readonly afterRestart: 'CONCLUDES' | 'REPLAYED' | 'RECOVERS';
 }
 const CASES: readonly Case[] = [
   { label: 'passo 5: raiz de resultados (EIO)', code: 'EIO', over: (_w, e) => ({ resultsFs: failingSync(e.base, 'EIO') }), events: BASE, run: false, receipt: false, afterRestart: 'CONCLUDES' },
   { label: 'passo 5: raiz de recibos (ENOTSUP)', code: 'ENOTSUP', over: (_w, e) => ({ resultsFs: failingSync(e.anchors, 'ENOTSUP') }), events: BASE, run: false, receipt: false, afterRestart: 'CONCLUDES' },
   { label: 'passo 6: pasta do livro ao publicar o RUN_INTENT (EINVAL)', code: 'EINVAL', over: (w) => ({ ledger: { fs: failingSync(path.join(w.ledgerDir, w.auditId), 'EINVAL', 'l000004.json') } }), events: [...BASE, 'RUN_INTENT'], run: false, receipt: false, afterRestart: 'CONCLUDES' },
-  { label: 'passo 8: pasta de resultados da auditoria (EIO)', code: 'EIO', over: (w, e) => ({ resultsFs: failingSync(path.join(e.base, w.auditId), 'EIO', 's0001.json') }), events: [...BASE, 'RUN_INTENT'], run: true, receipt: false, afterRestart: 'OPEN' },
-  { label: 'passo 10: pasta de recibos da auditoria (ENOTSUP)', code: 'ENOTSUP', over: (w, e) => ({ resultsFs: failingSync(path.join(e.anchors, w.auditId), 'ENOTSUP', 'a0001.json') }), events: [...BASE, 'RUN_INTENT'], run: true, receipt: true, afterRestart: 'OPEN' },
+  { label: 'passo 8: pasta de resultados da auditoria (EIO)', code: 'EIO', over: (w, e) => ({ resultsFs: failingSync(path.join(e.base, w.auditId), 'EIO', 's0001.json') }), events: [...BASE, 'RUN_INTENT'], run: true, receipt: false, afterRestart: 'RECOVERS' },
+  { label: 'passo 10: pasta de recibos da auditoria (ENOTSUP)', code: 'ENOTSUP', over: (w, e) => ({ resultsFs: failingSync(path.join(e.anchors, w.auditId), 'ENOTSUP', 'a0001.json') }), events: [...BASE, 'RUN_INTENT'], run: true, receipt: true, afterRestart: 'RECOVERS' },
   { label: 'passo 11: pasta do livro ao publicar o RUN_CONFIRMED (EIO)', code: 'EIO', over: (w) => ({ ledger: { fs: failingSync(path.join(w.ledgerDir, w.auditId), 'EIO', 'l000005.json') } }), events: [...BASE, 'RUN_INTENT', 'RUN_CONFIRMED'], run: true, receipt: true, afterRestart: 'REPLAYED' },
 ];
 
 for (const item of CASES) {
-  test(`RL-20 / M-R17: fsync falho no ${item.label} ⇒ nunca sucesso, RESULT_DURABILITY_UNKNOWN, base trava, sem "Nada foi gravado" nem caminho; depois do reinício o mesmo pedido ${item.afterRestart === 'OPEN' ? 'encontra a operação aberta (R1.4)' : 'conclui sem duplicar'}`, async () => {
+  test(`RL-20 / M-R17: fsync falho no ${item.label} ⇒ nunca sucesso, RESULT_DURABILITY_UNKNOWN, base trava, sem "Nada foi gravado" nem caminho; depois do reinício o mesmo pedido ${item.afterRestart === 'RECOVERS' ? 'conclui a pendente pelo autor (R1.4)' : 'conclui sem duplicar'}`, async () => {
     const { w, e } = await protectedWorld();
     const f = finalizerOver(w, e, item.over(w, e));
     const body = await bodyNow(f, OP_A, w.auditId);
@@ -81,17 +81,11 @@ for (const item of CASES) {
     // reinício
     clearStorageFatal();
     const restarted = await finalizerOver(w, e, { ledger: AGED_OTHERS }).results.finalize(OP_A, w.auditId, body);
-    if (item.afterRestart === 'OPEN') {
-      assert.ok(!restarted.ok && restarted.code === 'RESULT_PENDING_UNCONFIRMED', show(restarted));
-      const view = await must(servicesOver(w, e).list(BIA, w.auditId, clock()));
-      assert.deepEqual([view.ledger.state, view.ledger.runs?.open?.phase], ['PROTECTED', item.receipt ? 'C' : 'B']);
-      assert.deepEqual((await runsOf(e, w.auditId)).all.length, 1, 'sem duplicar');
-      return;
-    }
     assert.ok(restarted.ok, show(restarted));
-    assert.equal(restarted.value.replayed, item.afterRestart === 'REPLAYED');
+    assert.equal(restarted.value.replayed, item.afterRestart !== 'CONCLUDES');
+    assert.equal(restarted.value.recoveredPending, item.afterRestart === 'RECOVERS');
     const records = await ledgerRecords(w);
-    const expected = item.events.length === 4 ? [...BASE, 'RUN_INTENT', 'RUN_ABORTED', 'RUN_INTENT', 'RUN_CONFIRMED'] : [...BASE, 'RUN_INTENT', 'RUN_CONFIRMED'];
+    const expected = item.events.length === 4 && item.afterRestart === 'CONCLUDES' ? [...BASE, 'RUN_INTENT', 'RUN_ABORTED', 'RUN_INTENT', 'RUN_CONFIRMED'] : [...BASE, 'RUN_INTENT', 'RUN_CONFIRMED'];
     assert.deepEqual(records.map((r) => r.event), expected);
     const after = await runsOf(e, w.auditId);
     assert.deepEqual([after.all.length, after.runs.length], [1, 1], 'exatamente um resultado');
