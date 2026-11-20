@@ -67,7 +67,7 @@ test('R2: releitura FRESCA dos resultados (revalidate) acusa RESULT_LEDGER_MISMA
       // ENQUANTO A está no prepare (livro já lido): B (processo real) grava uma decisão completa; depois um resultado é selado sobre o estado novo (cita a cabeça nova)
       const b = await runChild(w, e, { task: 'create-retry', worker: 3, actor: 'bia@empresa.com', nowIso: clock() });
       void b;
-      await sealResult(w, e);
+      await sealResult(w, e, { viaLedger: true }); // R1.5: pelo livro (sem o par RUN_* o resultado seria UNLEDGERED_RESULT, uma acusação real)
       const r = await real(auditId);
       return r;
     }

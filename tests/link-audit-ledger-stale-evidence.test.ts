@@ -33,16 +33,19 @@ function scripted(real: KnownHeadsProvider, script: ReadonlyArray<'real' | 'thro
   return { provider, calls: () => calls };
 }
 
-/** Mundo: resultado r1 selado (cita 3); decisão 2 confirmada e resultado r2 selado (cita 5); o ATACANTE remove o CONFIRMED da decisão 2 (livro atrasado: parece recuperável). */
+/**
+ * Mundo: resultado r1 selado pelo livro (cita 3; RUN_* em 4 e 5); decisão 2 confirmada (6 e 7) e resultado r2 selado pelo livro (cita 7; RUN_* em 8 e 9); o ATACANTE remove o
+ * CONFIRMED da decisão 2 e o que veio depois (livro atrasado: parece recuperável). R1.5: os resultados passam pela porta do livro (sem o par seriam UNLEDGERED_RESULT).
+ */
 async function worldWithTailRemoved() {
   const { w, e } = await sealedWorld();
   const real = witnessOver(w, e);
   const stale = await real(w.auditId); // retrato de ANTES do segundo resultado
   await must(w.protectedService.create(ANA, w.auditId, { record: rec.naModel() }, clock()));
-  const second = await sealResult(w, e);
-  assert.equal(second.ledgerHead?.ledgerSeq, 5);
-  fs.rmSync(ledgerPath(w, 5));
-  assert.deepEqual(await ledgerEvents(w), ['GENESIS', 'INTENT', 'CONFIRMED', 'INTENT']);
+  const second = await sealResult(w, e, { viaLedger: true });
+  assert.equal(second.ledgerHead?.ledgerSeq, 7);
+  for (const seq of [9, 8, 7]) fs.rmSync(ledgerPath(w, seq));
+  assert.deepEqual(await ledgerEvents(w), ['GENESIS', 'INTENT', 'CONFIRMED', 'RUN_INTENT', 'RUN_CONFIRMED', 'INTENT']);
   return { w, e, real, stale };
 }
 
@@ -62,11 +65,12 @@ test('TOCTOU construído: a testemunha entrega a leitura VELHA nas leituras inic
 });
 
 test('evidência MUDANDO DURANTE o RECOVER (a 3ª leitura traz o resultado que contradiz): recusa sem gravar; a mesma coisa para a criação e a revogação que tentam passar pela recuperação da fase C', async () => {
-  const { w, e, real } = await worldWithTailRemoved();
+  const { w, e, real, stale } = await worldWithTailRemoved();
   const truth = await real(w.auditId);
   const before = trees(w, e);
-  // as duas primeiras leituras mostram "nenhum resultado cita o livro" (o retrato velho que o revisor usou); a terceira é a verdade
-  const clean = { ...truth, ledgerHeads: [], unverifiedLedgerHeads: [] } as Read;
+  // as duas primeiras leituras mostram "nenhum resultado cita o livro" (o retrato velho que o revisor usou); a terceira é a verdade. R1.5: o retrato velho também não mostra o
+  // segundo resultado (senão ele mesmo já seria UNLEDGERED_RESULT na primeira leitura e o teste não exercitaria a releitura)
+  const clean = { ...truth, ledgerHeads: [], unverifiedLedgerHeads: [], runs: (stale as { runs?: unknown }).runs } as Read;
   for (const action of ['recover', 'create', 'revoke'] as const) {
     const { provider } = scripted(real, [clean, clean]);
     const service = decisionsOver(w, { ledger: ledgerFor(w, { guard: null }), knownHeads: provider });

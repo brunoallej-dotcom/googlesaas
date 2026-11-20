@@ -83,7 +83,8 @@ export function resultsFixture(over: Partial<ResultsList> = {}): ResultsList {
   const results = over.results ?? [];
   const last = results[results.length - 1];
   // por padrão o head da cadeia é o do último resultado (coerência exigida pelo validador)
-  return { definitive: true, auditId: AUDIT, results, head: last ? { seq: last.seq, sha256: last.contentSha256 } : null, pending: null, currentInputSha256: H('2'), currentDecisionsHead: null, ...over };
+  // R1.5: toda lista diz o que confirma os resultados (padrão: o livro de cabeças)
+  return { definitive: true, auditId: AUDIT, confirmation: 'LEDGER', results, head: last ? { seq: last.seq, sha256: last.contentSha256 } : null, pending: null, currentInputSha256: H('2'), currentDecisionsHead: null, ...over };
 }
 export function pendingRun(over: Partial<PendingRun> = {}): PendingRun {
   return { seq: 1, finalizedAt: '2026-10-30T12:00:00.000Z', receipt: 'MISSING', blocksFinalization: true, origin: 'PROVEN', originDetail: null, isMine: true, outcome: 'INCONCLUSIVO', level: null, coveragePercent: 11, appliedDecisionCount: 0, inputSha256: H('2'), decisionsHead: null, matchesCurrent: true, contentSha256: H('4'), ...over };
@@ -99,7 +100,7 @@ export function runDetail(over: Partial<RunDetail> = {}): RunDetail {
     ...over,
   };
 }
-export const detailResponse = (over: Partial<RunDetailResponse> = {}): RunDetailResponse => ({ stale: false, decisionsChanged: false, superseded: false, run: runDetail(), ...over });
+export const detailResponse = (over: Partial<RunDetailResponse> = {}): RunDetailResponse => ({ confirmation: 'LEDGER', stale: false, decisionsChanged: false, superseded: false, run: runDetail(), ...over });
 export const finalizeSuccess = (over: Partial<FinalizeSuccess> = {}): FinalizeSuccess => ({ definitive: true, replayed: false, head: head(1, '4'), anchored: true, stateChangedAfterFinalization: false, recoveredPending: false, run: runDetail(), ...over });
 
 export const ok = <T,>(value: T, status = 200): ApiOutcome<T> => ({ kind: 'ok', status, value });

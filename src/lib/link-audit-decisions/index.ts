@@ -46,6 +46,7 @@ export type {
   ResultsEvidence,
   ResultsLedgerContext,
   ResultsLedgerPort,
+  ResultsLedgerRead,
   RunDraft,
   RunRefusal,
   RunRefusalCode,

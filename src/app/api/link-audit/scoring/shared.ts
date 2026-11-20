@@ -66,8 +66,12 @@ interface Prepared {
   readonly resultsLedger: ResultsLedgerPort | null;
 }
 
-/** Autentica, limita a taxa, confere a configuração das três raízes de LEITURA e monta a prévia; qualquer exceção do chamador vira erro genérico. */
-async function prepare(request: Request, limiter: SlidingWindowLimiter): Promise<NextResponse | Prepared> {
+/**
+ * Autentica, limita a taxa, confere a configuração das três raízes de LEITURA e monta a prévia; qualquer exceção do chamador vira erro genérico. `evidence: 'OPTIONAL'` (consultas
+ * de resultados, R1.5; spec §16.17.9, RL-27): a confirmação vem do livro e NÃO depende das evidências — armazenamento de evidências ilegível não fecha a consulta (a prévia, fonte
+ * opcional de `stale`, falha e vira "sem comparação"); configuração INSEGURA (`FORBIDDEN`) continua recusada.
+ */
+async function prepare(request: Request, limiter: SlidingWindowLimiter, evidence: 'REQUIRED' | 'OPTIONAL' = 'REQUIRED'): Promise<NextResponse | Prepared> {
   const access = await requireOperator(request);
   if (isErrorResponse(access)) return access;
 
@@ -87,7 +91,7 @@ async function prepare(request: Request, limiter: SlidingWindowLimiter): Promise
   const authorize = (candidate: EvidenceActor): boolean => candidate.email === access.operator && candidate.email.length > 0;
   const reader = createEvidenceReader({ baseDir: evidenceDir, authorize });
   const storage = await reader.storageStatus(actor);
-  if (storage !== 'READY') return reply({ error: 'O armazenamento de evidências não está acessível ao servidor.', code: 'EVIDENCE_STORAGE_UNAVAILABLE' }, 503);
+  if (storage !== 'READY' && (evidence === 'REQUIRED' || storage === 'FORBIDDEN')) return reply({ error: 'O armazenamento de evidências não está acessível ao servidor.', code: 'EVIDENCE_STORAGE_UNAVAILABLE' }, 503);
   const basisReader = createScoringBasisReader({ baseDir: evidenceDir, authorize });
   // PROVA de que as evidências vieram da coleta: manifestos assinados FORA da pasta de evidências (somente leitura) + chaves PÚBLICAS de confiança. Sem as duas
   // coisas a política é a FECHADA (nada é autêntico ⇒ nenhuma finalização). Não existe valor que "confie em tudo".
@@ -160,7 +164,7 @@ export function resultsFailureResponse(failure: ResultsFailure): NextResponse {
 /** Resultados: a finalização exige as duas pastas de resultados (503 sem elas); a prévia continua funcionando sem elas. */
 export async function withResults(request: Request, mode: 'read' | 'write', handler: (ctx: ResultsContext) => Promise<NextResponse>): Promise<NextResponse> {
   return guarded(async () => {
-    const prepared = await prepare(request, mode === 'write' ? finalizeLimiter : resultsReadLimiter);
+    const prepared = await prepare(request, mode === 'write' ? finalizeLimiter : resultsReadLimiter, mode === 'write' ? 'REQUIRED' : 'OPTIONAL');
     if (prepared instanceof NextResponse) return prepared;
     const resultsDir = configuredDir(process.env.GMN_LINK_AUDIT_RESULTS_DIR);
     if (!resultsDir) return reply({ error: RESULTS_MESSAGE.RESULTS_NOT_CONFIGURED, code: 'RESULTS_NOT_CONFIGURED' }, 503);
@@ -171,7 +175,8 @@ export async function withResults(request: Request, mode: 'read' | 'write', hand
     if (mode === 'write' && !originConfig.ok) return reply({ error: RESULTS_MESSAGE.ORIGIN_KEY_NOT_CONFIGURED, code: 'ORIGIN_KEY_NOT_CONFIGURED' }, RESULTS_HTTP_STATUS.ORIGIN_KEY_NOT_CONFIGURED);
     const service = createScoringResultsService({
       ...(originConfig.ok ? { origin: originConfig.authenticator } : {}),
-      // R1.3: a finalização grava pelo livro (RUN_INTENT antes do resultado, RUN_CONFIRMED depois do recibo); livro não configurado ⇒ a porta recusa (falha fechada)
+      // R1.3: a finalização grava pelo livro (RUN_INTENT antes do resultado, RUN_CONFIRMED depois do recibo); R1.5: as consultas conferem cada objeto com o livro (`view`).
+      // Livro não configurado ⇒ a porta recusa (falha fechada; consultas 503)
       ...(prepared.resultsLedger ? { ledger: prepared.resultsLedger } : {}),
       preview: prepared.preview,
       basisReader: prepared.basisReader,

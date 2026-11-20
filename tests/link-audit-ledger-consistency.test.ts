@@ -21,13 +21,13 @@ async function raceWorld(withGuard: boolean, fireAt: Point | null) {
   const w = await ledgerWorld({ withGuard });
   const e = resultsEnv();
   await must(w.protectedService.create(ANA, w.auditId, { record: rec.c2() }, clock()));
-  await sealResult(w, e);
+  await sealResult(w, e, { viaLedger: true });
   let fired = false;
   const fire = async (point: Point): Promise<void> => {
     if (fired || point !== fireAt) return;
     fired = true;
     await must(w.protectedService.create(ANA, w.auditId, { record: rec.naModel() }, clock()));
-    await sealResult(w, e); // o resultado novo cita o livro DEPOIS dessa decisão
+    await sealResult(w, e, { viaLedger: true }); // o resultado novo cita o livro DEPOIS dessa decisão (R1.5: pelo livro, com RUN_INTENT/RUN_CONFIRMED)
   };
   const realProvider = witnessOver(w, e);
   const provider: KnownHeadsProvider = async (auditId) => {
@@ -86,7 +86,8 @@ test('inconsistência PERSISTENTE continua bloqueando em TODAS as consultas (nen
   // (a) resultado cita o livro, mas o livro perdeu a cauda
   const { w, e } = await raceWorld(false, null);
   const records = fs.readdirSync(`${w.ledgerDir}/${w.auditId}`).filter((n) => /^l\d{6}\.json$/.test(n));
-  fs.rmSync(ledgerPath(w, records.length));
+  // R1.5: a cauda é o par RUN_INTENT + RUN_CONFIRMED da finalização; o resultado cita a cabeça de DECISÕES (cauda − 2), que sai junto
+  for (const seq of [records.length, records.length - 1, records.length - 2]) fs.rmSync(ledgerPath(w, seq));
   const reader = servicesOver(w, e);
   for (let i = 0; i < 3; i += 1) {
     const view = await must(reader.list(BIA, w.auditId, clock()));
@@ -107,7 +108,7 @@ test('PROCESSOS SEPARADOS: 4 processos gravam criação e revogação sem parar 
   const w = await ledgerWorld({ withGuard: true });
   const e = resultsEnv();
   await must(w.protectedService.create(ANA, w.auditId, { record: rec.c2() }, clock()));
-  await sealResult(w, e);
+  await sealResult(w, e, { viaLedger: true });
   const reader = decisionsOver(w, { ledger: ledgerFor(w, { guard: w.guard }), knownHeads: witnessOver(w, e) });
   const writers = Promise.all([1, 2, 3, 4].map((worker) => runChild(w, e, { task: 'workload', worker, rounds: 2, actor: 'ana@empresa.com' })));
   const seen = new Map<string, number>();

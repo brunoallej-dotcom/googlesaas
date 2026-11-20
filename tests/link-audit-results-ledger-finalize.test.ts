@@ -303,14 +303,16 @@ test('RL-25: com guarda configurada a cabeça atual é publicada ANTES do RUN_IN
 
 /* ------------------------------------------------------------------ fail-closed: leitura do objeto × livro, fases B/C, capacidade */
 
-test('passo 1b (falha fechada): resultado anterior à R1.3 numa auditoria inscrita (s0001 + a0001 sem RUN_*) ⇒ RESULT_INTEGRITY e nada gravado no livro nem em resultados', async () => {
+// R1.5 (spec §16.17.5): o resultado sem RUN_* deixou de chegar ao passo 1b — a própria vista o acusa (UNLEDGERED_RESULT, congela tudo) e a avaliação desta finalização recusa
+// pelo código do estado (NOT_FINALIZABLE com o bloqueio do livro; passo 6 (a)). O 1b continua coberto pela troca G↔X do RL-31 (`link-audit-results-ledger-reads`).
+test('resultado anterior à R1.3 numa auditoria inscrita (s0001 + a0001 sem RUN_*) ⇒ UNLEDGERED_RESULT na vista, NOT_FINALIZABLE e nada gravado no livro nem em resultados', async () => {
   const { w, e } = await protectedWorld();
   const old = await finalizeAs(finalizerOver(w, e, { port: false }), OP_A, w.auditId);
   assert.ok(old.ok, show(old));
   await must(w.protectedService.create(ANA, w.auditId, { record: rec.naModel() }, clock()));
   const before = await footprintOf(w, e);
   const done = await finalizeAs(finalizerOver(w, e), OP_A, w.auditId);
-  assert.ok(!done.ok && done.code === 'RESULT_INTEGRITY', show(done));
+  assert.ok(!done.ok && done.code === 'NOT_FINALIZABLE' && (done.blockers ?? []).some((b) => b.code === 'DECISIONS_HISTORY_UNRESOLVED' && b.reasonCode === 'UNLEDGERED_RESULT'), show(done));
   assert.deepEqual(await footprintOf(w, e), before);
 });
 

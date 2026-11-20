@@ -17,25 +17,34 @@ import { decisionsOver, ledgerFor, ledgerWorld, type LedgerWorld } from './link-
 export const witnessOver = (w: LedgerWorld, e: ResultsEnv) => createResultsKnownHeads({ baseDir: e.base, anchorDir: e.anchors, otherDirs: [w.decisionsDir, w.anchorDir, w.evidenceDir, w.ledgerDir], origin: TEST_ORIGIN });
 export const servicesOver = (w: LedgerWorld, e: ResultsEnv, over: { ledger?: LedgerSource } = {}) => decisionsOver(w, { ledger: over.ledger ?? ledgerFor(w, { guard: null }), knownHeads: witnessOver(w, e) });
 
-/** Finaliza (sela) um resultado v2 sobre o estado atual da auditoria e devolve o registro selado. */
-export async function sealResult(w: LedgerWorld, e: ResultsEnv): Promise<ScoreRun> {
+/**
+ * Finaliza (sela) um resultado v2 sobre o estado atual da auditoria e devolve o registro selado. Padrão: SEM a porta do livro — grava só `s0001` + `a0001`, como antes da R1.3
+ * (os testes da R1.2 montam o par `RUN_*` à mão com `runMakersFor`; depois da R1.5 um resultado assim, sem o par, é `UNLEDGERED_RESULT`). `viaLedger`: pela porta de escrita real
+ * (R1.3: `RUN_INTENT` antes, `RUN_CONFIRMED` depois do recibo) — o resultado que a produção grava (spec §16.17.9: mudam os testes que gravam resultado direto no disco).
+ */
+export async function sealResult(w: LedgerWorld, e: ResultsEnv, options: { readonly viaLedger?: boolean } = {}): Promise<ScoreRun> {
   const decisions = servicesOver(w, e);
   const preview = previewOver({ evidenceDir: w.evidenceDir, raw: decisions });
   const evaluated = await preview.evaluate(OP_A, w.auditId);
   if (!evaluated.ok) throw new Error(`prévia: ${JSON.stringify(evaluated).slice(0, 200)}`);
-  const done = await makeService(e, preview).finalize(OP_A, w.auditId, { expectedHead: evaluated.value.decisions.head, expectedInputSha256: evaluated.value.inputSha256 as string });
+  const port = options.viaLedger ? decisions.resultsLedger : null;
+  if (options.viaLedger && !port) throw new Error('sem a porta de escrita do livro');
+  const done = await makeService(e, preview, port ? { ledger: port } : {}).finalize(OP_A, w.auditId, { expectedHead: evaluated.value.decisions.head, expectedInputSha256: evaluated.value.inputSha256 as string });
   if (!done.ok) throw new Error(`finalização: ${JSON.stringify(done).slice(0, 240)}`);
   const read = await readRunLog(e.base, w.auditId, { anchorDir: e.anchors });
   if (!read.ok) throw new Error('resultados ilegíveis');
   return read.value.runs[read.value.runs.length - 1] as ScoreRun;
 }
 
-/** Auditoria protegida com UMA decisão e um resultado v2 selado sobre ela (o resultado cita a cabeça do livro = o `CONFIRMED`). */
+/**
+ * Auditoria protegida com UMA decisão e um resultado v2 selado sobre ela PELO LIVRO (o resultado cita a cabeça de decisões = o `CONFIRMED`, posição 3; o livro ganha `RUN_INTENT`
+ * e `RUN_CONFIRMED` nas posições 4 e 5). R1.5: sem o par, o resultado seria `UNLEDGERED_RESULT`.
+ */
 export async function sealedWorld(): Promise<{ w: LedgerWorld; e: ResultsEnv; run: ScoreRun }> {
   const w = await ledgerWorld();
   const e = resultsEnv();
   await must(w.protectedService.create(ANA, w.auditId, { record: rec.c2() }, clock()));
-  return { w, e, run: await sealResult(w, e) };
+  return { w, e, run: await sealResult(w, e, { viaLedger: true }) };
 }
 
 const ROOT = path.resolve(__dirname, '..', '..');

@@ -68,7 +68,8 @@ test('RL-01 (espelho de RV3A-1): fase B + recibo FORJADO (só SHA-256) ⇒ parec
   const before = await everythingOf(w, e);
   const attack = await finalizerOver(w, e).results.finalize(OP_B, w.auditId, body);
   assert.equal(codeOf(attack), 'RESULT_PENDING_UNCONFIRMED', show(attack));
-  assert.equal((attack as { pending?: unknown }).pending, undefined, 'fase C: a pendente não vai no corpo (o DTO só sabe dizer "sem recibo"; R1.5)');
+  // R1.5 (D-18): a pendente vai no corpo com o recibo PRESENTE (o livro não confirmou; nunca é confirmação)
+  assert.equal((attack as { pending?: { receipt?: string } }).pending?.receipt, 'PRESENT', 'fase C: a pendente vai no corpo com receipt PRESENT');
   await assertUntouched(w, e, before, 'C', 'RL-01');
 });
 
@@ -114,14 +115,13 @@ for (const variant of ['B', 'C', 'C (recibo forjado)'] as const) {
   });
 }
 
-test('pendente no corpo só na fase B: a recusa de quem não é o autor traz `pending` (receipt MISSING) na B e nada na C', async () => {
+test('pendente no corpo (R1.5): a recusa de quem não é o autor traz `pending` com receipt MISSING na B e PRESENT na C', async () => {
   for (const phase of ['B', 'C'] as const) {
     const { w, e, body } = await openRunWorld(phase);
     const refused = await finalizerOver(w, e).results.finalize(OP_B, w.auditId, body);
     assert.equal(codeOf(refused), 'RESULT_PENDING_UNCONFIRMED', show(refused));
     const pending = (refused as { pending?: { receipt: string; isMine: boolean } }).pending;
-    if (phase === 'B') assert.deepEqual([pending?.receipt, pending?.isMine], ['MISSING', false]);
-    else assert.equal(pending, undefined);
+    assert.deepEqual([pending?.receipt, pending?.isMine], [phase === 'B' ? 'MISSING' : 'PRESENT', false], phase);
   }
 });
 
@@ -143,10 +143,11 @@ test('RL-06 / M-R07: " ANA@Empresa.com " conclui a fase C; " BIA@Empresa.com " r
 /* ============================================================================ RL-05: reconferências, uma por vez (fases B e C) */
 
 /** Avaliador que embrulha a prévia REAL e altera UMA coisa (só na conclusão: o pedido idêntico foi montado com a prévia real). */
-function tampered(over: { evaluate?: (value: Evaluation) => Evaluation; barrier?: Awaited<ReturnType<PreviewEvaluator['durabilityBarrier']>> }, calls: { evaluate: number; barrier: number } = { evaluate: 0, barrier: 0 }): NonNullable<FinalizerOver['evaluator']> {
+function tampered(over: { evaluate?: (value: Evaluation) => Evaluation; failWith?: 'READ_INCONSISTENT'; barrier?: Awaited<ReturnType<PreviewEvaluator['durabilityBarrier']>> }, calls: { evaluate: number; barrier: number } = { evaluate: 0, barrier: 0 }): NonNullable<FinalizerOver['evaluator']> {
   return (preview) => ({
     async evaluate(actor, auditId) {
       calls.evaluate += 1;
+      if (over.failWith) return { ok: false, code: over.failWith, issues: [] };
       const result = await preview.evaluate(actor, auditId);
       return result.ok && over.evaluate ? { ok: true, value: over.evaluate(result.value) } : result;
     },
@@ -173,7 +174,10 @@ const RECHECKS: ReadonlyArray<{ readonly label: string; readonly code: string; r
   { label: 'decisões regredidas', code: 'HISTORY_REGRESSED', over: (calls) => ({ evaluator: tampered({ evaluate: withRegressedDecisions }, calls) }) },
   { label: 'fsync na barreira de durabilidade', code: 'RESULT_DURABILITY_UNKNOWN', over: (calls) => ({ evaluator: tampered({ barrier: { ok: false, code: 'DURABILITY_UNKNOWN', issues: ['fsync simulado'] } }, calls) }) },
   { label: 'estado mudou na barreira', code: 'INPUT_CHANGED', over: (calls) => ({ evaluator: tampered({ barrier: { ok: false, code: 'INPUT_CHANGED', issues: ['mudou'] } }, calls) }) },
+  { label: 'a avaliação falha (leituras discordantes)', code: 'READ_INCONSISTENT', over: (calls) => ({ evaluator: tampered({ failWith: 'READ_INCONSISTENT' }, calls) }) },
 ];
+/** Revisão da R1.5 (`junin-01`, MINOR): toda recusa da conclusão leva a pendente com o recibo da fase (MISSING na B, PRESENT na C) — salvo durabilidade desconhecida (nada se afirma). */
+const NO_PENDING_CODES: ReadonlySet<string> = new Set(['RESULT_DURABILITY_UNKNOWN']);
 
 for (const phase of ['B', 'C'] as const) {
   for (const item of RECHECKS) {
@@ -182,8 +186,10 @@ for (const phase of ['B', 'C'] as const) {
       const before = await everythingOf(w, e);
       const done = await finalizerOver(w, e, item.over({ evaluate: 0, barrier: 0 })).results.finalize(OP_A, w.auditId, body);
       assert.equal(codeOf(done), item.code, show(done));
-      // a recusa vem do SERVIÇO, antes do armazenamento: na fase C a pendente não vai no corpo (o DTO diria "sem recibo"; R1.3 nota (5))
-      if (phase === 'C') assert.equal((done as { pending?: unknown }).pending, undefined, 'fase C: sem pendente no corpo');
+      // a recusa vem do SERVIÇO, antes do armazenamento, e leva a pendente com o recibo da fase (R1.5, D-18; revisão da R1.5): PRESENT na C, MISSING na B — salvo durabilidade
+      const pending = (done as { pending?: { receipt?: string; seq?: number } }).pending;
+      if (NO_PENDING_CODES.has(item.code)) assert.equal(pending, undefined, `${phase}: durabilidade desconhecida não afirma nada`);
+      else assert.deepEqual([pending?.seq, pending?.receipt], [1, phase === 'C' ? 'PRESENT' : 'MISSING'], `${phase}/${item.label}: a pendente vai no corpo`);
       await assertUntouched(w, e, before, phase, `${phase}/${item.label}`);
       // a recusa não é permanente: com tudo em ordem o autor conclui depois
       const own = await finalizerOver(w, e).results.finalize(OP_A, w.auditId, body);

@@ -83,7 +83,7 @@ const base = (auditId: string): string => `/api/link-audit/scoring/${auditId}`;
 const json = async (r: Response): Promise<Record<string, any>> => (await r.json()) as Record<string, any>;
 
 interface Ctx {
-  readonly w: World;
+  readonly w: World & { readonly ledgerDir: string };
   readonly dirs: Dirs;
   readonly ana: string;
   readonly auditId: string;
@@ -423,9 +423,13 @@ test('MAJOR-1 pela API (resultados): resultado pendente com AUTOR FALSIFICADO e 
   fs.writeFileSync(file, serialize(seal(run)));
   fs.rmSync(path.join(c.dirs.resultAnchors, c.auditId), { recursive: true, force: true });
   const ana = await cookie('ana@empresa.com');
-  const listed = await json(await list(c, ana));
-  assert.deepEqual([listed.results.length, listed.pending.origin, listed.pending.originDetail, listed.pending.isMine, listed.pending.outcome, listed.pending.coveragePercent], [0, 'UNPROVEN', 'MISSING', false, null, null]);
-  assert.ok(!JSON.stringify(listed).includes('ana@empresa.com') || listed.results.length === 0, 'o autor citado no arquivo não é afirmado');
+  // R1.5 (spec §16.17.5 e 16.17.9): a consulta passa pelo livro, que confirmou o resultado ORIGINAL; o arquivo trocado na mesma posição é RESULT_DIVERGES ⇒ 409 sem dado
+  // nenhum (nem a pendente, nem o autor citado no arquivo). Antes da R1.5 a lista mostrava a pendente com a origem NÃO comprovada.
+  const listedResponse = await list(c, ana);
+  const listed = await json(listedResponse);
+  assert.deepEqual([listedResponse.status, listed.code, listed.results, listed.pending], [409, 'RESULT_INTEGRITY', undefined, undefined]);
+  assert.ok((listed.issues as string[]).includes('livro: RESULT_DIVERGES'), JSON.stringify(listed));
+  assert.ok(!JSON.stringify(listed).includes('ana@empresa.com'), 'o autor citado no arquivo não é afirmado');
   const receiptsBefore = hashTree(c.dirs.resultAnchors);
   const attempt = await post(c, body, ana); // o "autor" nomeado reenvia o pedido que a interface monta
   const failure = await json(attempt);
@@ -509,4 +513,57 @@ test('PROVA DE COLETA pela API: captura forjada SÓ na pasta de evidências, dep
   const attempt = await post(c, { expectedHead: body.finalization.expectedHead, expectedInputSha256: body.finalization.expectedInputSha256 ?? first.expectedInputSha256 });
   assert.equal(attempt.status, 409);
   assert.deepEqual([...all(c), ...mine(c)], before, 'nada gravado');
+});
+
+/* ------------------------------------------------------------------------------------------------ R1.5: consultas pelo livro (spec do livro §16.17.9) */
+test('R1.5 pela API: consultas confirmadas pelo livro (confirmation LEDGER); evidências ilegíveis NÃO fecham as consultas (RL-27), mas a finalização continua exigindo-as; livro não configurado ⇒ 503 RESULTS_STORAGE_UNAVAILABLE (RL-39)', async () => {
+  const c = await setup();
+  const seen = await preview(c);
+  assert.equal((await post(c, seen)).status, 201);
+  const listed = await list(c);
+  const lb = await json(listed);
+  assert.deepEqual([listed.status, lb.confirmation, lb.results.length, lb.pending], [200, 'LEDGER', 1, null]);
+  assert.match(lb.integrity.note, /livro de cabeças/, 'a nota de integridade diz que só vale o confirmado pelo livro');
+  const one = await json(await detail(c, '1'));
+  assert.equal(one.confirmation, 'LEDGER');
+
+  // RL-27: o armazenamento de evidências some (ilegível): a consulta segue, confirmada pelo livro, sem comparação com o estado atual
+  const aside = `${c.w.evidenceDir}-fora`;
+  fs.renameSync(c.w.evidenceDir, aside);
+  try {
+    const blind = await list(c);
+    const bb = await json(blind);
+    assert.deepEqual([blind.status, bb.confirmation, bb.results.length, bb.results[0]?.stale, bb.results[0]?.decisionsChanged], [200, 'LEDGER', 1, null, null], JSON.stringify(bb).slice(0, 200));
+    assert.equal((await detail(c, '1')).status, 200);
+    const write = await post(c, seen);
+    assert.deepEqual([write.status, (await json(write)).code], [503, 'EVIDENCE_STORAGE_UNAVAILABLE'], 'a finalização continua exigindo as evidências');
+  } finally {
+    fs.renameSync(aside, c.w.evidenceDir);
+  }
+
+  // RL-39: sem o livro configurado, nada é exibido (503) — nunca "sem livro = confie no recibo"
+  applyLedgerEnv(env, null);
+  try {
+    for (const r of [await list(c), await detail(c, '1')]) {
+      const failure = await json(r);
+      assert.deepEqual([r.status, failure.code, failure.results, failure.run], [503, 'RESULTS_STORAGE_UNAVAILABLE', undefined, undefined]);
+      assert.ok((failure.issues as string[]).includes('livro: NOT_CONFIGURED'), JSON.stringify(failure));
+      assert.match(failure.error, /livro de cabeças/);
+    }
+  } finally {
+    applyLedgerEnv(env, c.w);
+  }
+});
+
+test('R1.5 pela API: evidências em pasta INSEGURA (dentro do projeto) continuam recusadas também nas consultas (só a ilegibilidade é tolerada)', async () => {
+  const c = await setup();
+  const seen = await preview(c);
+  assert.equal((await post(c, seen)).status, 201);
+  env.GMN_LINK_AUDIT_EVIDENCE_DIR = path.resolve(__dirname, '..', 'public');
+  try {
+    const r = await list(c);
+    assert.deepEqual([r.status, (await json(r)).code], [503, 'EVIDENCE_STORAGE_UNAVAILABLE']);
+  } finally {
+    env.GMN_LINK_AUDIT_EVIDENCE_DIR = c.w.evidenceDir;
+  }
 });

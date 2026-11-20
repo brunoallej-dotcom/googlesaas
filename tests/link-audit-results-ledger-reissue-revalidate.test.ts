@@ -5,8 +5,8 @@ import type { KnownHeadsProvider, KnownHeadsRead, LedgerPort, LedgerStep } from 
 import { ledgerRefOf, ledgerSnapshotOf, readLog } from '../src/lib/link-audit-decisions/store';
 import type { LedgerHead, ResultsEvidence } from '../src/lib/link-audit-ledger';
 import { ANA, anchorPath, BIA, clock, hashTree, must, rec, registerCleanup } from './helpers/link-audit-decisions-fixtures';
-import { decisionsOver, ledgerEvents, ledgerFor, ledgerRecords, ledgerWorld, NO_RESULTS, type LedgerWorld } from './helpers/link-audit-ledger-fixtures';
-import { hashOf, runRefOf } from './helpers/link-audit-results-ledger-fixtures';
+import { decisionsOver, LEDGER_AUTH_A, ledgerEvents, ledgerFor, ledgerRecords, ledgerWorld, NO_RESULTS, type LedgerWorld } from './helpers/link-audit-ledger-fixtures';
+import { appendLedger, hashOf, runIntentMaker, runRefOf } from './helpers/link-audit-results-ledger-fixtures';
 
 /*
  * Revisão independente da R1.2 (19/11/2026, `junin-02`, MAJOR) — a REEMISSÃO do recibo de uma decisão (`prepare` no ramo `HISTORY_UNRESOLVED`/`REISSUE_RECEIPT`)
@@ -106,6 +106,8 @@ test('REISSUE-R2: resultado, recibo, citação ou indício que a releitura R2 mo
   const port = ledgerFor(w, { guard: null });
   const { cite, contradicting } = await citations(w);
   const sha = hashOf('resultado-concorrente');
+  // R1.5: a finalização concorrente gravou o RUN_INTENT dela ANTES de publicar (passo 6); sem ele, o resultado visto em R1 seria UNLEDGERED_RESULT
+  await appendLedger(w, LEDGER_AUTH_A, runIntentMaker({ runSha256: sha }));
   const pendingRun: ResultsEvidence = { ...EMPTY, hasResults: true, ledgerHeads: [cite], runs: { anchored: [], pending: runRefOf(1, sha, { ledgerHead: cite }) } };
   const anchoredRun: ResultsEvidence = { ...EMPTY, hasResults: true, ledgerHeads: [cite], runs: { anchored: [runRefOf(1, sha, { ledgerHead: cite })], pending: null } };
   const legacy: ResultsEvidence = { ...EMPTY, hasResults: true };
