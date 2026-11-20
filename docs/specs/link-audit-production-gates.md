@@ -104,23 +104,38 @@ resultado de produção**, separando o que é código, que o manager faz sozinho
   - `latest` indisponível ⇒ `HISTORY_UNRESOLVED` com `GUARD_UNAVAILABLE` (`model.ts:489`);
   - cabeça da guarda ausente do livro ⇒ `GUARD_MISMATCH` (`model.ts:517-519`);
   - livro ausente com registro na guarda ⇒ `LEDGER_REMOVED_WITNESSED` (`model.ts:493-494`);
-  - nova operação, novo `RUN_INTENT` e `ENROLL` exigem publicar a cabeça antes (`service.ts:763`, `:893`, `:972`).
+  - uma nova operação de decisão (`prepare`) e um novo `RUN_INTENT` publicam a cabeça **anterior** antes de começar e
+    recusam com `LEDGER_GUARD_UNAVAILABLE` se não conseguirem (`service.ts:763`, `:893`);
+  - o `ENROLL` é diferente: grava o `GENESIS` primeiro e publica **depois**. Se a publicação falhar, ele recusa com
+    `LEDGER_GUARD_UNAVAILABLE`, mas o `GENESIS` já está no livro (`service.ts:969-972`).
   - O limite travado em teste está em `tests/link-audit-ledger-guard.test.ts:56`: sem guarda, o rollback coordenado
     **não** é detectado.
 - **Lacunas do contrato R6-10 no código de hoje:**
   - **GE-R3/GE-R6:** com a guarda lida, `head: null` diante de um livro de qualquer tamanho vira só `BEHIND`, e a vista
     continua `PROTECTED` (`model.ts:577-582`). "Nunca publicou" e "esqueceu" saem iguais.
   - **GE-R4:** `BEHIND` não tem limite. Qualquer atraso continua `PROTECTED` (`model.ts:577`).
-  - **GE-R5:** depois de um fecho ou de uma receita, o retorno booleano de `publishGuard` é **ignorado**
-    (`service.ts:555`, `:590`, `:671`, `:690`, `:710`, `:732`, `:806`, `:829`, `:923`). Só as chamadas *antes* de uma
-    operação nova o conferem (`:763`, `:893`, `:972`).
+  - **GE-R5:** em nove pontos, o retorno booleano de `publishGuard` é **ignorado** depois de um registro já gravado no
+    livro (tabela abaixo). Só conferem o retorno as publicações de `prepare` e `RUN_INTENT`, antes de uma operação nova
+    (`:763`, `:893`), e a do `ENROLL`, depois do `GENESIS` (`:972`).
+
+    | # | `service.ts` | Função | Registro já gravado | Fluxo |
+    |---|---|---|---|---|
+    | S1 | `:555` | `closeRun` (de `runConfirmed` e `runConclude`) | `RUN_CONFIRMED` | fecho de resultado; a resposta é final |
+    | S2 | `:590` | `abortStaleRun` (de `runPrepare`) | `RUN_ABORTED` (fase A vencida) | segue para uma finalização nova |
+    | S3 | `:671` | `prepare`, receita da fase C | `CONFIRMED` de decisão | segue para a operação pedida ou termina (`RECOVER`) |
+    | S4 | `:690` | `prepare`, receita de aborto | `ABORTED` de decisão | idem |
+    | S5 | `:710` | `prepare`, `RECOVER` | `RUN_ABORTED` (fase A vencida) | idem |
+    | S6 | `:732` | `prepare`, `RECOVER` | `CHECKPOINT` da chave atual | termina (manutenção) |
+    | S7 | `:806` | `reissue` | `RECEIPT_REISSUED` | a resposta é final |
+    | S8 | `:829` | `confirmed` | `CONFIRMED` de decisão | a resposta é final |
+    | S9 | `:923` | `runGate`, prazo do dono vencido | `RUN_ABORTED` próprio | a resposta é sempre `RUN_DEADLINE` |
   - O adaptador sintético não tem prazo de resposta. Um adaptador de rede vai precisar de um (§5.1.4, regra 5).
 
 #### 5.1.3 Entregas
 
 | ID | Entrega | Tipo |
 |---|---|---|
-| GE-E1 | Adaptador real atrás de `ExternalGuardPort`, para o provedor escolhido (Q1): prazo de resposta, respostas validadas com zod e erro ⇒ `{ ok: false }`, nunca "nenhuma cabeça" | código |
+| GE-E1 | Adaptador real atrás de `ExternalGuardPort`, para o provedor escolhido (Q1): prazo de resposta, respostas validadas com zod, erro ⇒ indisponível (nunca "nenhuma cabeça"), e `publish` com o motivo da recusa (`CONFLICT`, `STALE`, indisponível) conforme a regra 7 da §5.1.4. A porta muda junto, com o adaptador sintético ajustado | código |
 | GE-E2 | Ligação em `ledgerForRoutes()`. A credencial da guarda é lida só pelo módulo do livro, como as chaves (`ledger/config.ts:26-27`). Sem credencial, o estado continua `NOT_CONFIGURED`, que **não passa no portão** (§10.1, G-1) | código |
 | GE-E3 | Contrato R6-10 no modelo e no serviço: regras 1 a 4 da §5.1.4 | código |
 | GE-E4 | Se Q1 = opção 1: migração versionada em `supabase/proposed/`, com conferência de privilégios no próprio SQL, como a `003` faz (`supabase/proposed/003_rls_hardening.sql:34-43`), e o rollback correspondente. O responsável a aplica em produção | código + ação do responsável |
@@ -136,7 +151,7 @@ resultado de produção**, separando o que é código, que o manager faz sozinho
    histórico anterior valeria o que vale no instante da publicação, como o L4 da spec do livro §13). Isso exige o papel
    administrativo (§5.2). Consequência: nenhuma auditoria inscrita sem guarda entra no uso de produção.
 2. **Primeira cabeça.** `head: null` é aceito só com o livro em `ledgerSeq ≤ 1`, que é o caso do `GENESIS` gravado com a
-   publicação interrompida (`service.ts:972`). Com dois ou mais registros, `head: null` ⇒ `HISTORY_UNRESOLVED`, com uma
+   publicação interrompida (o `ENROLL` publica **depois** do `GENESIS`, `service.ts:969-972`). Com dois ou mais registros, `head: null` ⇒ `HISTORY_UNRESOLVED`, com uma
    razão nova (nome proposto `GUARD_HEAD_MISSING`).
 3. **Atraso máximo.**
    - `L_max` é o maior número de registros que o protocolo grava entre duas publicações obrigatórias, contando as famílias
@@ -146,29 +161,52 @@ resultado de produção**, separando o que é código, que o manager faz sozinho
      toda operação nova publica antes de começar.
    - **Janela residual declarada:** a guarda detecta o retrocesso a qualquer ponto **anterior à última cabeça
      publicada**. Um retrocesso dentro da última operação ainda não publicada passa (no máximo `L_max` registros).
-4. **Falha de publicação depois do fecho.** A operação já está durável no livro. A resposta é de **sucesso**, com
-   `externalGuard: BEHIND` na vista e um evento de alarme. Responder falha levaria o cliente a reenviar uma decisão já
-   confirmada. A próxima operação continua recusando enquanto não conseguir publicar (`service.ts:763`, `:893`, `:972`).
+4. **Falha de publicação depois de um registro gravado** (os nove pontos S1–S9 da §5.1.2). O registro já está durável no
+   livro, então nunca se responde como se nada tivesse sido gravado: o cliente reenviaria uma decisão já confirmada.
+   Por ponto:
+   - **S1, S7, S8** (resposta final) e **S6** (manutenção que termina): a resposta é de **sucesso**, com
+     `externalGuard: BEHIND` na vista e o evento de alarme;
+   - **S3, S4, S5** quando a sessão termina num `RECOVER`: igual a S6;
+   - **S2, S3, S4, S5** quando a sessão segue para uma operação nova: a publicação obrigatória seguinte (`:763` ou
+     `:893`) recusa com `LEDGER_GUARD_UNAVAILABLE`, e o alarme é emitido no ponto da falha;
+   - **S9:** a resposta continua `RUN_DEADLINE`, com `BEHIND` na vista e o alarme.
+
+   Em todos os casos, a próxima operação continua recusando enquanto não conseguir publicar (`:763`, `:893`).
 5. **Indisponibilidade.** Erro ou prazo esgotado no `latest` ⇒ `GUARD_UNAVAILABLE` ⇒ `HISTORY_UNRESOLVED`
    (`model.ts:489`). A falha é fechada **também nas leituras**: com o provedor fora do ar, nenhuma decisão aparece como
    vigente e nada é finalizável. O prazo de resposta e a política ficam para a Q3.
 6. **"Esqueceu".** O servidor não guarda estado entre requisições, então não percebe sozinho uma guarda que regrediu. Ser
    append-only e monotônica torna essa regressão impossível sem comprometer o provedor. Quem detecta é a reconciliação
    externa (GE-E5), que compara com o próprio registro anterior.
-7. **Inserção forjada.** Quem tem a credencial de escrita consegue inserir registros. Para que isso nunca esconda um
-   retrocesso:
-   - `latest` devolve o **maior** `ledgerSeq`;
-   - toda inserção exige `ledgerSeq` maior que o maior já gravado para a auditoria.
-   - Assim, inserir só **congela** a auditoria (DoS, a mesma classe do L6 da spec do livro §13).
+7. **Publicação: idempotência e monotonia.** A porta já trata como idempotente a republicação do mesmo par
+   (`guard.ts:13`; o adaptador sintético aceita o par que já existe em qualquer posição, `guard.ts:35-36`). O provedor
+   real decide, de forma atômica por auditoria:
+   - **o mesmo trio** `(auditId, ledgerSeq, sha256)` já gravado ⇒ **aceito**, sem registro novo (idempotente), em
+     qualquer posição;
+   - **mesmo `ledgerSeq` com outro `sha256`** ⇒ **recusado** (conflito);
+   - **`ledgerSeq` novo e menor que o maior já gravado** ⇒ **recusado** (atrasado);
+   - **`ledgerSeq` maior que o maior** ⇒ gravado.
+
+   `latest` devolve o **maior** `ledgerSeq`. Com essas regras, quem tem a credencial de escrita não consegue esconder um
+   retrocesso: só consegue **congelar** a auditoria, por exemplo publicando uma sequência falsa acima da real (DoS, a
+   mesma classe do L6 da spec do livro §13).
+
+   A porta passa a devolver o motivo da recusa (`CONFLICT`, `STALE` ou indisponível) em vez de só `{ ok: false }`. Isso
+   evita um falso alarme numa corrida legítima: o processo A grava o registro 5 e, antes de publicá-lo, o processo B
+   grava 6 e 7 e publica 7; a publicação atrasada de A é recusada como `STALE`. Nesse caso, o serviço relê o `latest`, e
+   se a cabeça maior da guarda está no livro (é prefixo), a publicação está coberta e não há alarme. `CONFLICT` sempre
+   gera alarme.
 8. **Formato do registro:** `{auditId, ledgerSeq, sha256}` mais a hora do provedor, que é só informativa (a ordem vale
    pelo `ledgerSeq`). O `auditId` vai em claro ou como HMAC com chave própria (Q5).
 
 #### 5.1.5 Casos de borda
 
-- **Auditoria nova:** o `GENESIS` publica; se a publicação falhar, o `ENROLL` responde `LEDGER_GUARD_UNAVAILABLE`
-  (`service.ts:972`), o livro fica com 1 registro e `head: null`, que a regra 2 aceita. A próxima operação publica antes.
-- **Corrida entre processos:** a publicação do mesmo par é idempotente; um par diferente na mesma posição falha
-  (`guard.ts:13`). O provedor tem de garantir isso de forma atômica (restrição única `(auditId, ledgerSeq)`).
+- **Auditoria nova:** o `ENROLL` grava o `GENESIS` e só então publica. Se a publicação falhar, ele responde
+  `LEDGER_GUARD_UNAVAILABLE` (`service.ts:969-972`), o livro fica com 1 registro e `head: null`, que a regra 2 aceita. A
+  primeira operação seguinte (`prepare` ou `RUN_INTENT`) publica antes de começar.
+- **Corrida entre processos:** regra 7. O mesmo trio é idempotente; um par diferente na mesma posição é conflito; a
+  publicação atrasada de um processo, já coberta por uma cabeça maior, não gera alarme. O provedor garante isso de forma
+  atômica (restrição única `(auditId, ledgerSeq)` e trava por auditoria).
 - **Resultados:** os registros `RUN_*` estão no mesmo livro, então a guarda cobre também a confirmação de resultados
   (ADR-0002) sem trabalho a mais.
 - **Restauração de backup mais velho que a guarda:** a guarda fica à frente do livro restaurado ⇒ `GUARD_MISMATCH` e a
@@ -202,27 +240,35 @@ VPS. Contra restauração errada de backup e contra quem só escreve nos volumes
 | | (1) Tabela append-only no **Supabase** | (2) Repositório **GitHub privado** separado | (3) Armazenamento com **Object Lock** |
 |---|---|---|---|
 | Custo e serviço | Nenhum serviço novo (o projeto já usa o Supabase); custo zero no plano atual (**a confirmar** o plano) | Conta existente; regra de proteção em repositório privado exige plano pago (ver abaixo) | **Pago e fornecedor novo: exige autorização** |
-| Imutabilidade | Por gatilho e privilégios do Postgres; quebrável por quem é dono do projeto | Por regra de proteção (histórico sem push forçado); quebrável pelo dono do repositório | Modo *compliance*: nem a conta raiz encurta a retenção (**a confirmar** por fornecedor) |
-| Domínio de falha | Fora da VPS; mesmo projeto dos dados de prospecção | Fora da VPS; mesma conta do código, do CI e do deploy | Fora da VPS; conta separada |
-| Credencial na VPS | Papel Postgres dedicado: só `INSERT` e `SELECT` na tabela | Token fine-grained: só `contents:write` nesse repositório | Chave só com `PutObject` (sem apagar, sem contornar a retenção) |
+| Imutabilidade | Por gatilho e privilégios do Postgres; **quebrável pelo dono ou administrador do projeto** | Por regra de proteção (histórico sem push forçado); quebrável pelo dono do repositório | Modo *compliance*: nem a conta raiz encurta a retenção (**a confirmar** por fornecedor) |
+| Domínio de falha | Fora da VPS, mas **dentro do projeto Supabase**, o mesmo dos dados de prospecção | Fora da VPS; mesma conta do código, do CI e do deploy | Fora da VPS; conta separada |
+| Independência contra o dono da conta | **Não** | **Não** | **Sim** (retenção que nem o dono encurta) |
+| Credencial na VPS | Papel Postgres dedicado: só executa a função de publicação e lê; sem `INSERT` direto, `UPDATE`, `DELETE` ou `TRUNCATE` | Token fine-grained: só `contents:write` nesse repositório | Chave só com `PutObject` (sem apagar, sem contornar a retenção) |
 | Dependência nova | Cliente Postgres (`pg`) para conexão direta; revisão de cadeia de suprimento | Nenhuma (API REST) | SDK S3 ou assinatura manual |
 | Disponibilidade | Toda leitura da Fase 6 depende do Supabase | Toda leitura depende da API do GitHub | Toda leitura depende do fornecedor |
 
 **Opção (1): Supabase, desenho mínimo.** Tudo por migração versionada (GE-E4); nada no console.
 
-- Tabela num **esquema dedicado, não exposto pela API REST** do Supabase, com dono `postgres`.
-- Papel de login dedicado (nome proposto `gmn_guard_writer`) com `USAGE` no esquema e só `INSERT` e `SELECT` na tabela.
+- Tabela num **esquema dedicado, não exposto pela Data API (REST)** do Supabase, com dono `postgres`. O estado atual de
+  *Exposed schemas* do projeto **não está verificado** no repositório (`docs/phase5/g5-s0-relatorio-2026-11-07.md:82`),
+  por isso o PG-G08 exige a prova de que a tabela não responde pela API.
+- Escrita só por uma **função de publicação** com dono `postgres` (`SECURITY DEFINER`, com `search_path` fixado). Ela
+  toma uma trava consultiva por auditoria, aplica a regra 7 da §5.1.4 e devolve "gravado" ou "já gravado", ou recusa
+  com `CONFLICT` ou `STALE`.
+- Papel de login dedicado (nome proposto `gmn_guard_writer`) com `USAGE` no esquema, `EXECUTE` só nessa função e
+  `SELECT` na tabela. Sem `INSERT` direto, `UPDATE`, `DELETE` ou `TRUNCATE`.
 - Papel separado só de leitura para a reconciliação (`gmn_guard_reader`), cuja credencial **não** fica na VPS.
 - `REVOKE ALL` de `PUBLIC`, `anon`, `authenticated` e `service_role` na tabela e no esquema. É necessário porque os
   privilégios padrão de `postgres` em `public` ainda concedem tudo à `service_role` e os de `supabase_admin` não foram
   alterados (`NOTES.md:140`). Num esquema novo, os padrões que se aplicam são **a confirmar** no laboratório.
-- Gatilhos:
-  - `BEFORE UPDATE OR DELETE` que recusa sempre;
-  - `BEFORE TRUNCATE` de instrução que recusa sempre;
-  - gatilho de inserção que exige `ledgerSeq` maior que o maior da auditoria, sob trava consultiva por auditoria, mais a
-    restrição única `(audit_id, ledger_seq)`.
+- Defesa em profundidade, para o caso de algum privilégio escapar:
+  - restrição única `(audit_id, ledger_seq)`;
+  - gatilho `BEFORE UPDATE OR DELETE` que recusa sempre;
+  - gatilho `BEFORE TRUNCATE`, de instrução, que recusa sempre;
+  - gatilho `BEFORE INSERT` com a mesma regra 7, para que nem um `INSERT` direto contorne a monotonia.
 - Toda função criada sai sem `EXECUTE` para `PUBLIC`, porque o Postgres concede esse privilégio por padrão
-  (`trigger_set_updated_at` está assim, `NOTES.md:140`).
+  (`trigger_set_updated_at` está assim, `NOTES.md:140`); o `EXECUTE` da função de publicação vai só para o
+  `gmn_guard_writer`.
 - Conexão direta ou pelo *pooler*. Se a VPS tem IPv6 e se a conexão direta do plano exige IPv4 pago fica **a confirmar**.
 
 *O que um atacante com a VPS consegue fazer, sendo honesto:*
@@ -232,15 +278,21 @@ VPS. Contra restauração errada de backup e contra quem só escreve nos volumes
   `TRUNCATE` não é exposto pela API REST. A migração confere tudo isso com `has_table_privilege` e aborta se divergir.
   Os outros dados do projeto continuam expostos à `service_role` como hoje: está fora do escopo desta spec.
 - **Com a credencial do `gmn_guard_writer`:**
-  - insere registros, o que só serve para congelar auditorias (§5.1.4, regra 7);
-  - lê as cabeças (`auditId` e frequência de atividade, ver Q5).
-  - **Não** consegue alterar, apagar, desligar o gatilho nem mudar privilégios: isso exige ser dono da tabela.
-- **Com controle do processo:** a ameaça comum acima.
+  - publica uma **sequência falsa** acima da real para uma auditoria: a cabeça da guarda deixa de estar no livro
+    (`GUARD_MISMATCH`) e as publicações legítimas passam a ser `STALE`. É **DoS**: a auditoria congela e, sem o papel
+    administrativo, não reabre pela aplicação (§5.2);
+  - lê as cabeças (`auditId` e frequência de atividade, ver Q5);
+  - **não** consegue alterar nem apagar registros, desligar gatilhos ou mudar privilégios: isso exige ser dono da tabela.
+- **Com controle do processo web:** a ameaça comum acima. O web comprometido pode **mentir sobre o `latest`** para a
+  própria aplicação e esconder um retrocesso das telas; só a reconciliação externa detecta, e só **depois**.
 - **O que não consegue:** restaurar o banco do Supabase a um ponto anterior. Isso exige o dono do projeto, pelo painel.
 
 *Ameaças que sobram:*
 
-- conta do Supabase comprometida (o dono apaga o gatilho e as linhas);
+- **a guarda fica fora da VPS, mas dentro do projeto Supabase.** O dono ou um administrador do projeto pode alterar ou
+  remover gatilhos, privilégios e linhas, e restaurar o banco. É um risco declarado: se a exigência for independência
+  também contra o dono do projeto, só a opção (3) atende;
+- conta do Supabase comprometida (o mesmo efeito do item anterior);
 - raio de impacto: o projeto é o mesmo dos dados de prospecção, cujo RLS (G5) ainda está "pendente de homologação
   funcional" (`NOTES.md:140`);
 - pausa do projeto por inatividade, conforme o plano (**a confirmar**), que vira indisponibilidade com falha fechada.
@@ -282,12 +334,14 @@ histórico, se a regra de proteção estiver valendo. Mais a ameaça comum.
 *O que um atacante com a VPS consegue fazer:* gravar objetos novos (congela, como na regra 7). Não apaga nem sobrescreve.
 Mais a ameaça comum.
 
-> **Recomendação do manager, a decidir pelo responsável (Q1):** opção **(1) Supabase** na primeira implantação, nas
-> condições acima (esquema não exposto, `REVOKE` conferido no SQL, gatilhos, papel só `INSERT`/`SELECT`, leitura da
-> reconciliação fora da VPS). Motivo: não há serviço novo nem custo, e o domínio de falha é separado da VPS. A opção
-> **(3)** fica como reforço quando houver uso com clientes ou mais de um operador, se o responsável autorizar o custo. A
-> opção **(2)** não é recomendada: depende de plano pago ou de repositório público e concentra poder na conta que já
-> controla código, CI e deploy.
+> **Recomendação do manager, a decidir pelo responsável (Q1):** opção **(1) Supabase** na primeira implantação, **para o
+> risco definido nesta spec: a VPS comprometida** (e a restauração errada de backup). Vale nas condições acima: esquema
+> não exposto e provado pelo PG-G08, `REVOKE` conferido no SQL, escrita só pela função de publicação, gatilhos e leitura da
+> reconciliação fora da VPS. Motivo: não há serviço novo nem custo, e o domínio de falha é separado da VPS. Ela **não**
+> protege contra o dono ou administrador do projeto Supabase. Se o responsável exigir essa independência também, a
+> resposta é a opção **(3)**, com custo autorizado. A opção **(3)** também é o reforço natural quando houver uso com
+> clientes ou mais de um operador. A opção **(2)** não é recomendada: depende de plano pago ou de repositório público e
+> concentra poder na conta que já controla código, CI e deploy.
 
 ### 5.2 (b) Papel administrativo com dupla aprovação
 
