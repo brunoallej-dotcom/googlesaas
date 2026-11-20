@@ -63,6 +63,10 @@ test('validador D-R1-2: `{ action: "REISSUE_RECEIPT", ledger }` com a vista estr
   assert.equal(isLedgerActionPayload({ action: 'REISSUE_RECEIPT', ledger: ledgerWith({ runs: { ...okRuns, receiptReissuable: true } }) }), false, 'reemissão anunciada sem o recibo removido');
   assert.equal(isLedgerActionPayload({ action: 'REISSUE_RECEIPT', ledger: { ...ledgerWith(), state: 'PROTECTED', receiptReissuable: true } }), false, 'receiptReissuable de topo em PROTECTED (é só de decisão)');
   assert.equal(isLedgerActionPayload({ action: 'REISSUE_RECEIPT' }), false, 'sem a vista');
+  // revisão da R1.6 (`junin-01`, BLOQUEADOR 1): a resposta de reemissão só é aceita com a família de resultados RESOLVIDA (o servidor só responde 200 assim)
+  assert.equal(isLedgerActionPayload({ action: 'REISSUE_RECEIPT', ledger: ledgerWith() }), false, 'reemissão com runs ainda não resolvido');
+  assert.equal(isLedgerActionPayload({ action: 'REISSUE_RECEIPT', ledger: ledgerWith({ runs: undefined }) }), false, 'reemissão sem runs');
+  assert.ok(isLedgerActionPayload({ action: 'RECOVER', ledger: ledgerWith() }), 'as outras ações continuam aceitando runs não resolvido (é o estado que elas mostram)');
 });
 
 test('painel do livro: o botão "Reemitir recibo do resultado" aparece SÓ com runs.receiptReissuable (PROTECTED e HISTORY_UNRESOLVED por razão de decisão), chama a ação REISSUE_RECEIPT e respeita canAct', () => {

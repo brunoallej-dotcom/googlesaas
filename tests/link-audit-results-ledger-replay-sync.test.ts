@@ -2,13 +2,15 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
-import { RESULTS_MESSAGE } from '../src/lib/link-audit-scoring-runs/results';
-import { clearStorageFatal } from '../src/lib/link-audit-storage';
+import { syncLedgerDirectory } from '../src/lib/link-audit-ledger';
+import { RESULTS_HTTP_STATUS, RESULTS_MESSAGE } from '../src/lib/link-audit-scoring-runs/results';
+import type { ScoreRun } from '../src/lib/link-audit-scoring-runs/results-types';
+import { clearStorageFatal, seal, serialize } from '../src/lib/link-audit-storage';
 import { nodeFsOps, type FsOps } from '../src/lib/link-audit/snapshot-store';
-import { registerCleanup } from './helpers/link-audit-decisions-fixtures';
-import { ledgerRecords, type LedgerWorld } from './helpers/link-audit-ledger-fixtures';
-import { OP_A, OP_B, type ResultsEnv } from './helpers/link-audit-results-fixtures';
-import { bodyNow, everythingOf, finalizerOver, protectedWorld, type FinalizerOver } from './helpers/link-audit-results-ledger-finalize-fixtures';
+import { ANA, clock, must, rec, registerCleanup, tmpDir } from './helpers/link-audit-decisions-fixtures';
+import { ledgerRecords, ledgerWorld, type LedgerWorld } from './helpers/link-audit-ledger-fixtures';
+import { buildEvaluation, FakeEvaluator, makeService, OP_A, OP_B, receiptPath, resultsEnv, runPath, type ResultsEnv } from './helpers/link-audit-results-fixtures';
+import { bodyNow, everythingOf, finalizerOver, protectedWorld, runsOf, type FinalizerOver } from './helpers/link-audit-results-ledger-finalize-fixtures';
 
 /*
  * R1.6 — PASSO 11b: REENVIO IDEMPOTENTE DE RESULTADO JÁ CONFIRMADO PELO LIVRO (spec do livro §16.17.3, 11b; RL-28; M-R17). O 200 `replayed` só sai depois de 1b (o objeto devolvido
@@ -93,3 +95,102 @@ for (const [target, code] of TARGETS) {
     assert.deepEqual(fs.readdirSync(path.join(e.base, w.auditId)).filter((name) => /^s\d{4}\.json$/.test(name)), ['s0001.json']);
   });
 }
+
+/* ============================================================================ revisão da R1.6 (`junin-01`, BLOQUEADOR 2): o 11b relê e autentica o estado ATUAL antes do 200 */
+
+const show2 = (value: unknown): string => JSON.stringify(value).slice(0, 360);
+/** Outro resultado VÁLIDO no lugar de G (mesmo número, sem chave) e, se pedido, o recibo coerente com ele. */
+function forgeX(g: ScoreRun): { run: string; receipt: string } {
+  const { contentSha256: _hash, ...body } = g as unknown as Record<string, unknown>;
+  void _hash;
+  const x = seal({ ...body, finalizedAt: g.finalizedAt.replace(/\.\d{3}Z$/, '.999Z') }) as unknown as ScoreRun;
+  return { run: serialize(x), receipt: serialize(seal({ schemaVersion: 1, kind: 'LINK_AUDIT_SCORE_RUN_ANCHOR', auditId: g.auditId, seq: g.seq, headSha256: x.contentSha256, anchoredAt: g.finalizedAt, prevAnchorSha256: null })) };
+}
+/** FsOps dos RESULTADOS que executa `tamper` uma vez, no primeiro fsync da pasta de resultados da auditoria: exatamente entre a validação inicial (1b) e o sync do 11b. */
+function tamperAtReplaySync(e: ResultsEnv, auditId: string, tamper: () => void): FsOps {
+  let done = false;
+  return {
+    ...nodeFsOps,
+    async syncDirectory(target) {
+      if (!done && target === path.join(e.base, auditId)) {
+        done = true;
+        tamper();
+      }
+      return nodeFsOps.syncDirectory(target);
+    },
+  };
+}
+const writable = (file: string, data: string): void => {
+  fs.chmodSync(file, 0o644);
+  fs.writeFileSync(file, data);
+};
+
+test('revisão da R1.6 (BLOQUEADOR 2): RUN_CONFIRMED removido do livro entre a validação inicial e o sync do 11b ⇒ nunca 200; o livro relido não confirma mais o resultado (409 RESULT_INTEGRITY)', async () => {
+  const { w, e, body } = await confirmed();
+  const tail = path.join(w.ledgerDir, w.auditId, 'l000005.json');
+  assert.equal((await ledgerRecords(w))[4]?.event, 'RUN_CONFIRMED');
+  const replay = await finalizerOver(w, e, { resultsFs: tamperAtReplaySync(e, w.auditId, () => fs.rmSync(tail)) }).results.finalize(OP_A, w.auditId, body);
+  assert.ok(!replay.ok, show2(replay));
+  assert.deepEqual([replay.code, RESULTS_HTTP_STATUS[replay.code]], ['RESULT_INTEGRITY', 409], show2(replay));
+});
+
+test('revisão da R1.6 (BLOQUEADOR 2): sNNNN trocado no mesmo intervalo (com e sem recibo coerente) ⇒ nunca 200; o resultado relido não é o confirmado (409)', async () => {
+  for (const coherent of [false, true]) {
+    const { w, e, body } = await confirmed();
+    const g = (await runsOf(e, w.auditId)).runs[0] as ScoreRun;
+    const x = forgeX(g);
+    const tamper = (): void => {
+      writable(runPath(e, 1, w.auditId), x.run);
+      if (coherent) writable(receiptPath(e, 1, w.auditId), x.receipt);
+    };
+    const replay = await finalizerOver(w, e, { resultsFs: tamperAtReplaySync(e, w.auditId, tamper) }).results.finalize(OP_A, w.auditId, body);
+    assert.ok(!replay.ok, `recibo coerente=${coherent}: ${show2(replay)}`);
+    assert.equal(RESULTS_HTTP_STATUS[replay.code], 409, `recibo coerente=${coherent}: ${show2(replay)}`);
+    assert.ok(['RESULT_INTEGRITY', 'RESULT_ANCHOR_MISMATCH'].includes(replay.code), show2(replay));
+  }
+});
+
+test('revisão da R1.6 (BLOQUEADOR 2): pasta do livro da auditoria removida no mesmo intervalo ⇒ nunca 200 (o sync estrito do livro exige a pasta; 409 RESULT_INTEGRITY: o livro sumiu com resultado confirmado)', async () => {
+  const { w, e, body } = await confirmed();
+  const replay = await finalizerOver(w, e, { resultsFs: tamperAtReplaySync(e, w.auditId, () => fs.rmSync(path.join(w.ledgerDir, w.auditId), { recursive: true })) }).results.finalize(OP_A, w.auditId, body);
+  assert.ok(!replay.ok, show2(replay));
+  assert.deepEqual([replay.code, RESULTS_HTTP_STATUS[replay.code]], ['RESULT_INTEGRITY', 409], show2(replay));
+});
+
+test('revisão da R1.6 (BLOQUEADOR 2): sync ESTRITO do livro só para quem pede (11b e reemissão) — pasta da auditoria ausente, insegura ou ilegível ⇒ recusa; o padrão dos demais chamadores (RECOVER, adoção de fechos, barreira) continua como antes', async () => {
+  const root = tmpDir('lad-r16-led-');
+  const auditId = 'auditoria-sync-0001';
+  assert.deepEqual(await syncLedgerDirectory(root, auditId), { ok: true }, 'padrão: pasta ausente ⇒ nada a sincronizar (inalterado)');
+  const absent = await syncLedgerDirectory(root, auditId, { requireExisting: true });
+  assert.deepEqual([absent.ok, absent.ok ? null : absent.code], [false, 'ABSENT']);
+  fs.writeFileSync(path.join(root, auditId), 'não sou pasta');
+  const unsafe = await syncLedgerDirectory(root, auditId, { requireExisting: true });
+  assert.deepEqual([unsafe.ok, unsafe.ok ? null : unsafe.code], [false, 'UNSAFE_PATH']);
+  assert.deepEqual(await syncLedgerDirectory(root, auditId), { ok: true }, 'padrão inalterado (o leitor recusa a forma hostil por conta própria)');
+  fs.rmSync(path.join(root, auditId));
+  const unreadable = await syncLedgerDirectory(root, auditId, { requireExisting: true, fs: { ...nodeFsOps, async lstat() { throw Object.assign(new Error('E/S simulada'), { code: 'EIO' }); } } });
+  assert.deepEqual([unreadable.ok, unreadable.ok ? null : unreadable.code], [false, 'UNREADABLE']);
+  fs.mkdirSync(path.join(root, auditId));
+  assert.deepEqual(await syncLedgerDirectory(root, auditId, { requireExisting: true }), { ok: true }, 'pasta presente: sincroniza');
+});
+
+test('revisão da R1.6 (BLOQUEADOR 2): fora de PROTECTED o reenvio idêntico não responde 200 — no legado (livro ausente) o resultado v1 não tem RUN_CONFIRMED que o confirme', async () => {
+  const w = await ledgerWorld();
+  const e = resultsEnv();
+  await must(w.protectedService.create(ANA, w.auditId, { record: rec.c2() }, clock()));
+  fs.rmSync(path.join(w.ledgerDir, w.auditId), { recursive: true });
+  const evaluation = buildEvaluation({ auditId: w.auditId });
+  const body = { expectedHead: evaluation.decisions.head, expectedInputSha256: evaluation.inputSha256 as string };
+  assert.ok((await makeService(e, new FakeEvaluator(evaluation)).finalize(OP_A, w.auditId, body)).ok, 'v1 plantado sem o livro');
+  const replay = await makeService(e, new FakeEvaluator(evaluation), { ledger: finalizerOver(w, e).decisions.resultsLedger as NonNullable<ReturnType<typeof finalizerOver>['decisions']['resultsLedger']> }).finalize(OP_A, w.auditId, body);
+  assert.ok(!replay.ok && replay.code === 'LEDGER_LEGACY_READ_ONLY', show2(replay));
+});
+
+test('revisão da R1.6 (MENOR): o texto de RESULT_DURABILITY_UNKNOWN serve à finalização, ao reenvio e à reemissão — não afirma que "nenhum resultado foi confirmado" (no reenvio e na reemissão ele já é confirmado pelo livro)', () => {
+  const text = RESULTS_MESSAGE.RESULT_DURABILITY_UNKNOWN;
+  assert.doesNotMatch(text, /nenhum resultado foi confirmado/i);
+  assert.doesNotMatch(text, /Nada foi gravado/i);
+  assert.match(text, /NÃO é sucesso/);
+  assert.match(text, /esta tentativa/i);
+  assert.match(text, /reiniciar/);
+});

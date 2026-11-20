@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
-import type { KnownHeadsProvider, ResultsLedgerPort } from '../src/lib/link-audit-decisions';
+import type { KnownHeadsProvider, LedgerView, ResultsLedgerPort } from '../src/lib/link-audit-decisions';
 import { createUnconfiguredLedger, evaluateProtection, verifyTags, type DecisionRef, type LedgerRecord, type ProtectionInput, type ResultsEvidence } from '../src/lib/link-audit-ledger';
 import { createOriginAuthenticator } from '../src/lib/link-audit-origin';
 import { RESULTS_HTTP_STATUS } from '../src/lib/link-audit-scoring-runs/results';
@@ -445,6 +445,75 @@ test('D-R1-2: a vista atualizada que não pode ser lida DEPOIS da gravação ⇒
   assert.equal(codeOf(done), 'RESULTS_STORAGE_UNAVAILABLE', show(done));
   assert.equal(views, 1, 'a vista só é pedida depois da gravação');
   assert.equal(receiptOf(e, w.auditId, 1).headSha256, (runs[0] as ScoreRun).contentSha256, 'o recibo foi reemitido antes');
+});
+
+/* ============================================================================ revisão da R1.6 (`junin-01`, BLOQUEADOR 1): 200 só com a vista posterior consistente */
+
+const INCONSISTENT_AFTER = /recibo foi gravado.*não ficou consistente/i;
+/** FsOps do serviço de resultados que, LOGO DEPOIS de gravar o recibo reemitido, troca o arquivo físico do resultado (e opcionalmente o recibo) por X: a vista posterior o vê. */
+function swapAfterReceipt(e: ResultsEnv, auditId: string, g: ScoreRun, coherentReceipt: boolean): FsOps {
+  return {
+    ...nodeFsOps,
+    async link(from, to) {
+      await nodeFsOps.link(from, to);
+      if (to !== receiptPath(e, 1, auditId)) return;
+      const x = forgeX(g);
+      fs.chmodSync(runPath(e, 1, auditId), 0o644);
+      fs.writeFileSync(runPath(e, 1, auditId), x);
+      if (coherentReceipt) {
+        const xSha = (JSON.parse(x) as { contentSha256: string }).contentSha256;
+        fs.chmodSync(receiptPath(e, 1, auditId), 0o644);
+        fs.writeFileSync(receiptPath(e, 1, auditId), serialize(seal({ schemaVersion: 1, kind: 'LINK_AUDIT_SCORE_RUN_ANCHOR', auditId, seq: 1, headSha256: xSha, anchoredAt: g.finalizedAt, prevAnchorSha256: null })));
+      }
+    },
+  };
+}
+
+test('revisão da R1.6 (BLOQUEADOR 1): divergência introduzida ENTRE a gravação do recibo e a vista posterior (arquivo físico trocado) ⇒ nunca 200; a recusa segue a vista e diz que o recibo foi gravado mas o estado não ficou consistente', async () => {
+  for (const [label, coherent, code, status] of [
+    ['resultado trocado, recibo de G (a testemunha não confere)', false, 'RESULTS_STORAGE_UNAVAILABLE', 503],
+    ['resultado E recibo trocados por X coerente (RESULT_DIVERGES)', true, 'RESULT_INTEGRITY', 409],
+  ] as const) {
+    const { w, e, runs } = await confirmedWorld();
+    removeReceipt(e, w.auditId, 1);
+    const done = await reissueAs(w, e, OP_B, { resultsFs: swapAfterReceipt(e, w.auditId, runs[0] as ScoreRun, coherent) });
+    assert.equal(codeOf(done), code, `${label}: ${show(done)}`);
+    assert.equal(RESULTS_HTTP_STATUS[code], status);
+    assert.ok(issuesOf(done).some((issue) => INCONSISTENT_AFTER.test(issue)), `${label}: ${show(done)}`);
+  }
+});
+
+test('revisão da R1.6 (BLOQUEADOR 1): a vista posterior só vale se confirma o MESMO resultado com runs OK (PROTECTED, ou HISTORY_UNRESOLVED por razão de decisão); qualquer outra ⇒ recusa coerente', async () => {
+  const { w, e, runs } = await confirmedWorld();
+  const run = runs[0] as ScoreRun;
+  const f = finalizerOver(w, e);
+  const port = f.decisions.resultsLedger as ResultsLedgerPort;
+  const truth = await port.view({ auditId: w.auditId, nowIso: clock() });
+  assert.ok(truth.kind === 'VIEW' && truth.view.runs?.state === 'OK');
+  const real = (truth as { view: LedgerView }).view;
+  const okRuns = real.runs as NonNullable<LedgerView['runs']>;
+  const cases: ReadonlyArray<readonly [string, LedgerView, string | null]> = [
+    ['controle: PROTECTED, runs OK, mesmo resultado', real, null],
+    ['controle: HISTORY_UNRESOLVED por razão de decisão, runs OK', { ...real, state: 'HISTORY_UNRESOLVED', reason: 'RECEIPT_REMOVED' }, null],
+    ['runs OK confirmando OUTRO hash na posição', { ...real, runs: { ...okRuns, confirmed: [{ runSeq: 1, runSha256: 'd'.repeat(64) }] } }, 'RESULT_INTEGRITY'],
+    ['runs OK sem o resultado', { ...real, runs: { ...okRuns, confirmed: [] } }, 'RESULT_INTEGRITY'],
+    ['runs ainda com o recibo removido', { ...real, runs: { ...okRuns, state: 'UNRESOLVED', reason: 'RESULT_RECEIPT_REMOVED', receiptReissuable: true } }, 'RESULT_INTEGRITY'],
+    ['contradição de resultado (sem runs)', { ...real, state: 'HISTORY_UNRESOLVED', reason: 'RESULT_DIVERGES', runs: undefined }, 'RESULT_INTEGRITY'],
+    ['testemunha indisponível (sem runs)', { ...real, state: 'HISTORY_UNRESOLVED', reason: 'RESULTS_EVIDENCE_UNAVAILABLE', runs: undefined }, 'RESULTS_STORAGE_UNAVAILABLE'],
+    ['razão que não admite (LIMIT_REACHED) mesmo com runs OK', { ...real, state: 'HISTORY_UNRESOLVED', reason: 'LIMIT_REACHED' }, 'RESULT_INTEGRITY'],
+    ['livro sumiu (legado)', { ...real, state: 'LEGACY_READ_ONLY', reason: 'LEDGER_ABSENT_WITH_HISTORY', runs: undefined }, 'RESULT_INTEGRITY'],
+  ];
+  for (const [label, after, code] of cases) {
+    removeReceipt(e, w.auditId, 1);
+    const lying: ResultsLedgerPort = { ...port, async view() { return { kind: 'VIEW', view: after }; } };
+    const done = await makeService(e, f.preview, { ledger: lying }).reissueReceipt(OP_B, w.auditId, ACTION);
+    if (code === null) assert.ok(done.ok, `${label}: ${show(done)}`);
+    else {
+      assert.equal(codeOf(done), code, `${label}: ${show(done)}`);
+      assert.ok(issuesOf(done).some((issue) => INCONSISTENT_AFTER.test(issue)), `${label}: ${show(done)}`);
+    }
+    assert.equal(receiptOf(e, w.auditId, 1).headSha256, run.contentSha256, `${label}: o recibo gravado é o de G`);
+  }
 });
 
 /* ============================================================================ corpo e configuração */
