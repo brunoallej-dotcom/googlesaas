@@ -439,7 +439,8 @@ São do CLI de coleta; onde ele roda em produção é **a confirmar**.
     - **22** meios-pontos automáticos;
     - **26** com o UTM comprovado (X5);
     - **34** com o juízo humano C2 (`criteria-sources.ts:11-12`, `:106-112`).
-  - 34 em 200 dá **17 %**. Com o N/A de S4 o denominador cai para 196 e dá cerca de 17,3 %.
+  - 34 em 200 dá **17 %**. N/A não aumenta a cobertura: o denominador da publicação é fixo
+    (`onda6c-integracao-orquestracao.md` §21.4).
   - O mínimo para publicar é **40 %** (`src/lib/link-audit/scoring/ruler.ts:142`, portão `COVERAGE_MIN` em
     `scoring/publication.ts:17`; a constante de exibição está em `link-audit-scoring-runs/outcome.ts:11`).
   - O portão que falha leva a `INCONCLUSIVO` (`outcome.ts:29-31`).
