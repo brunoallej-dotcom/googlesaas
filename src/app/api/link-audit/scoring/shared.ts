@@ -161,10 +161,14 @@ export function resultsFailureResponse(failure: ResultsFailure): NextResponse {
   );
 }
 
-/** Resultados: a finalização exige as duas pastas de resultados (503 sem elas); a prévia continua funcionando sem elas. */
-export async function withResults(request: Request, mode: 'read' | 'write', handler: (ctx: ResultsContext) => Promise<NextResponse>): Promise<NextResponse> {
+/**
+ * Resultados: a finalização exige as duas pastas de resultados (503 sem elas); a prévia continua funcionando sem elas. `reissue` (R1.6; spec do livro §16.17.5, D-12): a ação de
+ * reemissão do recibo de resultado usa a MESMA autenticação, lista de operadores e limitador da finalização, mas não depende das evidências (nem da prévia) nem da chave de origem
+ * (MAJOR-3: o recibo é o que o `RUN_CONFIRMED` do livro determina) — configuração INSEGURA das evidências continua recusada.
+ */
+export async function withResults(request: Request, mode: 'read' | 'write' | 'reissue', handler: (ctx: ResultsContext) => Promise<NextResponse>): Promise<NextResponse> {
   return guarded(async () => {
-    const prepared = await prepare(request, mode === 'write' ? finalizeLimiter : resultsReadLimiter, mode === 'write' ? 'REQUIRED' : 'OPTIONAL');
+    const prepared = await prepare(request, mode === 'read' ? resultsReadLimiter : finalizeLimiter, mode === 'write' ? 'REQUIRED' : 'OPTIONAL');
     if (prepared instanceof NextResponse) return prepared;
     const resultsDir = configuredDir(process.env.GMN_LINK_AUDIT_RESULTS_DIR);
     if (!resultsDir) return reply({ error: RESULTS_MESSAGE.RESULTS_NOT_CONFIGURED, code: 'RESULTS_NOT_CONFIGURED' }, 503);

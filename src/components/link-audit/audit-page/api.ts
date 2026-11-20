@@ -1,6 +1,6 @@
 import type { AuditDetailDto } from '@/lib/link-audit-evidence';
 import { safeText } from './labels';
-import type { Blocker, DecisionRequest, DecisionsList, FinalizeRequest, FinalizeSuccess, Head, LedgerActionResult, PendingRun, PreviewPayload, ResultsList, RunDetailResponse } from './types';
+import type { Blocker, DecisionRequest, DecisionsList, FinalizeRequest, FinalizeSuccess, Head, LedgerActionKind, LedgerActionResult, PendingRun, PreviewPayload, ResultsList, RunDetailResponse } from './types';
 import { blockerOk, isDecisionsPayload, isEvidencePayload, isFinalizePayload, isHead, isLedgerActionPayload, isObj, isPreviewPayload, isResultsPayload, isRunDetailPayload } from './validators';
 
 /*
@@ -107,8 +107,11 @@ export interface AuditApi {
   resultDetail(auditId: string, seq: number, signal?: AbortSignal): Promise<ApiOutcome<RunDetailResponse>>;
   decide(auditId: string, request: DecisionRequest): Promise<ApiOutcome<Record<string, unknown>>>;
   finalize(auditId: string, request: FinalizeRequest): Promise<ApiOutcome<FinalizeSuccess>>;
-  /** Livro de cabeças: inscrever (auditoria vazia) ou recuperar (verificável). Nunca adoção/restauração: essas exigem aprovação administrativa que não existe. */
-  ledger(auditId: string, action: 'ENROLL' | 'RECOVER'): Promise<ApiOutcome<LedgerActionResult>>;
+  /**
+   * Livro de cabeças: inscrever (auditoria vazia) ou recuperar (verificável), no livro das decisões; reemitir o recibo de um resultado já confirmado pelo livro (R1.6), na rota de
+   * resultados. Nunca adoção/restauração: essas exigem aprovação administrativa que não existe. A resposta precisa ser a da MESMA ação.
+   */
+  ledger(auditId: string, action: LedgerActionKind): Promise<ApiOutcome<LedgerActionResult>>;
 }
 
 export const httpApi: AuditApi = {
@@ -121,7 +124,7 @@ export const httpApi: AuditApi = {
     call('POST', request.kind === 'CREATE' ? `/api/link-audit/decisions/${enc(id)}` : `/api/link-audit/decisions/${enc(id)}/revocations`, request.body, (json) => (isObj(json) && json.anchored === true && typeof json.replayed === 'boolean' && isHead(json.head) ? json : null)),
   finalize: (id, request) =>
     call('POST', `/api/link-audit/scoring/${enc(id)}/finalize`, { expectedHead: request.expectedHead, expectedInputSha256: request.expectedInputSha256 }, (json) => (isFinalizePayload(json, id) ? json : null)),
-  ledger: (id, action) => call('POST', `/api/link-audit/decisions/${enc(id)}/ledger`, { action }, (json) => (isLedgerActionPayload(json) ? json : null)),
+  ledger: (id, action) => call('POST', action === 'REISSUE_RECEIPT' ? `/api/link-audit/scoring/${enc(id)}/results` : `/api/link-audit/decisions/${enc(id)}/ledger`, { action }, (json) => (isLedgerActionPayload(json) && json.action === action ? json : null)),
 };
 
 /* nomes antigos (testes e usos externos): mesma validação, agora estrita */

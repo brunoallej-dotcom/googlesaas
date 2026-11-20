@@ -1,7 +1,7 @@
 import { useId, useState } from 'react';
 import { RotateCcw, ShieldAlert, ShieldCheck, ShieldQuestion } from 'lucide-react';
 import { formatDateTime, OUTCOME_LABELS, safeText } from './labels';
-import { isBlockingLedger, isUnresolvedWitness, type LedgerInfo, type PendingDecision, type PendingOriginDetail, type PendingRun, type WitnessInfo, type WitnessStatus } from './types';
+import { isBlockingLedger, isUnresolvedWitness, type LedgerActionKind, type LedgerInfo, type LedgerRunsInfo, type PendingDecision, type PendingOriginDetail, type PendingRun, type WitnessInfo, type WitnessStatus } from './types';
 import { BUTTON_PRIMARY, BUTTON_QUIET } from './ui-bits';
 
 /*
@@ -279,6 +279,25 @@ const RUNS_REASON: Readonly<Record<string, string>> = {
   RESULT_RECEIPT_REMOVED: 'o recibo de um resultado já confirmado pelo livro foi removido',
   RESULT_REGRESSED: 'um resultado confirmado pelo livro não está mais na pasta de resultados (volume restaurado sozinho ou arquivo removido)',
 };
+/**
+ * Família de RESULTADOS não resolvida (§16.17.5), nos dois estados em que a vista a traz (PROTECTED e HISTORY_UNRESOLVED por razão de decisão). Com o recibo de um resultado
+ * confirmado removido, QUALQUER operador o reemite (R1.6, D-12): o botão "Reemitir recibo do resultado" aparece só com `runs.receiptReissuable`.
+ */
+function RunsUnresolved({ runs, canAct, onAction }: { readonly runs: LedgerRunsInfo; readonly canAct: boolean; readonly onAction: (action: LedgerActionKind) => void }): React.JSX.Element {
+  return (
+    <p className="mt-1" data-testid="ledger-runs-unresolved">
+      Resultados: {runs.reason ? (RUNS_REASON[runs.reason] ?? 'a família de resultados não está resolvida') : 'a família de resultados não está resolvida'}. As decisões seguem vigentes; as consultas e as finalizações de resultados estão fechadas e nada foi gravado.
+      {runs.receiptReissuable && (
+        <>
+          {' '}Qualquer operador pode reemitir o recibo: o conteúdo é o que o livro já confirmou (nenhum resultado novo é confirmado).
+          <button type="button" disabled={!canAct} onClick={() => onAction('REISSUE_RECEIPT')} className={`${BUTTON_QUIET} ml-2`}>
+            Reemitir recibo do resultado
+          </button>
+        </>
+      )}
+    </p>
+  );
+}
 const RUN_PHASE_TEXT: Readonly<Record<'A' | 'B' | 'C', string>> = {
   A: 'a gravação começou e o resultado ainda não foi publicado',
   B: 'o resultado foi publicado e ainda falta o recibo (ele ainda não vale)',
@@ -302,7 +321,7 @@ const PHASE_TEXT: Readonly<Record<'A' | 'B' | 'C', string>> = {
  * proteção contra retrocesso coordenado de todos os volumes (a guarda externa é requisito de produção e não existe ainda). Ações: inscrever (auditoria
  * vazia) e recuperar (verificável); adoção/restauração exigem aprovação administrativa que não existe: a tela NÃO oferece botão para elas.
  */
-export function LedgerPanel({ ledger, canAct, onAction }: { readonly ledger: LedgerInfo; readonly canAct: boolean; readonly onAction: (action: 'ENROLL' | 'RECOVER') => void }): React.JSX.Element | null {
+export function LedgerPanel({ ledger, canAct, onAction }: { readonly ledger: LedgerInfo; readonly canAct: boolean; readonly onAction: (action: LedgerActionKind) => void }): React.JSX.Element | null {
   if (ledger.state === 'NOT_REQUIRED') return null;
   const guard = GUARD_TEXT[ledger.externalGuard] ?? '';
   if (ledger.state === 'PROTECTED') {
@@ -335,11 +354,7 @@ export function LedgerPanel({ ledger, canAct, onAction }: { readonly ledger: Led
             {runs.open.originKid !== null && <> Chave de origem do resultado: <code className="text-gmn-text">{safeText(runs.open.originKid, 32)}</code> (id público).</>} Nenhum novo resultado é registrado enquanto isso.
           </p>
         )}
-        {runs && runs.state !== 'OK' && (
-          <p className="mt-1" data-testid="ledger-runs-unresolved">
-            Resultados: {runs.reason ? (RUNS_REASON[runs.reason] ?? 'a família de resultados não está resolvida') : 'a família de resultados não está resolvida'}. As decisões seguem vigentes; as consultas e as finalizações de resultados estão fechadas e nada foi gravado.
-          </p>
-        )}
+        {runs && runs.state !== 'OK' && <RunsUnresolved runs={runs} canAct={canAct} onAction={onAction} />}
         {capacity && (
           <p className="mt-1" data-testid="ledger-capacity">
             Capacidade do livro: {capacity.usedRecords} de {capacity.maxRecords} registros · cabem {capacity.decisionsAvailable} decisão(ões) nova(s) e {capacity.revocationsAvailable} revogação(ões).
@@ -398,6 +413,11 @@ export function LedgerPanel({ ledger, canAct, onAction }: { readonly ledger: Led
             <button type="button" disabled={!canAct} onClick={() => onAction('RECOVER')} className={`${BUTTON_QUIET} mt-2`}>
               Concluir recuperação verificável
             </button>
+          )}
+          {ledger.runs && ledger.runs.state !== 'OK' && (
+            <div className="text-xs text-gmn-muted">
+              <RunsUnresolved runs={ledger.runs} canAct={canAct} onAction={onAction} />
+            </div>
           )}
         </>
       )}

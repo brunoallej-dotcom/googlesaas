@@ -10,7 +10,7 @@ import { availableRefs, captureRef, parseEvidenceRef, referencedEvidence, report
 import { assertBase, DURABILITY_UNPROVEN_MESSAGE, type StoreErrorCode, type StoreFailure } from './files';
 import { canSupersede, effectiveScoringRecords, slotConflicts, toScoringRecord, type DecisionView, type LogState } from './project';
 import { appendEntry, assertDecisionBase, findReplay, readLog, syncDecisionDirectories, type OperationSpec, type PendingFailure, ledgerSnapshotOf } from './store';
-import { isLedgerBlocking, LEDGER_NOT_REQUIRED, NOT_REQUIRED_VIEW, type LedgerRefusal, type LedgerSource, type LedgerView, type ResultsEvidence, type ResultsLedgerContext, type ResultsLedgerPort, type ResultsLedgerRead, type ResultsRuns, type RunRef, type RunRefusal } from './ledger-port';
+import { isLedgerBlocking, LEDGER_NOT_REQUIRED, NOT_REQUIRED_VIEW, type LedgerRefusal, type LedgerRunPrepareInput, type LedgerRunReissueStep, type LedgerSource, type LedgerView, type ResultsEvidence, type ResultsLedgerContext, type ResultsLedgerPort, type ResultsLedgerRead, type ResultsRuns, type RunRef, type RunRefusal } from './ledger-port';
 import { evaluateKnownHeads, isUnresolved, WITNESS_NOT_REQUIRED, type KnownHeadsRead, type WitnessSource, type WitnessVerdict } from './witness';
 import {
   AUDIT_ID_PATTERN,
@@ -1093,6 +1093,36 @@ export function createDecisionService(options: DecisionServiceOptions) {
    * limitada nas corridas; esgotadas ⇒ `LEDGER_OPERATION_IN_PROGRESS`, nada gravado. A trava das decisões NÃO é tomada (decisões nunca esperam por resultado, D-8). Sem livro ou sem
    * testemunha dos resultados (`WITNESS_NOT_REQUIRED`, só testes da 6B isolada) não há porta: a finalização segue o caminho de antes (R1.5 o marcará `RECEIPT_ONLY`).
    */
+  /**
+   * A leitura que o livro avalia para os RESULTADOS (§16.17.8): R1 (testemunha dos resultados) → guarda → livro (`begin`) → decisões e recibos, a R2 sob demanda (`freshResults`) e a
+   * testemunha das DECISÕES (R7-06). A mesma para a finalização (`runPrepare`) e para a reemissão do recibo de resultado (`runReissue`, R1.6). `null` = histórico de decisões ilegível.
+   */
+  async function resultsLedgerInput(port: NonNullable<typeof ledgerPort>, auditId: string, actor: string, nowIso: string, rechecks: number): Promise<LedgerRunPrepareInput | null> {
+    const heads = await readKnownHeads(auditId);
+    const session = await port.begin(auditId);
+    const log = await readLog(options.baseDir, auditId, storeOptions);
+    if (!log.ok) return null;
+    const { state, pending } = log.value;
+    const entries = pending ? [...state.entries, pending] : state.entries;
+    const witness = evaluateKnownHeads(state.entries.map(chained), pending ? chained(pending) : null, heads);
+    return {
+      session,
+      auditId,
+      snapshot: ledgerSnapshotOf(state.entries, pending),
+      results: resultsEvidenceOf(heads),
+      // R2: releitura POSTERIOR ao livro e às decisões (só decide o que o livro cita e a fase do resultado aberto; e é a conferência TOCTOU antes de um RUN_ABORTED)
+      freshResults: async () => resultsEvidenceOf(await readKnownHeads(auditId)),
+      entryOriginProven: (seq) => {
+        const entry = entries[seq - 1];
+        return entry !== undefined && judgeOrigin(options.origin, 'DECISION', entry) === 'PROVEN';
+      },
+      nowIso,
+      actor,
+      rechecks,
+      decisionsWitness: isUnresolved(witness.status) ? witness.status : null,
+    };
+  }
+
   async function runContext(input: { readonly auditId: string; readonly actor: string; readonly nowIso: string }): Promise<ResultsLedgerContext> {
     const refused = (code: RunRefusal['code'], issues: string[]): ResultsLedgerContext => ({ kind: 'REFUSED', refusal: { code, reason: null, issues } });
     if (!ledgerPort) return refused('LEDGER_NOT_CONFIGURED', ['Este serviço não usa o livro de cabeças.']);
@@ -1101,30 +1131,10 @@ export function createDecisionService(options: DecisionServiceOptions) {
     let waits = 0;
     let rechecks = 0;
     for (let attempt = 0; attempt < RESULTS_LEDGER_RETRIES; attempt += 1) {
-      const heads = await readKnownHeads(auditId);
-      const session = await ledgerPort.begin(auditId);
-      const log = await readLog(options.baseDir, auditId, storeOptions);
-      if (!log.ok) return refused('DECISIONS_HISTORY_UNRESOLVED', ['O histórico de decisões não pôde ser lido para a finalização; nada foi gravado.']);
-      const { state, pending } = log.value;
-      const entries = pending ? [...state.entries, pending] : state.entries;
-      const witness = evaluateKnownHeads(state.entries.map(chained), pending ? chained(pending) : null, heads);
-      const step = await ledgerPort.runPrepare({
-        session,
-        auditId,
-        snapshot: ledgerSnapshotOf(state.entries, pending),
-        results: resultsEvidenceOf(heads),
-        // R2: releitura POSTERIOR ao livro e às decisões (só decide o que o livro cita e a fase do resultado aberto; e é a conferência TOCTOU antes de um RUN_ABORTED)
-        freshResults: async () => resultsEvidenceOf(await readKnownHeads(auditId)),
-        entryOriginProven: (seq) => {
-          const entry = entries[seq - 1];
-          return entry !== undefined && judgeOrigin(options.origin, 'DECISION', entry) === 'PROVEN';
-        },
-        nowIso: input.nowIso,
-        actor: input.actor,
-        rechecks,
-        decisionsWitness: isUnresolved(witness.status) ? witness.status : null,
-      });
-      if (step.kind === 'OK') return { kind: 'OK', session, view: step.view, concludable: step.concludable === true };
+      const prepared = await resultsLedgerInput(ledgerPort, auditId, input.actor, input.nowIso, rechecks);
+      if (!prepared) return refused('DECISIONS_HISTORY_UNRESOLVED', ['O histórico de decisões não pôde ser lido para a finalização; nada foi gravado.']);
+      const step = await ledgerPort.runPrepare(prepared);
+      if (step.kind === 'OK') return { kind: 'OK', session: prepared.session, view: step.view, concludable: step.concludable === true };
       if (step.kind === 'REFUSED') return step;
       if (step.kind === 'WAIT') {
         if (++waits > RESULTS_LEDGER_WAITS) return refused('LEDGER_OPERATION_IN_PROGRESS', ['Há uma finalização de outro processo em andamento nesta auditoria; tente novamente em instantes. Nada foi gravado.']);
@@ -1166,6 +1176,32 @@ export function createDecisionService(options: DecisionServiceOptions) {
     return readOnce();
   }
 
+  /**
+   * R1.6 — passos 1 e 1b da REEMISSÃO DO RECIBO DE RESULTADO (§16.17.5; D-12): a MESMA leitura da finalização, de QUALQUER operador, numa tentativa (nada é gravado no livro; o
+   * serviço de resultados relê R0 e a vista juntos, limitado, quando as duas não concordam). O livro decide qual resultado tem o recibo a reemitir.
+   */
+  async function runReissueContext(input: { readonly auditId: string; readonly actor: string; readonly nowIso: string }): Promise<LedgerRunReissueStep> {
+    const refused = (code: RunRefusal['code'], issues: string[]): LedgerRunReissueStep => ({ kind: 'REFUSED', refusal: { code, reason: null, issues } });
+    if (!ledgerPort) return refused('LEDGER_NOT_CONFIGURED', ['Este serviço não usa o livro de cabeças.']);
+    if (!validAuditId(input.auditId) || !ISO_MS.test(input.nowIso)) return refused('LEDGER_UNAVAILABLE', ['Parâmetros inválidos para a leitura do livro.']);
+    const prepared = await resultsLedgerInput(ledgerPort, input.auditId, input.actor, input.nowIso, 0);
+    if (!prepared) return refused('DECISIONS_HISTORY_UNRESOLVED', ['O histórico de decisões não pôde ser lido para a reemissão do recibo; nada foi gravado.']);
+    return ledgerPort.runReissue(prepared);
+  }
+  /**
+   * 11b e reemissão (R1.6): o livro desta auditoria comprovadamente durável AGORA (pasta e raiz), no modo ESTRITO (revisão da R1.6, `junin-01`): a pasta tem de existir como
+   * diretório comum e legível. Falha de fsync ⇒ `DURABILITY_UNKNOWN` (nunca sucesso); pasta ausente, insegura ou ilegível ⇒ `LEDGER_UNAVAILABLE` com a razão (o serviço de
+   * resultados a traduz: livro removido ⇒ integridade, os demais ⇒ disponibilidade).
+   */
+  async function resultsLedgerSync(input: { readonly auditId: string }): Promise<{ readonly ok: true } | { readonly ok: false; readonly refusal: RunRefusal }> {
+    if (!ledgerPort) return { ok: false, refusal: { code: 'LEDGER_NOT_CONFIGURED', reason: null, issues: ['Este serviço não usa o livro de cabeças.'] } };
+    const synced = await ledgerPort.sync(input.auditId, { requireExisting: true });
+    if (synced.ok) return { ok: true };
+    const reason = synced.refusal.reason;
+    if (reason === null || reason === 'DURABILITY_UNKNOWN') return { ok: false, refusal: { code: 'DURABILITY_UNKNOWN', reason: 'DURABILITY_UNKNOWN', issues: [DURABILITY_UNPROVEN_MESSAGE] } };
+    return { ok: false, refusal: { code: 'LEDGER_UNAVAILABLE', reason, issues: [`livro: ${reason}`, ...synced.refusal.issues.slice(0, 2)] } };
+  }
+
   const resultsLedger: ResultsLedgerPort | null =
     ledgerPort && options.knownHeads !== WITNESS_NOT_REQUIRED
       ? {
@@ -1176,6 +1212,9 @@ export function createDecisionService(options: DecisionServiceOptions) {
           confirmed: (input) => ledgerPort.runConfirmed(input),
           // R1.4: conclusão B/C pelo autor (a autorização vem do `runPrepare` desta sessão; o RECOVER nunca conclui, D-12)
           conclude: (input) => ledgerPort.runConclude(input),
+          // R1.6: reemissão do recibo de resultado confirmado (qualquer operador; nada no livro) e o sync estrito do livro (11b e reemissão)
+          reissue: runReissueContext,
+          sync: resultsLedgerSync,
         }
       : null;
 

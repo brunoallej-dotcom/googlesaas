@@ -4,7 +4,7 @@ import { StatusBadge } from '@/components/ui/status-badge';
 import { DECISION_KIND_LABELS, DECISION_STATUS_LABELS, formatDateTime, JUDGEMENT_C2_VALUES, OPTION_UNAVAILABLE_LABELS, safeText } from './labels';
 import { HistoryIntegrityBanner, LedgerPanel, PendingDecisionPanel, WitnessCoverageNote } from './pending-panels';
 import type { DecisionForm, OptionKey, RevokeFlow } from './state';
-import type { DecisionDto, DecisionsList, PreviewPayload } from './types';
+import type { DecisionDto, DecisionsList, LedgerActionKind, PreviewPayload } from './types';
 import { BUTTON_PRIMARY, BUTTON_QUIET, FIELD_CLASS } from './ui-bits';
 
 const HELD_LABELS: Readonly<Record<string, string>> = {
@@ -40,7 +40,7 @@ export interface DecisionsPanelProps {
   readonly onSubmitRevoke: () => void;
   readonly onResendRevoke: () => void;
   readonly onResendListed: () => void;
-  readonly onLedgerAction: (action: 'ENROLL' | 'RECOVER') => void;
+  readonly onLedgerAction: (action: LedgerActionKind) => void;
 }
 
 export function DecisionsPanel(p: DecisionsPanelProps): React.JSX.Element {

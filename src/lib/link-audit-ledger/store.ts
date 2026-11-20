@@ -70,12 +70,29 @@ export async function readLedgerFiles(baseDir: unknown, auditId: unknown, option
  * R7-04: sincroniza (fsync) a pasta do livro da auditoria e SÓ responde `ok` se ficou comprovadamente durável. Serve às ações de MANUTENÇÃO (`RECOVER`) que podem não gravar nada
  * porque o registro já existe: depois de uma falha de fsync e um reinício, "o registro existe" não prova que ele sobreviveria a uma queda — o sucesso exige sincronizar de novo.
  */
-export async function syncLedgerDirectory(baseDir: unknown, auditId: unknown, options: StoreOptions = {}): Promise<{ readonly ok: true } | { readonly ok: false; readonly code: 'STORAGE_FATAL' | 'UNSAFE_PATH'; readonly issues: readonly string[] }> {
+export async function syncLedgerDirectory(
+  baseDir: unknown,
+  auditId: unknown,
+  options: StoreOptions & {
+    /**
+     * Revisão da R1.6 (`junin-01`): a pasta da auditoria TEM de existir como diretório comum e legível — ausente (`ABSENT`), forma insegura (`UNSAFE_PATH`) ou erro de leitura
+     * (`UNREADABLE`) ⇒ recusa, sem travar a base (não é falha de fsync). Só para quem confirma o que o livro JÁ registrou (o reenvio de resultado confirmado, 11b, e a reemissão
+     * do recibo de resultado). Ausente = o comportamento de sempre dos demais chamadores (`RECOVER`, adoção de fechos, reemissão de decisão, barreira): pasta ausente não tem
+     * o que sincronizar, e a forma hostil é recusada pelo leitor.
+     */
+    readonly requireExisting?: boolean;
+  } = {},
+): Promise<{ readonly ok: true } | { readonly ok: false; readonly code: 'STORAGE_FATAL' | 'UNSAFE_PATH' | 'ABSENT' | 'UNREADABLE'; readonly issues: readonly string[] }> {
   const ops = options.fs ?? nodeFsOps;
   const located = locateLedger(baseDir, auditId, options.projectRoot ?? process.cwd());
   if (!located.ok) return { ok: false, code: 'UNSAFE_PATH', issues: located.issues };
   if (isBaseTripped(located.value.root)) return { ok: false, code: 'STORAGE_FATAL', issues: [DURABILITY_UNPROVEN_MESSAGE] };
-  if ((await dirStatus(ops, located.value.dir)) !== 'EXISTS') return { ok: true };
+  const status = await dirStatus(ops, located.value.dir);
+  if (status !== 'EXISTS') {
+    if (!options.requireExisting) return { ok: true };
+    if (status === 'MISSING') return { ok: false, code: 'ABSENT', issues: ['A pasta do livro desta auditoria não existe mais.'] };
+    return status === 'UNSAFE' ? { ok: false, code: 'UNSAFE_PATH', issues: ['A pasta do livro desta auditoria não é um diretório comum.'] } : { ok: false, code: 'UNREADABLE', issues: ['A pasta do livro desta auditoria não pôde ser lida.'] };
+  }
   const watch = watchDurability(ops);
   try {
     await watch.ops.syncDirectory(located.value.dir);

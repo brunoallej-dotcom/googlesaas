@@ -3,7 +3,7 @@ import type { Ctx } from '../../src/components/link-audit/audit-page/controller'
 import { newTokens } from '../../src/components/link-audit/audit-page/controller';
 import type { Action, PageState } from '../../src/components/link-audit/audit-page/state';
 import { initialPageState, pageReducer } from '../../src/components/link-audit/audit-page/state';
-import type { DecisionDto, DecisionRequest, DecisionsList, FinalizeRequest, FinalizeSuccess, Head, LedgerActionResult, PendingRun, PreviewPayload, ResultsList, RunDetail, RunDetailResponse, RunSummary } from '../../src/components/link-audit/audit-page/types';
+import type { DecisionDto, DecisionRequest, DecisionsList, FinalizeRequest, FinalizeSuccess, Head, LedgerActionKind, LedgerActionResult, PendingRun, PreviewPayload, ResultsList, RunDetail, RunDetailResponse, RunSummary } from '../../src/components/link-audit/audit-page/types';
 
 /* Dados 100% FICTÍCIOS. Nenhuma auditoria real, nenhuma rede. */
 export const AUDIT = 'auditoria-ui-0001';
@@ -129,7 +129,7 @@ export class FakeApi implements AuditApi {
   decide = (_id: string, request: DecisionRequest) => (this.log('decide', request), this.next(this.q.decide));
   finalize = (_id: string, request: FinalizeRequest) => (this.log('finalize', request), this.next(this.q.finalize));
   ledgerQueue: Queue<LedgerActionResult> = [ok({ action: 'ENROLL', ledger: { state: 'PROTECTED', reason: null, head: { ledgerSeq: 1, sha256: H('9') }, confirmedDecisions: 0, openOperation: null, recoverable: false, receiptReissuable: false, externalGuard: 'NOT_CONFIGURED' } })];
-  ledger = (_id: string, action: 'ENROLL' | 'RECOVER') => (this.log('ledger', action), this.next(this.ledgerQueue));
+  ledger = (_id: string, action: LedgerActionKind) => (this.log('ledger', action), this.next(this.ledgerQueue));
 }
 
 /** Harness síncrono (mesma regra do gancho): o estado é atualizado ANTES de qualquer leitura seguinte. */

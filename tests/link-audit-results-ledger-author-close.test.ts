@@ -143,11 +143,12 @@ test('RL-06 / M-R07: " ANA@Empresa.com " conclui a fase C; " BIA@Empresa.com " r
 /* ============================================================================ RL-05: reconferências, uma por vez (fases B e C) */
 
 /** Avaliador que embrulha a prévia REAL e altera UMA coisa (só na conclusão: o pedido idêntico foi montado com a prévia real). */
-function tampered(over: { evaluate?: (value: Evaluation) => Evaluation; failWith?: 'READ_INCONSISTENT'; barrier?: Awaited<ReturnType<PreviewEvaluator['durabilityBarrier']>> }, calls: { evaluate: number; barrier: number } = { evaluate: 0, barrier: 0 }): NonNullable<FinalizerOver['evaluator']> {
+function tampered(over: { evaluate?: (value: Evaluation) => Evaluation; failWith?: 'READ_INCONSISTENT' | 'DECISIONS_DURABILITY_UNKNOWN' | 'RESULT_INTEGRITY'; barrier?: Awaited<ReturnType<PreviewEvaluator['durabilityBarrier']>> }, calls: { evaluate: number; barrier: number } = { evaluate: 0, barrier: 0 }): NonNullable<FinalizerOver['evaluator']> {
   return (preview) => ({
     async evaluate(actor, auditId) {
       calls.evaluate += 1;
-      if (over.failWith) return { ok: false, code: over.failWith, issues: [] };
+      // `RESULT_INTEGRITY` não é código da prévia (tipo); o caso força a regra por CÓDIGO de `CONCLUSION_WITHOUT_PENDING` (revisão da R1.5, lacuna apontada por `junin-01`)
+      if (over.failWith) return { ok: false, code: over.failWith as 'READ_INCONSISTENT', issues: [] };
       const result = await preview.evaluate(actor, auditId);
       return result.ok && over.evaluate ? { ok: true, value: over.evaluate(result.value) } : result;
     },
@@ -175,9 +176,15 @@ const RECHECKS: ReadonlyArray<{ readonly label: string; readonly code: string; r
   { label: 'fsync na barreira de durabilidade', code: 'RESULT_DURABILITY_UNKNOWN', over: (calls) => ({ evaluator: tampered({ barrier: { ok: false, code: 'DURABILITY_UNKNOWN', issues: ['fsync simulado'] } }, calls) }) },
   { label: 'estado mudou na barreira', code: 'INPUT_CHANGED', over: (calls) => ({ evaluator: tampered({ barrier: { ok: false, code: 'INPUT_CHANGED', issues: ['mudou'] } }, calls) }) },
   { label: 'a avaliação falha (leituras discordantes)', code: 'READ_INCONSISTENT', over: (calls) => ({ evaluator: tampered({ failWith: 'READ_INCONSISTENT' }, calls) }) },
+  // R1.6 (lacuna da revisão da R1.5, `junin-01`): as duas exceções da regra "toda recusa leva a pendente" — integridade e durabilidade desconhecida das DECISÕES
+  { label: 'a avaliação falha com durabilidade desconhecida das decisões', code: 'DECISIONS_DURABILITY_UNKNOWN', over: (calls) => ({ evaluator: tampered({ failWith: 'DECISIONS_DURABILITY_UNKNOWN' }, calls) }) },
+  { label: 'a avaliação falha com integridade (defesa por código)', code: 'RESULT_INTEGRITY', over: (calls) => ({ evaluator: tampered({ failWith: 'RESULT_INTEGRITY' }, calls) }) },
 ];
-/** Revisão da R1.5 (`junin-01`, MINOR): toda recusa da conclusão leva a pendente com o recibo da fase (MISSING na B, PRESENT na C) — salvo durabilidade desconhecida (nada se afirma). */
-const NO_PENDING_CODES: ReadonlySet<string> = new Set(['RESULT_DURABILITY_UNKNOWN']);
+/**
+ * Revisão da R1.5 (`junin-01`, MINOR): toda recusa da conclusão leva a pendente com o recibo da fase (MISSING na B, PRESENT na C) — salvo integridade (nenhum dado de registro que não
+ * se explica) e durabilidade desconhecida, dos resultados ou das decisões (nada se afirma com a base travada). R1.6: as três exceções passaram a ser conferidas.
+ */
+const NO_PENDING_CODES: ReadonlySet<string> = new Set(['RESULT_DURABILITY_UNKNOWN', 'DECISIONS_DURABILITY_UNKNOWN', 'RESULT_INTEGRITY']);
 
 for (const phase of ['B', 'C'] as const) {
   for (const item of RECHECKS) {
@@ -188,7 +195,7 @@ for (const phase of ['B', 'C'] as const) {
       assert.equal(codeOf(done), item.code, show(done));
       // a recusa vem do SERVIÇO, antes do armazenamento, e leva a pendente com o recibo da fase (R1.5, D-18; revisão da R1.5): PRESENT na C, MISSING na B — salvo durabilidade
       const pending = (done as { pending?: { receipt?: string; seq?: number } }).pending;
-      if (NO_PENDING_CODES.has(item.code)) assert.equal(pending, undefined, `${phase}: durabilidade desconhecida não afirma nada`);
+      if (NO_PENDING_CODES.has(item.code)) assert.equal(pending, undefined, `${phase}/${item.label}: integridade e durabilidade desconhecida não afirmam nada (sem a pendente)`);
       else assert.deepEqual([pending?.seq, pending?.receipt], [1, phase === 'C' ? 'PRESENT' : 'MISSING'], `${phase}/${item.label}: a pendente vai no corpo`);
       await assertUntouched(w, e, before, phase, `${phase}/${item.label}`);
       // a recusa não é permanente: com tudo em ordem o autor conclui depois
@@ -234,6 +241,8 @@ test('RL-05 (fase C): registro que NÃO se explica (motor não o reproduz; orige
   const before = await everythingOf(broken.w, broken.e);
   const refused = await finalizerOver(broken.w, broken.e).results.finalize(OP_A, broken.w.auditId, broken.body);
   assert.equal(codeOf(refused), 'RESULT_INTEGRITY', show(refused));
+  // R1.6 (lacuna da revisão da R1.5, `junin-01`): integridade nunca leva a pendente (nenhum dado de um registro que não se explica)
+  assert.equal((refused as { pending?: unknown }).pending, undefined, 'RESULT_INTEGRITY sem a pendente');
   await assertUntouched(broken.w, broken.e, before, 'C', 'não se explica');
   const fine = await plantedPhaseC((unsigned) => unsigned);
   const done = await finalizerOver(fine.w, fine.e).results.finalize(OP_A, fine.w.auditId, fine.body);

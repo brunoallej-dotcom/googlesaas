@@ -152,3 +152,8 @@ void sameBodyKeys;
 /** Corpo estrito da finalização: SÓ a visão que o operador viu. Autor e hora vêm da sessão e do servidor. */
 export const finalizeBodySchema = z.object({ expectedHead: headSchema.nullable(), expectedInputSha256: hex64 }).strict();
 export type FinalizeBody = z.infer<typeof finalizeBodySchema>;
+/**
+ * Corpo estrito da AÇÃO de reemissão do recibo de resultado confirmado (R1.6; spec do livro §16.17.5, D-12): só a ação. Nada do resultado, do recibo ou da prévia vem do cliente: o
+ * recibo é o que o `RUN_CONFIRMED` do livro determina.
+ */
+export const reissueBodySchema = z.object({ action: z.literal('REISSUE_RECEIPT') }).strict();

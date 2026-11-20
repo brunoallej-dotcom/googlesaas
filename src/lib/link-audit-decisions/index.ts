@@ -36,6 +36,7 @@ export type {
   LedgerRunInput,
   LedgerRunPrepareInput,
   LedgerRunPrepareStep,
+  LedgerRunReissueStep,
   LedgerRunWriteInput,
   LedgerSource,
   LedgerState,

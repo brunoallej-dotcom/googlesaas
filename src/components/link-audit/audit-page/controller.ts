@@ -2,7 +2,7 @@ import type { AuditApi, ApiOutcome } from './api';
 import { JUDGEMENT_C2_VALUES, safeText } from './labels';
 import type { Action, OptionKey, PageState, Phase, SectionName } from './state';
 import { finalizeEligibility } from './state';
-import type { DecisionRequest, FinalizeRequest, Head } from './types';
+import type { DecisionRequest, FinalizeRequest, Head, LedgerActionKind } from './types';
 
 /*
  * Fluxos da página da auditoria (I5): carregamentos independentes, finalização, decisões e revogação. A API é INJETADA (testável sem
@@ -361,20 +361,32 @@ const sendRevoke = (ctx: Ctx, request: DecisionRequest): Promise<void> =>
     onError: (message) => ctx.dispatch({ type: 'REVOKE_SET', patch: { phase: 'error', message } }),
   });
 
+const LEDGER_ACTION_TEXT: Readonly<Record<LedgerActionKind, { readonly running: string; readonly done: string }>> = {
+  ENROLL: { running: 'Inscrevendo a auditoria no livro de cabeças…', done: 'Auditoria inscrita no livro de cabeças.' },
+  RECOVER: { running: 'Aplicando a recuperação verificável do livro…', done: 'Recuperação do livro concluída (apenas o que era verificável).' },
+  // R1.6 (spec do livro §16.17.5): o recibo regravado é o que o livro já confirmou (mesmo conteúdo); nada novo é confirmado
+  REISSUE_RECEIPT: { running: 'Reemitindo o recibo do resultado já confirmado pelo livro…', done: 'Recibo do resultado reemitido (o mesmo conteúdo que o livro já confirmava).' },
+};
+/** Recusas que pedem atenção, não indicam falha do sistema: aprovação administrativa inexistente e não autor na fase C; na reemissão, também "nada a reemitir" (outro operador já reemitiu). */
+const LEDGER_WARNINGS: ReadonlySet<string> = new Set(['ADMIN_APPROVAL_UNAVAILABLE', 'PENDING_UNCONFIRMED']);
+const isLedgerWarning = (action: LedgerActionKind, code: string): boolean => LEDGER_WARNINGS.has(code) || (action === 'REISSUE_RECEIPT' && code === 'LEDGER_ACTION_INVALID');
+
 /**
- * Ações sobre o LIVRO de cabeças: inscrever (auditoria vazia) e recuperar (verificável). A adoção e a restauração NÃO existem na tela: exigem aprovação administrativa
- * (identidade verificável e dupla aprovação) que o sistema ainda não tem. Depois de qualquer resposta a tela recarrega decisões e prévia (nunca confia no que mudou).
+ * Ações sobre o LIVRO de cabeças: inscrever (auditoria vazia), recuperar (verificável) e — R1.6 — reemitir o recibo de um resultado já confirmado pelo livro (qualquer operador).
+ * A adoção e a restauração NÃO existem na tela: exigem aprovação administrativa (identidade verificável e dupla aprovação) que o sistema ainda não tem. Depois de qualquer
+ * resposta a tela recarrega decisões e prévia — e os resultados, depois da reemissão — (nunca confia no que mudou).
  */
-export async function runLedgerAction(ctx: Ctx, action: 'ENROLL' | 'RECOVER'): Promise<void> {
+export async function runLedgerAction(ctx: Ctx, action: LedgerActionKind): Promise<void> {
   const state = ctx.getState();
-  ctx.dispatch({ type: 'NOTICE', notice: { tone: 'info', text: action === 'ENROLL' ? 'Inscrevendo a auditoria no livro de cabeças…' : 'Aplicando a recuperação verificável do livro…' } });
+  const text = LEDGER_ACTION_TEXT[action];
+  ctx.dispatch({ type: 'NOTICE', notice: { tone: 'info', text: text.running } });
   const out = await ctx.api.ledger(state.auditId, action);
   if (out.kind === 'ok') {
-    ctx.dispatch({ type: 'NOTICE', notice: { tone: 'success', text: action === 'ENROLL' ? 'Auditoria inscrita no livro de cabeças.' : 'Recuperação do livro concluída (apenas o que era verificável).' } });
+    ctx.dispatch({ type: 'NOTICE', notice: { tone: 'success', text: text.done } });
   } else {
-    ctx.dispatch({ type: 'NOTICE', notice: { tone: out.kind === 'failure' && (out.code === 'ADMIN_APPROVAL_UNAVAILABLE' || out.code === 'PENDING_UNCONFIRMED') ? 'warning' : 'danger', text: describeFailure(out) } });
+    ctx.dispatch({ type: 'NOTICE', notice: { tone: out.kind === 'failure' && isLedgerWarning(action, out.code) ? 'warning' : 'danger', text: describeFailure(out) } });
   }
-  await Promise.all([loadSection(ctx, 'decisions'), loadSection(ctx, 'preview')]);
+  await Promise.all([loadSection(ctx, 'decisions'), loadSection(ctx, 'preview'), ...(action === 'REISSUE_RECEIPT' ? [loadSection(ctx, 'results')] : [])]);
 }
 
 /** Decisão pendente que veio do histórico (recarregou a página): reenvia o pedido original reconstruído do que a API expõe. */

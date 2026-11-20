@@ -423,7 +423,13 @@ export type RunPlan =
   | { readonly kind: 'NONE' }
   | { readonly kind: 'WAIT_RUN'; readonly intent: LedgerRecord }
   | { readonly kind: 'ABORT_RUN'; readonly intent: LedgerRecord; readonly ageMs: number }
-  | { readonly kind: 'CONCLUDE_RUN'; readonly intent: LedgerRecord; readonly phase: 'B' | 'C' };
+  | { readonly kind: 'CONCLUDE_RUN'; readonly intent: LedgerRecord; readonly phase: 'B' | 'C' }
+  /**
+   * R1.6 (16.17.5, MAJOR-3; D-10, D-12): o recibo do ÚLTIMO resultado confirmado foi removido (`RESULT_RECEIPT_REMOVED`, julgado SÓ sobre a releitura R2, posterior ao livro).
+   * QUALQUER operador o reemite pela ação própria dos resultados; o conteúdo do recibo é inteiramente o `anchorRef` deste `RUN_CONFIRMED` (autenticado pela chave do livro), então
+   * autoria e origem não entram. Vale também com `HISTORY_UNRESOLVED` por razão de DECISÃO (o `runs` só existe depois das testemunhas e sem contradição de resultado).
+   */
+  | { readonly kind: 'REISSUE_RUN_RECEIPT'; readonly confirmed: ConfirmedRun };
 
 export interface Evaluation {
   readonly view: LedgerView;
@@ -474,7 +480,7 @@ export function evaluateProtection(input: ProtectionInput): Evaluation {
       },
       replay,
       plan,
-      runPlan: planRun(replay?.openRun ?? null, settled, state),
+      runPlan: planRun(replay?.openRun ?? null, settled, state, runs?.reissue ?? null),
       needsFreshResults: runs?.needsFreshResults ?? false,
     };
   };
@@ -604,6 +610,8 @@ interface RunsJudgement {
   /** A operação aberta, com `recoverable` = "haveria receita" (ainda sem exigir `PROTECTED`). */
   readonly open: OpenRun | null;
   readonly needsFreshResults: boolean;
+  /** R1.6: o `RUN_CONFIRMED` cujo recibo pode ser reemitido — o ÚLTIMO, e só ele, com `sk` certo e sem recibo NA RELEITURA R2; `null` em qualquer outro caso. */
+  readonly reissue: ConfirmedRun | null;
 }
 
 /**
@@ -653,19 +661,25 @@ function judgeRuns(replay: LedgerReplay, r1: ResultsEvidence, r2: ResultsEvidenc
   const unsettled = replay.confirmedRuns.filter((run) => !settledInR1(run));
   const latest = r2 ?? r1;
   let regressed = false;
-  let receiptRemoved = false;
+  const removed: ConfirmedRun[] = [];
   for (const run of unsettled) {
     const seen = sightingOf(latest, run.runSeq);
     if (seen === null || seen.ref.sha256 !== run.runSha256) regressed = true;
-    else if (!seen.anchored) receiptRemoved = true;
+    else if (!seen.anchored) removed.push(run);
   }
+  const receiptRemoved = removed.length > 0;
   const reason: RunsReason | null = regressed ? 'RESULT_REGRESSED' : receiptRemoved ? 'RESULT_RECEIPT_REMOVED' : null;
+  // R1.6 (receita da reemissão): só sobre R2 — sem a releitura posterior ao livro o recibo removido é julgado de forma fechada, mas não há o que reemitir com segurança (M-R15) —
+  // e só para o ÚLTIMO confirmado (o armazenamento tolera um único resultado sem recibo, a cauda; qualquer outra forma não tem receita)
+  const last = replay.confirmedRuns[replay.confirmedRuns.length - 1] ?? null;
+  const reissue = reason === 'RESULT_RECEIPT_REMOVED' && r2 !== undefined && removed.length === 1 && removed[0] === last ? last : null;
   return {
     state: reason === null ? 'OK' : 'UNRESOLVED',
     reason,
     confirmed: replay.confirmedRuns.map((run) => ({ runSeq: run.runSeq, runSha256: run.runSha256 })),
     open: describeOpenRun(replay.openRun, latest, input),
     needsFreshResults: unsettled.length > 0 && r2 === undefined,
+    reissue,
   };
 }
 
@@ -687,7 +701,10 @@ function describeOpenRun(intent: LedgerRecord | null, latest: ResultsEvidence, i
  * Plano da operação de resultado aberta (R1.3). `settled.open.recoverable` já exige `PROTECTED` e `runs.state = OK` (`settleRuns`); a conferência é repetida aqui de propósito
  * (falha fechada, M-R30). Fase A vencida SEM receita (o lugar não está vazio, visto só em R2) não vira espera: não há o que esperar, e a leitura seguinte o acusa (R1.5).
  */
-function planRun(intent: LedgerRecord | null, settled: LedgerRuns | null, state: LedgerView['state']): RunPlan {
+function planRun(intent: LedgerRecord | null, settled: LedgerRuns | null, state: LedgerView['state'], reissue: ConfirmedRun | null): RunPlan {
+  // R1.6: a reemissão do recibo de resultado não depende de operação aberta, de autor nem de origem; `runs` (logo `settled`) só existe com o livro autenticado e as testemunhas
+  // conferidas, em `PROTECTED` ou em `HISTORY_UNRESOLVED` por razão de decisão — a conferência do estado é repetida de propósito (falha fechada)
+  if (reissue && settled?.reason === 'RESULT_RECEIPT_REMOVED' && (state === 'PROTECTED' || state === 'HISTORY_UNRESOLVED')) return { kind: 'REISSUE_RUN_RECEIPT', confirmed: reissue };
   const open = settled?.open ?? null;
   if (!intent || !open || state !== 'PROTECTED' || settled?.state !== 'OK') return { kind: 'NONE' };
   if (open.phase === 'A') {

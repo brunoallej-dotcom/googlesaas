@@ -348,6 +348,17 @@ export interface LedgerRunPrepareInput extends LedgerViewInput {
   /** Se a testemunha das DECISÕES (6B) não está resolvida, o status dela (nenhuma gravação é feita); senão `null`. */
   readonly decisionsWitness?: string | null;
 }
+/**
+ * R1.6 — o que o livro devolve à AÇÃO de reemissão do recibo de resultado (spec §16.17.5, "Reemissão do recibo de resultado confirmado"; MAJOR-3, D-10, D-12). `OK` traz a vista
+ * da leitura avaliada (na ordem da §16.17.8, com a releitura R2) e o resultado CONFIRMADO cujo recibo o serviço de resultados grava — `MISSING`: o recibo foi removido (receita
+ * `REISSUE_RUN_RECEIPT`); `PRESENT`: o recibo do último confirmado já existe (reenvio da ação depois de uma gravação cuja durabilidade não se comprovou, ou de outro operador): o
+ * serviço o ADOTA e só sincroniza (R7-04, espelho do reuso da reemissão de decisão). Nada é gravado no livro em caso algum (D-10). Recusas: `LEDGER_ACTION_INVALID` (sem as condições:
+ * nenhum resultado confirmado a reemitir, operação aberta em B/C, `runs` ausente por testemunha ou contradição, `RESULT_REGRESSED`); `DECISIONS_HISTORY_UNRESOLVED` (testemunha das
+ * DECISÕES não resolvida, R7-06); `DURABILITY_UNKNOWN`, `LEDGER_NOT_CONFIGURED` e `LEDGER_UNAVAILABLE` (disponibilidade do livro ou da testemunha).
+ */
+export type LedgerRunReissueStep =
+  | { readonly kind: 'OK'; readonly view: LedgerView; readonly run: { readonly runSeq: number; readonly runSha256: string }; readonly receipt: 'MISSING' | 'PRESENT' }
+  | { readonly kind: 'REFUSED'; readonly refusal: RunRefusal };
 export interface LedgerRunInput {
   /** A sessão do `runPrepare` desta finalização. */
   readonly session: unknown;
@@ -394,6 +405,17 @@ export interface ResultsLedgerPort {
    * estrito. Exige (e consome) a autorização do `context` desta sessão.
    */
   conclude(input: LedgerRunWriteInput): Promise<RunStep>;
+  /**
+   * R1.6: passos 1 e 1b da AÇÃO de reemissão do recibo de resultado (`POST …/results {"action":"REISSUE_RECEIPT"}`): a mesma leitura do `context` (R1 → guarda → livro → decisões →
+   * R2) e a testemunha das decisões; de QUALQUER operador; nunca grava nem autoriza gravação no livro.
+   */
+  reissue(input: { readonly auditId: string; readonly actor: string; readonly nowIso: string }): Promise<LedgerRunReissueStep>;
+  /**
+   * R1.6: sincroniza o livro desta auditoria (pasta e raiz; `LedgerPort.sync` no modo ESTRITO) e só responde `ok` se ficou comprovadamente durável — antes do 200 do reenvio de
+   * resultado já confirmado (passo 11b) e da reemissão do recibo (16.17.5). Falha de fsync ⇒ `DURABILITY_UNKNOWN`; pasta do livro ausente, insegura ou ilegível ⇒ `LEDGER_UNAVAILABLE`
+   * com a razão (revisão da R1.6).
+   */
+  sync(input: { readonly auditId: string }): Promise<{ readonly ok: true } | { readonly ok: false; readonly refusal: RunRefusal }>;
 }
 
 export interface LedgerPort {
@@ -417,13 +439,17 @@ export interface LedgerPort {
   runConfirmed(input: LedgerRunWriteInput): Promise<RunStep>;
   /** Conclusão B/C (R1.4): `RUN_CONFIRMED` do `RUN_INTENT` ABERTO que o `runPrepare` desta sessão autorizou concluir (só o autor). Exige (e consome) a autorização. */
   runConclude(input: LedgerRunWriteInput): Promise<RunStep>;
+  /** R1.6: a reemissão do recibo de resultado confirmado (16.17.5): avalia o contexto (sanduíche com R2) e diz QUAL resultado tem o recibo a reemitir. Nunca grava (D-10). */
+  runReissue(input: LedgerRunPrepareInput): Promise<LedgerRunReissueStep>;
   /** `CONFIRMED`: DEPOIS do recibo. Só então a resposta de sucesso. */
   confirmed(input: LedgerEntryInput): Promise<LedgerStep>;
   /**
    * Sincroniza (fsync) a pasta do livro desta auditoria e SÓ responde `ok` se ficou comprovadamente durável (R7-04). Usada pelo REENVIO de uma entrada que o livro já confirmou: um
-   * registro que existe não prova que sobreviveria a uma queda (o fsync dele pode ter falhado antes de um reinício).
+   * registro que existe não prova que sobreviveria a uma queda (o fsync dele pode ter falhado antes de um reinício). `requireExisting` (revisão da R1.6): a pasta do livro da
+   * auditoria TEM de existir como diretório comum e legível — senão recusa, com a razão (`LEDGER_REMOVED_WITNESSED` ausente, `NOT_CONFIGURED` forma insegura, `UNAVAILABLE` ilegível,
+   * `DURABILITY_UNKNOWN` fsync); só para quem confirma o que o livro já registrou (11b e reemissão do recibo de resultado).
    */
-  sync(auditId: string): Promise<{ readonly ok: true } | { readonly ok: false; readonly refusal: LedgerRefusal }>;
+  sync(auditId: string, options?: { readonly requireExisting?: boolean }): Promise<{ readonly ok: true } | { readonly ok: false; readonly refusal: LedgerRefusal }>;
   /** Inscrição explícita de auditoria VAZIA (`GENESIS`). */
   enroll(input: LedgerEnrollInput): Promise<{ readonly ok: true; readonly view: LedgerView } | { readonly ok: false; readonly refusal: LedgerRefusal }>;
 }
