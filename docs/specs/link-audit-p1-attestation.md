@@ -622,7 +622,7 @@ O hash versionado passou a `2198b1bea7fe59c25ba21f465de17e65462c626ec1970ff3a686
   - a raiz REAL de `--seals-dir` que coincide com uma raiz temporária, fica dentro dela ou a contém é recusada (`SIGN_RUNTIME_UNSAFE`);
   - qualquer grant de escrita que se sobreponha a uma raiz temporária também é recusado;
   - as raízes são as PADRÃO da custódia (`/tmp`, `/var/tmp`, `/dev/shm` e TMPDIR/TMP/TEMP do ambiente, vazio no artefato), pelo caminho dado e pelo real (`bothForms` da custódia, agora exportado), nunca as injetáveis dos testes;
-  - raiz temporária cujo caminho real não se resolve ⇒ recusa (a linha do runbook já concede leitura às três).
+  - raiz temporária cujo caminho real não se resolve por qualquer motivo que não seja inexistência (EACCES, EIO, ELOOP, `ERR_ACCESS_DENIED` do modelo de permissões, erro sem código) ⇒ recusa (a linha do runbook já concede leitura às três). Raiz INEXISTENTE (`ENOENT`/`ENOTDIR`, ex.: estação sem `/dev/shm`) segue só com a forma dada: nenhum arquivo real pode estar dentro dela, e recusá-la impediria estações legítimas (decisão do manager na confirmação final do junin-02).
 
   Testes: cada raiz como `--seals-dir`, uma pasta dentro de cada uma (com e sem grant de escrita) e o caso válido fora delas. Os testes do artefato em processo passaram a manter a pasta de manifestos numa estação no HOME (as entradas e a chave continuam em pastas temporárias); a assinatura completa no pseudo-terminal já criava a estação no HOME.
 - **(b) Pai real do `.git` ausente.** Uma leitura inexistente terminada em `.git` passava sem conferir o pai: `link/.git` ausente sob um pai que é link também passava. Agora o pai tem de existir e ser o próprio caminho real:
