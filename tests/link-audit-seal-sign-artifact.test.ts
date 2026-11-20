@@ -39,7 +39,9 @@ const PROC_GRANTS = ['/proc/self/cmdline', '/proc/self/environ', '/proc/self/fd'
 
 let shared: Promise<BuiltArtifact> | null = null;
 /** Um build por arquivo de teste (as guardas e o hash são do mesmo arquivo que os processos reais executam). */
-const built = (): Promise<BuiltArtifact> => (shared ??= buildSignArtifact({ outDir: tmpDir('lasa-build-') }));
+/** Pastas pelo caminho REAL: os grants do artefato têm de ser o próprio caminho real (confirmação da revisão da W4.6). */
+const realTmpDir = (prefix: string): string => fs.realpathSync(tmpDir(prefix));
+const built = (): Promise<BuiltArtifact> => (shared ??= buildSignArtifact({ outDir: realTmpDir('lasa-build-') }));
 const sha256Of = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
 const hasScript = ((): boolean => {
   try {
@@ -198,7 +200,7 @@ test('§5.5.1 item 6: no artefato, o recibo leva artifactSha256 = SHA-256 dos by
 
 /** O artefato numa pasta própria (0700, criada por mkdtemp), arquivo 0444: a custódia que a linha do runbook pressupõe. */
 async function custodiedCopy(): Promise<string> {
-  const dir = tmpDir('lasa-custodia-');
+  const dir = realTmpDir('lasa-custodia-');
   const file = path.join(dir, ARTIFACT_FILE_NAME);
   fs.copyFileSync((await built()).file, file);
   fs.chmodSync(file, 0o444);
@@ -439,7 +441,7 @@ test('critérios i e ii em processo REAL: por env -i com o node por caminho abso
 
 test('decisão 3 em processo REAL: com a linha do runbook, a sondagem de fsync na raiz de --seals-dir vem logo depois do analisador: node que bloqueia fsync sob --permission ⇒ SIGN_RUNTIME_NO_FSYNC antes de ler qualquer entrada; node que permite ⇒ segue e só então recusa a entrada inexistente (SIGN_INPUT_UNREADABLE)', { timeout: LIMIT_MS }, async () => {
   const artifact = await built();
-  const seals = tmpDir('lasa-manifestos-');
+  const seals = realTmpDir('lasa-manifestos-');
   const key = makeKeyFile();
   const missing = path.join(tmpDir('lasa-vazia-'), 'nao-existe.json');
   const args = ['sign', '--audit', AUD, '--package', missing, '--approval', missing, '--dossier', missing, '--seals-dir', seals, '--expect-seq', '1', '--first', '--key-id', key.keyId, '--key-source', `file:${key.keyPath}`, '--custodian', CUSTODIAN, '--trust-keys', key.ring];
@@ -473,7 +475,7 @@ function stationDir(): string | null {
   const realHome = fs.realpathSync(home);
   if (temps.some((temp) => realHome === temp || realHome.startsWith(`${temp}${path.sep}`))) return null;
   try {
-    return fs.mkdtempSync(path.join(home, '.lasa-estacao-'));
+    return fs.realpathSync(fs.mkdtempSync(path.join(home, '.lasa-estacao-')));
   } catch {
     return null;
   }
