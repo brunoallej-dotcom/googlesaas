@@ -179,7 +179,12 @@ const ledgerOk = (l: unknown): boolean => {
   if (l.state === 'PROTECTED' && (l.reason !== null || l.head === null || l.receiptReissuable !== false)) return false;
   return true;
 };
-export const isLedgerActionPayload = (value: unknown): value is LedgerActionResult => isObj(value) && oneOf(value.action, ['ENROLL', 'RECOVER', 'REISSUE_RECEIPT'] as const) && ledgerOk(value.ledger);
+/**
+ * Resposta das ações sobre o livro (D-R1-2). Revisão da R1.6 (`junin-01`, BLOQUEADOR 1): a da reemissão do recibo de resultado só é aceita com a família de resultados RESOLVIDA
+ * (`runs.state = OK`) — é a única com que o servidor responde 200; qualquer outra é tratada como resposta malformada (a tela recarrega e não afirma sucesso).
+ */
+export const isLedgerActionPayload = (value: unknown): value is LedgerActionResult =>
+  isObj(value) && oneOf(value.action, ['ENROLL', 'RECOVER', 'REISSUE_RECEIPT'] as const) && ledgerOk(value.ledger) && (value.action !== 'REISSUE_RECEIPT' || (isObj(value.ledger) && isObj(value.ledger.runs) && value.ledger.runs.state === 'OK'));
 const ledgerBlocks = (l: unknown): boolean => isObj(l) && l.state !== 'PROTECTED' && l.state !== 'NOT_REQUIRED';
 /** O que a PRÉVIA informa do livro (sem operação detalhada). */
 const previewLedgerOk = (l: unknown): boolean =>

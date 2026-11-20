@@ -104,7 +104,8 @@ export const RESULTS_MESSAGE: Readonly<Record<ResultsFailureCode, string>> = Obj
   RESULT_NOT_FOUND: 'Resultado não encontrado.',
   RESULTS_LIMIT_REACHED: 'Limite de resultados por auditoria atingido.',
   RESULT_WRITE_CONFLICT: 'A gravação não pôde ser concluída com segurança agora (outro processo gravou ao mesmo tempo ou a operação passou do prazo seguro); nada foi publicado nem sobrescrito. Tente novamente.',
-  RESULT_DURABILITY_UNKNOWN: 'A durabilidade do livro, do resultado ou do recibo NÃO foi comprovada. Isto NÃO é sucesso e nenhum resultado foi confirmado; as escritas ficam interrompidas até o servidor reiniciar — depois, reenvie o MESMO pedido.',
+  // revisão da R1.6 (MENOR): o texto serve à finalização, ao reenvio de resultado já confirmado e à reemissão do recibo (nos dois últimos o resultado JÁ é confirmado pelo livro)
+  RESULT_DURABILITY_UNKNOWN: 'A durabilidade em disco do livro, do resultado ou do recibo NÃO foi comprovada por esta tentativa. Isto NÃO é sucesso: nada desta tentativa vale como confirmação nova, e as escritas ficam interrompidas até o servidor reiniciar — depois, releia o estado e, se ainda for preciso, reenvie o MESMO pedido.',
   WEBSITE_DERIVATION_MISMATCH: 'O website derivado não confere com a evidência bruta íntegra reaberta agora. Nada foi gravado.',
   EVIDENCE_HASH_CHANGED: 'Uma evidência já usada em um resultado anterior mudou de conteúdo (mesmo número, outro hash). Nada foi gravado.',
   // D-17 (R1.3): a gravação do RUN_INTENT falhou — o texto das decisões (que fala de decisão) não serve aqui
@@ -383,6 +384,31 @@ function crossCheck(read: { readonly runs: readonly ScoreRun[]; readonly pending
   return { kind: 'OPEN', run: effective, receipt: read.pending !== effective };
 }
 /* ------------------------------------------------------------------ reemissão do recibo de resultado (R1.6; spec §16.17.5) */
+
+/** Frases da releitura do livro DEPOIS de gravar (reemissão) ou de sincronizar (11b): revisão da R1.6 (`junin-01`, BLOQUEADORES 1 e 2). Fixas, sem caminho. */
+const REISSUE_INCONSISTENT_AFTER = 'livro: o recibo foi gravado (o mesmo conteúdo que o livro confirmava), mas o estado relido depois não ficou consistente; nada foi confirmado de novo. Recarregue o painel do livro.';
+const REPLAY_INCONSISTENT_AFTER = 'livro: o resultado não foi devolvido — o livro ou os resultados relidos depois da sincronização não confirmam mais este resultado.';
+const RELOADED_MISMATCH = 'livro: o livro relido não confirma este resultado na mesma posição com o mesmo hash.';
+/**
+ * O livro relido AGORA ainda confirma ESTE resultado? Só com a vista autenticada (`VIEW`), a família de resultados resolvida (`runs.state = OK`) e o `RUN_CONFIRMED` da MESMA posição
+ * com o MESMO hash; em `PROTECTED` ou — só onde a consulta também vale (`allowDecisionReasons`: reemissão) — em `HISTORY_UNRESOLVED` por uma razão de DECISÃO. `null` = confirma;
+ * senão a recusa coerente com a vista (disponibilidade ⇒ 503, integridade ⇒ 409, como as consultas: MINOR-3), com a frase do caminho.
+ */
+function ledgerStillConfirms(read: ResultsLedgerRead, run: { readonly seq: number; readonly sha256: string }, allowDecisionReasons: boolean, note: string): ResultsFailure | null {
+  const noted = (f: ResultsFailure): ResultsFailure => ({ ...f, issues: [...f.issues.slice(0, 4), note] });
+  if (read.kind === 'UNAVAILABLE') return noted(failure('RESULTS_STORAGE_UNAVAILABLE', ...read.issues.slice(0, 3)));
+  if (read.kind === 'INTEGRITY') return noted(failure('RESULT_INTEGRITY', ...read.issues.slice(0, 3)));
+  const view = read.view;
+  if (view.state === 'NOT_REQUIRED') return noted(failure('RESULTS_STORAGE_UNAVAILABLE', 'livro: NOT_REQUIRED'));
+  const admitted = view.state === 'PROTECTED' || (allowDecisionReasons && view.state === 'HISTORY_UNRESOLVED' && view.reason !== null && DECISION_ONLY_REASONS.has(view.reason));
+  if (!admitted || !view.runs) return noted(refusedByLedger(view.reason));
+  if (view.runs.state !== 'OK') return noted(refusedByLedger(view.runs.reason));
+  const at = view.runs.confirmed[run.seq - 1];
+  if (!at || at.runSeq !== run.seq || at.runSha256 !== run.sha256) return noted(failure('RESULT_INTEGRITY', RELOADED_MISMATCH));
+  return null;
+}
+/** Recusa do sync ESTRITO do livro (11b e reemissão): fsync ⇒ durabilidade desconhecida; pasta do livro ausente ⇒ integridade (removida depois de testemunhada); os demais ⇒ disponibilidade. */
+const fromLedgerSync = (refusal: RunRefusal): ResultsFailure => (refusal.code === 'DURABILITY_UNKNOWN' ? failure('RESULT_DURABILITY_UNKNOWN') : refusedByLedger(refusal.reason));
 
 /** Recusa do livro na reemissão ⇒ código público dos resultados: disponibilidade continua disponibilidade (503), nunca "ação inválida" (16.17.9, MINOR-3). */
 const fromReissue = (refusal: RunRefusal): ResultsFailure =>
@@ -698,10 +724,20 @@ export function createScoringResultsService(deps: ResultsDeps) {
         // o recibo já é durável; sem o RUN_CONFIRMED a operação fica (ou volta a ficar) em fase C: RESULT_ANCHOR_PENDING — salvo durabilidade desconhecida ou quem não é o autor
         return gateOf(await port.conclude({ session, auditId, actor: operator, nowIso: deps.clock(), run }), (refusal) => (refusal.code === 'PENDING_UNCONFIRMED' ? fromRun(refusal) : inPhaseC(anchorPendingOr(refusal), sealed)));
       },
-      // passo 11b (R1.6): o livro comprovadamente durável antes do 200 do reenvio de um resultado já confirmado; qualquer falha é durabilidade não comprovada
-      async sync() {
+      // passo 11b (R1.6; revisão da R1.6, `junin-01`): fora de PROTECTED não há `RUN_CONFIRMED` que confirme o reenvio (legado: nunca 200); em PROTECTED, sync ESTRITO do livro e
+      // releitura autenticada que ainda confirme ESTE resultado (mesma posição, mesmo hash) antes do 200 — o armazenamento já releu o resultado e o recibo
+      async replayed(run) {
+        if (blockedByState) return refuse(blockedByState);
         const synced = await port.sync({ auditId });
-        return synced.ok ? { kind: 'OK' } : refuse(failure('RESULT_DURABILITY_UNKNOWN'));
+        if (!synced.ok) return refuse(fromLedgerSync(synced.refusal));
+        let read: ResultsLedgerRead;
+        try {
+          read = await port.view({ auditId, nowIso: deps.clock() });
+        } catch {
+          read = { kind: 'UNAVAILABLE', issues: ['livro: UNAVAILABLE'] };
+        }
+        const stale = ledgerStillConfirms(read, { seq: run.seq, sha256: run.contentSha256 }, false, REPLAY_INCONSISTENT_AFTER);
+        return stale ? refuse(stale) : { kind: 'OK' };
       },
     };
     /**
@@ -1004,7 +1040,7 @@ export function createScoringResultsService(deps: ResultsDeps) {
           },
           async sync() {
             const synced = await port.sync({ auditId });
-            return synced.ok ? { kind: 'OK' } : { kind: 'REFUSED', failure: failure('RESULT_DURABILITY_UNKNOWN') };
+            return synced.ok ? { kind: 'OK' } : { kind: 'REFUSED', failure: fromLedgerSync(synced.refusal) };
           },
         },
         { ...storeOptions, now: deps.clock },
@@ -1017,9 +1053,11 @@ export function createScoringResultsService(deps: ResultsDeps) {
       } catch {
         after = { kind: 'UNAVAILABLE', issues: ['livro: UNAVAILABLE'] };
       }
-      if (after.kind === 'UNAVAILABLE') return failure('RESULTS_STORAGE_UNAVAILABLE', ...after.issues.slice(0, 5));
-      if (after.kind === 'INTEGRITY') return failure('RESULT_INTEGRITY', ...after.issues.slice(0, 5));
-      return { ok: true, value: { action: 'REISSUE_RECEIPT', ledger: after.view } };
+      // revisão da R1.6 (`junin-01`, BLOQUEADOR 1): 200 só se a vista RELIDA confirma o MESMO resultado com `runs` OK (PROTECTED, ou HISTORY_UNRESOLVED por razão de decisão); um
+      // arquivo trocado entre a gravação e a vista, o recibo removido de novo ou o livro em outra razão ⇒ a recusa coerente com a vista, dizendo que o recibo FOI gravado
+      const inconsistent = ledgerStillConfirms(after, { seq: reissued.run.seq, sha256: reissued.run.contentSha256 }, true, REISSUE_INCONSISTENT_AFTER);
+      if (inconsistent) return inconsistent;
+      return { ok: true, value: { action: 'REISSUE_RECEIPT', ledger: (after as Extract<ResultsLedgerRead, { kind: 'VIEW' }>).view } };
     },
   };
 }

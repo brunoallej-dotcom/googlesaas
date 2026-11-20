@@ -1188,11 +1188,18 @@ export function createDecisionService(options: DecisionServiceOptions) {
     if (!prepared) return refused('DECISIONS_HISTORY_UNRESOLVED', ['O histórico de decisões não pôde ser lido para a reemissão do recibo; nada foi gravado.']);
     return ledgerPort.runReissue(prepared);
   }
-  /** 11b e reemissão (R1.6): o livro desta auditoria comprovadamente durável AGORA (pasta e raiz); qualquer falha é durabilidade não comprovada (nunca sucesso). */
+  /**
+   * 11b e reemissão (R1.6): o livro desta auditoria comprovadamente durável AGORA (pasta e raiz), no modo ESTRITO (revisão da R1.6, `junin-01`): a pasta tem de existir como
+   * diretório comum e legível. Falha de fsync ⇒ `DURABILITY_UNKNOWN` (nunca sucesso); pasta ausente, insegura ou ilegível ⇒ `LEDGER_UNAVAILABLE` com a razão (o serviço de
+   * resultados a traduz: livro removido ⇒ integridade, os demais ⇒ disponibilidade).
+   */
   async function resultsLedgerSync(input: { readonly auditId: string }): Promise<{ readonly ok: true } | { readonly ok: false; readonly refusal: RunRefusal }> {
     if (!ledgerPort) return { ok: false, refusal: { code: 'LEDGER_NOT_CONFIGURED', reason: null, issues: ['Este serviço não usa o livro de cabeças.'] } };
-    const synced = await ledgerPort.sync(input.auditId);
-    return synced.ok ? { ok: true } : { ok: false, refusal: { code: 'DURABILITY_UNKNOWN', reason: synced.refusal.reason, issues: [DURABILITY_UNPROVEN_MESSAGE] } };
+    const synced = await ledgerPort.sync(input.auditId, { requireExisting: true });
+    if (synced.ok) return { ok: true };
+    const reason = synced.refusal.reason;
+    if (reason === null || reason === 'DURABILITY_UNKNOWN') return { ok: false, refusal: { code: 'DURABILITY_UNKNOWN', reason: 'DURABILITY_UNKNOWN', issues: [DURABILITY_UNPROVEN_MESSAGE] } };
+    return { ok: false, refusal: { code: 'LEDGER_UNAVAILABLE', reason, issues: [`livro: ${reason}`, ...synced.refusal.issues.slice(0, 2)] } };
   }
 
   const resultsLedger: ResultsLedgerPort | null =

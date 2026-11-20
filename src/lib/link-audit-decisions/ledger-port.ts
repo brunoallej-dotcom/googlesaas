@@ -411,8 +411,9 @@ export interface ResultsLedgerPort {
    */
   reissue(input: { readonly auditId: string; readonly actor: string; readonly nowIso: string }): Promise<LedgerRunReissueStep>;
   /**
-   * R1.6: sincroniza o livro desta auditoria (pasta e raiz; `LedgerPort.sync`) e só responde `ok` se ficou comprovadamente durável — antes do 200 do reenvio de resultado já confirmado
-   * (passo 11b) e da reemissão do recibo (16.17.5). Falha ⇒ `DURABILITY_UNKNOWN`.
+   * R1.6: sincroniza o livro desta auditoria (pasta e raiz; `LedgerPort.sync` no modo ESTRITO) e só responde `ok` se ficou comprovadamente durável — antes do 200 do reenvio de
+   * resultado já confirmado (passo 11b) e da reemissão do recibo (16.17.5). Falha de fsync ⇒ `DURABILITY_UNKNOWN`; pasta do livro ausente, insegura ou ilegível ⇒ `LEDGER_UNAVAILABLE`
+   * com a razão (revisão da R1.6).
    */
   sync(input: { readonly auditId: string }): Promise<{ readonly ok: true } | { readonly ok: false; readonly refusal: RunRefusal }>;
 }
@@ -444,9 +445,11 @@ export interface LedgerPort {
   confirmed(input: LedgerEntryInput): Promise<LedgerStep>;
   /**
    * Sincroniza (fsync) a pasta do livro desta auditoria e SÓ responde `ok` se ficou comprovadamente durável (R7-04). Usada pelo REENVIO de uma entrada que o livro já confirmou: um
-   * registro que existe não prova que sobreviveria a uma queda (o fsync dele pode ter falhado antes de um reinício).
+   * registro que existe não prova que sobreviveria a uma queda (o fsync dele pode ter falhado antes de um reinício). `requireExisting` (revisão da R1.6): a pasta do livro da
+   * auditoria TEM de existir como diretório comum e legível — senão recusa, com a razão (`LEDGER_REMOVED_WITNESSED` ausente, `NOT_CONFIGURED` forma insegura, `UNAVAILABLE` ilegível,
+   * `DURABILITY_UNKNOWN` fsync); só para quem confirma o que o livro já registrou (11b e reemissão do recibo de resultado).
    */
-  sync(auditId: string): Promise<{ readonly ok: true } | { readonly ok: false; readonly refusal: LedgerRefusal }>;
+  sync(auditId: string, options?: { readonly requireExisting?: boolean }): Promise<{ readonly ok: true } | { readonly ok: false; readonly refusal: LedgerRefusal }>;
   /** Inscrição explícita de auditoria VAZIA (`GENESIS`). */
   enroll(input: LedgerEnrollInput): Promise<{ readonly ok: true; readonly view: LedgerView } | { readonly ok: false; readonly refusal: LedgerRefusal }>;
 }

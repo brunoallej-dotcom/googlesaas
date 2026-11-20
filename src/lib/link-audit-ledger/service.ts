@@ -1001,9 +1001,12 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
       return { kind: 'OK', view, run: target.run, receipt: target.receipt };
     },
 
-    async sync(auditId: string) {
-      const synced = await syncLedgerDirectory(options.dir, auditId, storeOptions);
-      return synced.ok ? { ok: true as const } : { ok: false as const, refusal: refusal('LEDGER_UNAVAILABLE', null, null, [...synced.issues]) };
+    async sync(auditId: string, syncOptions: { readonly requireExisting?: boolean } = {}) {
+      const synced = await syncLedgerDirectory(options.dir, auditId, { ...storeOptions, ...(syncOptions.requireExisting ? { requireExisting: true } : {}) });
+      if (synced.ok) return { ok: true as const };
+      // a razão só é dita no modo estrito (revisão da R1.6): o livro ausente com resultado confirmado foi removido depois de testemunhado; os demais chamadores recebem o de sempre
+      const reason: LedgerReason | null = !syncOptions.requireExisting ? null : synced.code === 'ABSENT' ? 'LEDGER_REMOVED_WITNESSED' : synced.code === 'UNSAFE_PATH' ? 'NOT_CONFIGURED' : synced.code === 'UNREADABLE' ? 'UNAVAILABLE' : 'DURABILITY_UNKNOWN';
+      return { ok: false as const, refusal: { code: 'LEDGER_UNAVAILABLE' as const, reason, issues: [...synced.issues], view: null } };
     },
 
     async enroll(input: LedgerEnrollInput) {

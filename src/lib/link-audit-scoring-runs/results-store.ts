@@ -303,8 +303,11 @@ export interface RunLedgerHooks<F> {
   confirmed(sealed: ScoreRun): Promise<RunLedgerGate<F>>;
   /** Conclusão B/C (R1.4): `RUN_CONFIRMED` da operação aberta, pelo autor, depois do recibo (gravado na B, adotado na C) e do sync estrito. */
   conclude(sealed: ScoreRun): Promise<RunLedgerGate<F>>;
-  /** Passo 11b (R1.6): o livro desta auditoria comprovadamente durável AGORA (pasta e raiz), antes do 200 do reenvio de um resultado já confirmado. */
-  sync(): Promise<RunLedgerGate<F>>;
+  /**
+   * Passo 11b (R1.6; revisão da R1.6): depois do sync das pastas e da releitura dos resultados, o livro desta auditoria comprovadamente durável AGORA (sync estrito: a pasta tem de
+   * existir) e RELIDO e autenticado, ainda confirmando ESTE resultado (o `RUN_CONFIRMED(k)` com o mesmo hash) — só então o 200 do reenvio.
+   */
+  replayed(run: ScoreRun): Promise<RunLedgerGate<F>>;
 }
 /** A falha é de durabilidade NÃO comprovada (fsync estrito): nunca sucesso, as bases travaram (R6-07, D-15). */
 export const isDurabilityUnknown = (failure: { readonly code: string; readonly issues: readonly string[] }): boolean => failure.code === 'STORAGE_FATAL' && failure.issues.includes(DURABILITY_UNPROVEN_MESSAGE);
@@ -420,8 +423,14 @@ export async function appendRun<F>(baseDir: unknown, auditId: unknown, build: (c
             // em recibos, os diretórios-pai das duas e o livro (pasta e raiz) ANTES do 200. Falha ⇒ durabilidade desconhecida (bases travadas), nunca sucesso.
             const durable = await syncStrict([dir, anchorLocated.value.dir, root, anchorLocated.value.root]);
             if (durable) return durable;
-            const ledgerDurable = await ledger.sync();
-            if (ledgerDurable.kind !== 'OK') return ledgerDurable.kind === 'REFUSED' ? { ok: false, code: 'REJECTED', failure: ledgerDurable.failure } : fail('INTERNAL', 'Passo do livro inesperado no reenvio (erro interno).');
+            // Revisão da R1.6 (`junin-01`, BLOQUEADOR 2): o que se devolve é o estado ATUAL, não o lido antes do sync. Relê resultados e recibos (o objeto confirmado continua lá, com
+            // o MESMO hash e com recibo) e então o livro (sync estrito e releitura autenticada, pela porta). Divergência ⇒ integridade (409); E/S ⇒ disponibilidade (503).
+            const again = await readVerified(ops, located.value, anchorLocated.value, auditId as string);
+            if (!again.ok) return again;
+            const still = again.value.runs[target.seq - 1];
+            if (!still || still.contentSha256 !== target.contentSha256) return fail('HASH_MISMATCH', 'O resultado relido depois da sincronização não é o que foi conferido (arquivo trocado ou recibo removido); nada foi devolvido.');
+            const confirmedNow = await ledger.replayed(target);
+            if (confirmedNow.kind !== 'OK') return confirmedNow.kind === 'REFUSED' ? { ok: false, code: 'REJECTED', failure: confirmedNow.failure } : fail('INTERNAL', 'Passo do livro inesperado no reenvio (erro interno).');
           }
           return { ok: true, run: target, runs: settled, anchored: true, replayed: true, anchors: confirmedSummary(settled.length) };
         }

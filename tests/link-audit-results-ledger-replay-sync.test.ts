@@ -147,6 +147,8 @@ test('revisão da R1.6 (BLOQUEADOR 2): sNNNN trocado no mesmo intervalo (com e s
     assert.ok(!replay.ok, `recibo coerente=${coherent}: ${show2(replay)}`);
     assert.equal(RESULTS_HTTP_STATUS[replay.code], 409, `recibo coerente=${coherent}: ${show2(replay)}`);
     assert.ok(['RESULT_INTEGRITY', 'RESULT_ANCHOR_MISMATCH'].includes(replay.code), show2(replay));
+    // o armazenamento relê o resultado ANTES do livro (16.17.8): a divergência sai como a do arquivo, não como a da vista
+    if (coherent) assert.ok(replay.issues.some((issue) => /resultado relido depois da sincronização/.test(issue)), show2(replay));
   }
 });
 
@@ -172,6 +174,17 @@ test('revisão da R1.6 (BLOQUEADOR 2): sync ESTRITO do livro só para quem pede 
   assert.deepEqual([unreadable.ok, unreadable.ok ? null : unreadable.code], [false, 'UNREADABLE']);
   fs.mkdirSync(path.join(root, auditId));
   assert.deepEqual(await syncLedgerDirectory(root, auditId, { requireExisting: true }), { ok: true }, 'pasta presente: sincroniza');
+});
+
+test('revisão da R1.6 (BLOQUEADOR 2): a porta dos RESULTADOS sincroniza o livro no modo estrito — pasta do livro removida ⇒ recusa com LEDGER_REMOVED_WITNESSED (a do livro das decisões continua no padrão)', async () => {
+  const { w, e } = await confirmed();
+  const f = finalizerOver(w, e);
+  const port = f.decisions.resultsLedger as NonNullable<typeof f.decisions.resultsLedger>;
+  assert.deepEqual(await port.sync({ auditId: w.auditId }), { ok: true });
+  fs.rmSync(path.join(w.ledgerDir, w.auditId), { recursive: true });
+  const refused = await port.sync({ auditId: w.auditId });
+  assert.ok(!refused.ok && refused.refusal.code === 'LEDGER_UNAVAILABLE' && refused.refusal.reason === 'LEDGER_REMOVED_WITNESSED', show2(refused));
+  assert.deepEqual(await f.ledger.sync(w.auditId), { ok: true }, 'LedgerPort.sync sem o modo estrito: inalterado');
 });
 
 test('revisão da R1.6 (BLOQUEADOR 2): fora de PROTECTED o reenvio idêntico não responde 200 — no legado (livro ausente) o resultado v1 não tem RUN_CONFIRMED que o confirme', async () => {
