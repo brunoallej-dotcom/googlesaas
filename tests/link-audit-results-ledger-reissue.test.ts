@@ -434,6 +434,19 @@ test('RL-33 / M-R38: a reemissão não exige o autenticador de origem (serviço 
   await assertReissued(w, e, await withoutOrigin.reissueReceipt({ email: 'carla@empresa.com' }, w.auditId, ACTION), runs[0] as ScoreRun, ledgerBefore, 'sem chave de origem');
 });
 
+test('D-R1-2: a vista atualizada que não pode ser lida DEPOIS da gravação ⇒ 503 sem afirmar nada (o recibo já está gravado e durável; a tela recarrega)', async () => {
+  const { w, e, runs } = await confirmedWorld();
+  removeReceipt(e, w.auditId, 1);
+  const f = finalizerOver(w, e);
+  const port = f.decisions.resultsLedger as ResultsLedgerPort;
+  let views = 0;
+  const blindAfter: ResultsLedgerPort = { ...port, async view() { views += 1; throw new Error('leitura simulada'); } };
+  const done = await makeService(e, f.preview, { ledger: blindAfter }).reissueReceipt(OP_B, w.auditId, ACTION);
+  assert.equal(codeOf(done), 'RESULTS_STORAGE_UNAVAILABLE', show(done));
+  assert.equal(views, 1, 'a vista só é pedida depois da gravação');
+  assert.equal(receiptOf(e, w.auditId, 1).headSha256, (runs[0] as ScoreRun).contentSha256, 'o recibo foi reemitido antes');
+});
+
 /* ============================================================================ corpo e configuração */
 
 test('corpo ESTRITO `{"action":"REISSUE_RECEIPT"}`; identidade e auditId validados; sem a porta do livro ⇒ LEDGER_ACTION_INVALID; nada gravado em nenhum caso', async () => {
