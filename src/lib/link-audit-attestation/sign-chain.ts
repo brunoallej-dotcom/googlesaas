@@ -16,13 +16,14 @@ import {
   type EvidenceToProve,
 } from '../link-audit-evidence/provenance';
 import { auditId as auditIdSchema, MAX_PACKAGE_ENTRIES } from './schemas';
-import { runSignCore, type SealChainFacts, type SignCoreDeps, type SignCoreInput, type SignCoreResult, type SigningKeyStatus, type SignPlan, type SignRefusal } from './sign-core';
+import { runSignCore, SIGN_KEY_ID_PATTERN, type SealChainFacts, type SignCoreDeps, type SignCoreInput, type SignCoreResult, type SigningKeyStatus, type SignPlan, type SignRefusal } from './sign-core';
 
 /*
  * P1 W4.2 — a CADEIA e o MANIFESTO do `sign` (spec §5.5 passos 7 e 13; §5.5.1 item 2; §7.1; contrato do verificador v2 §2–§6). Único arquivo do
  * `sign` que importa o verificador: o núcleo (`sign-core.ts`) recebe daqui só FATOS estruturais (§5.5.1 item 7; o artefato único separa o núcleo
  * do verificador na W4.6). Disco SÓ pelo `FsOps` injetado e só leitura; a gravação (temporário + `link()` exclusivo) está em `sign-run.ts` (W4.3),
- * que recebe daqui o texto já conferido (`serializeSealFile`); a chave real e o CLI são da W4.4, o autoteste da W4.5.
+ * que recebe daqui o texto já conferido (`serializeSealFile`); a chave real e o CLI são da W4.4. W4.5: o AUTOTESTE do passo 14 (`selfTestSeal`) julga o
+ * manifesto novo com o mesmo verificador e a mesma fotografia somente leitura da leitura da cadeia, antes de qualquer gravação.
  *
  * A cadeia é verificada pelo VERIFICADOR v2 REAL em modo produção: a lista de chaves com estado (`--trust-keys`, `parseTrustKeyring`), os fechos
  * de `<seals-dir>/_closures/` e `acceptedVersions: [2]`, com as evidências = entradas da própria cabeça (prova formato, cadeia, estados e fechos;
@@ -60,7 +61,7 @@ export async function readSealChain(input: SealChainInput, deps: { readonly fs: 
     if (!auditIdSchema.safeParse(input.auditId).success) return reason('AUDIT_ID_INVALID'); // nunca vira caminho
     const keyring = parseTrustKeyring(input.trustKeys);
     if (!keyring) return reason('PROOF_NOT_CONFIGURED');
-    const ops = readOnceSnapshot(deps.fs);
+    const ops = chainSnapshot(deps.fs);
     const root = await sealsRoot(ops, input.sealsDir);
     if (root === ROOT_IO_ERROR) return reason('VERIFICATION_ERROR'); // EACCES/EIO na raiz nunca viram "inexistente"
     if (root === null) return reason('SEALS_DIR_UNREADABLE');
@@ -128,6 +129,13 @@ async function readHead(ops: FsOps, file: string): Promise<EvidenceSealFileV2 | 
   }
 }
 
+/** A raiz da cópia da estação pelo caminho real (as mesmas regras e a mesma fotografia da leitura da cadeia): `close-key` (W4.5) também a usa. */
+export async function resolveSealsRoot(ops: FsOps, sealsDir: string): Promise<{ readonly ok: true; readonly root: string } | { readonly ok: false; readonly reason: 'SEALS_DIR_UNREADABLE' | 'VERIFICATION_ERROR' }> {
+  const root = await sealsRoot(ops, sealsDir);
+  if (root === ROOT_IO_ERROR) return { ok: false, reason: 'VERIFICATION_ERROR' };
+  return root === null ? { ok: false, reason: 'SEALS_DIR_UNREADABLE' } : { ok: true, root };
+}
+
 const READ_ONLY = async (): Promise<never> => {
   throw Object.assign(new Error('a leitura da cadeia do sign é somente leitura'), { code: 'EROFS' });
 };
@@ -137,6 +145,19 @@ const READ_ONLY = async (): Promise<never> => {
  * (ou a falha) é reaproveitada. Assim a cabeça que esta leitura analisa e a que o verificador julga são os mesmos bytes (sem corrida entre as duas
  * leituras) e cada manifesto é lido uma única vez. `readFile` respeita o limite pedido por quem chama, como o original.
  */
+const SNAPSHOTS = new WeakSet<FsOps>();
+
+/**
+ * A fotografia somente leitura (`readOnceSnapshot`), IDEMPOTENTE: aplicada a uma fotografia, devolve a mesma. Quem a cria antes da leitura da cadeia
+ * (`runSign`, W4.5) a repassa ao autoteste do passo 14, que então julga os MESMOS bytes sem nova leitura do disco.
+ */
+export function chainSnapshot(ops: FsOps): FsOps {
+  if (SNAPSHOTS.has(ops)) return ops;
+  const snapshot = readOnceSnapshot(ops);
+  SNAPSHOTS.add(snapshot);
+  return snapshot;
+}
+
 function readOnceSnapshot(ops: FsOps): FsOps {
   const seen = new Map<string, Promise<unknown>>();
   const once = <T>(key: string, load: () => Promise<T>): Promise<T> => {
@@ -173,11 +194,8 @@ export interface SignWithChainInput extends Omit<SignCoreInput, 'chain' | 'signi
   readonly keyId: string;
 }
 
-/**
- * `--key-id` (spec §5.5, tabela de argumentos): o MESMO padrão de id de chave do verificador v2 (`TRUST_KEY_ID`, não exportado). Cópia deliberada,
- * para não mudar o verificador; a paridade é travada por teste contra `parseTrustKeyring`.
- */
-export const SIGN_KEY_ID_PATTERN = /^[a-z0-9][a-z0-9-]{3,31}$/;
+/** `--key-id`: o padrão de id de chave mora em `sign-core.ts` (revisão da W4.5); reexportado aqui para quem já o importava deste arquivo. */
+export { SIGN_KEY_ID_PATTERN };
 const BAD_KEY_ID: SignRefusal = { ok: false, code: 'USAGE', message: '--key-id inválido (minúsculas, dígitos e "-", 4 a 32 caracteres, começando por letra ou dígito). Nada foi assinado nem gravado.' };
 
 /** Estado de `--key-id` na lista com estado já parseada pelo verificador (contrato v2 §5). Lista inválida ⇒ `absent` (a cadeia já a recusa no passo 7). */
@@ -305,5 +323,99 @@ export function serializeSealFile(seal: SealManifest): SealTextResult {
     return back.ok && sealSha256(back.value) === sealSha256(seal) ? { ok: true, text } : TEXT_FAILED;
   } catch {
     return TEXT_FAILED;
+  }
+}
+
+/* ------------------------------------------------------------------------------------------------------------------- passo 14: autoteste (W4.5) */
+
+const fsError = (code: string, message: string): Error => Object.assign(new Error(message), { code });
+const VIRTUAL_DIR: FileInfo = { isFile: () => false, isDirectory: () => true, isSymbolicLink: () => false, size: 0, mtimeMs: 0 };
+
+/**
+ * Um arquivo NOVO em memória sobre a fotografia (`dir/name` com `text`), para o verificador julgar o que ainda não foi gravado: `lstat`, `readdir` e
+ * `readFile` desse arquivo (e da pasta, se ausente) são respondidos daqui; o resto vai à fotografia. A existência do nome sai da listagem da pasta
+ * já lida (nunca de uma consulta nova ao arquivo). Nome que já existe na pasta ⇒ toda consulta a ele falha (EEXIST), e o verificador recusa: nunca
+ * se esconde um arquivo real atrás do novo. Nada é escrito.
+ */
+export function withVirtualFile(ops: FsOps, dir: string, name: string, text: string): FsOps {
+  const file = path.join(dir, name);
+  const size = Buffer.byteLength(text, 'utf8');
+  const info: FileInfo = { isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false, size, mtimeMs: 0 };
+  let state: Promise<{ readonly dirInfo: FileInfo | null; readonly names: readonly string[] }> | undefined;
+  const listing = (): Promise<{ readonly dirInfo: FileInfo | null; readonly names: readonly string[] }> => {
+    state ??= (async () => {
+      try {
+        const dirInfo = await ops.lstat(dir);
+        return { dirInfo, names: dirInfo.isDirectory() && !dirInfo.isSymbolicLink() ? await ops.readdir(dir) : [] };
+      } catch (error) {
+        if (errorCode(error) === 'ENOENT') return { dirInfo: null, names: [] };
+        throw error;
+      }
+    })();
+    return state;
+  };
+  const fresh = async (): Promise<void> => {
+    if ((await listing()).names.includes(name)) throw fsError('EEXIST', 'o arquivo novo já existe na pasta');
+  };
+  return {
+    ...ops,
+    lstat: async (target) => {
+      if (target === file) return (await fresh(), info);
+      if (target === dir) return (await listing()).dirInfo ?? VIRTUAL_DIR;
+      return ops.lstat(target);
+    },
+    readdir: async (target) => {
+      if (target !== dir) return ops.readdir(target);
+      await fresh();
+      return [...(await listing()).names, name];
+    },
+    readFile: async (target, maxBytes) => {
+      if (target !== file) return ops.readFile(target, maxBytes);
+      await fresh();
+      if (size > maxBytes) throw fsError('ETOOBIG', `excede ${maxBytes} bytes`);
+      return text;
+    },
+  };
+}
+
+export interface SealSelfTestInput {
+  /** A MESMA raiz dada à leitura da cadeia (o caminho real fixado por `runSign`). */
+  readonly sealsDir: string;
+  /** `--trust-keys`: a lista COMPLETA com estado (§5.5.1 item 2, C9). */
+  readonly trustKeys: string;
+  /** O manifesto assinado (passo 13). */
+  readonly seal: SealManifest;
+  /** Os BYTES que serão gravados (`serializeSealFile`): é isso que o autoteste julga. */
+  readonly text: string;
+  /** As evidências: as `entries` do PACOTE lido (o autoteste não lê a pasta de evidências, §5.5 passo 14). */
+  readonly entries: ReadonlyArray<{ readonly ref: string; readonly contentSha256: string }>;
+}
+
+const SELFTEST_MESSAGE =
+  'O autoteste do passo 14 recusou o manifesto novo: o verificador v2 (lista completa com estado, fechos da pasta, só v2), sobre a cadeia anterior mais o manifesto em memória, não deu AUTHENTICATED; o servidor também o recusaria. Nada foi gravado.';
+const selfTestFailed = (code: string): SignRefusal => ({ ok: false, code: 'SIGN_SELFTEST_FAILED', message: SELFTEST_MESSAGE, chainReason: code });
+
+/**
+ * Passo 14 (§5.5.1 item 2, C9): o manifesto novo, com os BYTES a gravar, em memória sobre a fotografia da leitura da cadeia (nenhuma leitura nova do
+ * disco para o que já foi lido), julgado pelo VERIFICADOR v2 REAL em modo produção: `parseTrustKeyring(--trust-keys)` com os estados, os fechos de
+ * `_closures/`, `acceptedVersions: [2]`, evidências = `entries` do pacote. Só passa com `AUTHENTICATED` cuja cabeça é EXATAMENTE o manifesto novo
+ * (`headSeq` e `headSealSha256`). Senão `SIGN_SELFTEST_FAILED` com o código do verificador. Devolve `null` se passou; nunca lança e nunca escreve.
+ */
+export async function selfTestSeal(input: SealSelfTestInput, deps: { readonly fs: FsOps }): Promise<SignRefusal | null> {
+  try {
+    const keyring = parseTrustKeyring(input.trustKeys);
+    if (!keyring) return selfTestFailed('PROOF_NOT_CONFIGURED');
+    const ops = chainSnapshot(deps.fs);
+    const root = await resolveSealsRoot(ops, input.sealsDir);
+    if (!root.ok) return selfTestFailed(root.reason);
+    const { seal } = input;
+    const overlay = withVirtualFile(ops, path.join(root.root, seal.auditId), sealFileName(seal), input.text);
+    const evidences = input.entries.map((entry) => ({ ref: entry.ref, contentSha256: entry.contentSha256, legacy: false }));
+    const verdict = await createSealedEvidenceProvenance({ sealsDir: root.root, keyring, acceptedVersions: [2], fs: overlay }).classify(seal.auditId, evidences);
+    if (verdict.status !== 'AUTHENTICATED') return selfTestFailed(verdict.reason);
+    const isNewHead = 'headSeq' in verdict && verdict.headSeq === seal.seq && verdict.headSealSha256 === sealSha256(seal);
+    return isNewHead ? null : selfTestFailed('SELFTEST_HEAD_MISMATCH');
+  } catch {
+    return selfTestFailed('VERIFICATION_ERROR');
   }
 }
