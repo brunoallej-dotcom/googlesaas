@@ -419,6 +419,26 @@ test('revisão da W4.5 (MINOR): as recusas da pasta de recibos nunca ecoam o NOM
   }
 });
 
+test('revisão da W4.5 (TOCTOU): recibo que muda de tamanho entre o fstat e a leitura pelo descritor ⇒ CLOSE_RECEIPTS_INVALID (nunca se aceita um recibo cortado ou crescido)', async () => {
+  const R = signer('ek-fecho-r');
+  for (const [label, change] of [
+    ['cresceu', (bytes: Uint8Array) => Buffer.concat([bytes, Buffer.from(' ')])],
+    ['encolheu', (bytes: Uint8Array) => bytes.subarray(0, bytes.length - 1)],
+  ] as const) {
+    const world = closeWorld({ retired: R });
+    writeReceipts(world.receiptsDir, chainOn(world.sealsDir, X, [R]));
+    const changing: CloseFsOps = {
+      ...nodeCloseFsOps,
+      async openDir(target) {
+        const opened = await nodeCloseFsOps.openDir(target);
+        return { ...opened, read: async (name, maxBytes) => ((read) => ({ stat: read.stat, bytes: change(read.bytes) }))(await opened.read(name, maxBytes)) };
+      },
+    };
+    const refusal = refused(world, await runCloseKey(world.input(), closeDeps(world, { closeFs: changing })), 'CLOSE_RECEIPTS_INVALID', label);
+    assert.match(refusal.message, /mudou durante a leitura/, label);
+  }
+});
+
 test(`§5.5.1 item 9 (limite exato, revisão da W4.5): exatamente ${MAX_RECEIPT_FILES} arquivos não esbarram no teto; ${MAX_RECEIPT_FILES + 1} ⇒ CLOSE_RECEIPTS_INVALID antes de ler qualquer recibo`, async () => {
   assert.equal(MAX_RECEIPT_FILES, 10_000, 'valor de produção');
   const world = closeWorld();
