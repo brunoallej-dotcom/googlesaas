@@ -5,7 +5,7 @@ import { STORE_AUDIT_ID } from './audit-id-alias';
 import type { PreviewBlocker } from './blockers';
 import { MINIMUM_COVERAGE_PERCENT } from './outcome';
 import { PREVIEW_HTTP_STATUS, PREVIEW_MESSAGE, type DurabilityExpectation, type DurabilityOutcome, type Evaluation, type LedgerView, type PreviewActor, type PreviewFailure, type PreviewFailureCode, type ResultsLedgerPort, type RunDraft, type RunRefusal, type RunStep } from './preview';
-import { appendRun, assertResultsBase, isDurabilityUnknown, nodeFsOps, probeDirectory, readRunLog, type FsOps, type RunAnchorSummary, type RunLedgerGate, type RunLedgerHooks, type StoreErrorCode } from './results-store';
+import { appendRun, assertResultsBase, isDurabilityUnknown, nodeFsOps, probeDirectory, readRunLog, type FsOps, type RunAnchorSummary, type RunLedgerContextGate, type RunLedgerGate, type RunLedgerHooks, type StoreErrorCode } from './results-store';
 import { finalizeBodySchema, INTEGRITY_NOTE, RUN_FILE_KIND, RUN_SCHEMA_VERSION, RUN_SCHEMA_VERSION_LEDGER, type RunHead as Head, type ScoreRun, type ScoreRunDraft } from './results-types';
 import { toPublicRun, verifyRunRecord } from './results-verify';
 import { MAPPER_VERSION } from './types';
@@ -313,6 +313,14 @@ const fromRun = (refusal: RunRefusal): ResultsFailure => {
   const code = RUN_TO_RESULTS[refusal.code];
   return failure(code, ...(code === 'RESULT_DURABILITY_UNKNOWN' ? [] : refusal.issues.slice(0, 5)));
 };
+/**
+ * Recusa do FECHO QUE CONFIRMA (passo 11 e conclusão B/C), quando resultado e recibo já são duráveis: em regra a operação fica (ou volta a ficar) em fase C e só o autor conclui
+ * (`RESULT_ANCHOR_PENDING`), salvo durabilidade desconhecida. A operação ENCERRADA por outro processo antes da confirmação (`RUN_CLOSED`, p.ex. `RUN_ABORTED` alheio da fase A
+ * vencida) é outra coisa: o resultado publicado depois do encerramento nunca será confirmado (contradição `RESULT_PUBLISHED_AFTER_ABORT`, sem receita) — `RESULT_INTEGRITY`,
+ * nunca a promessa de concluir por reenvio (revisão da R1.4). Nenhum código novo (D-11).
+ */
+const anchorPendingOr = (refusal: RunRefusal): ResultsFailure =>
+  refusal.code === 'DURABILITY_UNKNOWN' ? fromRun(refusal) : failure(refusal.code === 'RUN_CLOSED' ? 'RESULT_INTEGRITY' : 'RESULT_ANCHOR_PENDING', ...refusal.issues.slice(0, 5));
 /** O que o `RUN_INTENT` precisa do resultado JÁ SELADO (formato v2: o resultado cita a cabeça de decisões do livro). */
 const draftOf = (run: ScoreRun): RunDraft | null =>
   run.ledgerHead
@@ -493,20 +501,29 @@ export function createScoringResultsService(deps: ResultsDeps) {
 
   /**
    * PASSOS DO LIVRO de UMA finalização (R1.3; spec §16.17.3), ligados à porta de escrita. A sessão do livro é a do passo 1 desta tentativa; cada passo devolve `OK`, `RESTART`
-   * (recomeça do passo 0) ou a recusa já traduzida. Nesta fatia, operação aberta em B/C não é concluída por ninguém (a conclusão pelo autor é da R1.4): `RESULT_PENDING_UNCONFIRMED`.
+   * (recomeça do passo 0) ou a recusa já traduzida. Operação aberta em B/C (R1.4; §16.17.4): o passo 1b entrega a PENDENTE EFETIVA ao `build` (`OPEN`); só o AUTOR a conclui, pelo
+   * reenvio idêntico, e só se a sessão do livro recebeu a autorização da conclusão (`concludable`: receita com origem comprovada pela testemunha e o autor pedindo).
    */
-  function ledgerSteps(port: ResultsLedgerPort, auditId: string, operator: string, viewer: Viewer): { readonly hooks: RunLedgerHooks<ResultsFailure>; readonly unresolved: () => ResultsFailure | null } {
+  function ledgerSteps(port: ResultsLedgerPort, auditId: string, operator: string): { readonly hooks: RunLedgerHooks<ResultsFailure>; readonly unresolved: () => ResultsFailure | null; readonly conclusionBlocked: (stage: 'ORIGIN' | 'GRANT') => ResultsFailure | null } {
     let session: unknown = null;
     let mismatches = 0;
     /** Livro NÃO resolvido nesta tentativa (`HISTORY_UNRESOLVED`): o reenvio idêntico não pode responder 200 sobre ele (falha fechada; o reenvio pelo livro é da R1.6). */
     let unresolved: ResultsFailure | null = null;
+    /**
+     * O que o livro desta tentativa diz da CONCLUSÃO de uma pendente (R1.4): `null` = nenhuma operação aberta em B/C foi vista (o livro não está `PROTECTED` — `blockedByState` —,
+     * ou não há pendente efetiva); senão, se ela tem receita (`recoverable`: origem comprovada pela testemunha, D-16) e se ESTA sessão recebeu a autorização (só o autor).
+     */
+    let open: { readonly recoverable: boolean; readonly concludable: boolean } | null = null;
+    let blockedByState: ResultsFailure | null = null;
     const refuse = (f: ResultsFailure): RunLedgerGate<ResultsFailure> => ({ kind: 'REFUSED', failure: f });
     const gateOf = (outcome: RunStep, map: (refusal: RunRefusal) => ResultsFailure = fromRun): RunLedgerGate<ResultsFailure> =>
       outcome.kind === 'OK' ? { kind: 'OK' } : outcome.kind === 'RESTART' ? { kind: 'RESTART' } : refuse(map(outcome.refusal));
     const hooks: RunLedgerHooks<ResultsFailure> = {
-      async context(read) {
+      async context(read): Promise<RunLedgerContextGate<ResultsFailure>> {
         session = null;
         unresolved = null;
+        open = null;
+        blockedByState = null;
         const ctx = await port.context({ auditId, actor: operator, nowIso: deps.clock() });
         if (ctx.kind === 'REFUSED') return refuse(fromRun(ctx.refusal));
         const runs = ctx.view.runs;
@@ -518,6 +535,8 @@ export function createScoringResultsService(deps: ResultsDeps) {
             const reason = ctx.view.reason;
             unresolved = reason === 'DURABILITY_UNKNOWN' ? failure('RESULT_DURABILITY_UNKNOWN') : failure(reason === 'NOT_CONFIGURED' ? 'LEDGER_NOT_CONFIGURED' : 'DECISIONS_HISTORY_UNRESOLVED', `livro: ${reason ?? 'UNRESOLVED'}`);
           }
+          // nenhuma conclusão de pendente fora de PROTECTED (o livro não autoriza nada; falha fechada mesmo que o resto passe)
+          blockedByState = unresolved ?? failure(ctx.view.state === 'LEGACY_READ_ONLY' ? 'LEDGER_LEGACY_READ_ONLY' : ctx.view.state === 'ENROLLMENT_PENDING' ? 'LEDGER_ENROLLMENT_REQUIRED' : 'DECISIONS_HISTORY_UNRESOLVED');
           session = ctx.session;
           return { kind: 'OK' };
         }
@@ -525,9 +544,12 @@ export function createScoringResultsService(deps: ResultsDeps) {
         if (runs.open !== null && runs.open.phase === 'A') return refuse(failure('LEDGER_OPERATION_IN_PROGRESS'));
         const checked = crossCheck(read, runs);
         if (checked.kind === 'MISMATCH') return ++mismatches >= OBJECT_LEDGER_ATTEMPTS ? refuse(failure('RESULT_INTEGRITY', OBJECT_LEDGER_MISMATCH)) : { kind: 'RESTART' };
-        // B (sem recibo) ou C (com recibo): só a pendente da fase B sai no corpo (o DTO só sabe dizer "sem recibo"; o da fase C é da R1.5)
-        if (checked.kind === 'OPEN') return refuse({ ...failure('RESULT_PENDING_UNCONFIRMED'), ...(checked.receipt ? {} : { pending: pendingOf(checked.run, viewer) }) });
         session = ctx.session;
+        // B (sem recibo) ou C (com recibo): a pendente EFETIVA vai ao `build` (R1.4), que exige o autor, a origem e todas as reconferências; a conclusão só segue com a autorização
+        if (checked.kind === 'OPEN') {
+          open = { recoverable: runs.open?.recoverable === true, concludable: ctx.concludable };
+          return { kind: 'OPEN', run: checked.run, receipt: checked.receipt };
+        }
         return { kind: 'OK' };
       },
       async intent(sealed) {
@@ -543,10 +565,26 @@ export function createScoringResultsService(deps: ResultsDeps) {
         const run = draftOf(sealed);
         if (!run || session === null) return refuse(failure('INTERNAL_ERROR'));
         // resultado e recibo existem e são duráveis; sem o RUN_CONFIRMED a operação fica em fase C (só o autor conclui): RESULT_ANCHOR_PENDING — salvo durabilidade desconhecida
-        return gateOf(await port.confirmed({ session, auditId, actor: operator, nowIso: deps.clock(), run }), (refusal) => (refusal.code === 'DURABILITY_UNKNOWN' ? fromRun(refusal) : failure('RESULT_ANCHOR_PENDING', ...refusal.issues.slice(0, 5))));
+        return gateOf(await port.confirmed({ session, auditId, actor: operator, nowIso: deps.clock(), run }), anchorPendingOr);
+      },
+      async conclude(sealed) {
+        const run = draftOf(sealed);
+        if (!run || session === null) return refuse(failure('INTERNAL_ERROR'));
+        // o recibo já é durável; sem o RUN_CONFIRMED a operação fica (ou volta a ficar) em fase C: RESULT_ANCHOR_PENDING — salvo durabilidade desconhecida ou quem não é o autor
+        return gateOf(await port.conclude({ session, auditId, actor: operator, nowIso: deps.clock(), run }), (refusal) => (refusal.code === 'PENDING_UNCONFIRMED' ? fromRun(refusal) : anchorPendingOr(refusal)));
       },
     };
-    return { hooks, unresolved: () => unresolved };
+    /**
+     * O livro desta tentativa permite CONCLUIR a pendente? Em dois momentos do `build`: `ORIGIN` logo depois da origem conferida pelo serviço (a testemunha do livro também precisa
+     * comprová-la: D-16, chave vencida/revogada/desconhecida ⇒ operação aberta e sem receita) e `GRANT` depois de TODAS as reconferências (a sessão do livro autorizou esta
+     * conclusão: só o autor, com receita e testemunha das decisões resolvida). Sem operação B/C vista pelo livro, ninguém conclui. Tudo antes de qualquer gravação.
+     */
+    const conclusionBlocked = (stage: 'ORIGIN' | 'GRANT'): ResultsFailure | null => {
+      if (open === null) return blockedByState ?? failure('RESULT_PENDING_UNCONFIRMED');
+      if (stage === 'ORIGIN') return open.recoverable ? null : failure('RESULT_PENDING_ORIGIN_UNPROVEN');
+      return open.concludable ? null : failure('RESULT_PENDING_UNCONFIRMED');
+    };
+    return { hooks, unresolved: () => unresolved, conclusionBlocked };
   }
 
   return {
@@ -569,19 +607,22 @@ export function createScoringResultsService(deps: ResultsDeps) {
 
       let evaluated: Evaluation | null = null;
       let concludedPending = false;
-      const runLedger = deps.ledger ? ledgerSteps(deps.ledger, auditId, operator, viewer) : null;
+      const runLedger = deps.ledger ? ledgerSteps(deps.ledger, auditId, operator) : null;
       const appended = await appendRun<ResultsFailure>(
         deps.baseDir,
         auditId,
         async (ctx) => {
           const reject = (f: ResultsFailure): { ok: false; failure: ResultsFailure } => ({ ok: false, failure: f });
+          // a pendente só vai no corpo quando o DTO a descreve (sem recibo); a pendente efetiva da fase C do livro já tem recibo (o `'PRESENT'` é da R1.5)
+          const pendingBody = (run: ScoreRun): { pending?: PendingRunDto } => (ctx.pendingReceipt ? {} : { pending: pendingOf(run, viewer) });
           // 1. reenvio idêntico (mesmo `inputSha256` e mesmo `head` das decisões) do último arquivo publicado
           const last = ctx.all[ctx.all.length - 1];
           if (last && last.inputSha256 === expectedInputSha256 && sameHead(last.decisions.head, expectedHead)) {
             // com o livro NÃO resolvido (R1.3), nem o reenvio de confirmado nem a conclusão de pendente respondem: nada é afirmado sobre um livro em dúvida
             const unresolved = runLedger?.unresolved() ?? null;
             if (unresolved) return reject(unresolved);
-            if (last === ctx.pending && last.finalizedBy !== operator) return reject({ ...failure('RESULT_PENDING_UNCONFIRMED'), pending: pendingOf(last, viewer) });
+            // §16.17.4 (R1.4): só o AUTOR conclui — e-mail da sessão normalizado (`operatorOf`) === `finalizedBy` (o `RUN_INTENT` amarra o hash, logo também `run.author`)
+            if (last === ctx.pending && last.finalizedBy !== operator) return reject({ ...failure('RESULT_PENDING_UNCONFIRMED'), ...pendingBody(last) });
             concludedPending = last === ctx.pending;
             if (concludedPending) {
               // CONCLUIR uma pendente = dar o recibo a um arquivo que vive numa pasta que quem escreve nela controla por inteiro. Camadas,
@@ -589,7 +630,10 @@ export function createScoringResultsService(deps: ResultsDeps) {
               // (2) o registro se explica (reexecuta o motor sobre a entrada gravada); (3) as evidências citadas existem HOJE com os mesmos hashes;
               // (4) o histórico de decisões não regrediu desde o head gravado. O pedido do operador (`expectedHead`/`expectedInputSha256`) vem da
               // interface a partir do próprio arquivo: NÃO é prova de nada.
-              if (judgeOrigin(deps.origin, 'RUN', last) !== 'PROVEN') return reject({ ...failure('RESULT_PENDING_ORIGIN_UNPROVEN'), pending: pendingOf(last, viewer) });
+              if (judgeOrigin(deps.origin, 'RUN', last) !== 'PROVEN') return reject({ ...failure('RESULT_PENDING_ORIGIN_UNPROVEN'), ...pendingBody(last) });
+              // (1b) com o livro: a origem também comprovada pela testemunha que o livro lê (D-16)
+              const unprovable = runLedger ? runLedger.conclusionBlocked('ORIGIN') : null;
+              if (unprovable) return reject({ ...unprovable, ...pendingBody(last) });
               if (!explains(last)) return reject(failure('RESULT_INTEGRITY')); // nunca se dá recibo a um registro que não se explica
               const now = await deps.preview.evaluate(actor, auditId);
               if (!now.ok) return reject({ ...failure(now.code, ...now.issues), ...(now.head !== undefined ? { head: now.head } : {}) });
@@ -605,10 +649,13 @@ export function createScoringResultsService(deps: ResultsDeps) {
                 const barrier = await deps.preview.durabilityBarrier(actor, auditId, {});
                 if (!barrier.ok) return reject(failure(barrier.code === 'DURABILITY_UNKNOWN' ? 'RESULT_DURABILITY_UNKNOWN' : 'INPUT_CHANGED', ...barrier.issues.slice(0, 3)));
               }
+              // (6) com o livro (R1.4): a sessão do livro autorizou ESTA conclusão (só o autor, com receita); sem a autorização, nada é gravado — nem o recibo da fase B
+              const ungranted = runLedger ? runLedger.conclusionBlocked('GRANT') : null;
+              if (ungranted) return reject({ ...ungranted, ...pendingBody(last) });
             } else if (!explains(last)) return reject(failure('RESULT_INTEGRITY')); // reenvio de um CONFIRMADO: nada é gravado, mas só se devolve o que se explica
             return { ok: true, replayOf: last.seq };
           }
-          if (ctx.pending) return reject({ ...failure('RESULT_PENDING_UNCONFIRMED'), pending: pendingOf(ctx.pending, viewer) });
+          if (ctx.pending) return reject({ ...failure('RESULT_PENDING_UNCONFIRMED'), ...pendingBody(ctx.pending) });
 
           // 2. avaliação (leitura dupla concordante) e confronto com o que o operador viu
           const ev = await deps.preview.evaluate(actor, auditId);
