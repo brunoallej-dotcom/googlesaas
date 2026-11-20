@@ -468,6 +468,29 @@ Fecham lacunas apontadas no mapa da W4; prevalecem sobre o texto acima onde houv
 - **Limites declarados:** a varredura inteira fica na memória (até 256 MiB). A exigência de R e S em `keyIds` é defesa em profundidade: com R `retired:<hash>`, toda cadeia coberta que autentica já usou o fecho.
 - **Ficam para depois:** o runbook da aposentadoria (W5): entrega byte a byte, fixação do hash, destruição de todas as cópias da privada de R e retirada de um fecho anterior numa reemissão; o artefato único (W4.6).
 
+**Revisão independente da W4.5 (20/11/2026, `junin-03`, BLOQUEAR; achados conferidos pelo manager, todos procedentes; corrigidos com testes antes do código):**
+
+- **MAJOR (era BLOCKER, vem da W4.4 e vale para `sign` e `close-key`): frase da chave e diagnóstico do runtime (T-008).** Desligar `process.report` não bastava: `NODE_OPTIONS=--heapsnapshot-signal=SIGUSR2` (ou `--inspect`, `--heap-prof`, `--diagnostic-dir`, `--report-*`, pré-carga extra…) despejaria o heap com a frase ou abriria um depurador. Corrigido com uma barreira nova, `SIGN_RUNTIME_UNSAFE` (código 3), logo depois da barreira de ambiente do §8.1 e antes do analisador: nada é lido, o terminal não é tocado e a frase nunca é pedida.
+  - **Ambiente (só os NOMES, como no §8.1):** qualquer `NODE_*` é recusa, salvo `NODE_ENV`. Inclui `NODE_OPTIONS` mesmo vazio (decisão: olhar o valor quebraria a regra "só os nomes"), `NODE_DEBUG`, `NODE_V8_COVERAGE` e `NODE_PATH`.
+  - **`process.execArgv`, lista permitida explícita:**
+    - o par do carregador do `npm run link-audit:seal`. Conferido num processo real: o `tsx` põe exatamente `--require <…>/tsx/dist/preflight.cjs --import file://<…>/tsx/dist/loader.mjs` e nada em `NODE_OPTIONS`. O par vale uma vez, nesta ordem, e os dois arquivos têm de ser, pelo caminho real, os do `node_modules` do próprio projeto;
+    - o modelo de permissões do artefato da W4.6: `--permission` (ou `--experimental-permission`), `--allow-fs-read=…` e `--allow-fs-write=…` (só com `=`), e `--disable-sigusr1`, que só restringe;
+    - qualquer outra opção ⇒ recusa, sem ecoar o valor.
+  - **Inspector:** `node:inspector` não é importado (ficaria fora da lista RS-14). Na partida ele só liga por `NODE_OPTIONS` ou `execArgv`, que a barreira cobre; `process.debugPort` existe sempre (9229) e não indica nada.
+  - **Limite declarado:** outro processo do MESMO usuário pode ligar o inspector depois (SIGUSR1) ou ler a memória (`/proc/<pid>/mem`). Isso fica fora da garantia (estação dedicada, W5), e a W4.6 pode rodar com `--disable-sigusr1`, já aceito.
+  - **Testes:** por injeção (`execArgv` e ambiente são injetáveis no CLI) e em processo REAL pelo `tsx`: o carregador do projeto passa; `NODE_OPTIONS` e uma opção extra (`--expose-gc`) recusam. Os testes que rodam o CLI injetam um `execArgv` limpo: o do processo de teste é o carregador dos testes, e o `node --test` põe `NODE_TEST_CONTEXT` no ambiente.
+- **MAJOR (era BLOCKER): pasta de recibos não vinculada à leitura (TOCTOU).** O `lstat` seguido de `realpath` deixava trocar a pasta (a raiz de confiança do fecho) por um link e fazer de um recibo forjado uma cabeça. Corrigido no molde da custódia da chave da W4.4:
+  - a pasta é aberta UMA vez com `O_RDONLY|O_DIRECTORY|O_NOFOLLOW`. O `fstat` do descritor exige diretório do usuário que roda o comando, sem escrita para grupo e outros (fora do Linux, sem `getuid`, é recusa);
+  - a enumeração e cada leitura vão SEMPRE por `/proc/self/fd/<fd>/…`;
+  - cada recibo é aberto dentro dela com `O_NOFOLLOW|O_NONBLOCK` e conferido no próprio descritor: arquivo comum, do usuário, sem escrita para grupo e outros, até 4 KiB e sem mudar durante a leitura. Decisão: `nlink` não é exigido, porque quem protege o conteúdo é o dono e o modo do próprio arquivo, e o nome está preso ao descritor da pasta;
+  - as pastas ACIMA (pelo caminho real do descritor) não podem ser graváveis por grupo ou outros, salvo com sticky bit (como `/tmp`). O dono delas não é conferido: num namespace de usuário (o executor isolado dos testes), as pastas de root aparecem com dono não mapeado. Fica como condição do runbook (W5), igual à pasta da chave;
+  - a sobreposição com `--seals-dir` passa a ser pela identidade `dev`/`ino`: a pasta e as de cima contra a cópia do servidor e as de cima dela, inclusive por link;
+  - teste: a troca da pasta por um link para recibos forjados, feita depois da abertura, não muda o que é lido.
+- **MINOR: limites aplicados depois de enumerar tudo.** Os recibos e a raiz da cópia do servidor passam a ser enumerados com `opendir`, de forma iterativa, parando na entrada máximo + 1 (`collectUpTo`). Na raiz da cópia o teto conta entradas (`MAX_SERVER_ENTRIES` = 10 000, inclusive `_closures`).
+- **MINOR: nomes de recibo nas mensagens.** As recusas citam a posição ordinal na ordem alfabética ("o 3º arquivo"), nunca o nome, que pode carregar dado de cliente.
+- **NIT: isolamento transitivo.** `SIGN_KEY_ID_PATTERN` mudou para `sign-core.ts` (`sign-chain.ts` o reexporta). `sign-receipts.ts` importa só `node:fs/promises`, `node:path`, `zod`, `schemas` e `sign-core`, e o teste de isolamento confere pelo grafo que ele não alcança o verificador nem o `snapshot-store`.
+- **NIT: limites exatos.** Exatamente 10 000 recibos não esbarram no teto e 10 001 são recusados antes de qualquer leitura. Exatamente 1000 auditorias cobertas gravam o fecho e 1001 são recusadas. O teto de recibos também é provado com limite injetado (só nos testes).
+
 ### 5.6 Manifesto `v2` e verificador `v2` (onda W3, contrato próprio)
 
 **Decisão de 16/11:** `v2` **antes do primeiro resultado de produção**, com `dossier.sha256` e `prevSealSha256` **dentro da parte assinada**.
