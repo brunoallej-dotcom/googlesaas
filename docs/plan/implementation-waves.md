@@ -251,7 +251,11 @@ interface (`audit-page/validators.ts`).
     fortes e verificáveis para cifrar a chave K1 (PKCS#8 PBES2: scrypt com custo definido, ou PBKDF2 com número alto de
     iterações) e frase de alta entropia, e diz como conferir os parâmetros do arquivo antes do uso. O `sign` só AVISA (saída
     de erro) abaixo dos mínimos provisórios do código (PBKDF2 600000 iterações; scrypt N = 2^17), que o runbook confirma ou
-    substitui.
+    substitui; o aviso não confere `r`, `p` nem o PRF, então o runbook confere o perfil completo.
+  - **estação de assinatura (revisões da W4.4):** Linux (a custódia é provada pelo descritor via `/proc/self/fd`; em outro
+    sistema o `sign` recusa); o arquivo de chave fica numa pasta 0700 cujas pastas ACIMA também não sejam graváveis por
+    outros usuários (condição do resíduo declarado da corrida); ambiente sem variáveis com nome de segredo (`*TOKEN*`,
+    `*SECRET*`, `*PASSWORD*`…), que o `sign` recusa.
 - **Goal command**: `/goal test -f docs/phase6-auditoria-link/p1-relatorio-ensaio.md && grep -q "AUTHENTICATED" docs/phase6-auditoria-link/p1-relatorio-ensaio.md && grep -q "RUN_CONFIRMED" docs/phase6-auditoria-link/p1-relatorio-ensaio.md, stop after 3 tries`
 
 ## Onda W6 — Coleta LIVE nova da TUVAPLAST (fora do código)
