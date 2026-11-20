@@ -10,6 +10,9 @@ import fsPromises from 'node:fs/promises';
  *    autorreferência): a estação e o CI o comparam com o versionado em `docs/phase6-auditoria-link/p1-sign-artifact.sha256`.
  * Só LEITURA, por UM descritor aberto sem seguir link no último componente e sem travar em FIFO, com teto. Sob `node --permission`, cada caminho
  * precisa de `--allow-fs-read` (o runbook fixa a linha); sem ele a leitura falha e quem chama recusa (falha fechada).
+ *  - a SONDAGEM antecipada de fsync (decisão do manager na W4.6): desde o Node 24.22.0 o modelo de permissões bloqueia `fsync`/`fdatasync`
+ *    (nodejs/node#65431), e a gravação à prova de queda do `sign` (§5.5.1 item 4) precisa dele no arquivo e na pasta. A sonda abre a raiz de
+ *    `--seals-dir` só para leitura e sincroniza ESSE descritor, com a mesma operação da gravação (`FileHandle.sync()`); nada é gravado.
  */
 
 /** Teto do bloco original: argv + ambiente cabem em ARG_MAX (2 MiB por padrão no Linux); acima disso, recusa. */
@@ -52,6 +55,36 @@ export const nodeExecBlock = {
   cmdline: (): Promise<Uint8Array> => readBounded('/proc/self/cmdline', MAX_EXEC_BLOCK_BYTES),
   environ: (): Promise<Uint8Array> => readBounded('/proc/self/environ', MAX_EXEC_BLOCK_BYTES),
 };
+
+/** `blocked`: o modelo de permissões nega fsync; `ok`: fsync funcionou; `unprobed`: a pasta não abriu ou outro erro (o fluxo normal decide). */
+export type FsyncProbeResult = 'ok' | 'blocked' | 'unprobed';
+/** O código que o modelo de permissões do Node usa para uma API negada (inclusive "fsync API is disabled when Permission Model is enabled"). */
+const PERMISSION_DENIED = 'ERR_ACCESS_DENIED';
+const codeOf = (error: unknown): unknown => (typeof error === 'object' && error !== null ? (error as { readonly code?: unknown }).code : undefined);
+
+/**
+ * Sonda de fsync na pasta `dir` (a raiz de `--seals-dir`): abre só para leitura (`O_RDONLY|O_DIRECTORY`) e sincroniza o descritor. Só a negação do
+ * modelo de permissões NO SYNC é `blocked`; a abertura que falha (pasta inexistente, arquivo, sem grant) é `unprobed`, porque o fluxo normal já recusa
+ * esses casos com o motivo certo. Nunca lança e nunca grava.
+ */
+export async function nodeFsyncProbe(dir: string): Promise<FsyncProbeResult> {
+  const { constants } = fsPromises;
+  let probe: Awaited<ReturnType<typeof fsPromises.open>>;
+  try {
+    probe = await fsPromises.open(dir, constants.O_RDONLY | constants.O_DIRECTORY);
+  } catch {
+    return 'unprobed';
+  }
+  try {
+    await probe.sync();
+    return 'ok';
+  } catch (error) {
+    return codeOf(error) === PERMISSION_DENIED ? 'blocked' : 'unprobed';
+  } finally {
+    // fechar um descritor só de leitura que falha não muda o que a sonda já provou (nem grava nada)
+    await probe.close().catch(() => undefined);
+  }
+}
 
 /** SHA-256 (hex minúsculo) dos bytes do arquivo do artefato em execução. Falha de leitura ⇒ lança (quem chama recusa, sem repassar o erro). */
 export async function artifactDigest(file: string): Promise<string> {

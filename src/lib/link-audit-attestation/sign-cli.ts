@@ -7,7 +7,7 @@ import type { SignRefusal } from './sign-core';
 import { defaultTempRoots, nodeKeyFileOps, openK1Key, publicKeyText, type KeyFileOps, type KeySource } from './sign-key';
 import { nodeCloseFsOps, type CloseFsOps } from './sign-receipts';
 import { runSign, type SignRunDeps, type SignRunResult } from './sign-run';
-import { artifactDigest, nodeExecBlock } from './sign-runtime';
+import { artifactDigest, nodeExecBlock, nodeFsyncProbe, type FsyncProbeResult } from './sign-runtime';
 import { openHiddenInput, terminalCloseConfirm, terminalConfirm, terminalPassphrase, type HiddenInput, type SignTerminal } from './sign-terminal';
 
 /*
@@ -77,6 +77,8 @@ export interface SignCliDeps {
    * e o recibo leva o SHA-256 dos bytes desse arquivo. Ausente (código-fonte, `npm run`): `artifactSha256` nulo, com aviso.
    */
   readonly artifact?: { readonly file: string };
+  /** W4.6 (decisão do manager): a sondagem antecipada de fsync na raiz de `--seals-dir` (padrão: `nodeFsyncProbe`, só leitura, nada gravado). */
+  readonly fsyncProbe?: (dir: string) => Promise<FsyncProbeResult>;
 }
 
 type Line = (line: string) => void;
@@ -168,6 +170,20 @@ const ARTIFACT_UNREADABLE: SignRefusal = {
   message: 'O artefato único não conseguiu ler os próprios bytes para o artifactSha256 (sob --permission, a linha do runbook dá --allow-fs-read à pasta do artefato). Nada foi lido, assinado nem gravado.',
 };
 
+const NO_FSYNC: SignRefusal = {
+  ok: false,
+  code: 'SIGN_RUNTIME_NO_FSYNC',
+  message: 'Este node bloqueia fsync sob --permission (o modelo de permissões do Node 24.22 em diante): a gravação à prova de queda do manifesto e do fecho não seria provada. Use a versão do node fixada no runbook (linha 22). Nada foi lido nem assinado.',
+};
+
+/**
+ * W4.6 (decisão do manager): logo depois do analisador, antes de ler qualquer entrada, da confirmação, da custódia e da frase, sonda fsync na raiz de
+ * `--seals-dir`. Só `blocked` recusa; `unprobed` (pasta inexistente, sem grant…) segue para as recusas próprias do fluxo. A sonda nunca grava.
+ */
+async function fsyncRefusal(sealsDir: string, deps: SignCliDeps): Promise<SignRefusal | null> {
+  return (await (deps.fsyncProbe ?? nodeFsyncProbe)(sealsDir)) === 'blocked' ? NO_FSYNC : null;
+}
+
 /** W4.6: no artefato, o SHA-256 dos próprios bytes (falha ⇒ recusa); fora dele, `null`. */
 async function artifactHash(deps: SignCliDeps): Promise<string | null | SignRefusal> {
   if (deps.artifact === undefined) return null;
@@ -252,6 +268,8 @@ export async function runSignCli(tokens: readonly string[], out: Line, err: Line
     const args = parseSignArgs(tokens);
     if ('ok' in args) return refusalOut(args, json, out, err);
     if (args.keySource.kind === 'external') return refusalOut(KEY_SOURCE_UNSUPPORTED, args.json, out, err);
+    const noFsync = await fsyncRefusal(args.sealsDir, deps);
+    if (noFsync) return refusalOut(noFsync, args.json, out, err);
     const result = await signWithTerminal(args, out, err, now, deps, env);
     return result.ok ? successOut(result, args.json, out, err, artifactSha256) : refusalOut(result, args.json, out, err);
   } catch {
@@ -329,6 +347,8 @@ export async function runCloseKeyCli(tokens: readonly string[], out: Line, err: 
     const args = parseCloseKeyArgs(tokens);
     if ('ok' in args) return refusalOut(args, json, out, err, CLOSE_KEY_USAGE);
     if (args.keySource.kind === 'external') return refusalOut(KEY_SOURCE_UNSUPPORTED, args.json, out, err, CLOSE_KEY_USAGE);
+    const noFsync = await fsyncRefusal(args.sealsDir, deps);
+    if (noFsync) return refusalOut(noFsync, args.json, out, err, CLOSE_KEY_USAGE);
     const result = await closeWithTerminal(args, out, err, now, deps, env);
     return result.ok ? closeSuccessOut(result, args.json, out, err, artifactSha256) : refusalOut(result, args.json, out, err, CLOSE_KEY_USAGE);
   } catch {

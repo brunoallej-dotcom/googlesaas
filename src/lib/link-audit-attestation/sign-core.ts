@@ -53,6 +53,8 @@ export const SIGN_REFUSAL_CODES = [
   'SIGN_RUNTIME_UNSAFE',
   // W4.6: o artefato único não conseguiu ler os próprios bytes para o `artifactSha256` do recibo (passo 16), pelo CLI; nunca por este núcleo
   'SIGN_ARTIFACT_UNREADABLE',
+  // W4.6 (decisão do manager): o node em execução bloqueia fsync sob --permission (Node >= 24.22); sondado logo depois do analisador, pelo CLI
+  'SIGN_RUNTIME_NO_FSYNC',
   // W4.5: o comando de fecho `close-key` (`sign-receipts.ts`, `sign-closure.ts`; spec §5.5.1 item 9, contrato do verificador v2 §6)
   'CLOSE_KEY_STATE_INVALID',
   'CLOSE_RECEIPTS_INVALID',
