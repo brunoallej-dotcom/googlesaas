@@ -1,11 +1,13 @@
-import { nodeFsOps, type BytesFsOps } from '../link-audit/snapshot-store';
-import { parseCloseKeyArgs, parseSignArgs, runtimeRefusal, secretArgvRefusal, secretEnvRefusal, type CloseKeyArgs, type SignArgs } from './sign-args';
+import type { BytesFsOps } from '../link-audit/fs-ops';
+import { nodeFsOps } from '../link-audit/node-fs-ops';
+import { artifactGrantsRefusal, parseCloseKeyArgs, parseSignArgs, runtimeRefusal, secretArgvRefusal, secretEnvRefusal, type CloseKeyArgs, type ExecBlockReader, type SignArgs } from './sign-args';
 import { sealDigest } from './sign-chain';
 import { runCloseKey, type CloseKeyDone, type CloseKeyResult } from './sign-closure';
 import type { SignRefusal } from './sign-core';
 import { defaultTempRoots, nodeKeyFileOps, openK1Key, publicKeyText, type KeyFileOps, type KeySource } from './sign-key';
 import { nodeCloseFsOps, type CloseFsOps } from './sign-receipts';
 import { runSign, type SignRunDeps, type SignRunResult } from './sign-run';
+import { artifactDigestUnderCustody, nodeExecBlock, nodeFsyncProbe, type FsyncProbeResult } from './sign-runtime';
 import { openHiddenInput, terminalCloseConfirm, terminalConfirm, terminalPassphrase, type HiddenInput, type SignTerminal } from './sign-terminal';
 
 /*
@@ -19,6 +21,8 @@ import { openHiddenInput, terminalCloseConfirm, terminalConfirm, terminalPassphr
  * Os padrões (`process.stdin`, `process.env`, `process.report`, disco real) são injetáveis; o ambiente é olhado só pelos NOMES (e TMPDIR/TMP/TEMP).
  * W4.5: o autoteste do passo 14 roda dentro de `runSign`; e o subcomando `close-key` (`runCloseKeyCli`) reaproveita as mesmas barreiras, o mesmo
  * terminal sem eco e a mesma chave K1, com o fecho em `sign-closure.ts`.
+ * W4.6: a barreira do runtime confere também o bloco ORIGINAL do exec (`/proc/self`, `sign-runtime.ts`); rodando como o ARTEFATO ÚNICO
+ * (`scripts/link-audit-sign-artifact.ts` empacotado), ela exige a linha do runbook, e o recibo leva o `artifactSha256` dos bytes do próprio arquivo.
  */
 
 export const SIGN_USAGE: readonly string[] = [
@@ -66,6 +70,15 @@ export interface SignCliDeps {
   readonly closeFs?: CloseFsOps;
   /** W4.5: o usuário que roda o comando, dono exigido da pasta de recibos (padrão: `process.getuid()`; fora do Linux, ausente ⇒ recusa). */
   readonly uid?: number;
+  /** W4.6: o bloco ORIGINAL do exec visto pela barreira do runtime (padrão: `/proc/self/cmdline` e `/proc/self/environ`). */
+  readonly execBlock?: ExecBlockReader;
+  /**
+   * W4.6: presente só quando o comando roda como o ARTEFATO ÚNICO (a entrada empacotada passa o próprio arquivo): a barreira exige a linha do runbook
+   * e o recibo leva o SHA-256 dos bytes desse arquivo. Ausente (código-fonte, `npm run`): `artifactSha256` nulo, com aviso.
+   */
+  readonly artifact?: { readonly file: string };
+  /** W4.6 (decisão do manager): a sondagem antecipada de fsync na raiz de `--seals-dir` (padrão: `nodeFsyncProbe`, só leitura, nada gravado). */
+  readonly fsyncProbe?: (dir: string) => Promise<FsyncProbeResult>;
 }
 
 type Line = (line: string) => void;
@@ -118,13 +131,13 @@ export interface SignReceipt {
   readonly custodian: string;
   readonly roleException: boolean;
   readonly requiresLaterReview: boolean;
-  /** SHA-256 do artefato único do `sign` (W4.6). Até lá `null`: o comando roda do código-fonte, sem artefato conferido (NOT_VERIFIED). */
+  /** SHA-256 dos bytes do artefato único em execução (W4.6); `null` fora dele (código-fonte, sem artefato conferido: NOT_VERIFIED). */
   readonly artifactSha256: string | null;
 }
 
 type Signed = Extract<SignRunResult, { readonly ok: true }>;
 
-function receiptOf(signed: Signed): SignReceipt {
+function receiptOf(signed: Signed, artifactSha256: string | null): SignReceipt {
   const { seal, plan } = signed;
   return {
     ok: true,
@@ -143,18 +156,62 @@ function receiptOf(signed: Signed): SignReceipt {
     custodian: plan.custodian,
     roleException: plan.roleException,
     requiresLaterReview: plan.requiresLaterReview,
-    artifactSha256: null,
+    artifactSha256,
   };
 }
 
-/** W4.5: o autoteste do passo 14 existe (`runSign`); resta o aviso do artefato único conferido (W4.6). */
-const ARTIFACT_NOTICE = 'Aviso: artifactSha256 é nulo (o comando roda do código-fonte, sem o artefato único conferido da W4.6): não entregue ao servidor antes dele.';
+/** Fora do artefato (código-fonte, `npm run`): o recibo não tem `artifactSha256`. */
+const ARTIFACT_NOTICE = 'Aviso: artifactSha256 é nulo (o comando roda do código-fonte, não do artefato único conferido): não entregue ao servidor o que ele assinar.';
+/** No artefato: o hash dos bytes em execução, para a estação conferir com o versionado (spec §5.5.1 item 6). */
+const artifactLine = (sha256: string): string => `Artefato único: artifactSha256 ${sha256} (confira com docs/phase6-auditoria-link/p1-sign-artifact.sha256 antes de entregar).`;
+const ARTIFACT_UNREADABLE: SignRefusal = {
+  ok: false,
+  code: 'SIGN_ARTIFACT_UNREADABLE',
+  message: 'O artefato único não conseguiu ler os próprios bytes para o artifactSha256 (sob --permission, a linha do runbook dá --allow-fs-read à pasta do artefato e a /proc/self/fd). Nada foi lido, assinado nem gravado.',
+};
+const ARTIFACT_UNSAFE: SignRefusal = {
+  ok: false,
+  code: 'SIGN_ARTIFACT_UNSAFE',
+  message: 'O artefato único está fora da custódia: tem de ser um arquivo comum sem permissão de escrita, do usuário que roda o comando ou do root, numa pasta sem escrita para grupo e outros, e não pode ser link nem ser trocado durante a conferência. Confira-o com sha256sum -c antes de rodar (runbook). Nada foi lido, assinado nem gravado.',
+};
+
+const NO_FSYNC: SignRefusal = {
+  ok: false,
+  code: 'SIGN_RUNTIME_NO_FSYNC',
+  message: 'Este node bloqueia fsync sob --permission (o modelo de permissões do Node 24.22 em diante): a gravação à prova de queda do manifesto e do fecho não seria provada. Use a versão do node fixada no runbook (linha 22). Nada foi lido nem assinado.',
+};
+
+/**
+ * Revisão independente da W4.6 (3): no artefato, logo depois do analisador, os grants do modelo de permissões ficam limitados (escrita só em
+ * `--seals-dir`; sem `/`, `*` nem leitura rasa). Fora do artefato, nada a conferir.
+ */
+async function grantsRefusal(subcommand: 'sign' | 'close-key', sealsDir: string, deps: SignCliDeps, env: Readonly<Record<string, string | undefined>>): Promise<SignRefusal | null> {
+  if (deps.artifact === undefined) return null;
+  // as raízes temporárias PADRÃO (nunca as injetadas da custódia): no artefato, manifesto nunca em pasta temporária
+  return artifactGrantsRefusal({ subcommand, sealsDir, execArgv: deps.execArgv ?? process.execArgv, execBlock: deps.execBlock ?? nodeExecBlock, realpath: (deps.keyFs ?? nodeKeyFileOps).realpath, tempRoots: defaultTempRoots(env) });
+}
+
+/**
+ * W4.6 (decisão do manager): logo depois do analisador, antes de ler qualquer entrada, da confirmação, da custódia e da frase, sonda fsync na raiz de
+ * `--seals-dir`. Só `blocked` recusa; `unprobed` (pasta inexistente, sem grant…) segue para as recusas próprias do fluxo. A sonda nunca grava.
+ */
+async function fsyncRefusal(sealsDir: string, deps: SignCliDeps): Promise<SignRefusal | null> {
+  return (await (deps.fsyncProbe ?? nodeFsyncProbe)(sealsDir)) === 'blocked' ? NO_FSYNC : null;
+}
+
+/** W4.6: no artefato, o SHA-256 dos próprios bytes pelo descritor, sob custódia (falha ⇒ recusa); fora dele, `null`. */
+async function artifactHash(deps: SignCliDeps): Promise<string | null | SignRefusal> {
+  if (deps.artifact === undefined) return null;
+  const digest = await artifactDigestUnderCustody(deps.artifact.file, { fs: deps.keyFs ?? nodeKeyFileOps, uid: deps.uid ?? process.getuid?.() });
+  if (digest.ok) return digest.sha256;
+  return digest.reason === 'UNSAFE' ? ARTIFACT_UNSAFE : ARTIFACT_UNREADABLE;
+}
 const SELFTEST_LINE = 'Autoteste (passo 14): o verificador v2 autenticou a cadeia com o manifesto novo antes da gravação (lista completa com estado, fechos da pasta, só v2).';
 
 /** Saída do sucesso: com --json, UM objeto (o recibo); sem, o nome do arquivo (nunca a pasta), o recibo legível e o recibo em JSON numa linha. */
-function successOut(signed: Signed, json: boolean, out: Line, err: Line): number {
-  const receipt = receiptOf(signed);
-  err(ARTIFACT_NOTICE);
+function successOut(signed: Signed, json: boolean, out: Line, err: Line, artifactSha256: string | null): number {
+  const receipt = receiptOf(signed, artifactSha256);
+  err(artifactSha256 === null ? ARTIFACT_NOTICE : artifactLine(artifactSha256));
   if (json) {
     out(JSON.stringify(receipt));
     return EXIT.OK;
@@ -201,7 +258,14 @@ async function earlyRefusal(tokens: readonly string[], env: Readonly<Record<stri
   const names = Object.keys(env);
   const secret = secretArgvRefusal(tokens) ?? secretEnvRefusal(names);
   if (secret) return secret;
-  return runtimeRefusal({ execArgv: deps.execArgv ?? process.execArgv, envNames: names, projectRoot: deps.projectRoot, realpath: (deps.keyFs ?? nodeKeyFileOps).realpath });
+  return runtimeRefusal({
+    execArgv: deps.execArgv ?? process.execArgv,
+    envNames: names,
+    projectRoot: deps.projectRoot,
+    realpath: (deps.keyFs ?? nodeKeyFileOps).realpath,
+    execBlock: deps.execBlock ?? nodeExecBlock,
+    artifact: deps.artifact !== undefined,
+  });
 }
 
 /** Subcomando `sign`: devolve o código de saída (0 assinado, 1 uso, 3 recusa, 4 falha inesperada). Nunca lança. */
@@ -212,11 +276,15 @@ export async function runSignCli(tokens: readonly string[], out: Line, err: Line
     const env = deps.env ?? process.env;
     const early = await earlyRefusal(tokens, env, deps);
     if (early) return refusalOut(early, json, out, err);
+    const artifactSha256 = await artifactHash(deps);
+    if (typeof artifactSha256 === 'object' && artifactSha256 !== null) return refusalOut(artifactSha256, json, out, err);
     const args = parseSignArgs(tokens);
     if ('ok' in args) return refusalOut(args, json, out, err);
     if (args.keySource.kind === 'external') return refusalOut(KEY_SOURCE_UNSUPPORTED, args.json, out, err);
+    const narrow = (await grantsRefusal('sign', args.sealsDir, deps, env)) ?? (await fsyncRefusal(args.sealsDir, deps));
+    if (narrow) return refusalOut(narrow, args.json, out, err);
     const result = await signWithTerminal(args, out, err, now, deps, env);
-    return result.ok ? successOut(result, args.json, out, err) : refusalOut(result, args.json, out, err);
+    return result.ok ? successOut(result, args.json, out, err, artifactSha256) : refusalOut(result, args.json, out, err);
   } catch {
     // nunca a mensagem nem o objeto do erro: pode carregar caminho, conteúdo lido ou material da chave (RS-13)
     if (json) out(JSON.stringify({ ok: false, code: 'UNEXPECTED', message: UNEXPECTED_MESSAGE }));
@@ -227,7 +295,7 @@ export async function runSignCli(tokens: readonly string[], out: Line, err: Line
 
 /* ------------------------------------------------------------------------------------------------------------------- close-key (W4.5) */
 
-const CLOSE_NOTICE = 'Aviso: o close-key roda do código-fonte, sem o artefato único conferido da W4.6: não entregue o fecho nem fixe o hash antes dele.';
+const CLOSE_NOTICE = 'Aviso: o close-key roda do código-fonte, não do artefato único conferido: não entregue o fecho nem fixe o hash que ele produzir.';
 
 /** As cadeias e auditorias FORA do fecho, em linhas legíveis (ids públicos e números; nunca caminho). */
 function excludedLines(done: CloseKeyDone): string[] {
@@ -242,9 +310,10 @@ function excludedLines(done: CloseKeyDone): string[] {
 }
 
 /** Saída do fecho: com --json, UM objeto (o resumo); sem, o arquivo (relativo), o hash a fixar, o item da lista, o aviso e o que ficou de fora. */
-function closeSuccessOut(done: CloseKeyDone, json: boolean, out: Line, err: Line): number {
+function closeSuccessOut(done: CloseKeyDone, json: boolean, out: Line, err: Line, artifactSha256: string | null): number {
   const summary = { ok: true, retiredKeyId: done.retiredKeyId, signerKeyId: done.signerKeyId, custodian: done.custodian, sealedAt: done.sealedAt, closureSha256: done.closureSha256, fileName: done.fileName, heads: done.heads, unknownSealsOnServer: done.unknownSealsOnServer, receiptedHeadsNotOnServer: done.receiptedHeadsNotOnServer, pinnedTrustKey: done.pinnedTrustKey };
-  err(CLOSE_NOTICE);
+  // W4.6: o objeto --json do fecho não muda (forma da W4.5); o hash do artefato vai para a saída de erro, para o registro de rotação
+  err(artifactSha256 === null ? CLOSE_NOTICE : artifactLine(artifactSha256));
   if (json) {
     out(JSON.stringify(summary));
     return EXIT.OK;
@@ -286,11 +355,15 @@ export async function runCloseKeyCli(tokens: readonly string[], out: Line, err: 
     const env = deps.env ?? process.env;
     const early = await earlyRefusal(tokens, env, deps);
     if (early) return refusalOut(early, json, out, err, CLOSE_KEY_USAGE);
+    const artifactSha256 = await artifactHash(deps);
+    if (typeof artifactSha256 === 'object' && artifactSha256 !== null) return refusalOut(artifactSha256, json, out, err, CLOSE_KEY_USAGE);
     const args = parseCloseKeyArgs(tokens);
     if ('ok' in args) return refusalOut(args, json, out, err, CLOSE_KEY_USAGE);
     if (args.keySource.kind === 'external') return refusalOut(KEY_SOURCE_UNSUPPORTED, args.json, out, err, CLOSE_KEY_USAGE);
+    const narrow = (await grantsRefusal('close-key', args.sealsDir, deps, env)) ?? (await fsyncRefusal(args.sealsDir, deps));
+    if (narrow) return refusalOut(narrow, args.json, out, err, CLOSE_KEY_USAGE);
     const result = await closeWithTerminal(args, out, err, now, deps, env);
-    return result.ok ? closeSuccessOut(result, args.json, out, err) : refusalOut(result, args.json, out, err, CLOSE_KEY_USAGE);
+    return result.ok ? closeSuccessOut(result, args.json, out, err, artifactSha256) : refusalOut(result, args.json, out, err, CLOSE_KEY_USAGE);
   } catch {
     // nunca a mensagem nem o objeto do erro: pode carregar caminho, conteúdo lido ou material da chave (RS-13)
     if (json) out(JSON.stringify({ ok: false, code: 'UNEXPECTED', message: UNEXPECTED_MESSAGE }));

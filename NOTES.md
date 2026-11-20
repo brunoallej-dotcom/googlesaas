@@ -1,6 +1,6 @@
 # GMN Intelligence Platform: notas do projeto
 
-Uso **interno** (não é SaaS). Documentação detalhada por fase em `docs/`. Última atualização: 20/11/2026 (**Onda 6C ENCERRADA** em 16/11/2026; **P1 em andamento**: W0–W3 concluídas; **R1 e W4 em fatias** (R1 completa: R1.1–R1.6 na `main`; W4.1–W4.5 na `main`, W4.6 em revisão); correção antecipada do defeito RL-32 do livro; repositório **público** desde 17/11/2026, com proteções; plano em `docs/plan/implementation-waves.md`; ver o fim do arquivo).
+Uso **interno** (não é SaaS). Documentação detalhada por fase em `docs/`. Última atualização: 20/11/2026 (**Onda 6C ENCERRADA** em 16/11/2026; **P1 em andamento**: W0–W3 concluídas; **R1 e W4 em fatias** (R1 e W4 completas: R1.1–R1.6 e W4.1–W4.6 na `main`; spec dos portões de produção fora do P1 na `main`, #51); correção antecipada do defeito RL-32 do livro; repositório **público** desde 17/11/2026, com proteções; plano em `docs/plan/implementation-waves.md`; ver o fim do arquivo).
 
 ## Baseline Git local e versão (28/10/2026)
 - **Atualização 07/11/2026:** o repositório agora tem o remoto `origin` (`https://github.com/brunoallej-dotcom/googlesaas.git`); os PRs #1 (`765a93a`, Onda 6B), #2 (`24c19e9`, Onda 6C) e #3 (`7013b2a`, bootstrap/CI/Node 22) estão mergeados na `main`; tag `v1.0.1` mantida. O texto abaixo ("sem remote") é o registro histórico de 28/10/2026.
@@ -287,6 +287,6 @@ Endurecimento de código (antes de expor): bypass `GMN_AUTH_DISABLED` desligado 
 | W3 | Verificador `v2` + contrato próprio | ✅ concluída (contrato PR #25; W3.1–W3.5: #30, #32, #33, #34, #35; `16ff609`) |
 | R1 | Confirmação de resultados pelo livro (ADR-0002) | ✅ R1.1–R1.6 mergeadas (#39, #41, #45, #46, #49 e o PR da R1.6); portão da R1 satisfeito no código |
 | R2 | Proveniência registrada no resultado (portão antes do primeiro resultado de produção) | ⬜ |
-| W4 | CLI `sign` (manifesto `v2`) | 🟡 W4.1 (#38), W4.2 (#40), W4.3 (#42), W4.4 (#44) e W4.5 (#48) mergeadas; W4.6 em andamento |
+| W4 | CLI `sign` (manifesto `v2`) | ✅ W4.1–W4.6 mergeadas (#38, #40, #42, #44, #48, #50); artefato único reproduzível, conferido no CI sob `--permission` |
 | W5 | Procedimento, dossiê e ensaio em homologação | ⬜ |
 | W6 | Coleta LIVE nova da TUVAPLAST (autorização escrita específica) | ⬜ |

@@ -43,6 +43,8 @@ export interface KeyFileStat {
   readonly mode: number;
   readonly nlink: number;
   readonly size: number;
+  /** Dono do arquivo (revisão independente da W4.6: a custódia do artefato exige o usuário ou o root). */
+  readonly uid: number;
 }
 /** O arquivo de chave ABERTO: tudo o que se confere dele e a leitura saem deste descritor (revisão da W4.4). */
 export interface OpenedKeyFile {
@@ -93,6 +95,7 @@ const UNSAFE_HARDLINK = unsafe('o arquivo tem mais de um nome (hardlink): outro 
 const UNSAFE_NO_DESCRIPTOR_PATH = unsafe('não foi possível obter o caminho real do arquivo ABERTO (/proc/self/fd indisponível: sistema sem /proc ou fora do Linux); sem ele a custódia não é provada');
 const UNSAFE_MOVED = unsafe('o arquivo mudou de lugar durante a conferência (o caminho real do descritor mudou)');
 const UNPROVABLE = unsafe('não foi possível conferir o caminho (erro ao inspecionar uma pasta acima do arquivo)');
+const UNPROVABLE_ROOT = unsafe('não foi possível resolver o caminho real de uma raiz proibida (projeto ou pasta temporária: permissão negada, erro de E/S ou laço de links); sem ele a custódia não é provada');
 const NOT_ENCRYPTED = refuse('SECRET_NOT_ENCRYPTED', 'O arquivo da chave está em TEXTO CLARO (chave privada sem cifra): trate-a como exposta, gere/cifre outra numa estação limpa (PKCS#8 com frase) e destrua a cópia em claro.');
 const UNPROTECTED_EMPTY = refuse('SIGN_KEY_UNPROTECTED', 'A chave cifrada abre com frase VAZIA: está sem proteção.');
 const UNPROTECTED_LEGACY = refuse('SIGN_KEY_UNPROTECTED', 'A chave usa cifra legada (não PBES2): proteção insuficiente; recifre-a em PKCS#8 com PBES2.');
@@ -131,22 +134,31 @@ export function defaultTempRoots(env: Readonly<Record<string, string | undefined
   return [...new Set([...fromEnv, ...FIXED_TEMP_ROOTS].map((dir) => path.resolve(dir)))];
 }
 
-const isInside = (child: string, root: string): boolean => {
+/** `child` é `root` ou fica dentro dela (caminhos absolutos). Também usado pelos grants do artefato (W4.6). */
+export const isInside = (child: string, root: string): boolean => {
   const relative = path.relative(root, child);
   return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 };
 const errorCode = (error: unknown): unknown => (typeof error === 'object' && error !== null ? (error as { readonly code?: unknown }).code : undefined);
 
-/** Cada raiz pelo caminho dado E pelo caminho real (quando existe): um link no caminho da raiz não a esconde. */
-async function bothForms(fs: KeyFileOps, roots: readonly string[]): Promise<string[]> {
+/** Raiz que não existe (ex.: /dev/shm ausente): a forma dada basta, porque nenhum arquivo real pode estar dentro dela. */
+const ROOT_ABSENT_CODES: ReadonlySet<unknown> = new Set(['ENOENT', 'ENOTDIR']);
+
+/**
+ * Cada raiz pelo caminho dado E pelo caminho real: um link no caminho da raiz não a esconde. Confirmação da revisão da W4.5 (iii), W4.6: só a raiz
+ * INEXISTENTE (ENOENT/ENOTDIR) segue com a forma dada; qualquer outra falha (EACCES, EIO, EPERM, ELOOP, `ERR_ACCESS_DENIED` do modelo de permissões
+ * do Node, erro sem código) deixa a raiz sem caminho real conhecido e a custódia NÃO é provada ⇒ `null` (quem chama recusa). Também usado pelos
+ * grants do artefato (segunda confirmação da revisão da W4.6: manifesto nunca em pasta temporária).
+ */
+export async function bothForms(fs: Pick<KeyFileOps, 'realpath'>, roots: readonly string[]): Promise<string[] | null> {
   const forms: string[] = [];
   for (const root of roots) {
     const resolved = path.resolve(root);
     forms.push(resolved);
     try {
       forms.push(await fs.realpath(resolved));
-    } catch {
-      // raiz inexistente (ex.: /dev/shm ausente): basta a forma dada
+    } catch (error) {
+      if (!ROOT_ABSENT_CODES.has(errorCode(error))) return null;
     }
   }
   return forms;
@@ -184,8 +196,8 @@ async function dirModeRefusal(fs: KeyFileOps, dir: string): Promise<SignRefusal 
 type Roots = { readonly project: readonly string[]; readonly temp: readonly string[] };
 const DELETED_SUFFIX = ' (deleted)';
 
-/** Caminho real do DESCRITOR: absoluto, normalizado, de arquivo não apagado; senão `null` (a custódia não é provada). */
-async function descriptorPath(opened: OpenedKeyFile): Promise<string | null> {
+/** Caminho real do DESCRITOR: absoluto, normalizado, de arquivo não apagado; senão `null` (a custódia não é provada). Também usado pela custódia do artefato (W4.6). */
+export async function descriptorPath(opened: OpenedKeyFile): Promise<string | null> {
   try {
     const real = await opened.realPath();
     const usable = typeof real === 'string' && path.isAbsolute(real) && path.normalize(real) === real && !real.includes('\0') && !real.endsWith(DELETED_SUFFIX);
@@ -195,8 +207,8 @@ async function descriptorPath(opened: OpenedKeyFile): Promise<string | null> {
   }
 }
 
-/** Lê pelo descritor até o fim; um byte a mais que o `fstat` declarou denuncia um arquivo que cresceu (quem chama recusa). */
-async function readAll(opened: OpenedKeyFile, buffer: Buffer): Promise<number> {
+/** Lê pelo descritor até o fim; um byte a mais que o `fstat` declarou denuncia um arquivo que cresceu (quem chama recusa). Também usado pelo artefato (W4.6). */
+export async function readAll(opened: OpenedKeyFile, buffer: Buffer): Promise<number> {
   let length = 0;
   while (length < buffer.length) {
     const { bytesRead } = await opened.read(buffer, length, buffer.length - length, length);
@@ -425,7 +437,10 @@ export interface OpenK1Deps {
 export async function openK1Key(keyPath: string, keyId: string, deps: OpenK1Deps): Promise<KeyObject | SignRefusal> {
   try {
     const file = path.resolve(keyPath);
-    const roots: Roots = { project: await bothForms(deps.fs, [deps.custody.projectRoot]), temp: await bothForms(deps.fs, deps.custody.tempRoots) };
+    const project = await bothForms(deps.fs, [deps.custody.projectRoot]);
+    const temp = await bothForms(deps.fs, deps.custody.tempRoots);
+    if (project === null || temp === null) return UNPROVABLE_ROOT;
+    const roots: Roots = { project, temp };
     const byGivenPath = await locationRefusal(deps.fs, file, roots);
     if (byGivenPath) return byGivenPath;
     const bytes = await readThroughDescriptor(deps.fs, file, roots);

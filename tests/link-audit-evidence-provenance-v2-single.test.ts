@@ -8,6 +8,7 @@ import { isPreviewPayload } from '../src/components/link-audit/audit-page/valida
 import { canonicalJson } from '../src/lib/link-audit/canonical';
 import { nodeFsOps, type FileInfo, type FsOps } from '../src/lib/link-audit/snapshot-store';
 import { evidenceToProveFromBasis } from '../src/lib/link-audit-evidence/evidence-to-prove';
+import { createSealedEvidenceProvenanceOver, parseTrustKeyring as parseTrustKeyringForTests } from '../src/lib/link-audit-evidence/provenance-core';
 import {
   createEvidenceSeal,
   createEvidenceSealV2,
@@ -243,16 +244,18 @@ function walk(dir: string): string[] {
     return /\.(?:ts|tsx|js|cjs|mjs)$/.test(entry.name) ? [full] : [];
   });
 }
-const FACTORIES = ['createSealedEvidenceProvenance', 'evidenceProvenanceFromConfig'] as const;
+/** W4.6: `createSealedEvidenceProvenanceOver` is the verifier CORE's factory (same options, the read port `fs` mandatory, no default disk). */
+const FACTORIES = ['createSealedEvidenceProvenance', 'evidenceProvenanceFromConfig', 'createSealedEvidenceProvenanceOver'] as const;
 const FACTORY = new RegExp(`\\b(?:${FACTORIES.join('|')})\\b`, 'g');
-const PROVENANCE_FILE = path.join('src', 'lib', 'link-audit-evidence', 'provenance.ts');
-const PROVENANCE_MODULE = path.join(ROOT, 'src', 'lib', 'link-audit-evidence', 'provenance');
+/** W4.6: the verifier is a PAIR, the core (no default disk) and the facade (re-exports + the default disk adapter); definitions live only there. */
+const VERIFIER_FILES: ReadonlySet<string> = new Set([path.join('src', 'lib', 'link-audit-evidence', 'provenance.ts'), path.join('src', 'lib', 'link-audit-evidence', 'provenance-core.ts')]);
+const VERIFIER_MODULES: ReadonlySet<string> = new Set([path.join(ROOT, 'src', 'lib', 'link-audit-evidence', 'provenance'), path.join(ROOT, 'src', 'lib', 'link-audit-evidence', 'provenance-core')]);
 /** Every way a file can reference another module: `import/export … from`, dynamic `import()`, `require()` and side-effect `import '…'`. */
 const MODULE_REFERENCE = /\b(?<keyword>import|export)\s*(?<clause>[^'";]*?)\s*\bfrom\s*['"](?<from>[^'"]+)['"]|\bimport\s*\(\s*['"](?<dynamic>[^'"]+)['"]\s*\)|\brequire\s*\(\s*['"](?<required>[^'"]+)['"]\s*\)|\bimport\s*['"](?<bare>[^'"]+)['"]/g;
 
 function resolvesToProvenance(file: string, specifier: string): boolean {
   const target = specifier.startsWith('@/') ? path.join(ROOT, 'src', specifier.slice(2)) : specifier.startsWith('.') ? path.resolve(path.dirname(path.join(ROOT, file)), specifier) : null;
-  return target !== null && target.replace(/\.(?:ts|js)$/, '') === PROVENANCE_MODULE;
+  return target !== null && VERIFIER_MODULES.has(target.replace(/\.(?:ts|js)$/, ''));
 }
 /** The text between the parenthesis at `open` and its match (`null` if unbalanced). */
 function balancedArguments(code: string, open: number): string | null {
@@ -266,7 +269,8 @@ function balancedArguments(code: string, open: number): string | null {
 
 /**
  * Static guard of V2-19 over ONE source file (comments already stripped). Each mention of a factory must be (a) a plain, non-aliased `import { … }`
- * specifier, (b) a DIRECT call whose argument is an object literal containing `acceptedVersions:`, or (c) its definition in provenance.ts. Anything
+ * specifier, (b) a DIRECT call whose argument is an object literal containing `acceptedVersions:`, or (c) its definition in the verifier pair
+ * (provenance-core.ts and the facade provenance.ts, W4.6). Anything
  * else (alias, assignment, value, re-export, member access) is a violation, and so is any reference to the provenance module that is not a named
  * `import { … } from` (namespace, default, `export … from`, `require`, dynamic or side-effect import): those could reach a factory without its name.
  */
@@ -288,7 +292,7 @@ function scanFactoryUse(file: string, code: string): { readonly violations: stri
     if (allowed.some(([from, to]) => at >= from && at < to)) continue;
     const before = code.slice(0, at);
     const after = code.slice(at + match[0].length);
-    if (/\bfunction\s+$/.test(before) && file === PROVENANCE_FILE) continue;
+    if (/\bfunction\s+$/.test(before) && VERIFIER_FILES.has(file)) continue;
     const isDirectCall = !before.trimEnd().endsWith('.') && /^\s*\(/.test(after); // `.name(` / `?.name(` is member access, never direct
     const args = isDirectCall ? balancedArguments(code, at + match[0].length + (after.length - after.trimStart().length)) : null;
     if (args !== null && /^\s*\{[\s\S]*\bacceptedVersions\s*:/.test(args)) calls.push(args);
@@ -318,6 +322,10 @@ test('V2-19 (M3, static guard) an aliased import, an assignment, a namespace cal
     ['require', "const prov = require('../../../lib/link-audit-evidence/provenance');"],
     ['dynamic import', "const prov = await import('@/lib/link-audit-evidence/provenance');"],
     ['definition outside provenance.ts', 'function createSealedEvidenceProvenance(options) { return options; }'],
+    ['core factory defined outside the verifier pair', 'function createSealedEvidenceProvenanceOver(options) { return options; }'],
+    ['namespace import of the core', "import * as core from '@/lib/link-audit-evidence/provenance-core';\ncore.createSealedEvidenceProvenanceOver({ acceptedVersions: [2], fs: x });"],
+    ['core factory called without acceptedVersions', "import { createSealedEvidenceProvenanceOver } from '../../../lib/link-audit-evidence/provenance-core';\ncreateSealedEvidenceProvenanceOver({ sealsDir: d, keyring: k, fs: x });"],
+    ['core factory aliased', "import { createSealedEvidenceProvenanceOver as over } from '../../../lib/link-audit-evidence/provenance-core';\nover({ acceptedVersions: [2] });"],
     ['string-keyed access', "import * as prov from '@/lib/link-audit-evidence/provenance';\nprov['evidenceProvenanceFromConfig']({ acceptedVersions: [2] });"],
   ];
   for (const [label, source] of fixtures) assert.ok(scanFactoryUse(file, strip(source)).violations.length > 0, `the guard must report: ${label}`);
@@ -487,7 +495,8 @@ test('V2-40 (contract §10) the audit page labels and the DTO validator accept e
     assert.equal(isPreviewPayload(blocked, UI_AUDIT), false, `${reason}_X: an unknown reason is still refused`);
   }
   assert.equal(new Set(reasons.map((reason) => PROVENANCE_REASON_LABELS[reason])).size, reasons.length, 'one distinct label per reason');
-  const source = fs.readFileSync(path.join(ROOT, 'src', 'lib', 'link-audit-evidence', 'provenance.ts'), 'utf8');
+  // W4.6: the definition moved, verbatim, to the verifier core (provenance.ts re-exports it)
+  const source = fs.readFileSync(path.join(ROOT, 'src', 'lib', 'link-audit-evidence', 'provenance-core.ts'), 'utf8');
   assert.match(source, /export interface EvidenceToProve \{\n  readonly ref: string;\n  readonly contentSha256: string;\n  readonly legacy: boolean;\n\}/, 'EvidenceToProve is unchanged');
 });
 
@@ -502,9 +511,8 @@ const importsOf = (source: string): string[] => {
   ];
 };
 
-test('V2-41 (IA-05 spirit, static) the import graph of provenance.ts gains no dependency and provenance.ts itself has no network, environment or clock', () => {
-  const entry = path.join(ROOT, 'src', 'lib', 'link-audit-evidence', 'provenance.ts');
-  assert.deepEqual(new Set(importsOf(fs.readFileSync(entry, 'utf8'))), new Set(['node:crypto', 'node:path', 'zod', '../link-audit/canonical', '../link-audit/snapshot-store', './types']), 'direct imports (contract §10)');
+/** Local files and external modules reachable from `entry` through every form of import (relative only; `@/` is not used here). */
+function importGraph(entry: string): { readonly files: readonly string[]; readonly external: readonly string[] } {
   const external = new Set<string>();
   const seen = new Set<string>();
   const visit = (file: string): void => {
@@ -522,9 +530,48 @@ test('V2-41 (IA-05 spirit, static) the import graph of provenance.ts gains no de
     }
   };
   visit(entry);
-  // Frozen as of W3.2. `node:dns`/`node:net` were ALREADY reachable (snapshot-store → evidence → url-safety) and are not used by provenance.ts.
-  assert.deepEqual([...external].sort(), ['node:crypto', 'node:dns', 'node:fs/promises', 'node:net', 'node:path', 'zod'], 'transitive external modules');
-  const own = strip(fs.readFileSync(entry, 'utf8'));
-  assert.ok(!/\bfetch\s*\(|node:(?:http|https|http2|dns|net|tls|dgram|child_process|fs)\b|XMLHttpRequest|WebSocket/.test(own), 'no network or direct disk module');
-  assert.ok(!/process\.env|Date\.now|new Date\s*\(|Math\.random/.test(own), 'no environment, clock or randomness');
+  return { files: [...seen].map((file) => path.relative(ROOT, file).split(path.sep).join('/')).sort(), external: [...external].sort() };
+}
+const EVIDENCE_LIB = path.join(ROOT, 'src', 'lib', 'link-audit-evidence');
+
+test('V2-41 (IA-05 spirit, static; W4.6 §5.5.1 item 7) the verifier CORE reaches no disk adapter, network module nor snapshot-store; the facade only adds the default disk adapter; neither file has network, environment or clock', () => {
+  const core = path.join(EVIDENCE_LIB, 'provenance-core.ts');
+  const facade = path.join(EVIDENCE_LIB, 'provenance.ts');
+  assert.deepEqual(new Set(importsOf(fs.readFileSync(core, 'utf8'))), new Set(['node:crypto', 'node:path', 'zod', '../link-audit/canonical', '../link-audit/fs-ops', './types']), 'core direct imports');
+  const coreGraph = importGraph(core);
+  assert.deepEqual(coreGraph.files, ['src/lib/link-audit-evidence/provenance-core.ts', 'src/lib/link-audit-evidence/types.ts', 'src/lib/link-audit/canonical.ts', 'src/lib/link-audit/fs-ops.ts'], 'core graph (a new file needs a decision)');
+  // Before W4.6 `node:dns`/`node:net`/`node:fs/promises` were reachable (snapshot-store → evidence → url-safety); the core reaches none of them
+  assert.deepEqual(coreGraph.external, ['node:crypto', 'node:path', 'zod'], 'core transitive external modules');
+  assert.deepEqual(new Set(importsOf(fs.readFileSync(facade, 'utf8'))), new Set(['node:path', '../link-audit/fs-ops', '../link-audit/node-fs-ops', './provenance-core']), 'facade direct imports');
+  assert.deepEqual(importGraph(facade).external, ['node:crypto', 'node:fs/promises', 'node:path', 'zod'], 'facade transitive external modules (no network: the snapshot-store chain is gone)');
+  for (const file of [core, facade]) {
+    const own = strip(fs.readFileSync(file, 'utf8'));
+    assert.ok(!/\bfetch\s*\(|node:(?:http|https|http2|dns|net|tls|dgram|child_process)\b|XMLHttpRequest|WebSocket/.test(own), `${path.basename(file)}: no network module`);
+    assert.ok(!/process\.env|Date\.now|new Date\s*\(|Math\.random/.test(own), `${path.basename(file)}: no environment, clock or randomness`);
+  }
+  assert.ok(!/node:fs\b|nodeFsOps|node-fs-ops/.test(strip(fs.readFileSync(core, 'utf8'))), 'the core has no default disk');
+});
+
+test('V2-41 (W4.6) the facade keeps the behavior: same values as the core (identity), the factory without `fs` reads the real disk; the core factory without a read port is the closed policy', async () => {
+  const facadeModule = (await import('../src/lib/link-audit-evidence/provenance')) as Record<string, unknown>;
+  const coreModule = (await import('../src/lib/link-audit-evidence/provenance-core')) as Record<string, unknown>;
+  const facadeOwn = new Set(['createSealedEvidenceProvenance', 'evidenceProvenanceFromConfig']);
+  // the explicit-port factory is reached only through the core (the facade's own factory wraps it with the default disk)
+  const coreOnly = new Set(['createSealedEvidenceProvenanceOver']);
+  for (const [name, value] of Object.entries(coreModule)) if (!coreOnly.has(name)) assert.equal(facadeModule[name], value, `${name}: re-exported by the facade (same value)`);
+  for (const name of coreOnly) assert.ok(name in coreModule && !(name in facadeModule), `${name}: only in the core`);
+  for (const name of Object.keys(facadeModule)) assert.ok(facadeOwn.has(name) || name in coreModule, `${name}: facade export comes from the core`);
+  for (const name of facadeOwn) assert.ok(!(name in coreModule), `${name}: defined only in the facade (default disk)`);
+  const sealsDir = tmpDir('lep2-fachada-');
+  const v2 = v2Of(KEYS_A);
+  writeSealFile(sealsDir, AUD, 1, v2);
+  const ring = parseTrustKeyringForTests(LIST_A) as TrustKeyring;
+  const expected = { status: 'AUTHENTICATED', headSeq: 1, headSealSha256: sealSha256(v2), keyIds: [KEYS_A.keyId] };
+  assert.deepEqual(await createSealedEvidenceProvenance({ sealsDir, keyring: ring, acceptedVersions: [2] }).classify(AUD, SAMPLE), expected, 'facade, default disk');
+  assert.deepEqual(await createSealedEvidenceProvenanceOver({ sealsDir, keyring: ring, acceptedVersions: [2], fs: nodeFsOps }).classify(AUD, SAMPLE), expected, 'core, explicit disk port');
+  const spied = spyFs();
+  assert.deepEqual(await createSealedEvidenceProvenance({ sealsDir, keyring: ring, acceptedVersions: [2], fs: spied.fs }).classify(AUD, SAMPLE), expected, 'facade, injected port');
+  assert.ok(spied.calls.length > 0, 'the injected port is the one used');
+  const withoutPort = { sealsDir, keyring: ring, acceptedVersions: [2] } as unknown as Parameters<typeof createSealedEvidenceProvenanceOver>[0];
+  assert.deepEqual(await createSealedEvidenceProvenanceOver(withoutPort).classify(AUD, SAMPLE), UNAUTH('PROOF_NOT_CONFIGURED'), 'core without a read port: closed (never a silent default disk)');
 });
