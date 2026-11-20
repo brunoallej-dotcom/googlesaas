@@ -8,7 +8,8 @@ import { parseKeySource, type KeySource } from './sign-key';
  * qualquer outra análise, duas barreiras de higiene (passo 1): nenhuma opção com nome de segredo (senha, chave, PIN…) nem material de chave em
  * qualquer argumento ⇒ `SECRET_VIA_ARGV_FORBIDDEN`; nenhuma variável de ambiente com nome de segredo ⇒ `SECRET_VIA_ENV_FORBIDDEN` (só os NOMES são
  * olhados). Depois o analisador estrito: opção desconhecida, repetida ou sem valor, argumento posicional e formato inválido ⇒ USAGE (código 1).
- * Nenhuma mensagem ecoa o VALOR de uma opção (pode ser caminho, rótulo ou segredo colado por engano).
+ * Nenhuma mensagem ecoa o VALOR de uma opção (pode ser caminho, rótulo ou segredo colado por engano). W4.5: o analisador do `close-key`
+ * (`parseCloseKeyArgs`), com as mesmas barreiras e as mesmas regras de `--key-id`, `--key-source` e `--trust-keys`.
  */
 
 export interface SignArgs {
@@ -30,8 +31,10 @@ export interface SignArgs {
 
 const VALUE_FLAGS: ReadonlySet<string> = new Set(['audit', 'package', 'approval', 'dossier', 'risk-acceptance', 'seals-dir', 'expect-seq', 'key-id', 'key-source', 'custodian', 'trust-keys']);
 const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(['first', 'json']);
-/** As únicas opções com "key" no nome que o `sign` aceita: nenhuma recebe segredo (rótulo público, caminho e lista de PÚBLICAS). */
-const KEY_NAMED_FLAGS: ReadonlySet<string> = new Set(['key-id', 'key-source', 'trust-keys']);
+const CLOSE_VALUE_FLAGS: ReadonlySet<string> = new Set(['retired-key-id', 'seals-dir', 'receipts-dir', 'key-id', 'key-source', 'custodian', 'trust-keys']);
+const CLOSE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set(['json']);
+/** As únicas opções com "key" no nome que o `sign` e o `close-key` aceitam: nenhuma recebe segredo (rótulos públicos, caminho e lista de PÚBLICAS). */
+const KEY_NAMED_FLAGS: ReadonlySet<string> = new Set(['key-id', 'key-source', 'trust-keys', 'retired-key-id']);
 /** Nome de opção que sugere segredo (§8.1, IA-15). Mais largo de propósito: uma opção desconhecida com esse nome é recusa de segredo, não de uso. */
 const SECRET_FLAG_NAME = /pass|senha|secret|segredo|pin|token|priv|chave|key|pwd|credential|credencia|seed|semente|mnemonic/i;
 /** Material de chave reconhecível em QUALQUER argumento: armadura PEM, PKCS#8 Ed25519 em base64/base64url ou em hex. */
@@ -94,19 +97,19 @@ function unknownFlag(token: string): SignRefusal {
 }
 
 /** Tokens → valores e sinalizadores, sem validar o conteúdo (flag desconhecida, repetida ou sem valor ⇒ USAGE). */
-function tokenize(tokens: readonly string[]): { readonly values: ReadonlyMap<string, string>; readonly flags: ReadonlySet<string> } | SignRefusal {
+function tokenize(tokens: readonly string[], valueFlags: ReadonlySet<string> = VALUE_FLAGS, booleanFlags: ReadonlySet<string> = BOOLEAN_FLAGS): { readonly values: ReadonlyMap<string, string>; readonly flags: ReadonlySet<string> } | SignRefusal {
   const values = new Map<string, string>();
   const flags = new Set<string>();
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index] ?? '';
     if (!token.startsWith('--')) return usage(`Argumento inesperado na posição ${index + 2} (as opções começam com --).`);
     const name = token.slice(2);
-    if (BOOLEAN_FLAGS.has(name)) {
+    if (booleanFlags.has(name)) {
       if (flags.has(name)) return usage(`Opção repetida: --${name}.`);
       flags.add(name);
       continue;
     }
-    if (!VALUE_FLAGS.has(name)) return unknownFlag(token);
+    if (!valueFlags.has(name)) return unknownFlag(token);
     const value = tokens[index + 1];
     if (value === undefined || value.startsWith('--')) return usage(`A opção --${name} exige um valor.`);
     if (values.has(name)) return usage(`Opção repetida: --${name}.`);
@@ -172,4 +175,139 @@ export function parseSignArgs(tokens: readonly string[]): SignArgs | SignRefusal
   const custodian = values.get('custodian');
   if (custodian === undefined || !shortLabel.safeParse(custodian).success) return usage('Informe --custodian <rótulo curto> (iniciais ou ID; sem e-mail nem telefone).');
   return { auditId, ...paths, ...seq, ...key, custodian, json: flags.has('json') };
+}
+
+/* ------------------------------------------------------------------------------------------------------------------- close-key (W4.5) */
+
+export interface CloseKeyArgs {
+  readonly retiredKeyId: string;
+  readonly sealsDir: string;
+  readonly receiptsDir: string;
+  readonly keyId: string;
+  readonly keySource: KeySource;
+  readonly custodian: string;
+  readonly trustKeys: string;
+  readonly json: boolean;
+}
+
+/**
+ * Analisador ESTRITO do `close-key` (depois das MESMAS barreiras de segredo do `sign`): `--retired-key-id` (R) e `--key-id` (S) no padrão de id de
+ * chave e diferentes (uma chave nunca fecha a si mesma), `--seals-dir`, `--receipts-dir`, `--key-source file:`, `--custodian` e `--trust-keys` como
+ * no `sign`. Devolve os argumentos ou a recusa (USAGE, ou segredo em `--key-source`).
+ */
+export function parseCloseKeyArgs(tokens: readonly string[]): CloseKeyArgs | SignRefusal {
+  const parsed = tokenize(tokens, CLOSE_VALUE_FLAGS, CLOSE_BOOLEAN_FLAGS);
+  if ('ok' in parsed) return parsed;
+  const { values, flags } = parsed;
+  const retiredKeyId = values.get('retired-key-id');
+  if (retiredKeyId === undefined || !SIGN_KEY_ID_PATTERN.test(retiredKeyId)) return usage('Informe --retired-key-id válido (o id da chave a aposentar: minúsculas, dígitos e "-", 4 a 32 caracteres).');
+  const [sealsDir, receiptsDir] = ['seals-dir', 'receipts-dir'].map((name) => values.get(name));
+  if (!isPath(sealsDir)) return usage('Informe --seals-dir <pasta de manifestos da estação> (a cópia do servidor).');
+  if (!isPath(receiptsDir)) return usage('Informe --receipts-dir <pasta de recibos> (o registro externo das assinaturas).');
+  const key = keyArgs(values);
+  if ('ok' in key) return key;
+  if (key.keyId === retiredKeyId) return usage('--key-id igual a --retired-key-id: uma chave nunca fecha a si mesma; o fecho é assinado por uma chave ATIVA diferente.');
+  const custodian = values.get('custodian');
+  if (custodian === undefined || !shortLabel.safeParse(custodian).success) return usage('Informe --custodian <rótulo curto> (iniciais ou ID; sem e-mail nem telefone).');
+  return { retiredKeyId, sealsDir, receiptsDir, ...key, custodian, json: flags.has('json') };
+}
+
+/* ------------------------------------------------------------------------------------------------------------------- runtime do Node (W4.5, T-008) */
+
+/**
+ * Revisão da W4.5 (MAJOR; modelo de ameaças T-008): opções do NODE que despejam a memória (onde estará a frase da chave) ou abrem um depurador
+ * (`--heapsnapshot-signal`, `--heapsnapshot-near-heap-limit`, `--heap-prof`, `--cpu-prof`, `--diagnostic-dir`, `--report-*`, `--inspect*`, pré-carga
+ * extra por `--require`/`--import`, `--expose-gc`, `--env-file`…) chegam por `NODE_OPTIONS` ou por `process.execArgv`. Lista PERMITIDA explícita;
+ * tudo o mais é recusa:
+ *  - o carregador do `npm run link-audit:seal` (conferido num processo real: o `tsx` põe EXATAMENTE `--require <…>/tsx/dist/preflight.cjs --import
+ *    file://<…>/tsx/dist/loader.mjs` em `execArgv`, e nada em `NODE_OPTIONS`), uma vez, nesta ordem, com os dois arquivos sendo, pelo caminho
+ *    real, os do `node_modules` do PRÓPRIO projeto;
+ *  - o modelo de permissões do artefato único da W4.6 (`node --permission --allow-fs-read=… artefato.js`): `--permission` (ou o antigo
+ *    `--experimental-permission`), `--allow-fs-read=<…>`, `--allow-fs-write=<…>` (só na forma com `=`) e `--disable-sigusr1` (que só restringe).
+ * O ambiente é olhado só pelos NOMES (como a barreira do §8.1): `NODE_OPTIONS` (mesmo vazio) e qualquer outro `NODE_*` (NODE_DEBUG, NODE_V8_COVERAGE,
+ * NODE_PATH…) são recusa; `NODE_ENV` não muda nada no comando e passa. Inspector: sem importar `node:inspector` (fora da lista RS-14), ele só liga
+ * na partida por essas opções; `process.debugPort` existe sempre (9229) e não indica nada. Limite declarado: outro processo do MESMO usuário pode
+ * ligá-lo depois (SIGUSR1) ou ler a memória (`/proc/<pid>/mem`); isso está fora da garantia (estação dedicada, W5).
+ */
+export interface RuntimeFacts {
+  /** `process.execArgv` (injetável). */
+  readonly execArgv: readonly string[];
+  /** Os NOMES do ambiente (nunca os valores). */
+  readonly envNames: readonly string[];
+  /** A raiz do projeto: o carregador aceito é o do `node_modules` dela. */
+  readonly projectRoot: string;
+  /** Caminho real (só metadados; o da custódia da chave, `KeyFileOps.realpath`). */
+  readonly realpath: (target: string) => Promise<string>;
+}
+
+const PERMISSION_FLAGS: ReadonlySet<string> = new Set(['--permission', '--experimental-permission', '--disable-sigusr1']);
+/** As duas opções do par do carregador. Por expressão (`r[e]quire`): a guarda textual de carregamento dinâmico do teste de isolamento recusa a palavra solta. */
+const PRELOAD_CJS = /^--r[e]quire$/;
+const PRELOAD_ESM = /^--import$/;
+const PERMISSION_PATHS = /^--allow-fs-(?:read|write)=.+$/;
+const NODE_ENV_NAME = /^NODE_/;
+const HARMLESS_NODE_ENV: ReadonlySet<string> = new Set(['NODE_ENV']);
+const FILE_URL_PREFIX = 'file://';
+const RUNTIME_NOTHING = 'Nada foi lido, assinado nem gravado.';
+const runtimeUnsafe = (why: string): SignRefusal => ({
+  ok: false,
+  code: 'SIGN_RUNTIME_UNSAFE',
+  message: `${why}: elas podem despejar a memória do processo (onde estaria a frase da chave) ou abrir um depurador (T-008). Rode o comando num shell limpo, pelo npm run link-audit:seal (ou pelo artefato da W4.6), sem NODE_OPTIONS e sem opções extras do node. ${RUNTIME_NOTHING}`,
+});
+const EXEC_ARGV_UNSAFE = runtimeUnsafe('O Node foi iniciado com opções além do carregador do projeto e do modelo de permissões (diagnóstico, depuração, perfil ou pré-carga); os valores não são ecoados');
+
+/** Caminho de uma URL `file://` absoluta, sem `node:url` (fora da lista RS-14); outra forma ⇒ `null`. */
+function fileUrlPath(url: string): string | null {
+  if (!url.startsWith(FILE_URL_PREFIX)) return null;
+  try {
+    const decoded = decodeURIComponent(url.slice(FILE_URL_PREFIX.length));
+    return decoded.startsWith('/') && !decoded.includes('\0') ? decoded : null;
+  } catch {
+    return null;
+  }
+}
+
+/** O par do carregador do `tsx` aponta, pelo caminho REAL, para os arquivos do `node_modules` do PRÓPRIO projeto. Qualquer falha ⇒ `false`. */
+async function isProjectLoader(preflight: string | undefined, loaderUrl: string | undefined, facts: RuntimeFacts): Promise<boolean> {
+  const loader = loaderUrl === undefined ? null : fileUrlPath(loaderUrl);
+  if (preflight === undefined || loader === null || !preflight.startsWith('/')) return false;
+  const dist = `${facts.projectRoot.replace(/\/+$/, '')}/node_modules/tsx/dist`;
+  try {
+    const [given, expected, givenLoader, expectedLoader] = await Promise.all([facts.realpath(preflight), facts.realpath(`${dist}/preflight.cjs`), facts.realpath(loader), facts.realpath(`${dist}/loader.mjs`)]);
+    return given === expected && givenLoader === expectedLoader;
+  } catch {
+    return false;
+  }
+}
+
+/** `execArgv` só com a lista permitida (cabeçalho acima). */
+async function execArgvAllowed(facts: RuntimeFacts): Promise<boolean> {
+  const tokens = facts.execArgv;
+  let loaderSeen = false;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index] ?? '';
+    if (PERMISSION_FLAGS.has(token) || PERMISSION_PATHS.test(token)) continue;
+    if (!PRELOAD_CJS.test(token) || loaderSeen || !PRELOAD_ESM.test(tokens[index + 2] ?? '')) return false;
+    if (!(await isProjectLoader(tokens[index + 1], tokens[index + 3], facts))) return false;
+    loaderSeen = true;
+    index += 3;
+  }
+  return true;
+}
+
+/**
+ * Barreira do runtime (revisão da W4.5, T-008), no CLI do `sign` e do `close-key` logo depois da barreira de ambiente do §8.1 e antes do analisador:
+ * nada é lido, o terminal não é tocado e a frase nunca é pedida. Recusa `SIGN_RUNTIME_UNSAFE` (código 3) citando só NOMES de variáveis. Nunca lança.
+ */
+export async function runtimeRefusal(facts: RuntimeFacts): Promise<SignRefusal | null> {
+  try {
+    const nodeNames = facts.envNames.filter((name) => NODE_ENV_NAME.test(name) && !HARMLESS_NODE_ENV.has(name));
+    if (nodeNames.length > 0) {
+      const shown = nodeNames.filter((name) => ECHOABLE_ENV_NAME.test(name)).slice(0, MAX_ECHOED_ENV_NAMES);
+      return runtimeUnsafe(`Há configuração do Node no ambiente (${shown.join(', ')}${nodeNames.length > shown.length ? ', …' : ''}; só os nomes são lidos)`);
+    }
+    return (await execArgvAllowed(facts)) ? null : EXEC_ARGV_UNSAFE;
+  } catch {
+    return EXEC_ARGV_UNSAFE;
+  }
 }

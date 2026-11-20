@@ -402,7 +402,7 @@ test('IA-14 (RS-21): nenhuma saída do sign (humana, --json, recusa) contém nom
   }
 });
 
-test('IA-14: saída humana do sucesso: arquivo (só o nome), pública, recibo legível e em JSON, aviso do autoteste da W4.5 e artifactSha256 nulo (artefato da W4.6)', async () => {
+test('IA-14: saída humana do sucesso: arquivo (só o nome), pública, recibo legível e em JSON, autoteste do passo 14 registrado (W4.5) e aviso do artifactSha256 nulo (artefato da W4.6)', async () => {
   const world = cliWorld();
   const run = await runSign(world.argv(), { typed: world.typed() });
   assert.equal(run.code, 0, run.stderr);
@@ -413,7 +413,9 @@ test('IA-14: saída humana do sucesso: arquivo (só o nome), pública, recibo le
   const receipt = JSON.parse(jsonLine.slice('Recibo (JSON): '.length)) as Record<string, unknown>;
   assert.deepEqual(Object.keys(receipt), RECEIPT_KEYS);
   assert.equal(receipt.artifactSha256, null);
-  assert.match(run.stderr, /autoteste/i, 'aviso: autoteste do passo 14 ainda não existe (W4.5)');
+  assert.match(run.stdout, /Autoteste \(passo 14\)/, 'o autoteste do passo 14 (W4.5) é registrado na saída');
+  assert.doesNotMatch(run.stderr, /ainda não existe/, 'o aviso do autoteste ausente saiu (W4.5)');
+  assert.match(run.stderr, /artifactSha256 é nulo/, 'o aviso do artefato único (W4.6) continua');
 });
 
 test('saída das recusas: RECUSADO: + código (código 3); --json com {ok:false, code, message} e, quando houver, refs e chainReason; nada gravado', async () => {
