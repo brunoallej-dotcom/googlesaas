@@ -97,8 +97,10 @@ test('guardas do build (mutações): módulo fora da lista (node:os, node:net, f
     // revisão independente da W4.6 (2): no Node 22 o modelo de permissões não restringe rede; esta guarda é o controle
     ['getBuiltinModule', "console.log(typeof process.getBuiltinModule('node:net'));\n", 'DYNAMIC_LOAD'],
     ['require como valor', "declare const require: (name: string) => unknown;\nconst load = require;\nconsole.log(load('node:net'));\n", 'DYNAMIC_LOAD'],
-    ['require entre parênteses', "declare const require: (name: string) => unknown;\nconsole.log((require)('node:crypto'));\n", 'DYNAMIC_LOAD'],
-    ['module.require', "declare const module: { require(name: string): unknown };\nconsole.log(module.require('node:crypto'));\n", 'DYNAMIC_LOAD'],
+    // o esbuild normaliza (require)('x') para require("x") estático: a saída cai na lista literal
+    ['require entre parênteses', "declare const require: (name: string) => unknown;\nconsole.log((require)('node:net'));\n", 'IMPORT_NOT_ALLOWED'],
+    // idem para module.require('x'): vira require("x") estático (a forma de membro no texto final é recusada abaixo, em checkArtifactText)
+    ['module.require', "declare const module: { require(name: string): unknown };\nconsole.log(module.require('node:net'));\n", 'IMPORT_NOT_ALLOWED'],
     ['process.binding', "console.log((process as unknown as { binding(name: string): unknown }).binding('fs'));\n", 'DYNAMIC_LOAD'],
     ['_linkedBinding', "console.log((process as unknown as { _linkedBinding(name: string): unknown })._linkedBinding('x'));\n", 'DYNAMIC_LOAD'],
     ['createRequire', "declare const createRequire: (url: string) => (name: string) => unknown;\nconsole.log(createRequire('/x')('node:net'));\n", 'DYNAMIC_LOAD'],
@@ -122,10 +124,12 @@ test('guardas do build (mutações): módulo fora da lista (node:os, node:net, f
   assert.deepEqual(checkArtifactText('var c = require("node:crypto"), p = require( "node:path" );', []), ['node:crypto', 'node:path']);
 });
 
-test('revisão independente da W4.6 (2): exceções EXATAS e justificadas do zod embutido ao identificador Function (aliases para o teste de eval e para o JIT do Doc.compile, e uma mensagem); cada uma tem de aparecer exatamente uma vez, e qualquer outro uso de Function é recusado', async () => {
+test('revisão independente da W4.6 (2): exceções EXATAS e justificadas do zod embutido ao identificador Function (aliases do teste de eval, do JIT do Doc.compile e do z.compile, e uma mensagem); cada uma tem de aparecer exatamente uma vez, e qualquer outro uso de Function é recusado', async () => {
+  // util.allowsEval (testa se o runtime gera código), core/doc.js (JIT dos validadores), core/compile.js (z.compile, não usado pelo sign) e texto
   assert.deepEqual([...ZOD_FUNCTION_EXCEPTIONS], [
     'try{const F=Function;new F("");return true}catch(_){return false}',
     'compile(){const F=Function;',
+    'const F=Function;const factoryCode=',
     '"Function types cannot be represented in JSON Schema"',
   ]);
   const text = fs.readFileSync((await built()).file, 'utf8');
@@ -266,6 +270,27 @@ test('revisão independente da W4.6 (1): o hash do recibo sai do DESCRITOR do pr
     },
   };
   await refusedBeforeInputs(swapped, 'arquivo trocado depois da abertura', { keyFs: swapping });
+  // troca DURANTE a leitura (depois das conferências do lugar): o caminho do descritor é conferido de novo no fim ⇒ recusa
+  const duringRead = await custodiedCopy();
+  const swappingOnRead: KeyFileOps = {
+    ...nodeKeyFileOps,
+    openKeyFile: async (target) => {
+      const opened = await nodeKeyFileOps.openKeyFile(target);
+      let swappedOnce = false;
+      return {
+        ...opened,
+        read: (...args) => {
+          if (!swappedOnce) {
+            swappedOnce = true;
+            fs.writeFileSync(`${target}.novo`, 'trocado durante a leitura', { mode: 0o444 });
+            fs.renameSync(`${target}.novo`, target);
+          }
+          return opened.read(...args);
+        },
+      };
+    },
+  };
+  await refusedBeforeInputs(duringRead, 'arquivo trocado durante a leitura', { keyFs: swappingOnRead });
 });
 /** Os campos de `KeyFileStat` de um `fstat` real (o spread perderia os métodos do Stats). */
 const pick = (info: Awaited<ReturnType<Awaited<ReturnType<KeyFileOps['openKeyFile']>>['stat']>>) => ({ isFile: () => info.isFile(), mode: info.mode, nlink: info.nlink, size: info.size, uid: info.uid });

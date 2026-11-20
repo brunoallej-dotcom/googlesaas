@@ -44,7 +44,7 @@ const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   // P1 W4.4: a chave K1 (PKCS#8 cifrado + frase) e a custódia do arquivo; disco SÓ leitura (node:fs/promises, sem escrita) e só do arquivo de chave
   'sign-key.ts': new Set(['node:crypto', 'node:fs/promises', 'node:path', './sign-core']),
   // P1 W4.4: o analisador estrito do `sign` e as barreiras de segredo em argv e ambiente (§8.1); a lista com estado é validada por sign-chain.ts
-  'sign-args.ts': new Set(['./schemas', './sign-chain', './sign-core', './sign-key']),
+  'sign-args.ts': new Set(['node:path', './schemas', './sign-chain', './sign-core', './sign-key']),
   // P1 W4.4: o comando `sign` (composição: argumentos → leitura única/cadeia/núcleo/gravação de sign-run.ts, terminal, chave K1, recibo); o disco
   // padrão é o nodeFsOps (o mesmo FsOps injetável de sign-run.ts); nunca o verificador direto. W4.6: o adaptador estreito (node-fs-ops) e a porta
   // (fs-ops), sem o snapshot-store; o bloco original do exec e o hash do artefato vêm de sign-runtime.ts
@@ -71,7 +71,8 @@ const EXCEPTIONS: Readonly<Record<string, ReadonlySet<string>>> = {
   'sign-run.ts': new Set(['módulo node', 'escrita']), // node:crypto (só randomBytes do nome do temporário) e node:path; escrita SÓ pela regra estreita abaixo
   'sign-key.ts': new Set(['módulo node']), // node:crypto (abrir a chave e derivar a pública), node:fs/promises SÓ leitura (regra estreita abaixo) e node:path
   'sign-receipts.ts': new Set(['módulo node']), // node:fs/promises SÓ leitura pelo descritor (regra estreita abaixo) e node:path
-  'sign-runtime.ts': new Set(['módulo node']), // node:fs/promises SÓ leitura (regra estreita abaixo) e createHash de node:crypto
+  'sign-runtime.ts': new Set(['módulo node']), // node:fs/promises SÓ leitura (regra estreita abaixo), createHash de node:crypto e node:path
+  'sign-args.ts': new Set(['módulo node']), // revisão independente da W4.6 (3): só node:path, para a forma e a posição dos grants do artefato
   'sign-closure.ts': new Set(['módulo node', 'Date']), // node:crypto (assinar o fecho, derivar a pública, SHA-256 dos bytes) e node:path; relógio INJETADO (tipo Date)
   'sign-cli.ts': new Set(['process', 'ambiente', 'Date']), // padrões injetáveis process.env/stdin/report (regra estreita abaixo: nomes do ambiente, nunca arquivo de ambiente); relógio INJETADO (tipo Date)
 };
