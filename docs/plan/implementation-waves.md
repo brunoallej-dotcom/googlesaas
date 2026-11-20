@@ -1,4 +1,4 @@
-# Implementation waves — Produtor P1 da Auditoria por Link (atestação offline da coleta)
+# Implementation waves — Produtor P1 da Auditoria por Link (atestação offline da coleta) e portões de produção da Fase 6
 
 > Spec de origem: `docs/specs/link-audit-p1-attestation.md` (§14 sugeria W0–W6; este arquivo os detalha e acrescenta
 > a onda **R1**, do ADR-0002). Os testes seguem o padrão `tests/link-audit-seal-*.test.ts` da spec §5.2. Este arquivo é a fonte da verdade do roadmap de ondas; a tabela do `NOTES.md` espelha a
@@ -6,8 +6,10 @@
 >
 > **Contexto (16/11/2026):** a Onda 6C foi encerrada formalmente pelo responsável. A finalização continua falhando
 > fechada (`NOT_FINALIZABLE`) até existir prova de coleta, e o P1 é o que a produz. Valem as decisões D1–D6 da spec
-> (§13.1). Os bloqueadores de produção fora do P1 continuam fora deste plano: guarda externa imutável, papel
-> administrativo com dupla aprovação, volumes e chaves no `stack.yml`, D5.
+> (§13.1). Os bloqueadores de produção fora do P1 (guarda externa imutável, papel administrativo com dupla aprovação,
+> volumes e chaves no `stack.yml`, D5) têm spec própria, `docs/specs/link-audit-production-gates.md` (20/11/2026), e
+> ondas G0–G3 na seção [Portões de produção da Fase 6 (fora do P1)](#portões-de-produção-da-fase-6-fora-do-p1), antes
+> das notas de execução. A tabela abaixo é só do P1.
 
 | Onda | Entrega | Depende de | Paralela com | Status |
 |------|---------|------------|--------------|--------|
@@ -271,7 +273,196 @@ interface (`audit-page/validators.ts`).
   - hash `--json` da coleta registrado em canal separado;
   - manifesto `v2` `AUTHENTICATED` para a coleta.
 - **Goal command**: não se aplica a goal loop (ação humana com custo). Conferência:
-  `/goal grep -q "W6.*✅" docs/plan/implementation-waves.md, stop after 1 tries`.
+  `/goal grep -qE "^\| W6 \|.*✅" docs/plan/implementation-waves.md, stop after 1 tries` (ancorado na linha da tabela: o padrão antigo casava com o próprio texto do comando e saía sempre verdadeiro).
+
+## Portões de produção da Fase 6 (fora do P1)
+
+> Spec de origem: `docs/specs/link-audit-production-gates.md` (PROPOSTA de 20/11/2026). Ela cobre a guarda externa
+> (§5.1), o papel administrativo (§5.2), os volumes e as chaves do `stack.yml` (§5.3) e a consequência da D5 (§5.4), e
+> consolida o portão de produção (§10.1) e o piloto mínimo (§10.2). Os critérios PG-xx são os da spec §6. Valem as
+> **regras de todas as ondas** acima. Por cima delas:
+>
+> - **nenhuma onda G faz deploy**, aplica migração no Supabase, cria secret real ou contrata serviço: são ações do
+>   responsável (spec §10.1);
+> - a migração da guarda (se a Q1 for a opção 1) fica em `supabase/proposed/` até o responsável aplicar;
+> - testes do provedor da guarda usam um provedor simulado, sem rede.
+
+| Onda | Entrega | Depende de | Paralela com | Status |
+|------|---------|------------|--------------|--------|
+| G0 | Decisões Q1–Q12 da spec; ADR-0003 (provedor da guarda); modelo de ameaças da guarda e do caminho administrativo; números do contrato da guarda (`L_max`, `T`, prazo de resposta) | spec | todas as ondas do P1 | ⬜ |
+| G1.a | Volumes, segredos e chave de log: `stack.yml`, lista do entrypoint, `stop-first`, plano de backup e `operatorRef` com `GMN_LINK_AUDIT_LOG_KEY` | G0 (Q8, Q9 e o nome do secret da guarda) | G1.b, G1.c, R2, W4.6 | ⬜ |
+| G1.b | Guarda: adaptador real, contrato R6-10, ligação nas rotas, migração proposta, reconciliação externa e runbook | G0 (Q1–Q5); R1.6 na `main` | G1.a; G1.c só se Q6 = 3 | ⬜ |
+| G1.c | Papel administrativo (só se Q6 = 1 ou 2; com Q6 = 3, só o aceite formal) | G0 (Q6, Q7) e emenda da §16.8 da spec do livro; **se Q6 = 1 ou 2, também a G1.b na `main`** (as duas mexem no livro) | G1.a; G1.b só se Q6 = 3 (sem código) | ⬜ |
+| G2 | Integração e ensaio em homologação: os 16 ensaios e as 2 atestações da spec §10.4 | G1.a, G1.b, G1.c (ou o aceite), o ambiente de homologação (Q12) e o **relatório da W5 aprovado** | nenhuma (com a W5, só em ambiente totalmente isolado, spec §10.4) | ⬜ |
+| G3 | Portão de produção (spec §10.1) ou piloto mínimo declarado (spec §10.2) | G2, os portões do P1 (R1, R2, W4.6, W5, W6) e as decisões e ações do responsável | — | ⬜ |
+
+Ordem prática, conforme a Q6:
+
+- **Q6 = 3** (manter o 403): G0 → {G1.a ∥ G1.b ∥ G1.c (só o aceite)} → [relatório da W5 aprovado] → G2 → G3.
+- **Q6 = 1 ou 2** (com código): G0 → {G1.a ∥ (G1.b → G1.c)} → [relatório da W5 aprovado] → G2 → G3.
+
+Motivos:
+
+- **G1.b espera a R1.6** porque as duas mexem em `src/lib/link-audit-ledger/service.ts`.
+- **G1.c vem depois da G1.b** quando tem código: as duas mexem no livro (a G1.c grava registros `*_ACK`). Com Q6 = 3
+  não há código, e o aceite corre junto.
+- **G2 depois da W5:** a G2 faz rollback, restaurações e derruba o provedor; a W5 grava e finaliza um resultado de
+  ensaio. Na mesma pilha, uma corromperia a outra (spec §10.4). Em paralelo, só com pilhas, volumes, guarda e
+  credenciais totalmente separados.
+- **G1.a e W5:** a G1.a é dona do `stack.yml`, incluindo o volume de manifestos (fase 2 do ADR 6C-03), que a W5 usa.
+  Isso evita duas ondas editando o mesmo arquivo.
+
+### Onda G0 — Decisões e contratos (sequencial, sem código)
+
+- **Objetivo**: deixar decididas as questões da spec §11 e escritos os contratos que as ondas de código vão seguir.
+- **Escopo (slices/arquivos)**:
+  - `docs/specs/link-audit-production-gates.md`: §11 com as respostas do responsável e o status "APROVADA na onda G0";
+  - `docs/adr/0003-<provedor-da-guarda>.md` (novo) e `docs/adr/README.md`;
+  - `docs/security/threats/link-audit-portoes-producao.md` (novo, STRIDE), mais a linha no `INDEX.md`;
+  - números do contrato da guarda: `L_max` (contagem do protocolo), `T` e prazo de resposta;
+  - se a Q6 for 1 ou 2: proposta de emenda à §16.8 da spec do livro, com revisão independente antes do código.
+- **Depende de / paralela com**: só da spec. Paralela com todo o P1 (só documentação).
+- **Critérios de aceite**:
+  - as 12 questões têm resposta registrada, com data e quem decidiu;
+  - o ADR-0003 aparece em `docs/adr/README.md`;
+  - o modelo de ameaças novo lista as ameaças da spec §8 com status.
+  - As decisões são do responsável: o goal loop só confere que estão escritas.
+- **Goal command**: `/goal grep -q "APROVADA na onda G0" docs/specs/link-audit-production-gates.md && ls docs/adr/0003-*.md >/dev/null && grep -q "0003" docs/adr/README.md && test -f docs/security/threats/link-audit-portoes-producao.md, stop after 3 tries`
+
+### Onda G1.a — Volumes, segredos e chave de log
+
+- **Objetivo**: o `stack.yml` e o entrypoint entregam ao serviço web tudo o que o código da Fase 6 lê, sem valor real, e
+  a chave de log passa a ser usada.
+- **Escopo (slices/arquivos)**:
+  - `deploy/hostinger/stack.yml`: as seis pastas que faltam (manifestos só leitura), os secrets novos por `*_FILE`, as
+    variáveis comuns, `stop-first` no web e nada novo no Worker (spec §5.3.3, VC-E1–E4);
+  - `deploy/hostinger/docker-entrypoint.sh`: os nomes novos na lista fixa;
+  - `deploy/hostinger/Dockerfile`: alvos de montagem, se a G1 confirmar que precisam existir na imagem;
+  - `tests/deploy-config.test.ts`, estendido (VC-E5);
+  - `deploy/hostinger/PLANO-DE-BACKUP-E-RESTAURACAO.md` e `PROVA-DE-ORIGEM-E-DE-COLETA.md`, mais o checklist de
+    produção (VC-E6, VC-E7);
+  - `deploy/hostinger/GUIA-DE-IMPLANTACAO.md`: procedimento das pastas no host (VC-E8);
+  - a fatia 1 da spec de observabilidade, no mínimo `operatorRef` com `GMN_LINK_AUDIT_LOG_KEY` (spec §5.3.4), em
+    `src/lib/link-audit-observability/` (nome da spec de observabilidade), com testes `tests/link-audit-observability*.test.ts`.
+- **Depende de / paralela com**: G0 (destino dos logs e dos backups, nome do secret da guarda). Paralela com G1.b e G1.c
+  (arquivos disjuntos) e com R2 e W4.6.
+- **Critérios de aceite**:
+  - PG-V01 e PG-L01 cobertos por testes com o identificador no nome;
+  - **PG-V02 (VC-E6):** o plano de backup cita as seis variáveis de pasta da Fase 6 com destinos independentes (em
+    marcador) para os recibos e para o livro;
+  - **PG-V03 (VC-E7):** `PROVA-DE-ORIGEM-E-DE-COLETA.md` cita a chave do livro, a chave de log e a credencial da
+    guarda, e a ordem de ativação;
+  - **PG-V04 (VC-E8):** `deploy/hostinger/GUIA-DE-IMPLANTACAO.md` traz o procedimento de criação e conferência das
+    pastas no host (dono `10001:10001`, modo `0700`, `stat`). A execução fica registrada no EN-12 da G2 e na linha G-3
+    do portão;
+  - **atestações item a item** em `docs/phase6-auditoria-link/producao-g1a-atestacoes.md`, uma linha por item no formato `| AT-G1A-xx | SIM | arquivo:linha |`,
+    apontando onde cada item está cumprido:
+    - **AT-G1A-01** destinos de backup independentes (marcadores distintos) para os dois volumes de recibos e para o
+      livro, fora do disco dos dados que eles ancoram (VC-E6);
+    - **AT-G1A-02** nenhum comando de backup ou de restauração com `--delete` nem sobrescrita (VC-E6);
+    - **AT-G1A-03** pares do mesmo instante, `sha256sum` por arquivo e as cabeças guardadas junto do backup (VC-E6,
+      GE-R9);
+    - **AT-G1A-04** procedimento das pastas no host: dono `10001:10001`, modo `0700`, conferência por `stat` (VC-E8);
+    - **AT-G1A-05** chave do livro, chave de log e credencial da guarda documentadas como Swarm secrets, com nome em
+      marcador, e na lista do entrypoint (VC-E2, VC-E7);
+    - **AT-G1A-06** ordem de ativação: volumes e chaves ⇒ guarda ⇒ primeiro `ENROLL` (VC-E7);
+    - **AT-G1A-07** nenhum valor real, host ou caminho de produção nos arquivos alterados (VC-E1);
+  - nenhum valor literal, host ou caminho real nos arquivos de implantação: só marcadores;
+  - o Worker continua sem nenhuma variável `GMN_LINK_AUDIT_*`;
+  - `src/lib/logger.ts` e `src/lib/redact.ts` sem diff (spec de observabilidade, "O que NÃO muda").
+- **Goal command**: `/goal scripts/run-isolated.sh npm run typecheck && scripts/run-isolated.sh node --require ./tests/register-typescript.cjs --test tests/deploy-config.test.ts tests/link-audit-observability*.test.ts && grep -q "PG-V01" tests/deploy-config.test.ts && grep -lq "PG-L01" tests/link-audit-observability*.test.ts && for v in GMN_LINK_AUDIT_DECISIONS_DIR GMN_LINK_AUDIT_DECISIONS_ANCHOR_DIR GMN_LINK_AUDIT_RESULTS_DIR GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR GMN_LINK_AUDIT_DECISIONS_LEDGER_DIR GMN_LINK_AUDIT_EVIDENCE_SEALS_DIR; do grep -q "$v" deploy/hostinger/PLANO-DE-BACKUP-E-RESTAURACAO.md || exit 1; done && grep -q "GMN_LINK_AUDIT_LEDGER_KEY" deploy/hostinger/PROVA-DE-ORIGEM-E-DE-COLETA.md && grep -q "GMN_LINK_AUDIT_LOG_KEY" deploy/hostinger/PROVA-DE-ORIGEM-E-DE-COLETA.md && grep -q "10001:10001" deploy/hostinger/GUIA-DE-IMPLANTACAO.md && grep -q "0700" deploy/hostinger/GUIA-DE-IMPLANTACAO.md && grep -q "stat -c" deploy/hostinger/GUIA-DE-IMPLANTACAO.md && for n in 01 02 03 04 05 06 07; do grep -qE "^\| AT-G1A-$n \| SIM \|[^|]*[A-Za-z0-9_./-]+:[0-9]+[^|]*\|" docs/phase6-auditoria-link/producao-g1a-atestacoes.md || exit 1; done && git diff --quiet origin/main -- src/lib/logger.ts src/lib/redact.ts, stop after 6 tries` (cada atestação precisa de `SIM` e de um `arquivo:linha`)
+
+### Onda G1.b — Guarda externa
+
+- **Objetivo**: a guarda real fica atrás de `ExternalGuardPort`, com o contrato R6-10 fechado, ligada nas rotas e
+  conferível de fora da VPS.
+- **Escopo (slices/arquivos)**:
+  - `src/lib/link-audit-ledger/`: adaptador do provedor (GE-E1), leitura da credencial no módulo do livro, as regras 1 a
+    5 da spec §5.1.4 em `model.ts` e `service.ts` (razões `GUARD_HEAD_MISSING` e `GUARD_LAGGING`, sucesso com `BEHIND`
+    depois do fecho) e eventos de alarme (GE-E6);
+  - `src/app/api/link-audit/decisions/ledger-wiring.ts`: a guarda passa a `createLedgerService` (GE-E2);
+  - rótulos e validadores da interface para as razões novas;
+  - se a Q1 for a opção 1: `supabase/proposed/<NNN>_link_audit_guard.sql` e o rollback, com a conferência de privilégios
+    no próprio SQL (GE-E4, PG-G08);
+  - `scripts/link-audit-guard-reconcile.ts` (GE-E5) e o runbook da guarda em `docs/phase6-auditoria-link/` (GE-E7);
+  - testes `tests/link-audit-guard-*.test.ts`. O `tests/link-audit-ledger-guard.test.ts` atual continua travando o
+    limite **sem** guarda.
+- **Depende de / paralela com**: G0 (Q1–Q5 e os números do contrato) e a R1.6 na `main` (mesmo `service.ts`). Paralela
+  com G1.a.
+- **Critérios de aceite**:
+  - PG-G01 a PG-G07 e PG-G09 cobertos por testes com o identificador no nome, todos sem rede (provedor simulado);
+  - PG-G03 com **nove** testes, um por ponto S1–S9 da spec §5.1.2 (`CHECKPOINT` e `RECEIPT_REISSUED` incluídos);
+  - PG-G05 com a regra do trio idempotente, `CONFLICT` e `STALE` (spec §5.1.4, regra 7);
+  - o critério do provedor escolhido, com evidência anexada ao PR: **PG-G08** (opção 1, laboratório Supabase descartável,
+    incluindo a prova de que a tabela não responde pela Data API com `anon`, `authenticated` e `service_role`),
+    **PG-G10** (opção 2) ou **PG-G11** (opção 3). Nada disso roda em produção pela onda;
+  - 100 % das mutações dos pontos novos do modelo mortas (equivalentes justificadas);
+  - toda a suíte do livro e dos resultados verde;
+  - motor intacto.
+- **Fatias (sugestão; o manager confirma no início da onda)**: G1.b.1 contrato R6-10 no modelo e no serviço, com o
+  adaptador sintético; G1.b.2 adaptador real e ligação; G1.b.3 migração proposta e reconciliação.
+- **Goal command**: `/goal scripts/run-isolated.sh npm run typecheck && scripts/run-isolated.sh node --require ./tests/register-typescript.cjs --test tests/link-audit-guard-*.test.ts tests/link-audit-ledger-*.test.ts tests/link-audit-results-ledger*.test.ts && for id in PG-G01 PG-G02 PG-G04 PG-G05 PG-G06 PG-G07 PG-G09; do grep -lq "$id" tests/link-audit-guard-*.test.ts || exit 1; done && for s in S1 S2 S3 S4 S5 S6 S7 S8 S9; do grep -lqE "PG-G03.*\b$s\b" tests/link-audit-guard-*.test.ts || exit 1; done && git diff --quiet v1.0.1 -- src/lib/link-audit/scoring, stop after 10 tries`
+
+### Onda G1.c — Papel administrativo (condicional à Q6)
+
+- **Objetivo**: conforme a Q6. Com a opção 1 ou 2, `ADOPT`, `RESTORE_ACK` e `QUARANTINE_ACK` passam a ser aceitos só sob
+  a regra decidida. Com a opção 3, as ações continuam em 403, com o aceite formal registrado.
+- **Escopo (slices/arquivos)** (só para a opção 1 ou 2):
+  - emenda à §16.8 da spec do livro, revisada de forma independente antes do código;
+  - `src/lib/link-audit-decisions/service.ts` (`ledgerAction`) e um módulo novo de identidade e aprovação;
+  - registros novos do livro (`src/lib/link-audit-ledger/`), área de custódia e interface;
+  - testes `tests/link-audit-ledger-admin*.test.ts`. O `tests/link-audit-ledger-q5.test.ts` é reescrito só onde a
+    emenda mudar a regra.
+- **Depende de / paralela com**: G0 (Q6, Q7) e, com código (Q6 = 1 ou 2), a G1.b na `main`, porque as duas mexem no
+  livro. Paralela com G1.a. Com Q6 = 3 não há código e o aceite corre junto com a G1.b.
+- **Critérios de aceite**:
+  - PG-A01 a PG-A03 (e PG-A04, se a Q6 for 2) cobertos por testes com o identificador no nome;
+  - uma identidade só nunca conclui uma ação;
+  - nada é apagado: o que for afastado vai para a custódia com o hash citado.
+- **Goal command** (só para a opção 1 ou 2): `/goal scripts/run-isolated.sh npm run typecheck && scripts/run-isolated.sh node --require ./tests/register-typescript.cjs --test tests/link-audit-ledger-admin*.test.ts tests/link-audit-ledger-*.test.ts && for id in PG-A01 PG-A02 PG-A03; do grep -lq "$id" tests/link-audit-ledger-admin*.test.ts || exit 1; done, stop after 10 tries`. **Com a opção 2**, o mesmo comando com `PG-A04` acrescentado ao laço (`for id in PG-A01 PG-A02 PG-A03 PG-A04`). Com a opção 3 não há goal loop: a conferência é o aceite registrado na spec §11.
+
+### Onda G2 — Integração e ensaio de rollback e restauração (homologação)
+
+- **Objetivo**: provar, num ambiente isolado e sem dados reais, que a guarda detecta o rollback coordenado, que a
+  restauração dos pares do mesmo instante funciona e que as falhas do provedor fecham.
+- **Escopo**:
+  - pilha de homologação (Q12) com as pastas, as chaves descartáveis e a guarda num projeto ou esquema de laboratório;
+  - auditorias **novas**, inscritas depois de ligar a guarda; as da W5 não são reaproveitadas (spec §5.1.4, regra 1);
+  - o roteiro da spec §10.4 (16 ensaios: EN-01, EN-02a a EN-02e, EN-03 a EN-12): rollback coordenado, restaurações, rollback de imagem, queda do provedor,
+    falha de publicação depois do fecho, sequência falsa, reconciliação, `ANCHOR_PENDING`, `ENOSPC`, ações
+    administrativas e pastas no host;
+  - relatório `docs/phase6-auditoria-link/producao-relatorio-ensaio-g2.md`, com uma linha por ensaio no formato
+    `| EN-xx | PASSOU ou FALHOU | resultado observado | evidência |` e uma linha por atestação no formato
+    `| AT-G2-xx | SIM | evidência |` (AT-G2-01 nada em produção; AT-G2-02 chaves e credenciais do ensaio destruídas ou
+    revogadas, com data).
+- **Depende de / paralela com**: G1.a, G1.b, G1.c (ou o aceite da opção 3), o ambiente de homologação autorizado pelo
+  responsável e o **relatório da W5 aprovado** (a W5 fecha antes: chave do ensaio destruída, relatório arquivado). Usa
+  o mesmo ambiente da W5 só depois disso. Em paralelo com a W5, só em ambiente totalmente isolado (pilha, volumes,
+  guarda e credenciais separados), com o isolamento registrado nos dois relatórios.
+- **Critérios de aceite**:
+  - as 16 linhas de ensaio em `PASSOU`, cada uma com o resultado observado e a evidência não vazios (vista do livro,
+    código da resposta, saída da reconciliação, do `stat` ou do `docker service inspect`), e nenhuma em `FALHOU`;
+  - **AT-G2-01** (nada em produção) e **AT-G2-02** (chaves e credenciais do ensaio destruídas ou revogadas, com data)
+    em `SIM`, com evidência.
+- **Goal command**: `/goal test -f docs/phase6-auditoria-link/producao-relatorio-ensaio-g2.md && for n in 01 02a 02b 02c 02d 02e 03 04 05 06 07 08 09 10 11 12; do grep -qE "^\| EN-$n \| PASSOU \| *[^| ][^|]*\| *[^| ][^|]*\|" docs/phase6-auditoria-link/producao-relatorio-ensaio-g2.md || exit 1; done && ! grep -qE "^\| EN-[0-9]+[a-e]? \| FALHOU" docs/phase6-auditoria-link/producao-relatorio-ensaio-g2.md && for n in 01 02; do grep -qE "^\| AT-G2-$n \| SIM \| *[^| ][^|]*\|" docs/phase6-auditoria-link/producao-relatorio-ensaio-g2.md || exit 1; done, stop after 3 tries` (cada ensaio em `PASSOU` com resultado e evidência que não sejam vazios nem só espaços; nenhum em `FALHOU`; as duas atestações em `SIM` com evidência)
+
+### Onda G3 — Portão de produção (fora do código)
+
+- **Objetivo**: conferir, linha por linha, a tabela do portão (spec §10.1) antes do primeiro resultado de produção. Ou,
+  por decisão do responsável, abrir o piloto mínimo declarado (spec §10.2).
+- **Escopo**:
+  - atualizar a tabela da spec §10.1 com o estado e a evidência de cada uma das 15 linhas (P-1 a P-9, G-1 a G-6);
+  - no piloto, registrar o aceite formal com escopo, prazo e as condições 1 a 6 da §10.2;
+  - deploy pelo CI, por decisão do responsável;
+  - verificação pós-deploy;
+  - primeiro teste de escrita só numa auditoria sintética combinada.
+- **Depende de / paralela com**: G2, os portões do P1 (R1, R2, W4.6, W5, W6) e as ações do responsável (secrets,
+  migração, pastas no host, cerimônia da chave, consulta paga, autorização escrita da implantação).
+- **Critérios de aceite**:
+  - todas as linhas da §10.1 atendidas, ou o piloto com aceite escrito;
+  - autorização escrita do responsável para a implantação registrada.
+- **Goal command**: não se aplica a goal loop (decisão e ação humanas). Conferência:
+  `/goal grep -q "^| G3 |.*✅" docs/plan/implementation-waves.md, stop after 1 tries` (ancorado na linha da tabela, para o comando não casar com o próprio texto).
 
 ## Notas de execução
 
@@ -279,7 +470,7 @@ interface (`audit-page/validators.ts`).
   `--merge` com o CI verde no próprio commit, como na rodada de 16/11/2026.
 - Uma onda sequencial pode rodar como **goal loop**: invoque o Goal command dela e deixe o avaliador manter a sessão
   presa aos critérios de aceite. Feche a onda com a skill `verify` antes de marcá-la como ✅.
-- Grupos paralelos ({W1, W3}, depois {W2, R1}) podem rodar como subagents em worktrees isolados em
-  `~/projects/googlesaas-worktrees/`, um PR por vez no merge.
+- Grupos paralelos ({W1, W3}, depois {W2, R1}; nos portões, {G1.a, G1.b, G1.c}) podem rodar como subagents em worktrees
+  isolados em `~/projects/googlesaas-worktrees/`, um PR por vez no merge.
 - Quando uma onda terminar, marque ✅ aqui **e** no `NOTES.md` e atualize o status atual do `NOTES.md` antes de
   encerrar a sessão.
