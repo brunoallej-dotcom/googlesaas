@@ -185,9 +185,10 @@ const NO_FSYNC: SignRefusal = {
  * Revisão independente da W4.6 (3): no artefato, logo depois do analisador, os grants do modelo de permissões ficam limitados (escrita só em
  * `--seals-dir`; sem `/`, `*` nem leitura rasa). Fora do artefato, nada a conferir.
  */
-async function grantsRefusal(subcommand: 'sign' | 'close-key', sealsDir: string, deps: SignCliDeps): Promise<SignRefusal | null> {
+async function grantsRefusal(subcommand: 'sign' | 'close-key', sealsDir: string, deps: SignCliDeps, env: Readonly<Record<string, string | undefined>>): Promise<SignRefusal | null> {
   if (deps.artifact === undefined) return null;
-  return artifactGrantsRefusal({ subcommand, sealsDir, execArgv: deps.execArgv ?? process.execArgv, execBlock: deps.execBlock ?? nodeExecBlock, realpath: (deps.keyFs ?? nodeKeyFileOps).realpath });
+  // as raízes temporárias PADRÃO (nunca as injetadas da custódia): no artefato, manifesto nunca em pasta temporária
+  return artifactGrantsRefusal({ subcommand, sealsDir, execArgv: deps.execArgv ?? process.execArgv, execBlock: deps.execBlock ?? nodeExecBlock, realpath: (deps.keyFs ?? nodeKeyFileOps).realpath, tempRoots: defaultTempRoots(env) });
 }
 
 /**
@@ -280,7 +281,7 @@ export async function runSignCli(tokens: readonly string[], out: Line, err: Line
     const args = parseSignArgs(tokens);
     if ('ok' in args) return refusalOut(args, json, out, err);
     if (args.keySource.kind === 'external') return refusalOut(KEY_SOURCE_UNSUPPORTED, args.json, out, err);
-    const narrow = (await grantsRefusal('sign', args.sealsDir, deps)) ?? (await fsyncRefusal(args.sealsDir, deps));
+    const narrow = (await grantsRefusal('sign', args.sealsDir, deps, env)) ?? (await fsyncRefusal(args.sealsDir, deps));
     if (narrow) return refusalOut(narrow, args.json, out, err);
     const result = await signWithTerminal(args, out, err, now, deps, env);
     return result.ok ? successOut(result, args.json, out, err, artifactSha256) : refusalOut(result, args.json, out, err);
@@ -359,7 +360,7 @@ export async function runCloseKeyCli(tokens: readonly string[], out: Line, err: 
     const args = parseCloseKeyArgs(tokens);
     if ('ok' in args) return refusalOut(args, json, out, err, CLOSE_KEY_USAGE);
     if (args.keySource.kind === 'external') return refusalOut(KEY_SOURCE_UNSUPPORTED, args.json, out, err, CLOSE_KEY_USAGE);
-    const narrow = (await grantsRefusal('close-key', args.sealsDir, deps)) ?? (await fsyncRefusal(args.sealsDir, deps));
+    const narrow = (await grantsRefusal('close-key', args.sealsDir, deps, env)) ?? (await fsyncRefusal(args.sealsDir, deps));
     if (narrow) return refusalOut(narrow, args.json, out, err, CLOSE_KEY_USAGE);
     const result = await closeWithTerminal(args, out, err, now, deps, env);
     return result.ok ? closeSuccessOut(result, args.json, out, err, artifactSha256) : refusalOut(result, args.json, out, err, CLOSE_KEY_USAGE);

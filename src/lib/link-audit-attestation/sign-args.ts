@@ -2,7 +2,7 @@ import path from 'node:path';
 import { auditId as auditIdSchema, shortLabel } from './schemas';
 import { isTrustKeyringText, SIGN_KEY_ID_PATTERN } from './sign-chain';
 import { MAX_SEAL_SEQ, type SignRefusal } from './sign-core';
-import { isInside, parseKeySource, type KeySource } from './sign-key';
+import { bothForms, isInside, parseKeySource, type KeySource } from './sign-key';
 
 /*
  * P1 W4.4 — os ARGUMENTOS do `sign` (spec §5.2 "analisador próprio e estrito", §5.5 sintaxe e tabela, passo 1; §8, §8.1; IA-15; RS-11). Antes de
@@ -445,6 +445,10 @@ const GRANT_NOT_REAL = grantsRefusal('cada caminho concedido tem de existir e se
  */
 const LITERAL_READ_GRANTS: ReadonlySet<string> = new Set(['/proc/self/cmdline', '/proc/self/environ', '/proc/self/fd', '/tmp', '/var/tmp', '/dev/shm']);
 const ABSENT = 'ENOENT';
+const PERMISSION_DENIED = 'ERR_ACCESS_DENIED';
+const SEALS_IN_TEMP = grantsRefusal('a pasta de manifestos (--seals-dir) e os grants de escrita nunca ficam numa pasta temporária (/tmp, /var/tmp, /dev/shm ou TMPDIR/TMP/TEMP), nem dentro dela nem contendo uma, pelo caminho dado ou real');
+const TEMP_ROOTS_UNPROVEN = grantsRefusal('o caminho real das pastas temporárias não pôde ser resolvido (a linha do runbook concede leitura a /tmp, /var/tmp e /dev/shm)');
+const overlaps = (a: string, b: string): boolean => isInside(a, b) || isInside(b, a);
 const errnoOf = (error: unknown): unknown => (typeof error === 'object' && error !== null ? (error as { readonly code?: unknown }).code : undefined);
 
 /**
@@ -452,20 +456,36 @@ const errnoOf = (error: unknown): unknown => (typeof error === 'object' && error
  * fechada para todo o resto): na leitura, um `.git` da custódia (ela consulta a AUSÊNCIA); na escrita, a pasta que o `sign` ainda vai criar, desde que
  * a pasta existente mais próxima acima seja o próprio caminho real.
  */
-async function isOwnRealPath(grant: { readonly kind: 'read' | 'write'; readonly value: string }, realpath: (target: string) => Promise<string>): Promise<boolean> {
-  if (grant.kind === 'read' && LITERAL_READ_GRANTS.has(grant.value)) return true;
+type RealCheck = 'LITERAL' | 'VERIFIED' | 'ABSENT_GIT' | 'ABSENT_WRITE' | 'NOT_REAL';
+async function isOwnRealPath(grant: { readonly kind: 'read' | 'write'; readonly value: string }, realpath: (target: string) => Promise<string>): Promise<RealCheck> {
+  if (grant.kind === 'read' && LITERAL_READ_GRANTS.has(grant.value)) return 'LITERAL';
   try {
-    return (await realpath(grant.value)) === grant.value;
+    return (await realpath(grant.value)) === grant.value ? 'VERIFIED' : 'NOT_REAL';
   } catch (error) {
-    if (errnoOf(error) !== ABSENT) return false;
-    if (grant.kind === 'read') return path.basename(grant.value) === GIT_NAME;
+    if (errnoOf(error) !== ABSENT) return 'NOT_REAL';
+    if (grant.kind === 'read') return path.basename(grant.value) === GIT_NAME ? 'ABSENT_GIT' : 'NOT_REAL';
   }
   for (let dir = path.dirname(grant.value); ; dir = path.dirname(dir)) {
     try {
-      return (await realpath(dir)) === dir;
+      return (await realpath(dir)) === dir ? 'ABSENT_WRITE' : 'NOT_REAL';
     } catch (error) {
-      if (errnoOf(error) !== ABSENT || path.dirname(dir) === dir) return false;
+      if (errnoOf(error) !== ABSENT || path.dirname(dir) === dir) return 'NOT_REAL';
     }
+  }
+}
+
+/**
+ * Segunda confirmação da revisão da W4.6 (b): o pai de um `.git` AUSENTE tem de existir e ser o próprio caminho real. Prova direta: `realpath(pai)
+ * = pai`. Sob `--permission`, o pai (uma pasta acima da chave, como `/home` ou `/`) não é concedido e a leitura dele é negada; aí a prova é ele ser
+ * a própria pasta ou uma pasta acima de um grant já conferido como o próprio caminho real e existente (se esse grant não tem nenhum componente que
+ * seja link, as pastas acima dele também não têm, e existem). Qualquer outra falha (pai inexistente, link, erro) ⇒ recusa.
+ */
+async function hasRealParent(git: string, verified: readonly string[], realpath: (target: string) => Promise<string>): Promise<boolean> {
+  const parent = path.dirname(git);
+  try {
+    return (await realpath(parent)) === parent;
+  } catch (error) {
+    return errnoOf(error) === PERMISSION_DENIED && verified.some((real) => isInside(real, parent));
   }
 }
 
@@ -480,7 +500,7 @@ const depthOf = (value: string): number => value.split('/').filter(Boolean).leng
  * pelo menos dois componentes, salvo `/tmp` (raiz temporária da custódia) e caminhos que terminam em `.git` (os `lstat` da custódia da chave). No
  * `close-key`, a leitura ampla continua limite declarado até a W5 (as pastas acima dos recibos), mas `/` e `*` são recusados também lá.
  */
-export async function artifactGrantsRefusal(input: { readonly subcommand: 'sign' | 'close-key'; readonly sealsDir: string; readonly execArgv: readonly string[]; readonly execBlock: ExecBlockReader; readonly realpath: (target: string) => Promise<string> }): Promise<SignRefusal | null> {
+export async function artifactGrantsRefusal(input: { readonly subcommand: 'sign' | 'close-key'; readonly sealsDir: string; readonly execArgv: readonly string[]; readonly execBlock: ExecBlockReader; readonly realpath: (target: string) => Promise<string>; readonly tempRoots: readonly string[] }): Promise<SignRefusal | null> {
   const original = await originalExec(input.execBlock);
   if (original === null) return EXEC_BLOCK_UNREADABLE;
   const grants = [...input.execArgv, ...original.options].flatMap((token) => {
@@ -494,10 +514,23 @@ export async function artifactGrantsRefusal(input: { readonly subcommand: 'sign'
   } catch {
     return GRANT_ROOT_UNPROVEN;
   }
-  for (const grant of grants) if (!(await isOwnRealPath(grant, input.realpath))) return GRANT_NOT_REAL;
+  // segunda confirmação (a): manifesto nunca em pasta temporária (as raízes da custódia, pelo caminho dado e pelo real), nem a raiz contendo uma
+  const temps = await bothForms({ realpath: input.realpath }, input.tempRoots);
+  if (temps === null) return TEMP_ROOTS_UNPROVEN;
+  if (temps.some((temp) => overlaps(root, temp))) return SEALS_IN_TEMP;
+  const verified: string[] = [];
+  const absentGit: string[] = [];
+  for (const grant of grants) {
+    const check = await isOwnRealPath(grant, input.realpath);
+    if (check === 'NOT_REAL') return GRANT_NOT_REAL;
+    if (check === 'VERIFIED') verified.push(grant.value);
+    if (check === 'ABSENT_GIT') absentGit.push(grant.value);
+  }
+  for (const git of absentGit) if (!(await hasRealParent(git, verified, input.realpath))) return GRANT_NOT_REAL;
   // a comparação é entre caminhos REAIS: cada grant já é o próprio caminho real, e a raiz vem do realpath de --seals-dir
   const writable = input.subcommand === 'sign' ? root : path.join(root, CLOSURES_SUBDIR);
   if (grants.some((grant) => grant.kind === 'write' && !isInside(grant.value, writable))) return GRANT_WRITE_OUTSIDE;
+  if (grants.some((grant) => grant.kind === 'write' && temps.some((temp) => overlaps(grant.value, temp)))) return SEALS_IN_TEMP;
   if (input.subcommand === 'close-key') return null;
   const shallow = (value: string): boolean => depthOf(value) < MIN_READ_DEPTH && !SHALLOW_READS_ALLOWED.has(value) && path.basename(value) !== GIT_NAME;
   return grants.some((grant) => grant.kind === 'read' && shallow(grant.value)) ? GRANT_READ_SHALLOW : null;

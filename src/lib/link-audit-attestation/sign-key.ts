@@ -147,9 +147,10 @@ const ROOT_ABSENT_CODES: ReadonlySet<unknown> = new Set(['ENOENT', 'ENOTDIR']);
 /**
  * Cada raiz pelo caminho dado E pelo caminho real: um link no caminho da raiz não a esconde. Confirmação da revisão da W4.5 (iii), W4.6: só a raiz
  * INEXISTENTE (ENOENT/ENOTDIR) segue com a forma dada; qualquer outra falha (EACCES, EIO, EPERM, ELOOP, `ERR_ACCESS_DENIED` do modelo de permissões
- * do Node, erro sem código) deixa a raiz sem caminho real conhecido e a custódia NÃO é provada ⇒ `null` (quem chama recusa).
+ * do Node, erro sem código) deixa a raiz sem caminho real conhecido e a custódia NÃO é provada ⇒ `null` (quem chama recusa). Também usado pelos
+ * grants do artefato (segunda confirmação da revisão da W4.6: manifesto nunca em pasta temporária).
  */
-async function bothForms(fs: KeyFileOps, roots: readonly string[]): Promise<string[] | null> {
+export async function bothForms(fs: Pick<KeyFileOps, 'realpath'>, roots: readonly string[]): Promise<string[] | null> {
   const forms: string[] = [];
   for (const root of roots) {
     const resolved = path.resolve(root);
