@@ -18,6 +18,7 @@ import { cliWorld, contentsOf, FakeTerminal, runSign, sealFile, STRONG_PBKDF2_IT
 registerCleanup();
 
 const PASS_PROMPT = /Frase-senha/;
+const ROOT_DIR = path.join(__dirname, '..');
 
 function refusedCli(run: SignCliRun, code: string, label = code): void {
   assert.equal(run.code, 3, `${label}: código 3 (veio ${run.code}): ${run.stderr}`);
@@ -249,6 +250,38 @@ test('revisão da W4.4 (BLOCKER): sem o caminho real do descritor (/proc indispo
     const run = await runSign(world.argv(), { typed: world.typed(), keyFs: hookedKeyFs({ wrap }).ops });
     keyRefused(world, run, 'SECRET_PATH_UNSAFE', label, { askedPassphrase: false });
     assert.match(run.stderr, message, label);
+  }
+});
+
+test('confirmação da revisão da W4.5 (iii), W4.6: o caminho REAL de uma raiz proibida (projeto ou pasta temporária) que falha com EACCES, EIO, EPERM, ELOOP ou ERR_ACCESS_DENIED (modelo de permissões do Node) ⇒ SECRET_PATH_UNSAFE, custódia não comprovada; a chave nem é aberta e a frase não é pedida. Só ENOENT/ENOTDIR (raiz inexistente) seguem com a forma dada', async () => {
+  const forbiddenTemp = '/srv/raiz-temporaria-teste-w46';
+  const failing = (root: string, code: string | null): KeyFileOps & { readonly opens: () => number } => {
+    let opens = 0;
+    return {
+      ...nodeKeyFileOps,
+      realpath: async (target) => {
+        if (path.resolve(target) === path.resolve(root)) throw Object.assign(new Error(`falha simulada ${code ?? 'sem código'}`), code === null ? {} : { code });
+        return nodeKeyFileOps.realpath(target);
+      },
+      openKeyFile: async (target) => ((opens += 1), nodeKeyFileOps.openKeyFile(target)),
+      opens: () => opens,
+    };
+  };
+  for (const code of ['EACCES', 'EIO', 'EPERM', 'ELOOP', 'ERR_ACCESS_DENIED', null]) {
+    for (const [label, root, tempRoots] of [['pasta temporária', forbiddenTemp, [forbiddenTemp]], ['raiz do projeto', ROOT_DIR, []]] as const) {
+      const world = cliWorld();
+      const keyFs = failing(root, code);
+      const run = await runSign(world.argv(), { typed: world.typed(), keyFs, tempRoots });
+      keyRefused(world, run, 'SECRET_PATH_UNSAFE', `${label}: ${code ?? 'sem código'}`, { askedPassphrase: false });
+      assert.match(run.stderr, /raiz proibida/, `${label}: ${code ?? 'sem código'}`);
+      assert.equal(keyFs.opens(), 0, `${label}: ${code ?? 'sem código'}: a chave nem é aberta`);
+      assert.ok(!run.stderr.includes('falha simulada'), 'a mensagem do erro nunca sai');
+    }
+  }
+  for (const code of ['ENOENT', 'ENOTDIR']) {
+    const world = cliWorld();
+    const run = await runSign(world.argv(), { typed: world.typed(), keyFs: failing(forbiddenTemp, code), tempRoots: [forbiddenTemp] });
+    assert.equal(run.code, 0, `${code}: raiz inexistente segue com a forma dada: ${run.stderr}`);
   }
 });
 

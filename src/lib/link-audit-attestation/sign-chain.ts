@@ -1,10 +1,10 @@
 import { createPublicKey, sign as cryptoSign, type KeyObject } from 'node:crypto';
 import path from 'node:path';
-import type { FileInfo, FsOps } from '../link-audit/snapshot-store';
+import type { FileInfo, FsOps } from '../link-audit/fs-ops';
 import {
   assembleEvidenceSealV2,
   buildEvidenceSealBodyV2,
-  createSealedEvidenceProvenance,
+  createSealedEvidenceProvenanceOver,
   MAX_CLOSURE_BYTES,
   MAX_SEAL_BYTES,
   parseEvidenceSealV2Text,
@@ -14,14 +14,14 @@ import {
   type EvidenceSealBodyV2,
   type EvidenceSealFileV2,
   type EvidenceToProve,
-} from '../link-audit-evidence/provenance';
+} from '../link-audit-evidence/provenance-core';
 import { auditId as auditIdSchema, MAX_PACKAGE_ENTRIES } from './schemas';
 import { runSignCore, SIGN_KEY_ID_PATTERN, type SealChainFacts, type SignCoreDeps, type SignCoreInput, type SignCoreResult, type SigningKeyStatus, type SignPlan, type SignRefusal } from './sign-core';
 
 /*
  * P1 W4.2 — a CADEIA e o MANIFESTO do `sign` (spec §5.5 passos 7 e 13; §5.5.1 item 2; §7.1; contrato do verificador v2 §2–§6). Único arquivo do
- * `sign` que importa o verificador: o núcleo (`sign-core.ts`) recebe daqui só FATOS estruturais (§5.5.1 item 7; o artefato único separa o núcleo
- * do verificador na W4.6). Disco SÓ pelo `FsOps` injetado e só leitura; a gravação (temporário + `link()` exclusivo) está em `sign-run.ts` (W4.3),
+ * `sign` que importa o verificador: o núcleo (`sign-core.ts`) recebe daqui só FATOS estruturais (§5.5.1 item 7; W4.6: pelo NÚCLEO do verificador,
+ * `provenance-core.ts`, sem disco padrão nem `snapshot-store`). Disco SÓ pelo `FsOps` injetado e só leitura; a gravação (temporário + `link()` exclusivo) está em `sign-run.ts` (W4.3),
  * que recebe daqui o texto já conferido (`serializeSealFile`); a chave real e o CLI são da W4.4. W4.5: o AUTOTESTE do passo 14 (`selfTestSeal`) julga o
  * manifesto novo com o mesmo verificador e a mesma fotografia somente leitura da leitura da cadeia, antes de qualquer gravação.
  *
@@ -70,7 +70,7 @@ export async function readSealChain(input: SealChainInput, deps: { readonly fs: 
     if ('status' in listed) return listed;
     const head = await readHead(ops, path.join(dir, listed.headName));
     // `sealsDir: root` ⇒ o verificador monta os MESMOS caminhos que esta leitura (e lê pela mesma fotografia)
-    const verdict = await createSealedEvidenceProvenance({ sealsDir: root, keyring, acceptedVersions: [2], fs: ops }).classify(input.auditId, head ? evidencesOf(head) : PLACEHOLDER_EVIDENCE);
+    const verdict = await createSealedEvidenceProvenanceOver({ sealsDir: root, keyring, acceptedVersions: [2], fs: ops }).classify(input.auditId, head ? evidencesOf(head) : PLACEHOLDER_EVIDENCE);
     if (verdict.status !== 'AUTHENTICATED') return invalid(verdict.reason);
     if (head === null) return reason('SEAL_INVALID'); // inalcançável pelo verificador real; falha fechada
     if (!('headSeq' in verdict)) return reason('HEAD_NOT_V2_PATH'); // com [2] o verificador sempre percorre a cadeia (contrato §8-B)
@@ -411,7 +411,7 @@ export async function selfTestSeal(input: SealSelfTestInput, deps: { readonly fs
     const { seal } = input;
     const overlay = withVirtualFile(ops, path.join(root.root, seal.auditId), sealFileName(seal), input.text);
     const evidences = input.entries.map((entry) => ({ ref: entry.ref, contentSha256: entry.contentSha256, legacy: false }));
-    const verdict = await createSealedEvidenceProvenance({ sealsDir: root.root, keyring, acceptedVersions: [2], fs: overlay }).classify(seal.auditId, evidences);
+    const verdict = await createSealedEvidenceProvenanceOver({ sealsDir: root.root, keyring, acceptedVersions: [2], fs: overlay }).classify(seal.auditId, evidences);
     if (verdict.status !== 'AUTHENTICATED') return selfTestFailed(verdict.reason);
     const isNewHead = 'headSeq' in verdict && verdict.headSeq === seal.seq && verdict.headSealSha256 === sealSha256(seal);
     return isNewHead ? null : selfTestFailed('SELFTEST_HEAD_MISMATCH');

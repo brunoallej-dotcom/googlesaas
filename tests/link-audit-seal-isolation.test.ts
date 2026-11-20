@@ -21,7 +21,7 @@ const importsOf = (source: string): string[] => {
     ...[...code.matchAll(/\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1] ?? ''),
   ];
 };
-const FILES = ['export-run.ts', 'export.ts', 'index.ts', 'package-hash.ts', 'schemas.ts', 'sign-args.ts', 'sign-chain.ts', 'sign-cli.ts', 'sign-closure.ts', 'sign-core.ts', 'sign-key.ts', 'sign-receipts.ts', 'sign-run.ts', 'sign-terminal.ts'];
+const FILES = ['export-run.ts', 'export.ts', 'index.ts', 'package-hash.ts', 'schemas.ts', 'sign-args.ts', 'sign-chain.ts', 'sign-cli.ts', 'sign-closure.ts', 'sign-core.ts', 'sign-key.ts', 'sign-receipts.ts', 'sign-run.ts', 'sign-runtime.ts', 'sign-terminal.ts'];
 const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   'index.ts': new Set(['../link-audit-evidence/evidence-to-prove', './package-hash', './schemas']),
   'package-hash.ts': new Set(['../link-audit/canonical', './schemas']),
@@ -33,27 +33,33 @@ const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   // P1 W4.1: núcleo PURO das recusas do `sign` (só o hash do dossiê vem de node:crypto); nunca o verificador, o leitor nem disco
   'sign-core.ts': new Set(['node:crypto', './package-hash', './schemas']),
   // P1 W4.2: o ÚNICO arquivo do `sign` que importa o verificador v2 (leitura e verificação da cadeia, corpo e assinatura); disco só pelo FsOps
-  // injetado (tipo), nunca o leitor de evidências nem o armazenamento. O artefato único separa o núcleo do verificador na W4.6 (§5.5.1 item 7).
-  'sign-chain.ts': new Set(['node:crypto', 'node:path', '../link-audit/snapshot-store', '../link-audit-evidence/provenance', './schemas', './sign-core']),
+  // injetado (tipo), nunca o leitor de evidências nem o armazenamento. W4.6 (§5.5.1 item 7): o NÚCLEO do verificador (sem disco padrão) e a
+  // porta estreita de disco (só tipos), nunca a fachada provenance.ts nem o snapshot-store.
+  'sign-chain.ts': new Set(['node:crypto', 'node:path', '../link-audit/fs-ops', '../link-audit-evidence/provenance-core', './schemas', './sign-core']),
   // P1 W4.3: o ÚNICO arquivo do `sign` que escreve (leitura única das entradas e gravação temporário + link() exclusivo), pelo FsOps injetado;
   // nunca o verificador (o texto gravado vem conferido de sign-chain.ts), o leitor de evidências nem o armazenamento
-  'sign-run.ts': new Set(['node:crypto', 'node:path', '../link-audit/snapshot-store', './schemas', './sign-chain', './sign-core']),
+  'sign-run.ts': new Set(['node:crypto', 'node:path', '../link-audit/fs-ops', './schemas', './sign-chain', './sign-core']),
   // P1 W4.4: o terminal sem eco (modo bruto, restaurado no fim) e as telas da confirmação e da frase; nenhum import além dos tipos do núcleo
   'sign-terminal.ts': new Set(['./sign-core']),
   // P1 W4.4: a chave K1 (PKCS#8 cifrado + frase) e a custódia do arquivo; disco SÓ leitura (node:fs/promises, sem escrita) e só do arquivo de chave
   'sign-key.ts': new Set(['node:crypto', 'node:fs/promises', 'node:path', './sign-core']),
   // P1 W4.4: o analisador estrito do `sign` e as barreiras de segredo em argv e ambiente (§8.1); a lista com estado é validada por sign-chain.ts
-  'sign-args.ts': new Set(['./schemas', './sign-chain', './sign-core', './sign-key']),
+  'sign-args.ts': new Set(['node:path', './schemas', './sign-chain', './sign-core', './sign-key']),
   // P1 W4.4: o comando `sign` (composição: argumentos → leitura única/cadeia/núcleo/gravação de sign-run.ts, terminal, chave K1, recibo); o disco
-  // padrão é o nodeFsOps (o mesmo FsOps injetável de sign-run.ts); nunca o verificador direto
-  'sign-cli.ts': new Set(['../link-audit/snapshot-store', './sign-args', './sign-chain', './sign-closure', './sign-core', './sign-key', './sign-receipts', './sign-run', './sign-terminal']),
+  // padrão é o nodeFsOps (o mesmo FsOps injetável de sign-run.ts); nunca o verificador direto. W4.6: o adaptador estreito (node-fs-ops) e a porta
+  // (fs-ops), sem o snapshot-store; o bloco original do exec e o hash do artefato vêm de sign-runtime.ts
+  'sign-cli.ts': new Set(['../link-audit/fs-ops', '../link-audit/node-fs-ops', './sign-args', './sign-chain', './sign-closure', './sign-core', './sign-key', './sign-receipts', './sign-run', './sign-runtime', './sign-terminal']),
+  // P1 W4.6: a LEITURA do bloco original do exec (/proc/self/cmdline e /proc/self/environ, que um preload não altera ao limpar process.env) e o
+  // SHA-256 dos bytes do próprio artefato (recibo); só leitura (node:fs/promises, regra estreita abaixo) e node:crypto (só o hash). Revisão
+  // independente da W4.6 (1): o artefato é aberto e conferido pelas rotinas de custódia que já existem (sign-key: descritor; sign-receipts: pasta)
+  'sign-runtime.ts': new Set(['node:crypto', 'node:fs/promises', 'node:path', './sign-key', './sign-receipts']),
   // P1 W4.5: o REGISTRO EXTERNO do fecho (pasta de recibos do passo 16, aberta UMA vez e lida só pelo descritor; esquema zod estrito, limites) e a
   // escolha das cabeças; disco SÓ leitura (node:fs/promises, regra estreita abaixo); nunca o verificador, nem por transitividade (revisão da W4.5)
   'sign-receipts.ts': new Set(['node:fs/promises', 'node:path', 'zod', './schemas', './sign-core']),
   // P1 W4.5: o lado VERIFICADOR do close-key (varredura somente leitura da cópia do servidor, fecho montado e assinado, autoteste com R
   // retired:<hash>); o segundo e último arquivo do sign que importa o verificador (a W4.6 separa o núcleo dele do FsOps de disco para os dois);
   // a gravação é a de sign-run.ts (temporário + link() exclusivo)
-  'sign-closure.ts': new Set(['node:crypto', 'node:path', '../link-audit/snapshot-store', '../link-audit-evidence/provenance', './schemas', './sign-chain', './sign-core', './sign-receipts', './sign-run']),
+  'sign-closure.ts': new Set(['node:crypto', 'node:path', '../link-audit/fs-ops', '../link-audit-evidence/provenance-core', './schemas', './sign-chain', './sign-core', './sign-receipts', './sign-run']),
 };
 /** Exceções por arquivo às proibições abaixo, cada uma trocada por uma regra mais estreita (P1 W2). */
 const NO_IMPLICIT_CLOCK: readonly [RegExp, string] = [/Date\.now|new Date\s*\(\s*\)|performance\.now/, 'relógio implícito'];
@@ -65,6 +71,8 @@ const EXCEPTIONS: Readonly<Record<string, ReadonlySet<string>>> = {
   'sign-run.ts': new Set(['módulo node', 'escrita']), // node:crypto (só randomBytes do nome do temporário) e node:path; escrita SÓ pela regra estreita abaixo
   'sign-key.ts': new Set(['módulo node']), // node:crypto (abrir a chave e derivar a pública), node:fs/promises SÓ leitura (regra estreita abaixo) e node:path
   'sign-receipts.ts': new Set(['módulo node']), // node:fs/promises SÓ leitura pelo descritor (regra estreita abaixo) e node:path
+  'sign-runtime.ts': new Set(['módulo node']), // node:fs/promises SÓ leitura (regra estreita abaixo), createHash de node:crypto e node:path
+  'sign-args.ts': new Set(['módulo node']), // revisão independente da W4.6 (3): só node:path, para a forma e a posição dos grants do artefato
   'sign-closure.ts': new Set(['módulo node', 'Date']), // node:crypto (assinar o fecho, derivar a pública, SHA-256 dos bytes) e node:path; relógio INJETADO (tipo Date)
   'sign-cli.ts': new Set(['process', 'ambiente', 'Date']), // padrões injetáveis process.env/stdin/report (regra estreita abaixo: nomes do ambiente, nunca arquivo de ambiente); relógio INJETADO (tipo Date)
 };
@@ -119,17 +127,21 @@ test('P1 W4.1: sign-core.ts usa de node:crypto SÓ createHash (hash do dossiê):
 
 test('P1 W4.2: sign-chain.ts verifica a cadeia com o verificador REAL em modo produção (keyring, acceptedVersions [2]), só lê pelo FsOps injetado e nunca escreve', () => {
   const code = strip(fs.readFileSync(path.join(LIB, 'sign-chain.ts'), 'utf8'));
-  assert.ok(/createSealedEvidenceProvenance\(\{[^}]*\bkeyring\b[^}]*\bacceptedVersions:\s*\[2\]/.test(code), 'verificador com keyring e acceptedVersions: [2]');
+  // W4.6: a fábrica do NÚCLEO exige a porta de leitura (sem disco padrão): a fotografia somente leitura é sempre a injetada
+  assert.ok(/createSealedEvidenceProvenanceOver\(\{[^}]*\bkeyring\b[^}]*\bacceptedVersions:\s*\[2\][^}]*\bfs:/.test(code), 'verificador com keyring, acceptedVersions: [2] e a porta injetada');
   assert.ok(!/\btrustedKeys\b/.test(code), 'trustedKeys é só de teste');
   assert.ok(!/\.(?:mkdir|writeExclusive|link|unlink|chmod|syncDirectory|rename|rm|truncate)\s*\(|publishExclusive|withLock|nodeFsOps|node:fs/.test(code), 'escrita ou disco implícito');
   for (const name of FILES.filter((file) => !VERIFIER_ADAPTERS.has(file) && file !== 'export-run.ts')) {
-    assert.ok(!importsOf(fs.readFileSync(path.join(LIB, name), 'utf8')).includes('../link-audit-evidence/provenance'), `${name} não importa o verificador (§5.5.1 item 7)`);
+    const imported = importsOf(fs.readFileSync(path.join(LIB, name), 'utf8'));
+    assert.ok(!imported.includes('../link-audit-evidence/provenance') && !imported.includes('../link-audit-evidence/provenance-core'), `${name} não importa o verificador (§5.5.1 item 7)`);
   }
+  // W4.6: os dois adaptadores do verificador usam o NÚCLEO, nunca a fachada (que traz o disco padrão)
+  for (const name of VERIFIER_ADAPTERS) assert.ok(!importsOf(fs.readFileSync(path.join(LIB, name), 'utf8')).includes('../link-audit-evidence/provenance'), `${name} importa a fachada do verificador`);
 });
 
 test('P1 W4.5: sign-closure.ts autotesta o fecho com o verificador REAL em modo produção (keyring, acceptedVersions [2]), só lê pelo FsOps injetado e nunca escreve (a gravação é a de sign-run.ts)', () => {
   const code = strip(fs.readFileSync(path.join(LIB, 'sign-closure.ts'), 'utf8'));
-  assert.ok(/createSealedEvidenceProvenance\(\{[^}]*\bkeyring\b[^}]*\bacceptedVersions:\s*\[2\]/.test(code), 'verificador com keyring e acceptedVersions: [2]');
+  assert.ok(/createSealedEvidenceProvenanceOver\(\{[^}]*\bkeyring\b[^}]*\bacceptedVersions:\s*\[2\][^}]*\bfs:/.test(code), 'verificador com keyring, acceptedVersions: [2] e a porta injetada');
   assert.ok(!/\btrustedKeys\b/.test(code), 'trustedKeys é só de teste');
   assert.ok(!/\.(?:mkdir|writeExclusive|link|unlink|chmod|syncDirectory|rename|rm|truncate)\s*\(|publishExclusive|withLock|nodeFsOps|node:fs/.test(code), 'escrita ou disco implícito');
   assert.ok(/\bpublishClosure\s*\(/.test(code), 'o fecho é gravado pela criação exclusiva de sign-run.ts');
@@ -280,7 +292,7 @@ test('dynamicLoads enxerga import() com nome calculado e require; import() com s
 const SIGN_FILES = FILES.filter((name) => name.startsWith('sign-'));
 
 test('confirmação da revisão da W4.1: nos arquivos do sign, nenhum import() com nome calculado e nenhum require (o grafo de imports fica todo visível)', () => {
-  assert.deepEqual(SIGN_FILES, ['sign-args.ts', 'sign-chain.ts', 'sign-cli.ts', 'sign-closure.ts', 'sign-core.ts', 'sign-key.ts', 'sign-receipts.ts', 'sign-run.ts', 'sign-terminal.ts']);
+  assert.deepEqual(SIGN_FILES, ['sign-args.ts', 'sign-chain.ts', 'sign-cli.ts', 'sign-closure.ts', 'sign-core.ts', 'sign-key.ts', 'sign-receipts.ts', 'sign-run.ts', 'sign-runtime.ts', 'sign-terminal.ts']);
   for (const name of SIGN_FILES) assert.deepEqual(dynamicLoads(strip(fs.readFileSync(path.join(LIB, name), 'utf8'))), [], `${name}: carregamento dinâmico`);
 });
 
@@ -291,14 +303,45 @@ test('confirmação da revisão da W4.2: nenhum arquivo ALCANÇÁVEL a partir do
   for (const file of reached) assert.deepEqual(dynamicLoads(strip(fs.readFileSync(file, 'utf8'))), [], `${path.relative(ROOT, file)}: carregamento dinâmico`);
 });
 
+/** Spec §5.5.1 item 7 (RS-14): a lista LITERAL de módulos node que o artefato único pode carregar (`zod` vai embutido). */
+const ARTIFACT_NODE_MODULES: readonly string[] = ['node:crypto', 'node:fs', 'node:fs/promises', 'node:path', 'node:readline', 'node:process'];
+
+test('P1 W4.6 (§5.5.1 item 7): pelo grafo de FONTES a partir da entrada do artefato, o sign e o close-key não alcançam o export, o snapshot-store, a fachada do verificador nem a cadeia de rede (evidence → url-safety); de fora, só a lista literal e o zod', () => {
+  const graph = reachableFrom(path.join(ROOT, 'scripts', 'link-audit-sign-artifact.ts'));
+  const files = [...graph.keys()].map((file) => path.relative(ROOT, file).split(path.sep).join('/'));
+  for (const forbidden of [/link-audit-attestation\/export(?:-run)?\.ts$/, /snapshot-store\.ts$/, /link-audit-evidence\/provenance\.ts$/, /link-audit\/evidence\.ts$/, /url-safety\.ts$/, /link-audit-evidence\/(?:reader|store|scoring-basis)\.ts$/, /scripts\/link-audit-seal\.ts$/]) {
+    assert.ok(!files.some((file) => forbidden.test(file)), `o artefato alcança ${files.find((file) => forbidden.test(file))}`);
+  }
+  assert.ok(files.includes('src/lib/link-audit-evidence/provenance-core.ts') && files.includes('src/lib/link-audit/fs-ops.ts') && files.includes('src/lib/link-audit/node-fs-ops.ts'), 'o núcleo do verificador e a porta estreita estão no grafo');
+  const external = new Set([...graph].flatMap(([file, specifiers]) => specifiers.filter((specifier) => resolveLocal(file, specifier) === null)));
+  for (const specifier of external) assert.ok(specifier === 'zod' || ARTIFACT_NODE_MODULES.includes(specifier), `módulo de fora da lista literal no grafo do artefato: ${specifier}`);
+  for (const file of graph.keys()) assert.deepEqual(dynamicLoads(strip(fs.readFileSync(file, 'utf8'))), [], `${path.relative(ROOT, file)}: carregamento dinâmico`);
+});
+
+test('P1 W4.6: sign-runtime.ts só LÊ (o bloco original do exec em /proc/self e os bytes do artefato), pelo descritor aberto O_RDONLY|O_NOFOLLOW|O_NONBLOCK, com teto; a sondagem de fsync abre a pasta O_RDONLY|O_DIRECTORY e só sincroniza esse descritor; nunca escreve, nunca usa process nem decodifica valores do ambiente', () => {
+  const code = signCode('sign-runtime.ts');
+  assert.equal([...code.matchAll(/\.open\s*\(/g)].length, 2, 'dois opens: a leitura com teto e a pasta da sondagem');
+  assert.ok(/\.open\s*\(\s*target\s*,\s*constants\.O_RDONLY\s*\|\s*\(constants\.O_NOFOLLOW \?\? 0\)\s*\|\s*\(constants\.O_NONBLOCK \?\? 0\)\s*\)/.test(code), 'open O_RDONLY | O_NOFOLLOW | O_NONBLOCK');
+  // decisão do manager (W4.6, item 3): a sondagem antecipada de fsync, só leitura e só na pasta indicada; nada é gravado
+  assert.ok(/\.open\s*\(\s*dir\s*,\s*constants\.O_RDONLY\s*\|\s*constants\.O_DIRECTORY\s*\)/.test(code), 'open da sondagem O_RDONLY | O_DIRECTORY');
+  assert.deepEqual([...code.matchAll(/(\w+)\.sync\s*\(/g)].map((m) => m[1]), ['probe'], 'fsync só do descritor da sondagem');
+  assert.ok(!/writeFile|appendFile|\.write\s*\(|\.mkdir|\.mkdtemp|\.unlink|\.rm\s*\(|\.rmdir|\.rename|\.chmod|\.chown|\.link\s*\(|\.symlink|\.copyFile|\.truncate|createWriteStream|readFile\b|\.realpath\s*\(/.test(code), 'escrita ou leitura por caminho fora do descritor');
+  assert.ok(!/process\./.test(code), 'process');
+  assert.deepEqual([...code.matchAll(/'\/proc\/self\/(\w+)'/g)].map((m) => m[1]).sort(), ['cmdline', 'environ'], 'só o bloco original do exec');
+  assert.deepEqual([...code.matchAll(/import\s*\{([^}]*)\}\s*from\s*'node:crypto'/g)].map((m) => (m[1] ?? '').trim()), ['createHash'], 'de node:crypto só o hash');
+});
+
 /** P1 W2: o CLI `scripts/link-audit-seal.ts` é o ÚNICO consumidor, e só destes arquivos; P1 W4.4: o `sign` entra por UM arquivo, sign-cli.ts. */
 const CLI_FILE = path.join(ROOT, 'scripts', 'link-audit-seal.ts');
 const CLI_ALLOWED: ReadonlySet<string> = new Set(['@/lib/link-audit-attestation/export', '@/lib/link-audit-attestation/export-run', '@/lib/link-audit-attestation/schemas', '@/lib/link-audit-attestation/sign-cli']);
+/** P1 W4.6: a entrada do ARTEFATO ÚNICO (sign e close-key, sem o export) é o segundo consumidor, e só de sign-cli.ts. */
+const ARTIFACT_ENTRY = path.join(ROOT, 'scripts', 'link-audit-sign-artifact.ts');
 
-test('consumidores: só o CLI link-audit-seal importa o módulo (src/ e os demais scripts não), e só export, export-run, schemas e sign-cli', () => {
-  const walk = (dir: string): string[] => (fs.existsSync(dir) ? fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? (e.name === 'node_modules' || e.name === '.next' ? [] : walk(path.join(dir, e.name))) : /\.(ts|tsx|js|mjs)$/.test(e.name) ? [path.join(dir, e.name)] : [])) : []);
+test('consumidores: só o CLI link-audit-seal (export, export-run, schemas e sign-cli) e a entrada do artefato (só sign-cli) importam o módulo; src/ e os demais scripts não', () => {
+  const walk = (dir: string): string[] => (fs.existsSync(dir) ? fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? (e.name === 'node_modules' || e.name === '.next' ? [] : walk(path.join(dir, e.name))) : /\.(ts|tsx|js|mjs|cjs)$/.test(e.name) ? [path.join(dir, e.name)] : [])) : []);
+  assert.deepEqual(importsOf(fs.readFileSync(ARTIFACT_ENTRY, 'utf8')).filter((specifier) => /link-audit-attestation/.test(specifier)), ['../src/lib/link-audit-attestation/sign-cli'], 'a entrada do artefato importa só sign-cli');
   for (const file of [...walk(path.join(ROOT, 'src')), ...walk(path.join(ROOT, 'scripts'))]) {
-    if (file.startsWith(LIB + path.sep) || file === CLI_FILE) continue;
+    if (file.startsWith(LIB + path.sep) || file === CLI_FILE || file === ARTIFACT_ENTRY) continue;
     assert.ok(!/link-audit-attestation/.test(strip(fs.readFileSync(file, 'utf8'))), `${path.relative(ROOT, file)} importa o módulo de atestação`);
   }
   const used = importsOf(fs.readFileSync(CLI_FILE, 'utf8')).filter((specifier) => /link-audit-attestation/.test(specifier));

@@ -19,7 +19,7 @@
 | W3 | Verificador `v2` (aditivo em `provenance.ts`) + contrato próprio | W0 + contrato aprovado | W1, W2 | ✅ concluída em 19/11/2026 (W3.1–W3.5: PRs #30, #32, #33, #34, #35) |
 | R1 | ADR-0002: confirmação de resultados pelo livro de cabeças (fase C do resultado só pelo autor) | W0 (§16.17 revisada), W1, W3 | W2 | 🟡 R1.1 (#39), R1.2 (#41), R1.3 (#45), R1.4 (#46) e R1.5 mergeadas; R1.6 a seguir |
 | R2 | Resultado confirmado registra a proveniência que o atestou (`headSeq`, `headSealSha256`, `keyIds`); `UNAUTHENTICATED` na releitura ⇒ revisão humana | W3, R1 | W4 | ⬜ |
-| W4 | CLI `sign` (manifesto `v2`) | W1, W3, decisões §13.2 itens 1, 2 e 4 (tomadas: D10, D11, D12/D14) | — | 🟡 W4.1 (#38), W4.2 (#40), W4.3 (#42) e W4.4 (#44) mergeadas; W4.5 em revisão |
+| W4 | CLI `sign` (manifesto `v2`) | W1, W3, decisões §13.2 itens 1, 2 e 4 (tomadas: D10, D11, D12/D14) | — | 🟡 W4.1 (#38), W4.2 (#40), W4.3 (#42), W4.4 (#44) e W4.5 (#48) mergeadas; W4.6 em revisão |
 | W5 | Procedimento, dossiê e ensaio ponta a ponta em homologação com chave descartável | W4, R1, R2 | — | ⬜ decisões tomadas (D15, spec §13.4) |
 | W6 | Coleta LIVE nova da TUVAPLAST (fora do código) | W5 + autorização escrita específica (**dada em 20/11/2026, D16**) | — | ⬜ autorizada; roda depois do ensaio da W5 |
 
@@ -225,7 +225,7 @@ interface (`audit-page/validators.ts`).
   | W4.3 | Disco e concorrência: pacote lido uma vez, gravação temporário + `link()` exclusivo + `fsync`, corrida pelo mesmo `seq` | IA-12, IA-18 | médio |
   | W4.4 | CLI, papéis e K1: parser estrito, segredo fora de argv/ambiente, TTY sem eco, confirmação dos 12 caracteres, chave PKCS#8 cifrada, separação de papéis e recibo, `external:` recusado | IA-04, IA-14, IA-15, IA-16, IA-22, IA-23 | alto |
   | W4.5 | Comando de fecho `close-key` (cabeças só dos recibos; cadeia de R sem recibo = `UNKNOWN_SEAL_ON_SERVER`, excluída; fecho assinado por S ativa, autotestado com R `retired:<closureSha256>` e gravado em `_closures/<R>.json` com criação exclusiva) e autoteste do passo 14 com a lista completa e os fechos (`acceptedVersions: [2]`), sobre a mesma fotografia da cadeia; decisões nas notas da W4.5 (spec §5.5.1) | V2-46, C9 | **maior** |
-  | W4.6 | Artefato único: núcleo do verificador separado do `FsOps` de disco, build com `esbuild`, lista literal de imports, execução sob `node --permission` no CI, hash versionado conferido pelo CI Critérios da confirmação da revisão da W4.5: execução por `env -i` com `node` por caminho absoluto e `--permission`; a barreira do runtime confere também `/proc/self/cmdline` e `/proc/self/environ` (preload que limpa `process.env`); `bothForms()` da custódia (`sign-key.ts`) trata EACCES/EIO do `realpath` como custódia não comprovada (mapa da W4.6). | IA-03 (artefato), IA-24 | alto |
+  | W4.6 | Artefato único: núcleo do verificador separado do `FsOps` de disco, build com `esbuild`, lista literal de imports, execução sob `node --permission` no CI, hash versionado conferido pelo CI. Critérios da confirmação da revisão da W4.5: execução por `env -i` com `node` por caminho absoluto e `--permission`; a barreira do runtime confere também `/proc/self/cmdline` e `/proc/self/environ` (preload que limpa `process.env`); `bothForms()` da custódia (`sign-key.ts`) trata EACCES/EIO do `realpath` como custódia não comprovada (mapa da W4.6). Entregue: `provenance-core.ts` + fachada `provenance.ts`; `fs-ops.ts`/`node-fs-ops.ts`; entrada `scripts/link-audit-sign-artifact.ts`; build `npm run link-audit:sign-artifact`; hash em `docs/phase6-auditoria-link/p1-sign-artifact.sha256`; job `sign-artifact`. Decisões do manager depois do CI: `fsync` obrigatório mantido; estação na linha 22 do Node (o Node ≥ 24.22 bloqueia fsync sob `--permission`); sondagem antecipada `SIGN_RUNTIME_NO_FSYNC`; upload do artefato no CI fixado por SHA. Revisão independente da W4.6: custódia e hash pelo descritor do artefato (`SIGN_ARTIFACT_UNSAFE`), guarda de imports da saída completa, grants limitados; pendência pré-existente `publishExclusive` (fsync da pasta ignorado) para o plano. Decisões, linha do runbook e o limite do `close-key` sob `--permission` (W5) nas notas da W4.6 (spec §5.5.1). | IA-03 (artefato), IA-24 | alto |
 
 - **Goal command**: `/goal scripts/run-isolated.sh npm run typecheck && scripts/run-isolated.sh node --require ./tests/register-typescript.cjs --test tests/link-audit-seal-sign*.test.ts tests/link-audit-seal-close-key*.test.ts tests/link-audit-evidence-provenance*.test.ts && for id in IA-01 IA-03 IA-04 IA-06 IA-07 IA-08 IA-11 IA-12 IA-15 IA-16 IA-18 IA-22 IA-23 IA-24; do grep -lq "$id" tests/link-audit-seal-sign*.test.ts || exit 1; done, stop after 10 tries`
 
@@ -260,6 +260,15 @@ interface (`audit-page/validators.ts`).
     `*SECRET*`, `*PASSWORD*`…), que o `sign` recusa; sem `NODE_OPTIONS` nem outra variável `NODE_*` (salvo `NODE_ENV`) e sem opções
     extras do node (revisão da W4.5, T-008: `sign` e `close-key` recusam); a pasta de recibos do `close-key` é do custodiante, sem escrita para
     grupo e outros, e as pastas acima dela pertencem ao custodiante ou ao root (o código confere o modo delas, não o dono).
+  - **node da estação (decisão do manager na W4.6, 20/11/2026):** a linha **22** do Node, a mesma do CI e da produção, validada pelo job
+    `sign-artifact` (assinatura completa sob `--permission`). O Node 24.22 em diante bloqueia `fsync` sob `--permission`, e o artefato recusa cedo
+    (`SIGN_RUNTIME_NO_FSYNC`). O artefato roda pela linha fixada nas notas da W4.6 (spec §5.5.1): `env -i`, node por caminho absoluto,
+    `--disable-sigusr1`, `--permission` e grants estreitos. Imediatamente antes de cada execução, a estação confere o SHA-256 do artefato com o
+    versionado (`sha256sum -c`) e as pastas do caminho do artefato (`namei -m`: nenhuma com escrita para grupo/outros, salvo sticky); o artefato é
+    0444, do custodiante ou do root (revisão independente da W4.6).
+  - **`close-key` sob `--permission` (limite declarado na W4.6):** a conferência das pastas acima da pasta de recibos e da cópia do servidor exige
+    grants largos (o Node concede a subárvore inteira de uma pasta); decidir entre a linha larga (`--allow-fs-read=/`, escrita só na cópia do
+    servidor) e uma conferência que não dependa do `lstat` das pastas acima.
 - **Goal command**: `/goal test -f docs/phase6-auditoria-link/p1-relatorio-ensaio.md && grep -q "AUTHENTICATED" docs/phase6-auditoria-link/p1-relatorio-ensaio.md && grep -q "RUN_CONFIRMED" docs/phase6-auditoria-link/p1-relatorio-ensaio.md, stop after 3 tries`
 
 ## Onda W6 — Coleta LIVE nova da TUVAPLAST (fora do código)

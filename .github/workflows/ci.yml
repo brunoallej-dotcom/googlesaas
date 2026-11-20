@@ -53,6 +53,45 @@ jobs:
       - name: Build
         run: npm run build
 
+  # P1 W4.6: artefato único do sign/close-key (spec docs/specs/link-audit-p1-attestation.md §5.5.1 itens 5–7; IA-03 artefato, IA-24).
+  # Recompila com o esbuild travado no lockfile, confere o SHA-256 contra o versionado (build reprodutível) e roda o artefato sob
+  # node --permission: env -i, node por caminho absoluto, grants estreitos, chave de teste gerada no próprio teste, assinatura completa num
+  # pseudo-terminal (script) e recusas da barreira. LINK_AUDIT_ARTIFACT_STRICT=1: nada pode ser pulado. O teste recompila na própria pasta e
+  # exige o mesmo hash versionado, então os bytes que ele executa são os do passo de build (mesmo SHA-256). Node 22: a linha da estação (W5); o
+  # Node 24.22+ bloqueia fsync sob --permission e o artefato recusa cedo (SIGN_RUNTIME_NO_FSYNC). Por último, o upload do artefato e do hash.
+  sign-artifact:
+    name: sign artifact (build, hash, --permission)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: '22', cache: 'npm' }
+      - name: Install
+        run: npm ci
+      - name: Build do artefato (esbuild travado, opções fixas, guardas sobre a saída)
+        run: npm run link-audit:sign-artifact -- --out "$RUNNER_TEMP/sign-artifact"
+      - name: Hash recompilado igual ao versionado
+        run: cd "$RUNNER_TEMP/sign-artifact" && sha256sum -c "$GITHUB_WORKSPACE/docs/phase6-auditoria-link/p1-sign-artifact.sha256"
+      - name: Artefato sob node --permission (env -i, grants estreitos, pseudo-terminal)
+        env:
+          LINK_AUDIT_ARTIFACT_STRICT: '1'
+        run: node --require ./tests/register-typescript.cjs --test tests/link-audit-seal-sign-artifact.test.ts
+      - name: Junta o hash versionado ao artefato
+        run: cp docs/phase6-auditoria-link/p1-sign-artifact.sha256 "$RUNNER_TEMP/sign-artifact/"
+      - name: Upload do artefato e do hash versionado
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: link-audit-sign-artifact
+          path: |
+            ${{ runner.temp }}/sign-artifact/link-audit-sign.cjs
+            ${{ runner.temp }}/sign-artifact/p1-sign-artifact.sha256
+          if-no-files-found: error
+          retention-days: 90
+
   security:
     name: security
     runs-on: ubuntu-latest

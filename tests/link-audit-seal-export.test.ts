@@ -7,6 +7,7 @@ import { buildCandidatePackage, exportRefusalFor, type CandidateInput } from '..
 import { registerCleanup, tmpDir } from './helpers/link-audit-evidence-fixtures';
 import { legacyReplica, readBasis } from './helpers/link-audit-mapper-real-basis';
 import { at, checkStatus, exportArgs, HOUR, jsonOf, makeAudit, newOut, NOW, readJsonFile, runCli, T_COLLECT, type FixtureAudit } from './helpers/link-audit-seal-export-fixtures';
+import { faithfulExecBlock } from './helpers/link-audit-seal-sign-cli-fixtures';
 
 /* Dados 100% FICTÍCIOS. P1 W2 — `export` (pacote candidato, somente leitura): verificações mecânicas, janela, recusas e formato. */
 registerCleanup();
@@ -388,8 +389,9 @@ test('argumentos: opção desconhecida na forma --x=valor ecoa SÓ o nome da op�
 test('subcomando sign (W4.4) com argumentos incompletos: erro de uso do sign, sem ler nada (o sign tem testes próprios em link-audit-seal-sign-*.test.ts)', async () => {
   for (const json of [false, true]) {
     // W4.5 (T-008): o execArgv deste processo é o carregador dos TESTES e o node --test põe NODE_TEST_CONTEXT no ambiente, que a barreira do runtime
-    // recusaria; o do produto tem teste em processo real
-    const run = await runCli(['sign', '--audit', 'auditoria-teste-0001', '--package', '/nao/existe.json', ...(json ? ['--json'] : [])], undefined, { sign: { execArgv: [], env: { PATH: '/usr/bin' } } });
+    // recusaria; o do produto tem teste em processo real. W4.6: o mesmo vale para o bloco ORIGINAL do exec (/proc/self), injetado limpo
+    const argv = ['sign', '--audit', 'auditoria-teste-0001', '--package', '/nao/existe.json', ...(json ? ['--json'] : [])];
+    const run = await runCli(argv, undefined, { sign: { execArgv: [], env: { PATH: '/usr/bin' }, execBlock: faithfulExecBlock([], { PATH: '/usr/bin' }, argv) } });
     assert.equal(run.code, 1);
     assert.equal(json ? jsonOf(run).code : 'USAGE', 'USAGE');
     if (!json) assert.match(run.stderr, /Uso: npm run link-audit:seal -- sign/);

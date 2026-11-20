@@ -1,6 +1,6 @@
 import { randomBytes, type KeyObject } from 'node:crypto';
 import path from 'node:path';
-import { errorCode, type BytesFsOps, type FileInfo, type FsOps } from '../link-audit/snapshot-store';
+import { errorCode, type BytesFsOps, type FileInfo, type FsOps } from '../link-audit/fs-ops';
 import { auditId as auditIdSchema } from './schemas';
 import { chainSnapshot, keyMismatchRefusal, runSignWithChain, sealFileName, selfTestSeal, serializeSealFile, SIGN_KEY_ID_PATTERN, signSealManifest, type SealManifest, type SignWithChainDeps } from './sign-chain';
 import type { SignCoreResult, SignPlan, SignRefusal, SignRefusalCode } from './sign-core';

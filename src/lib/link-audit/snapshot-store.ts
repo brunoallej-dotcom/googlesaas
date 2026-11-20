@@ -1,7 +1,8 @@
 import { randomBytes } from 'node:crypto';
-import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import { formatZodIssues } from './evidence';
+import { errorCode, type FileInfo, type FsOps } from './fs-ops';
+import { nodeFsOps } from './node-fs-ops';
 import {
   buildSnapshot,
   MAX_SNAPSHOT_VERSION,
@@ -13,8 +14,16 @@ import {
   type LinkAuditSnapshot,
 } from './snapshot';
 
+/*
+ * P1 W4.6: a porta de disco (tipos e `errorCode`) e o adaptador padrão (`nodeFsOps`) moram em módulos ESTREITOS (`fs-ops.ts`, `node-fs-ops.ts`);
+ * reexportados aqui, sem mudança, para os consumidores existentes.
+ */
+export type { BytesFsOps, FileInfo, FsOps } from './fs-ops';
+export { errorCode } from './fs-ops';
+export { nodeFsOps } from './node-fs-ops';
+
 /**
- * Armazenamento LOCAL dos snapshots (Fase 6, Onda 2). É o único arquivo do módulo com acesso a disco.
+ * Armazenamento LOCAL dos snapshots (Fase 6, Onda 2). Acessa o disco SÓ pela porta `FsOps` (padrão: `nodeFsOps`, de `node-fs-ops.ts`).
  *
  * - Pasta privada `.data/link-audits/<snapshotId>/vNNNN.json`, fora de `public/` e ignorada pelo git.
  * - Cada arquivo `vNNNN.json` é um snapshot FECHADO: não existe API para editá-lo. Mudar algo = nova
@@ -51,103 +60,6 @@ export type StoreResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly code: StoreErrorCode; readonly issues: readonly string[] };
 
-export interface FileInfo {
-  isFile(): boolean;
-  isDirectory(): boolean;
-  isSymbolicLink(): boolean;
-  readonly size: number;
-  readonly mtimeMs: number;
-}
-
-/** Operações de disco usadas pelo armazenamento. Injetável para simular quedas nos testes. */
-export interface FsOps {
-  mkdir(dir: string): Promise<void>;
-  lstat(target: string): Promise<FileInfo>;
-  readdir(dir: string): Promise<string[]>;
-  realpath(target: string): Promise<string>;
-  /** Lê sem seguir symlink, confere que é arquivo comum e recusa mais de `maxBytes`. */
-  readFile(target: string, maxBytes: number): Promise<string>;
-  /** Cria o arquivo de forma exclusiva (flag `wx`; modo padrão 0o600), grava, faz fsync e fecha. */
-  writeExclusive(target: string, data: string, mode?: number): Promise<void>;
-  link(from: string, to: string): Promise<void>;
-  unlink(target: string): Promise<void>;
-  chmod(target: string, mode: number): Promise<void>;
-  syncDirectory(dir: string): Promise<void>;
-}
-
-/**
- * `FsOps` com a leitura dos BYTES exatos (mesmas garantias de `readFile`, sem decodificar UTF-8). Para quem calcula hash sobre o arquivo como está no
- * disco (o `sign` do P1: dossiê que pode ser binário). Interface à parte para não exigir o método dos `FsOps` que já existem.
- */
-export interface BytesFsOps extends FsOps {
-  readFileBytes(target: string, maxBytes: number): Promise<Uint8Array>;
-}
-
-/**
- * Leitura de um arquivo de DADOS (evidências, decisões, resultados, recibos). Quem escreve numa pasta de dados pode deixar ali um arquivo
- * ESPECIAL com nome válido (FIFO, dispositivo, soquete): `open()` bloqueante de um FIFO nunca retorna, prende uma thread do pool de I/O do
- * libuv (4 por padrão) e, com poucos deles, TODO o I/O de arquivo do processo web para (e o processo nem encerra). Por isso:
- *  - `O_NONBLOCK`: o `open()` de um FIFO retorna na hora (em arquivo comum não tem efeito) e o tipo é conferido a seguir;
- *  - `O_NOFOLLOW`: sem seguir link simbólico;
- *  - o tipo e o tamanho são conferidos no DESCRITOR já aberto (`fstat`), nunca por um `lstat` anterior (que seria uma corrida);
- *  - a leitura é LIMITADA ao tamanho declarado + 1 byte (um arquivo que cresce depois do `fstat` também é recusado);
- *  - qualquer tipo inesperado falha FECHADO (ENOTFILE/ETOOBIG), sem ler nada.
- */
-async function readRegularFile(target: string, maxBytes: number): Promise<Buffer> {
-  const { constants } = fsPromises;
-  const handle = await fsPromises.open(target, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
-  try {
-    const info = await handle.stat();
-    if (!info.isFile()) throw Object.assign(new Error('não é um arquivo comum'), { code: 'ENOTFILE' });
-    if (info.size > maxBytes) throw Object.assign(new Error(`excede ${maxBytes} bytes`), { code: 'ETOOBIG' });
-    // `size + 1`: um byte a mais que o declarado denuncia um arquivo que CRESCEU depois do fstat (adulteração ou corrida): falha fechada
-    const buffer = Buffer.allocUnsafe(info.size + 1);
-    let length = 0;
-    while (length < buffer.length) {
-      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
-      if (bytesRead === 0) break;
-      length += bytesRead;
-    }
-    if (length > info.size) throw Object.assign(new Error('o arquivo mudou durante a leitura'), { code: 'ECHANGED' });
-    return buffer.subarray(0, length);
-  } finally {
-    await handle.close();
-  }
-}
-
-export const nodeFsOps: BytesFsOps = {
-  async mkdir(dir) {
-    await fsPromises.mkdir(dir, { recursive: true });
-  },
-  lstat: (target) => fsPromises.lstat(target),
-  readdir: (dir) => fsPromises.readdir(dir),
-  realpath: (target) => fsPromises.realpath(target),
-  /** Texto UTF-8 de `readRegularFile` (ver acima: sem seguir link, sem travar em FIFO, tipo e tamanho no descritor, limite). */
-  readFile: async (target, maxBytes) => (await readRegularFile(target, maxBytes)).toString('utf8'),
-  /** Os mesmos bytes, sem decodificar. */
-  readFileBytes: (target, maxBytes) => readRegularFile(target, maxBytes),
-  async writeExclusive(target, data, mode = 0o600) {
-    const handle = await fsPromises.open(target, 'wx', mode);
-    try {
-      await handle.writeFile(data, 'utf8');
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-  },
-  link: (from, to) => fsPromises.link(from, to),
-  unlink: (target) => fsPromises.unlink(target),
-  chmod: (target, mode) => fsPromises.chmod(target, mode),
-  async syncDirectory(dir) {
-    const handle = await fsPromises.open(dir, 'r');
-    try {
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-  },
-};
-
 /** Pasta privada padrão (fora de `public/`). */
 export function defaultLinkAuditDirectory(cwd: string = process.cwd()): string {
   return path.join(cwd, '.data', 'link-audits');
@@ -155,11 +67,6 @@ export function defaultLinkAuditDirectory(cwd: string = process.cwd()): string {
 
 function fail(code: StoreErrorCode, ...issues: string[]): { readonly ok: false; readonly code: StoreErrorCode; readonly issues: readonly string[] } {
   return { ok: false, code, issues };
-}
-
-export function errorCode(error: unknown): string {
-  const code = (error as NodeJS.ErrnoException | null)?.code;
-  return typeof code === 'string' ? code : 'DESCONHECIDO';
 }
 
 export function describeError(operation: string, error: unknown): string {

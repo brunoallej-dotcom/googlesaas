@@ -493,6 +493,148 @@ Fecham lacunas apontadas no mapa da W4; prevalecem sobre o texto acima onde houv
 
 **Confirmação da revisão da W4.5 (20/11/2026, `junin-03`):** itens 2–6 fechados. No item 1 ficou um caso: um preload (`NODE_OPTIONS=--require <arquivo>`) roda ANTES do CLI e pode apagar `process.env.NODE_OPTIONS`, escondendo de `execArgv` e do ambiente uma opção como `--heapsnapshot-signal`. **Decisão do manager: limite declarado, não bloqueio.** Um preload já é código arbitrário dentro do processo: poderia capturar a frase direto no terminal (ou trocar qualquer função que a barreira usa), e nenhuma barreira dentro do próprio processo se defende de código que roda antes dela. A barreira da W4.5 protege contra configuração acidental e opções de diagnóstico, não contra a estação comprometida. O controle forte passa a ser critério da W4.6/W5: (i) o artefato roda por `env -i` com `node` por caminho absoluto e `--permission`, na linha de comando fixada pelo runbook; (ii) a barreira confere também `/proc/self/cmdline` e `/proc/self/environ` (o argv e o ambiente ORIGINAIS do `exec`, que limpar `process.env` não altera), o que pega um preload que só limpou o ambiente; (iii) o caso entra no modelo de ameaças junto da T-008. Sugestão não adotada: o teste de mudança de tamanho do recibo altera os bytes depois da leitura, em vez de reproduzir a troca entre as chamadas de sistema; ele prova a conferência "tamanho informado × bytes devolvidos", que é a guarda.
 
+**Notas da W4.6 (20/11/2026, artefato único: `provenance-core.ts`, `fs-ops.ts`, `node-fs-ops.ts`, `sign-runtime.ts`, `scripts/link-audit-sign-artifact.ts`, `scripts/build-sign-artifact.ts` e o job `sign-artifact` do CI; onde a spec era ambígua, valeu o lado que falha fechado):**
+
+- **Núcleo do verificador (item 7):** `provenance-core.ts` tem todo o verificador `v2`, SEM disco padrão. A fábrica dele, `createSealedEvidenceProvenanceOver`, exige a porta de leitura `fs`; sem ela, a política é a FECHADA, nunca o disco em silêncio. `provenance.ts` virou fachada compatível para o servidor e os testes W3:
+  - reexporta os mesmos valores do núcleo;
+  - acrescenta `createSealedEvidenceProvenance` (sem `fs` ⇒ `nodeFsOps`) e `evidenceProvenanceFromConfig`;
+  - os vetores-ouro não mudaram.
+
+  A porta de disco saiu do `snapshot-store.ts`, que a reexporta: os tipos `FsOps`/`FileInfo`/`BytesFsOps` e `errorCode` ficam em `fs-ops.ts` (sem imports), e o adaptador `nodeFsOps` em `node-fs-ops.ts` (só `node:fs/promises`). `sign-chain.ts` e `sign-closure.ts` usam o núcleo, e o grafo do `sign` não alcança mais `snapshot-store → evidence → url-safety` (`node:dns`/`node:net`). A guarda estática da V2-19 passou a tratar o par núcleo + fachada como o verificador: a fábrica do núcleo segue a mesma regra (`acceptedVersions` literal). A V2-41 prova que o núcleo só alcança `node:crypto`, `node:path` e `zod` e que a fachada preserva o comportamento.
+- **Entrada e recibo (item 6):** `scripts/link-audit-sign-artifact.ts` despacha só `sign` e `close-key`; o `export` fica fora. Empacotada (`LINK_AUDIT_SIGN_ARTIFACT` definido pelo build):
+  - a raiz do "projeto" é a pasta do artefato (a chave nunca pode estar nela);
+  - o recibo leva `artifactSha256` = SHA-256 dos bytes do próprio arquivo em execução, lido logo depois das barreiras. O esperado não é embutido (seria autorreferência);
+  - artefato ilegível ⇒ `SIGN_ARTIFACT_UNREADABLE` (código novo, código 3), antes de ler qualquer entrada.
+
+  Fora do artefato (`npm run link-audit:seal`), `artifactSha256` continua `null`, com aviso. O `close-key` mostra o hash do artefato na saída de erro; o objeto `--json` do fecho não mudou (forma da W4.5).
+- **Declaração do esbuild (item 5):** `npm install --save-dev --save-exact --package-lock-only --offline esbuild@0.28.2` funcionou sem rede. O lockfile só ganhou a declaração na raiz; resolução e integridade ficaram iguais. O plano B não foi preciso.
+- **Build (itens 5 e 6):** `npm run link-audit:sign-artifact -- [--out <pasta>] [--check]`, com opções FIXAS:
+  - bundle, `platform: node`, `format: cjs`, `target: node22`, sem sourcemap, `legalComments: 'none'`, ASCII, zod embutido;
+  - `minifyWhitespace`: só espaço em branco e comentários; nomes e sintaxe ficam como estão. Decisão: sem ela, o esbuild preserva comentários das dependências, e um comentário do zod com `import()` fazia a guarda textual recusar. Assim a guarda textual fica exata, e o fonte auditável continua sendo o do repositório;
+  - `preserveSymlinks` (num worktree, o `node_modules` é link) e `tsconfigRaw: {}`, para um ajuste do `tsconfig.json` do Next não mudar o hash.
+
+  Guardas sobre a SAÍDA, antes de gravar (falha ⇒ `ArtifactBuildError`, nada gravado):
+  - pelo `metafile`, todo import que sobrou é externo, por `require` estático, e da lista literal;
+  - pelo texto final, todo `require(` tem como argumento uma string literal da lista, e não há `import(`, `require.resolve`, `module.require`, `createRequire`, `process.binding`/`process.dlopen` nem caminho absoluto da máquina do build.
+
+  O artefato atual carrega só `node:crypto`, `node:fs/promises` e `node:path` (751 417 bytes). O build é reprodutível: o mesmo SHA-256 em pastas de saída diferentes, numa cópia do repositório em outro caminho e com o Node 24 local. Ele não depende da versão do node que chama o esbuild (o binário nativo é o travado no lockfile): o CI (Node v22.23.5) recompilou o mesmo hash.
+- **Hash versionado (item 6):** `docs/phase6-auditoria-link/p1-sign-artifact.sha256`, no formato do `sha256sum -c` (`<sha256>  link-audit-sign.cjs`); hoje `395d5ba946e3f6b45c9689828947ca49107d3a9940db4f4ca4574233c1dda17d` (depois da segunda confirmação da revisão independente, abaixo; conferido de novo em duas pastas e numa cópia do repositório em outro caminho). Muda a cada mudança de CÓDIGO no grafo do artefato (comentários não contam), e o PR que muda o código atualiza o arquivo; o teste e o CI recompilam e recusam a diferença. O limite declarado do item 6 continua: os dois lugares estão sob a mesma conta do GitHub.
+- **Barreira do runtime (confirmação da revisão da W4.5, critério ii):** confere também o bloco ORIGINAL do exec:
+  - em `/proc/self/cmdline`, só as opções do node ANTES do script, com a mesma lista permitida; o script e os argumentos do comando nunca são decodificados;
+  - em `/proc/self/environ`, só os NOMES, com as regras do §8.1 (`SECRET_VIA_ENV_FORBIDDEN`) e do `NODE_*`; nenhum valor é decodificado;
+  - bloco ilegível, vazio ou sem o nome do programa ⇒ `SIGN_RUNTIME_UNSAFE`.
+
+  Testado em processo real: uma pré-carga por `NODE_OPTIONS=--require …` que apaga `NODE_OPTIONS` de `process.env` (e esvazia `execArgv`) é recusada, pelo `tsx` e pelo artefato. No artefato, além disso:
+  - sem o carregador do `tsx`;
+  - `--permission` (ou `--experimental-permission`) e `--disable-sigusr1` obrigatórios em `execArgv` E na linha original;
+  - ambiente VAZIO no original e em `process.env`: o próprio artefato impõe o `env -i`.
+
+  Decisão: o caminho absoluto do node não é conferido pelo código (um node trocado no PATH já é código arbitrário e mentiria); fica na linha do runbook. Limite declarado: código que roda antes da barreira (pré-carga, `LD_PRELOAD`) pode reescrever a memória do processo; a barreira pega a configuração que ficou no bloco do exec, não uma estação comprometida (W5).
+- **Custódia (critério iii):** `bothForms()` só segue com a forma dada quando a raiz proibida não existe (ENOENT/ENOTDIR). EACCES, EIO, EPERM, ELOOP, `ERR_ACCESS_DENIED` (modelo de permissões) ou erro sem código ⇒ `SECRET_PATH_UNSAFE` ("raiz proibida"), antes de abrir a chave. Consequência sob `--permission`: a linha precisa de leitura de `/tmp`, `/var/tmp` e `/dev/shm`, porque o modelo do Node não separa metadados de conteúdo.
+- **Linha do runbook (critério i):** testada por `env -i` com o node por caminho absoluto, num pseudo-terminal (`script`), com chave gerada no teste. O node é da **linha 22** (a do CI e da produção, validada pelo job `sign-artifact`; decisão do manager, critério da W5):
+
+  ```
+  namei -m <pasta do artefato>/link-audit-sign.cjs   # nenhuma pasta do caminho com escrita para grupo/outros, salvo sticky (revisão abaixo)
+  ( cd <pasta do artefato> && sha256sum -c <cópia conferida de p1-sign-artifact.sha256> ) && \
+  env -i /caminho/absoluto/do/node-22 --disable-sigusr1 --permission \
+    --allow-fs-read=<pasta do artefato> --allow-fs-read=<pasta das entradas> \
+    --allow-fs-read=<pasta de manifestos> --allow-fs-write=<pasta de manifestos> \
+    --allow-fs-read=<pasta da chave> --allow-fs-read=<cada pasta acima da chave>/.git (até /.git) \
+    --allow-fs-read=/tmp --allow-fs-read=/var/tmp --allow-fs-read=/dev/shm \
+    --allow-fs-read=/proc/self/cmdline --allow-fs-read=/proc/self/environ --allow-fs-read=/proc/self/fd \
+    <pasta do artefato>/link-audit-sign.cjs sign <opções do §5.5>
+  ```
+
+  Os `.git` acima da chave são os caminhos que a custódia consulta por `lstat`; `/proc/self/fd` dá o caminho real do descritor da chave. Achado no Node 24.22: um grant que tem outro como prefixo de texto (`/var/tmp` e `/var/tmpfoo`, ou um mais longo dado antes do mais curto) faz o Node negar o mais curto. Por isso nenhum grant da linha pode ser prefixo de texto de outro (o teste confere).
+- **fsync sob `--permission`: Node 22 × 24.22 (fato do CI) e decisões do manager (20/11/2026):** desde o Node 24.22.0, o modelo de permissões BLOQUEIA `fsync`/`fdatasync` (nodejs/node#65431); localmente (Node 24.22.3), `fsync` de arquivo e de pasta dá `ERR_ACCESS_DENIED`, e só `O_SYNC` funciona. No CI (Node v22.23.5), a assinatura COMPLETA sob `--permission` funcionou: `fsync` permitido, manifesto gravado, autoteste ok, e o hash do build igual ao versionado. O job ficou vermelho só por causa da sonda do TESTE, que tratava qualquer saída diferente de 0 como "fsync bloqueado". Decisões:
+  1. **Gravação:** o `fsync` continua obrigatório, no arquivo e na pasta (§5.5.1 item 4). Nada de `O_SYNC` no lugar do `fsync` da pasta: sem prova de durabilidade, nunca sucesso.
+  2. **Node da estação:** a linha 22, a mesma do CI e da produção, validada pelo job `sign-artifact`. É critério da W5 (plano) e está na linha do runbook acima.
+  3. **Sondagem antecipada no código:** logo depois do analisador, o `sign` e o `close-key` abrem a raiz de `--seals-dir` só para leitura (`O_RDONLY|O_DIRECTORY`) e fazem `fsync` nesse descritor, com a mesma operação da gravação (`FileHandle.sync()`, `nodeFsyncProbe` em `sign-runtime.ts`).
+     - `ERR_ACCESS_DENIED` no `fsync` ⇒ recusa `SIGN_RUNTIME_NO_FSYNC` (código novo, código 3, escolhido para separar do diagnóstico da T-008): "este node bloqueia fsync sob --permission; use a versão do node fixada no runbook (linha 22); nada foi lido nem assinado". Ela sai antes de ler qualquer entrada, da confirmação, da custódia e da frase.
+     - Abertura que falha (pasta inexistente, arquivo, sem grant) é `unprobed` e segue para as recusas próprias do fluxo.
+     - Roda também fora do modelo de permissões (`npm run`), onde o `fsync` funciona. Nada é gravado na sondagem.
+     - Testes: por injeção (`blocked`, `ok`, `unprobed`; ordem depois da barreira do runtime e do analisador) e em processo real com o node local, que bloqueia: a recusa sai antes da confirmação e do pedido da frase.
+  4. **Sonda do teste:** usa a mesma operação do produto, roda de um arquivo (não de `-e`) e distingue "fsync negado" (`ERR_ACCESS_DENIED` no sync, saída própria) de "sonda quebrou" (qualquer outra saída: o teste FALHA mostrando a saída). No modo estrito do CI exige a assinatura completa. Com o node local 24.22, o caminho esperado é a recusa antecipada do item 3, não mais `SIGN_WRITE_FAILED` depois da frase. Hipótese, não conferida (sem Node 22 local), para a falha da sonda antiga no CI: ela usava `fs.fsyncSync`, outra API que não a do produto.
+  5. **Upload no CI:** último passo do job `sign-artifact`, com `actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9` (v7.0.2, SHA de commit conferido pelo manager). Artefato `link-audit-sign-artifact` com o `.cjs` e o `.sha256` versionado lado a lado (`sha256sum -c` funciona no download), `if-no-files-found: error`, `retention-days: 90`.
+- **`close-key` sob `--permission` (limite declarado, W5; não exercitado nesta fatia, o CI cobre o `sign`; a sondagem de fsync vale para ele também):** a revisão da W4.5 confere por `lstat` o modo das pastas ACIMA da pasta de recibos e a identidade das pastas acima da cópia do servidor. Como o modelo de permissões do Node concede a subárvore inteira de uma pasta, essas leituras exigem grants largos (na prática, `--allow-fs-read=/`, com a escrita só na cópia do servidor). Fica para a W5 decidir entre essa linha larga e uma conferência que não dependa do `lstat` das pastas acima.
+- **CI:** job novo `sign-artifact` (os jobs existentes não mudaram), com `contents: read` e as actions fixadas por SHA de commit. Passos: `npm ci` → build → `sha256sum -c` contra o hash versionado → `tests/link-audit-seal-sign-artifact.test.ts` com `LINK_AUDIT_ARTIFACT_STRICT=1` (nada pode ser pulado) → upload do artefato e do hash (decisão 5 acima). O teste recompila na própria pasta e exige o mesmo hash versionado, então os bytes que ele executa são os do passo de build.
+- **Isolamento:** testes novos ou ajustados:
+  - o grafo de fontes a partir da entrada do artefato não alcança o `export`, o `snapshot-store`, a fachada do verificador, `evidence` nem `url-safety`, e os módulos de fora são só os da lista literal e o `zod`;
+  - `sign-runtime.ts` só lê, por um descritor, com teto; a sondagem de fsync abre a pasta `O_RDONLY|O_DIRECTORY` e só sincroniza esse descritor;
+  - a porta de disco é estreita, e o `snapshot-store` reexporta os mesmos objetos.
+
+**Revisão independente da W4.6 (20/11/2026, `junin-02`, BLOQUEAR sobre `9711155`; achados 1–3 conferidos pelo manager e procedentes; corrigidos com testes antes do código):**
+
+1. **MAJOR (era BLOCKER): `artifactSha256` × bytes executados.** O hash era calculado reabrindo `__filename` por caminho depois de o Node já ter carregado o artefato: quem escreve na pasta poderia trocar o arquivo, executar e restaurar o original antes do hash, ou editar o mesmo inode.
+   - **Decisão do manager:** o hash do recibo é ANOTAÇÃO do próprio processo, não prova (um artefato alterado poderia imprimir o hash esperado fixo). O controle é a conferência ANTES da execução, com `sha256sum -c` imediatamente antes, na linha do runbook, sobre um arquivo sob custódia.
+   - **Correção:** `artifactDigestUnderCustody` (`sign-runtime.ts`) reaproveita as rotinas que já existiam, sem duplicar: da custódia da chave, a abertura única (`openKeyFile`, `O_NOFOLLOW`), o caminho real do descritor e a leitura pelo mesmo descritor; dos recibos, a regra da pasta (`isProtectedDir`, agora exportada). Exige:
+     - arquivo comum, sem nenhum bit de escrita (`mode & 0o222 = 0`), com dono = usuário que roda o comando ou root (`KeyFileStat` ganhou `uid`);
+     - pasta do artefato, pelo caminho real do descritor, sem escrita para grupo e outros, salvo sticky (como na W4.5);
+     - o caminho do descritor conferido de novo depois da leitura (troca durante a leitura ⇒ recusa).
+
+     Violação ⇒ `SIGN_ARTIFACT_UNSAFE` (código novo, código 3) antes de qualquer entrada; falha de leitura continua `SIGN_ARTIFACT_UNREADABLE`. A linha do runbook ganhou `/proc/self/fd` também para o artefato.
+   - **Pastas ACIMA da pasta do artefato (aceito pelo manager como limite declarado; ver a confirmação abaixo):** O manager pediu que elas também não fossem graváveis por terceiros. Sob `--permission` isso não é conferível dentro do processo: o `lstat` de uma pasta exige grant de leitura nela, e o grant do Node vale para a subárvore inteira (`/` no fim). Isso contraria o item 3 (grants estreitos; `/` recusado); foi conferido no Node 24.22 que, com só a pasta concedida, o `lstat` das pastas acima dá `ERR_ACCESS_DENIED`. O código confere o arquivo e a pasta dele; as pastas acima ficam com o runbook, imediatamente antes da execução (`namei -m <artefato>`), como já era para as pastas acima da chave (W4.4). Limite declarado: atacante com o mesmo usuário ou root fica fora da garantia (como na W4.5).
+2. **MAJOR: guarda de imports da saída incompleta.** Passavam `process.getBuiltinModule('node:net')` e `require` usado como valor. No Node 22 o modelo de permissões não restringe rede, então esta guarda é o controle. Correção sem dependência nova (`checkArtifactText`):
+   - toda ocorrência do identificador `require` no texto final é uma chamada direta `require("<módulo da lista>")`; como valor, membro (`x.require`) ou com nome calculado ⇒ recusa;
+   - também são recusados `getBuiltinModule`, `process.binding`, `_linkedBinding`, `createRequire`, `module.constructor`, `_load`, `mainModule`, `process.dlopen`, `import(`, `import.meta`, `eval` (inclusive como valor) e `Function` (inclusive como valor, que escaparia de `new Function`/`Function(`);
+   - exceções do zod embutido (`ZOD_FUNCTION_EXCEPTIONS`; na confirmação abaixo passaram a fixar o trecho INTEIRO, com SHA-256), cada uma retirada uma única vez e contada no teste (uma versão nova do zod que mude isso falha o build): o teste de eval de `util.allowsEval`, o JIT de `Doc.compile` (`core/doc.js`), o `z.compile` (`core/compile.js`, que o `sign` não usa, mas vem com o namespace `z`) e uma mensagem de erro. Quatro usos, não três: o quarto (`z.compile`) apareceu na conferência;
+   - fixtures de mutação para cada caso. O esbuild normaliza `(require)('x')` e `module.require('x')` para `require("x")` estático; nesses casos a saída cai na lista literal (fixture com `node:net`), e a forma de membro no texto final é recusada no teste de `checkArtifactText`.
+
+   Limite declarado (o mesmo da W4.2): a guarda é textual, e acesso por nome calculado (`process["getBuilt" + "inModule"]`) escapa dela. É defesa contra erro nosso e de dependência, não contra código malicioso no repositório. Sugestão, não adotada (muda a linha do runbook; decisão do manager): `--disallow-code-generation-from-strings` neutralizaria `eval`/`Function` em tempo de execução; o zod cai no caminho sem JIT.
+3. **MAJOR: grants sem limite no modo artefato.** `artifactGrantsRefusal` (`sign-args.ts`) roda depois do analisador e antes da sondagem de fsync, sobre os grants de `execArgv` e da linha original do exec. Falha ⇒ `SIGN_RUNTIME_UNSAFE`. Critério mais simples que falha fechado:
+   - todo grant é caminho absoluto, normalizado (sem `..` nem barra final), sem vírgula e sem `*`, e diferente de `/`;
+   - `sign`: `--allow-fs-write` só na raiz REAL de `--seals-dir` (resolvida por `realpath`) ou dentro dela; `close-key`: só em `<seals-dir>/_closures`;
+   - `sign`: leitura com pelo menos dois componentes (`/a/b`), o que recusa `/home`, `/etc`, `/usr` e `/root`. Exceções: `/tmp` exato (raiz temporária que a custódia resolve) e caminhos que terminam em `.git` (os `lstat` da custódia da chave, inclusive `/.git`). Leitura com dois componentes ou mais pode ainda ser ampla (ex.: a pasta inteira do usuário): limite declarado;
+   - `close-key`: a leitura ampla continua limite declarado até a W5, mas `/` e `*` também são recusados lá; com isso, o `close-key` não completa sob o artefato (item 5).
+4. **MINOR, pré-existente (não corrigido aqui; o manager leva ao plano):** `publishExclusive` (`snapshot-store.ts`) ignora a falha do fsync da pasta e devolve `ok`. Não é o caminho do `sign`, que usa `sign-run.ts` e responde `SIGN_WRITE_UNCONFIRMED`.
+5. **MINOR: `close-key` com sucesso sob o artefato** fica para a W5. Os limites já registrados são as leituras amplas das pastas acima dos recibos e da cópia do servidor, agora também barradas pelo item 3 (`/` recusado).
+
+**Confirmação da revisão da W4.6 (20/11/2026, `junin-02`, sobre `1af8ba7`; três itens parciais, corrigidos com testes antes do código):**
+
+1. **Pastas acima da pasta do artefato: limite declarado, aceito pelo manager.** O manager não pediu mudança de código.
+   - **Por que não é conferido no código:** sob `--permission`, o `lstat` de uma pasta exige grant de leitura NELA. O grant do Node vale para a subárvore inteira, e as pastas acima chegam a `/`. Conferi-las exigiria grants de leitura largos, que o item 3 da revisão proíbe; a estação é dedicada (D15.3).
+   - **O que o código confere:** pelo descritor aberto, o arquivo (comum, sem escrita, dono = usuário ou root) e a pasta imediata (sem escrita para grupo e outros, salvo sticky).
+   - **O que o runbook confere, imediatamente antes da execução:** `namei -m <artefato>` (nenhuma pasta do caminho com escrita para grupo/outros, salvo sticky) e `sha256sum -c` contra o hash versionado.
+   - **Ataque que sobra:** um terceiro com escrita numa pasta ACIMA da pasta do artefato pode trocá-la (renomear a pasta e pôr outra no lugar) DEPOIS do `namei`/`sha256sum` e antes do `node` abrir o arquivo. Fica fora da garantia, como o atacante com o mesmo usuário ou root. A condição do runbook (pastas acima sem escrita de terceiros) é o que fecha isso.
+2. **Exceções do zod na guarda da saída: fixadas inteiras.**
+   - **(a)** Antes eram prefixos (`compile(){const F=Function;`, `const F=Function;const factoryCode=`): uma mudança depois do prefixo poderia usar o apelido `F` sem disparar a guarda. Agora cada exceção (`ZOD_FUNCTION_EXCEPTIONS`) fixa a função ou o trecho INTEIRO, do começo ao fim, pelo texto exato da saída e pelo SHA-256 dele (conferido antes do uso; texto e hash divergentes ⇒ `ArtifactBuildError`):
+     - `util.allowsEval` (227 bytes);
+     - `Doc.compile` (227 bytes);
+     - `compileFn` do `z.compile` (1072 bytes);
+     - a mensagem do JSON Schema.
+
+     Qualquer diferença deixa o `Function` do trecho sem exceção, e a guarda recusa. Testes: o prefixo antigo seguido de outro uso de `F`, 1 caractere mudado, um `F()` acrescentado no fim e a repetição são recusados; as quatro, inteiras, passam; cada uma aparece exatamente uma vez no artefato.
+   - **(b) Defesa em profundidade:** `scripts/link-audit-sign-artifact-zod.ts`, importado PRIMEIRO pela entrada do artefato, faz `config({ jitless: true })`. No zod 4.6.7 travado, cada esquema de objeto decide o JIT na CONSTRUÇÃO (`const jit = !globalConfig.jitless`, `core/schemas.js`), e `util.allowsEval` não testa `new Function` quando `jitless`. Por isso a configuração precisa rodar antes de qualquer módulo do `sign` construir um esquema. Teste: no artefato real, com uma pré-carga que só observa (`Proxy` sobre `Function`, contando `construct`/`apply`), carregar todos os módulos dá `FUNCTION_CALLS=0`; sem o `jitless` (mutação), o teste do `allowsEval` já chama `Function` na carga. A configuração vale só para o artefato; o `npm run link-audit:seal` e o servidor não mudam.
+   - **Mutações:** exceção reduzida ao prefixo, 1 caractere no texto fixado e o `jitless` removido são pegos pelos testes.
+3. **Grants pelo caminho real.** No artefato, cada caminho de `--allow-fs-read`/`--allow-fs-write` tem de existir e ser igual ao próprio `realpath`: nenhum componente é link. A escrita é comparada com a raiz REAL de `--seals-dir` (resolvida por `realpath`), então `--seals-dir` dado por um link passa com o grant do caminho real. Exceções, cada uma com a regra que falha fechado:
+   - concedidos LITERALMENTE, só para leitura: `/proc/self/cmdline`, `/proc/self/environ` e `/proc/self/fd` (links do próprio kernel; o Node confere o texto do caminho), e `/tmp`, `/var/tmp` e `/dev/shm` (as raízes que a custódia resolve; podem faltar ou ser link numa distribuição);
+   - leitura que não existe só passa se terminar em `.git` (a custódia da chave consulta a AUSÊNCIA desses caminhos). Um `.git` que existe e é link é recusado;
+   - escrita que não existe (a subpasta que o `sign` ainda vai criar, ou `_closures` no `close-key`) só passa se a pasta existente mais próxima acima for o próprio caminho real e o texto estiver dentro da área de escrita;
+   - qualquer outra falha do `realpath` ⇒ recusa.
+
+   Testes: grant que é link para fora, grant com um componente intermediário que é link, leitura inexistente, escrita que, resolvida, cai fora de `--seals-dir` (link dentro da pasta de manifestos), escrita por um apelido da própria pasta e `.git` que é link. Todos dão `SIGN_RUNTIME_UNSAFE` antes de qualquer entrada. As pastas dos testes passaram a ser usadas pelo caminho real.
+
+O hash versionado passou a `2198b1bea7fe59c25ba21f465de17e65462c626ec1970ff3a6863949529f9513` (749 964 bytes). O módulo do `jitless` muda o artefato. Foi conferido em duas pastas e numa cópia do repositório em outro caminho.
+
+**Segunda confirmação da revisão da W4.6 (20/11/2026, `junin-02`, sobre `980e6f1`):** itens 1 e 2 fechados. O item 3 tinha dois furos, corrigidos com testes antes do código:
+
+- **(a) Manifesto nunca em pasta temporária.** A comparação aceitava igualdade com a raiz de `--seals-dir`: com `--seals-dir /tmp` (ou `/var/tmp`, `/dev/shm`, ou o caminho real de uma delas), um grant de escrita igual à raiz passava, contra a regra de que as raízes temporárias são só leitura. Agora, no artefato:
+  - a raiz REAL de `--seals-dir` que coincide com uma raiz temporária, fica dentro dela ou a contém é recusada (`SIGN_RUNTIME_UNSAFE`);
+  - qualquer grant de escrita que se sobreponha a uma raiz temporária também é recusado;
+  - as raízes são as PADRÃO da custódia (`/tmp`, `/var/tmp`, `/dev/shm` e TMPDIR/TMP/TEMP do ambiente, vazio no artefato), pelo caminho dado e pelo real (`bothForms` da custódia, agora exportado), nunca as injetáveis dos testes;
+  - raiz temporária cujo caminho real não se resolve por qualquer motivo que não seja inexistência (EACCES, EIO, ELOOP, `ERR_ACCESS_DENIED` do modelo de permissões, erro sem código) ⇒ recusa (a linha do runbook já concede leitura às três). Raiz INEXISTENTE (`ENOENT`/`ENOTDIR`, ex.: estação sem `/dev/shm`) segue só com a forma dada: nenhum arquivo real pode estar dentro dela, e recusá-la impediria estações legítimas (decisão do manager na confirmação final do junin-02).
+
+  Testes: cada raiz como `--seals-dir`, uma pasta dentro de cada uma (com e sem grant de escrita) e o caso válido fora delas. Os testes do artefato em processo passaram a manter a pasta de manifestos numa estação no HOME (as entradas e a chave continuam em pastas temporárias); a assinatura completa no pseudo-terminal já criava a estação no HOME.
+- **(b) Pai real do `.git` ausente.** Uma leitura inexistente terminada em `.git` passava sem conferir o pai: `link/.git` ausente sob um pai que é link também passava. Agora o pai tem de existir e ser o próprio caminho real:
+  - prova direta: `realpath(pai) = pai`;
+  - sob `--permission`, o pai (uma pasta acima da chave, como `/home` ou `/`) não é concedido e a leitura dele é negada. Aí a prova é o pai ser a própria pasta ou uma pasta acima de um grant já conferido como o próprio caminho real e existente: sem nenhum componente link nesse grant, as pastas acima dele também não têm link e existem;
+  - qualquer outra falha (pai inexistente, link, outro erro) ⇒ recusa.
+
+  Testes: `.git` ausente sob pai que é link e sob pai inexistente, em processo e sob `--permission` (pai fora dos grants); `.git` ausente cujo pai está acima de um grant real passa.
+- **Achado na verificação:** o teste em processo real com o artefato montado em `/tmp` concedia a pasta do artefato antes de `/tmp`. Pelo comportamento já registrado do Node 24.22 (grant mais longo dado antes do mais curto), a leitura de `/tmp` era negada. O teste passou a conceder só `/tmp`, que já cobre o artefato.
+
+O hash versionado passou a `395d5ba946e3f6b45c9689828947ca49107d3a9940db4f4ca4574233c1dda17d` (751 417 bytes), conferido em duas pastas e numa cópia do repositório em outro caminho.
+
 ### 5.6 Manifesto `v2` e verificador `v2` (onda W3, contrato próprio)
 
 **Decisão de 16/11:** `v2` **antes do primeiro resultado de produção**, com `dossier.sha256` e `prevSealSha256` **dentro da parte assinada**.

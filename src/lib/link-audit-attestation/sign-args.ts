@@ -1,7 +1,8 @@
+import path from 'node:path';
 import { auditId as auditIdSchema, shortLabel } from './schemas';
 import { isTrustKeyringText, SIGN_KEY_ID_PATTERN } from './sign-chain';
 import { MAX_SEAL_SEQ, type SignRefusal } from './sign-core';
-import { parseKeySource, type KeySource } from './sign-key';
+import { bothForms, isInside, parseKeySource, type KeySource } from './sign-key';
 
 /*
  * P1 W4.4 — os ARGUMENTOS do `sign` (spec §5.2 "analisador próprio e estrito", §5.5 sintaxe e tabela, passo 1; §8, §8.1; IA-15; RS-11). Antes de
@@ -228,7 +229,22 @@ export function parseCloseKeyArgs(tokens: readonly string[]): CloseKeyArgs | Sig
  * NODE_PATH…) são recusa; `NODE_ENV` não muda nada no comando e passa. Inspector: sem importar `node:inspector` (fora da lista RS-14), ele só liga
  * na partida por essas opções; `process.debugPort` existe sempre (9229) e não indica nada. Limite declarado: outro processo do MESMO usuário pode
  * ligá-lo depois (SIGUSR1) ou ler a memória (`/proc/<pid>/mem`); isso está fora da garantia (estação dedicada, W5).
+ *
+ * W4.6 (confirmação da revisão da W4.5, critério ii): uma pré-carga roda ANTES do comando e pode limpar `process.env` e `process.execArgv`. A barreira
+ * confere também o bloco ORIGINAL do exec (`/proc/self/cmdline` e `/proc/self/environ`), que isso não altera: na linha original, só as opções do node
+ * ANTES do script (o script e os argumentos do comando nunca são decodificados), com a mesma lista permitida; no ambiente original, só os NOMES
+ * (nenhum valor é decodificado), com as regras do §8.1 e do `NODE_*`. Bloco ilegível ⇒ recusa (falha fechada). No ARTEFATO ÚNICO, além disso: sem o
+ * carregador do `tsx`; `--permission` (ou `--experimental-permission`) e `--disable-sigusr1` obrigatórios em `execArgv` e na linha original; ambiente
+ * VAZIO (`env -i`) no original e em `process.env`. Limite declarado: código que roda antes da barreira (pré-carga, `LD_PRELOAD`) pode até reescrever a
+ * memória do processo; a barreira pega a configuração que ficou no bloco do exec, não uma estação comprometida (W5).
  */
+
+/** O bloco original do exec (Linux: `/proc/self/cmdline` e `/proc/self/environ`, registros terminados por NUL); estrutural, sem disco aqui. */
+export interface ExecBlockReader {
+  cmdline(): Promise<Uint8Array>;
+  environ(): Promise<Uint8Array>;
+}
+
 export interface RuntimeFacts {
   /** `process.execArgv` (injetável). */
   readonly execArgv: readonly string[];
@@ -238,9 +254,16 @@ export interface RuntimeFacts {
   readonly projectRoot: string;
   /** Caminho real (só metadados; o da custódia da chave, `KeyFileOps.realpath`). */
   readonly realpath: (target: string) => Promise<string>;
+  /** W4.6: o bloco ORIGINAL do exec (padrão do CLI: `/proc/self`, `sign-runtime.ts`). */
+  readonly execBlock: ExecBlockReader;
+  /** W4.6: rodando como o ARTEFATO ÚNICO (sem carregador; modelo de permissões, `--disable-sigusr1` e ambiente vazio obrigatórios). */
+  readonly artifact: boolean;
 }
 
 const PERMISSION_FLAGS: ReadonlySet<string> = new Set(['--permission', '--experimental-permission', '--disable-sigusr1']);
+/** W4.6: o artefato exige o modelo de permissões (um dos dois nomes) e o inspector desligado para SIGUSR1. */
+const PERMISSION_MODEL_FLAGS: ReadonlySet<string> = new Set(['--permission', '--experimental-permission']);
+const DISABLE_SIGUSR1 = '--disable-sigusr1';
 /** As duas opções do par do carregador. Por expressão (`r[e]quire`): a guarda textual de carregamento dinâmico do teste de isolamento recusa a palavra solta. */
 const PRELOAD_CJS = /^--r[e]quire$/;
 const PRELOAD_ESM = /^--import$/;
@@ -255,6 +278,22 @@ const runtimeUnsafe = (why: string): SignRefusal => ({
   message: `${why}: elas podem despejar a memória do processo (onde estaria a frase da chave) ou abrir um depurador (T-008). Rode o comando num shell limpo, pelo npm run link-audit:seal (ou pelo artefato da W4.6), sem NODE_OPTIONS e sem opções extras do node. ${RUNTIME_NOTHING}`,
 });
 const EXEC_ARGV_UNSAFE = runtimeUnsafe('O Node foi iniciado com opções além do carregador do projeto e do modelo de permissões (diagnóstico, depuração, perfil ou pré-carga); os valores não são ecoados');
+const ARTIFACT_LINE = 'rode o artefato pela linha fixada no runbook: env -i <node por caminho absoluto> --disable-sigusr1 --permission --allow-fs-read=… --allow-fs-write=… <artefato> <subcomando>';
+const EXEC_BLOCK_UNREADABLE: SignRefusal = {
+  ok: false,
+  code: 'SIGN_RUNTIME_UNSAFE',
+  message: `Não foi possível ler o bloco ORIGINAL do exec (/proc/self/cmdline e /proc/self/environ): sem ele a barreira do runtime não é provada (sistema sem /proc, fora do Linux, ou sob --permission sem --allow-fs-read para esses dois arquivos). ${RUNTIME_NOTHING}`,
+};
+const ARTIFACT_NO_PERMISSION: SignRefusal = {
+  ok: false,
+  code: 'SIGN_RUNTIME_UNSAFE',
+  message: `O artefato único só roda sob o modelo de permissões do Node (--permission, com --allow-fs-read/--allow-fs-write estreitos) e com --disable-sigusr1, nas opções do node e na linha original do exec: ${ARTIFACT_LINE}. ${RUNTIME_NOTHING}`,
+};
+const artifactEnvNotEmpty = (names: readonly string[]): SignRefusal => {
+  const shown = names.filter((name) => ECHOABLE_ENV_NAME.test(name)).slice(0, MAX_ECHOED_ENV_NAMES);
+  const list = shown.length > 0 ? ` (${shown.join(', ')}${names.length > shown.length ? ', …' : ''}; só os nomes são lidos)` : '';
+  return { ok: false, code: 'SIGN_RUNTIME_UNSAFE', message: `O artefato único só roda com o ambiente VAZIO (env -i); há variáveis no ambiente${list}: ${ARTIFACT_LINE}. ${RUNTIME_NOTHING}` };
+};
 
 /** Caminho de uma URL `file://` absoluta, sem `node:url` (fora da lista RS-14); outra forma ⇒ `null`. */
 function fileUrlPath(url: string): string | null {
@@ -280,14 +319,13 @@ async function isProjectLoader(preflight: string | undefined, loaderUrl: string 
   }
 }
 
-/** `execArgv` só com a lista permitida (cabeçalho acima). */
-async function execArgvAllowed(facts: RuntimeFacts): Promise<boolean> {
-  const tokens = facts.execArgv;
+/** Opções do node (as de `execArgv` ou as da linha original) só com a lista permitida (cabeçalho acima); no artefato, sem o carregador. */
+async function execArgvAllowed(tokens: readonly string[], facts: RuntimeFacts): Promise<boolean> {
   let loaderSeen = false;
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index] ?? '';
     if (PERMISSION_FLAGS.has(token) || PERMISSION_PATHS.test(token)) continue;
-    if (!PRELOAD_CJS.test(token) || loaderSeen || !PRELOAD_ESM.test(tokens[index + 2] ?? '')) return false;
+    if (facts.artifact || !PRELOAD_CJS.test(token) || loaderSeen || !PRELOAD_ESM.test(tokens[index + 2] ?? '')) return false;
     if (!(await isProjectLoader(tokens[index + 1], tokens[index + 3], facts))) return false;
     loaderSeen = true;
     index += 3;
@@ -295,18 +333,220 @@ async function execArgvAllowed(facts: RuntimeFacts): Promise<boolean> {
   return true;
 }
 
+/** `NODE_*` (salvo `NODE_ENV`) entre os nomes ⇒ recusa citando até 3 nomes. */
+function nodeEnvRefusal(names: readonly string[], where: string): SignRefusal | null {
+  const nodeNames = names.filter((name) => NODE_ENV_NAME.test(name) && !HARMLESS_NODE_ENV.has(name));
+  if (nodeNames.length === 0) return null;
+  const shown = nodeNames.filter((name) => ECHOABLE_ENV_NAME.test(name)).slice(0, MAX_ECHOED_ENV_NAMES);
+  return runtimeUnsafe(`Há configuração do Node no ambiente${where} (${shown.join(', ')}${nodeNames.length > shown.length ? ', …' : ''}; só os nomes são lidos)`);
+}
+
+const NUL_BYTE = 0;
+const EQUALS_BYTE = 0x3d;
+const DASH_BYTE = 0x2d;
+const LATIN1 = new TextDecoder('latin1');
+const UTF8 = new TextDecoder('utf-8');
+
+/** Os registros (subarrays, sem copiar nem decodificar) de um bloco terminado por NUL; um último registro sem NUL também conta. */
+function nulRecords(bytes: Uint8Array): Uint8Array[] {
+  const records: Uint8Array[] = [];
+  let start = 0;
+  for (let index = 0; index < bytes.length; index += 1) {
+    if (bytes[index] !== NUL_BYTE) continue;
+    records.push(bytes.subarray(start, index));
+    start = index + 1;
+  }
+  if (start < bytes.length) records.push(bytes.subarray(start));
+  return records;
+}
+
+/** Só os NOMES do ambiente original: os bytes antes do primeiro `=` de cada registro (o registro inteiro, se não houver `=`). Valores nunca. */
+export function environNames(bytes: Uint8Array): string[] {
+  return nulRecords(bytes)
+    .filter((record) => record.length > 0)
+    .map((record) => {
+      const equals = record.indexOf(EQUALS_BYTE);
+      return LATIN1.decode(equals < 0 ? record : record.subarray(0, equals));
+    });
+}
+
+/**
+ * As opções do node na linha ORIGINAL: os registros depois do programa e ANTES do script (o primeiro registro que não começa com `-`). O script e
+ * os argumentos do comando nunca são decodificados. Os valores do par do carregador (`--require <arquivo>`, `--import <url>`) vão junto para a
+ * conferência; qualquer outra opção com valor separado é recusada pela lista permitida. `null` = bloco vazio ou sem o nome do programa.
+ */
+export function cmdlineNodeOptions(bytes: Uint8Array): string[] | null {
+  const records = nulRecords(bytes);
+  if (records.length === 0 || (records[0] as Uint8Array).length === 0) return null;
+  const options: string[] = [];
+  for (let index = 1; index < records.length; index += 1) {
+    const record = records[index] as Uint8Array;
+    if (record[0] !== DASH_BYTE) break;
+    const token = UTF8.decode(record);
+    options.push(token);
+    const value = records[index + 1];
+    if ((PRELOAD_CJS.test(token) || PRELOAD_ESM.test(token)) && value !== undefined) {
+      options.push(UTF8.decode(value));
+      index += 1;
+    }
+  }
+  return options;
+}
+
+/** O bloco original lido e interpretado: opções do node antes do script e nomes do ambiente; qualquer falha ⇒ `null` (recusa fechada). */
+async function originalExec(reader: ExecBlockReader): Promise<{ readonly options: readonly string[]; readonly envNames: readonly string[] } | null> {
+  try {
+    const [cmdline, environ] = await Promise.all([reader.cmdline(), reader.environ()]);
+    const options = cmdline instanceof Uint8Array && environ instanceof Uint8Array ? cmdlineNodeOptions(cmdline) : null;
+    return options === null ? null : { options, envNames: environNames(environ) };
+  } catch {
+    return null;
+  }
+}
+
+/** No artefato, o modelo de permissões e `--disable-sigusr1` estão nas opções (de `execArgv` ou da linha original). */
+const hasArtifactFlags = (tokens: readonly string[]): boolean => tokens.some((token) => PERMISSION_MODEL_FLAGS.has(token)) && tokens.includes(DISABLE_SIGUSR1);
+
+/** O bloco original (W4.6): ambiente original (§8.1, `NODE_*`), opções da linha original e, no artefato, linha e ambiente do runbook. */
+async function originalExecRefusal(facts: RuntimeFacts): Promise<SignRefusal | null> {
+  const original = await originalExec(facts.execBlock);
+  if (original === null) return EXEC_BLOCK_UNREADABLE;
+  const envRefusal = secretEnvRefusal(original.envNames) ?? nodeEnvRefusal(original.envNames, ' ORIGINAL do processo (/proc/self/environ)');
+  if (envRefusal) return envRefusal;
+  if (!(await execArgvAllowed(original.options, facts))) return EXEC_ARGV_UNSAFE;
+  if (!facts.artifact) return null;
+  if (!hasArtifactFlags(facts.execArgv) || !hasArtifactFlags(original.options)) return ARTIFACT_NO_PERMISSION;
+  const names = [...new Set([...original.envNames, ...facts.envNames])];
+  return names.length > 0 ? artifactEnvNotEmpty(names) : null;
+}
+
+/* ------------------------------------------------------------------------------------------------------------------- grants do artefato (W4.6) */
+
+const GRANT = /^--allow-fs-(read|write)=(.*)$/;
+const CLOSURES_SUBDIR = '_closures';
+/** Revisão independente da W4.6 (3): leituras rasas (`/home`, `/etc`, `/usr`…) dão a subárvore inteira; só estas são aceitas com um componente. */
+const SHALLOW_READS_ALLOWED: ReadonlySet<string> = new Set(['/tmp']);
+const MIN_READ_DEPTH = 2;
+const GIT_NAME = '.git';
+const grantsRefusal = (why: string): SignRefusal => ({
+  ok: false,
+  code: 'SIGN_RUNTIME_UNSAFE',
+  message: `O artefato único só aceita grants estreitos do modelo de permissões: ${why}. Rode pela linha fixada no runbook. ${RUNTIME_NOTHING}`,
+});
+const GRANT_SHAPE = grantsRefusal('cada --allow-fs-read/--allow-fs-write é um caminho absoluto, normalizado, sem vírgula, diferente de / e sem *');
+const GRANT_WRITE_OUTSIDE = grantsRefusal('--allow-fs-write só na raiz real de --seals-dir ou dentro dela (no close-key, só em <seals-dir>/_closures)');
+const GRANT_READ_SHALLOW = grantsRefusal('leitura com pelo menos dois componentes (/a/b), salvo /tmp e os .git que a custódia da chave consulta');
+const GRANT_ROOT_UNPROVEN = grantsRefusal('o caminho real de --seals-dir não pôde ser resolvido para conferir os grants de escrita');
+const GRANT_NOT_REAL = grantsRefusal('cada caminho concedido tem de existir e ser o próprio caminho real (nenhum componente é link simbólico), salvo /proc/self/*, as raízes temporárias e os .git da custódia, que podem não existir');
+/**
+ * Confirmação da revisão da W4.6 (3): caminhos concedidos LITERALMENTE, sem conferir o caminho real. `/proc/self/*` são links do próprio kernel (o
+ * Node confere o texto do caminho); `/tmp`, `/var/tmp` e `/dev/shm` são as raízes que a custódia resolve (podem faltar ou ser link numa
+ * distribuição), concedidas só para leitura.
+ */
+const LITERAL_READ_GRANTS: ReadonlySet<string> = new Set(['/proc/self/cmdline', '/proc/self/environ', '/proc/self/fd', '/tmp', '/var/tmp', '/dev/shm']);
+const ABSENT = 'ENOENT';
+const PERMISSION_DENIED = 'ERR_ACCESS_DENIED';
+const SEALS_IN_TEMP = grantsRefusal('a pasta de manifestos (--seals-dir) e os grants de escrita nunca ficam numa pasta temporária (/tmp, /var/tmp, /dev/shm ou TMPDIR/TMP/TEMP), nem dentro dela nem contendo uma, pelo caminho dado ou real');
+const TEMP_ROOTS_UNPROVEN = grantsRefusal('o caminho real das pastas temporárias não pôde ser resolvido (a linha do runbook concede leitura a /tmp, /var/tmp e /dev/shm)');
+const overlaps = (a: string, b: string): boolean => isInside(a, b) || isInside(b, a);
+const errnoOf = (error: unknown): unknown => (typeof error === 'object' && error !== null ? (error as { readonly code?: unknown }).code : undefined);
+
+/**
+ * O grant é o próprio caminho real? Existe e `realpath` devolve o mesmo texto (nenhum componente é link). Caminho que não existe só passa (falha
+ * fechada para todo o resto): na leitura, um `.git` da custódia (ela consulta a AUSÊNCIA); na escrita, a pasta que o `sign` ainda vai criar, desde que
+ * a pasta existente mais próxima acima seja o próprio caminho real.
+ */
+type RealCheck = 'LITERAL' | 'VERIFIED' | 'ABSENT_GIT' | 'ABSENT_WRITE' | 'NOT_REAL';
+async function isOwnRealPath(grant: { readonly kind: 'read' | 'write'; readonly value: string }, realpath: (target: string) => Promise<string>): Promise<RealCheck> {
+  if (grant.kind === 'read' && LITERAL_READ_GRANTS.has(grant.value)) return 'LITERAL';
+  try {
+    return (await realpath(grant.value)) === grant.value ? 'VERIFIED' : 'NOT_REAL';
+  } catch (error) {
+    if (errnoOf(error) !== ABSENT) return 'NOT_REAL';
+    if (grant.kind === 'read') return path.basename(grant.value) === GIT_NAME ? 'ABSENT_GIT' : 'NOT_REAL';
+  }
+  for (let dir = path.dirname(grant.value); ; dir = path.dirname(dir)) {
+    try {
+      return (await realpath(dir)) === dir ? 'ABSENT_WRITE' : 'NOT_REAL';
+    } catch (error) {
+      if (errnoOf(error) !== ABSENT || path.dirname(dir) === dir) return 'NOT_REAL';
+    }
+  }
+}
+
+/**
+ * Segunda confirmação da revisão da W4.6 (b): o pai de um `.git` AUSENTE tem de existir e ser o próprio caminho real. Prova direta: `realpath(pai)
+ * = pai`. Sob `--permission`, o pai (uma pasta acima da chave, como `/home` ou `/`) não é concedido e a leitura dele é negada; aí a prova é ele ser
+ * a própria pasta ou uma pasta acima de um grant já conferido como o próprio caminho real e existente (se esse grant não tem nenhum componente que
+ * seja link, as pastas acima dele também não têm, e existem). Qualquer outra falha (pai inexistente, link, erro) ⇒ recusa.
+ */
+async function hasRealParent(git: string, verified: readonly string[], realpath: (target: string) => Promise<string>): Promise<boolean> {
+  const parent = path.dirname(git);
+  try {
+    return (await realpath(parent)) === parent;
+  } catch (error) {
+    return errnoOf(error) === PERMISSION_DENIED && verified.some((real) => isInside(real, parent));
+  }
+}
+
+/** Um grant aceitável na forma: absoluto, normalizado (sem `..`, sem barra final), sem vírgula (lista) e sem `*` (curinga), diferente de `/`. */
+const isNarrowPath = (value: string): boolean => value.length > 1 && path.isAbsolute(value) && path.resolve(value) === value && !/[,*\0]/.test(value);
+const depthOf = (value: string): number => value.split('/').filter(Boolean).length;
+
+/**
+ * Revisão independente da W4.6 (3), só no ARTEFATO, depois do analisador: os grants de `execArgv` E da linha original do exec. Critério simples que
+ * falha fechado: forma estreita (acima); cada grant é o próprio caminho real (`isOwnRealPath`, confirmação da revisão); escrita só na raiz REAL de
+ * `--seals-dir` ou dentro dela (`close-key`: só `_closures`); leitura no `sign` com
+ * pelo menos dois componentes, salvo `/tmp` (raiz temporária da custódia) e caminhos que terminam em `.git` (os `lstat` da custódia da chave). No
+ * `close-key`, a leitura ampla continua limite declarado até a W5 (as pastas acima dos recibos), mas `/` e `*` são recusados também lá.
+ */
+export async function artifactGrantsRefusal(input: { readonly subcommand: 'sign' | 'close-key'; readonly sealsDir: string; readonly execArgv: readonly string[]; readonly execBlock: ExecBlockReader; readonly realpath: (target: string) => Promise<string>; readonly tempRoots: readonly string[] }): Promise<SignRefusal | null> {
+  const original = await originalExec(input.execBlock);
+  if (original === null) return EXEC_BLOCK_UNREADABLE;
+  const grants = [...input.execArgv, ...original.options].flatMap((token) => {
+    const match = GRANT.exec(token);
+    return match ? [{ kind: match[1] as 'read' | 'write', value: match[2] as string }] : [];
+  });
+  if (grants.some((grant) => !isNarrowPath(grant.value))) return GRANT_SHAPE;
+  let root: string;
+  try {
+    root = await input.realpath(path.resolve(input.sealsDir));
+  } catch {
+    return GRANT_ROOT_UNPROVEN;
+  }
+  // segunda confirmação (a): manifesto nunca em pasta temporária (as raízes da custódia, pelo caminho dado e pelo real), nem a raiz contendo uma
+  const temps = await bothForms({ realpath: input.realpath }, input.tempRoots);
+  if (temps === null) return TEMP_ROOTS_UNPROVEN;
+  if (temps.some((temp) => overlaps(root, temp))) return SEALS_IN_TEMP;
+  const verified: string[] = [];
+  const absentGit: string[] = [];
+  for (const grant of grants) {
+    const check = await isOwnRealPath(grant, input.realpath);
+    if (check === 'NOT_REAL') return GRANT_NOT_REAL;
+    if (check === 'VERIFIED') verified.push(grant.value);
+    if (check === 'ABSENT_GIT') absentGit.push(grant.value);
+  }
+  for (const git of absentGit) if (!(await hasRealParent(git, verified, input.realpath))) return GRANT_NOT_REAL;
+  // a comparação é entre caminhos REAIS: cada grant já é o próprio caminho real, e a raiz vem do realpath de --seals-dir
+  const writable = input.subcommand === 'sign' ? root : path.join(root, CLOSURES_SUBDIR);
+  if (grants.some((grant) => grant.kind === 'write' && !isInside(grant.value, writable))) return GRANT_WRITE_OUTSIDE;
+  if (grants.some((grant) => grant.kind === 'write' && temps.some((temp) => overlaps(grant.value, temp)))) return SEALS_IN_TEMP;
+  if (input.subcommand === 'close-key') return null;
+  const shallow = (value: string): boolean => depthOf(value) < MIN_READ_DEPTH && !SHALLOW_READS_ALLOWED.has(value) && path.basename(value) !== GIT_NAME;
+  return grants.some((grant) => grant.kind === 'read' && shallow(grant.value)) ? GRANT_READ_SHALLOW : null;
+}
+
 /**
  * Barreira do runtime (revisão da W4.5, T-008), no CLI do `sign` e do `close-key` logo depois da barreira de ambiente do §8.1 e antes do analisador:
  * nada é lido, o terminal não é tocado e a frase nunca é pedida. Recusa `SIGN_RUNTIME_UNSAFE` (código 3) citando só NOMES de variáveis. Nunca lança.
+ * W4.6: confere também o bloco ORIGINAL do exec e, no artefato único, a linha e o ambiente do runbook (cabeçalho acima).
  */
 export async function runtimeRefusal(facts: RuntimeFacts): Promise<SignRefusal | null> {
   try {
-    const nodeNames = facts.envNames.filter((name) => NODE_ENV_NAME.test(name) && !HARMLESS_NODE_ENV.has(name));
-    if (nodeNames.length > 0) {
-      const shown = nodeNames.filter((name) => ECHOABLE_ENV_NAME.test(name)).slice(0, MAX_ECHOED_ENV_NAMES);
-      return runtimeUnsafe(`Há configuração do Node no ambiente (${shown.join(', ')}${nodeNames.length > shown.length ? ', …' : ''}; só os nomes são lidos)`);
-    }
-    return (await execArgvAllowed(facts)) ? null : EXEC_ARGV_UNSAFE;
+    const current = nodeEnvRefusal(facts.envNames, '');
+    if (current) return current;
+    if (!(await execArgvAllowed(facts.execArgv, facts))) return EXEC_ARGV_UNSAFE;
+    return await originalExecRefusal(facts);
   } catch {
     return EXEC_ARGV_UNSAFE;
   }
