@@ -1,4 +1,6 @@
-import { applyLedgerEnv, routeWorld } from './helpers/link-audit-ledger-fixtures';
+import { applyLedgerEnv, ledgerFor, routeWorld } from './helpers/link-audit-ledger-fixtures';
+import { createResultsKnownHeads } from '../src/lib/link-audit-scoring-runs';
+import type { ResultsLedgerPort } from '../src/lib/link-audit-decisions';
 import { LEDGER_NOT_REQUIRED } from '../src/lib/link-audit-decisions/ledger-port';
 import { WITNESS_NOT_REQUIRED } from '../src/lib/link-audit-decisions/witness';
 import assert from 'node:assert/strict';
@@ -75,7 +77,7 @@ const url = (auditId: string, suffix = ''): string => `/api/link-audit/decisions
 
 /** O head que o "navegador" viu por último (vem das respostas); cada teste começa sem ver nada (histórico vazio). */
 let lastHead: unknown = null;
-async function setup(): Promise<{ w: World; ana: string; auditId: string }> {
+async function setup(): Promise<{ w: Awaited<ReturnType<typeof routeWorld>>; ana: string; auditId: string }> {
   const w = await routeWorld();
   witnessDirs = resultsEnv();
   setEnv(w);
@@ -523,13 +525,15 @@ test('R3-MINOR-2 / R3-MINOR-5 pela API: com a TESTEMUNHA (resultado selado em ou
   const { w, ana, auditId } = await setup();
   assert.equal((await post(auditId, { record: rec.c2() }, ana)).status, 201);
   assert.equal((await revoke(auditId, { revokes: 'op-0001', reason: REASON }, ana)).status, 201);
-  // um resultado SELADO sobre esse histórico (em outras pastas) registra o head das decisões (seq 2)
+  // um resultado SELADO sobre esse histórico (em outras pastas) registra o head das decisões (seq 2). R1.5 (spec do livro §16.17.9): a auditoria é PROTEGIDA pelo livro, então o
+  // resultado passa pela porta de escrita do livro (RUN_INTENT/RUN_CONFIRMED); gravado direto no disco ele seria UNLEDGERED_RESULT
   const rEnv = resultsEnv();
-  const decisions = createDecisionService({ ledger: LEDGER_NOT_REQUIRED, knownHeads: WITNESS_NOT_REQUIRED, origin: TEST_ORIGIN, baseDir: w.decisionsDir, anchorDir: w.anchorDir, evidence: w.reader, evidenceBaseDir: w.evidenceDir });
+  const witness = createResultsKnownHeads({ baseDir: rEnv.base, anchorDir: rEnv.anchors, otherDirs: [w.decisionsDir, w.anchorDir, w.evidenceDir, w.ledgerDir], origin: TEST_ORIGIN });
+  const decisions = createDecisionService({ ledger: ledgerFor(w, { guard: null }), knownHeads: witness, origin: TEST_ORIGIN, baseDir: w.decisionsDir, anchorDir: w.anchorDir, evidence: w.reader, evidenceBaseDir: w.evidenceDir });
   const preview = previewOver({ evidenceDir: w.evidenceDir, raw: decisions });
   const evaluated = await preview.evaluate({ email: 'ana@empresa.com' }, auditId);
   assert.ok(evaluated.ok);
-  assert.ok((await makeService(rEnv, preview).finalize({ email: 'ana@empresa.com' }, auditId, { expectedHead: evaluated.value.decisions.head, expectedInputSha256: evaluated.value.inputSha256 as string })).ok);
+  assert.ok((await makeService(rEnv, preview, { ledger: decisions.resultsLedger as ResultsLedgerPort }).finalize({ email: 'ana@empresa.com' }, auditId, { expectedHead: evaluated.value.decisions.head, expectedInputSha256: evaluated.value.inputSha256 as string })).ok);
   env.GMN_LINK_AUDIT_RESULTS_DIR = rEnv.base;
   env.GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR = rEnv.anchors;
   const other = await cookie(nextOperator());

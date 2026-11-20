@@ -68,7 +68,8 @@ test('RL-01 (espelho de RV3A-1): fase B + recibo FORJADO (só SHA-256) ⇒ parec
   const before = await everythingOf(w, e);
   const attack = await finalizerOver(w, e).results.finalize(OP_B, w.auditId, body);
   assert.equal(codeOf(attack), 'RESULT_PENDING_UNCONFIRMED', show(attack));
-  assert.equal((attack as { pending?: unknown }).pending, undefined, 'fase C: a pendente não vai no corpo (o DTO só sabe dizer "sem recibo"; R1.5)');
+  // R1.5 (D-18): a pendente vai no corpo com o recibo PRESENTE (o livro não confirmou; nunca é confirmação)
+  assert.equal((attack as { pending?: { receipt?: string } }).pending?.receipt, 'PRESENT', 'fase C: a pendente vai no corpo com receipt PRESENT');
   await assertUntouched(w, e, before, 'C', 'RL-01');
 });
 
@@ -114,14 +115,13 @@ for (const variant of ['B', 'C', 'C (recibo forjado)'] as const) {
   });
 }
 
-test('pendente no corpo só na fase B: a recusa de quem não é o autor traz `pending` (receipt MISSING) na B e nada na C', async () => {
+test('pendente no corpo (R1.5): a recusa de quem não é o autor traz `pending` com receipt MISSING na B e PRESENT na C', async () => {
   for (const phase of ['B', 'C'] as const) {
     const { w, e, body } = await openRunWorld(phase);
     const refused = await finalizerOver(w, e).results.finalize(OP_B, w.auditId, body);
     assert.equal(codeOf(refused), 'RESULT_PENDING_UNCONFIRMED', show(refused));
     const pending = (refused as { pending?: { receipt: string; isMine: boolean } }).pending;
-    if (phase === 'B') assert.deepEqual([pending?.receipt, pending?.isMine], ['MISSING', false]);
-    else assert.equal(pending, undefined);
+    assert.deepEqual([pending?.receipt, pending?.isMine], [phase === 'B' ? 'MISSING' : 'PRESENT', false], phase);
   }
 });
 
@@ -182,8 +182,8 @@ for (const phase of ['B', 'C'] as const) {
       const before = await everythingOf(w, e);
       const done = await finalizerOver(w, e, item.over({ evaluate: 0, barrier: 0 })).results.finalize(OP_A, w.auditId, body);
       assert.equal(codeOf(done), item.code, show(done));
-      // a recusa vem do SERVIÇO, antes do armazenamento: na fase C a pendente não vai no corpo (o DTO diria "sem recibo"; R1.3 nota (5))
-      if (phase === 'C') assert.equal((done as { pending?: unknown }).pending, undefined, 'fase C: sem pendente no corpo');
+      // a recusa vem do SERVIÇO, antes do armazenamento; quando leva a pendente, na fase C ela diz receipt PRESENT (R1.5, D-18; antes ia sem pendente, R1.3 nota (5))
+      if (phase === 'C') assert.ok([undefined, 'PRESENT'].includes((done as { pending?: { receipt?: string } }).pending?.receipt), 'fase C: nunca "sem recibo"');
       await assertUntouched(w, e, before, phase, `${phase}/${item.label}`);
       // a recusa não é permanente: com tudo em ordem o autor conclui depois
       const own = await finalizerOver(w, e).results.finalize(OP_A, w.auditId, body);
