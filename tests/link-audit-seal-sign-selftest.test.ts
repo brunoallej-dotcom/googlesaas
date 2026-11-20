@@ -7,6 +7,7 @@ import { nodeFsOps, type BytesFsOps, type FileInfo, type FsOps } from '../src/li
 import { chainSnapshot, readSealChain, selfTestSeal, type SealManifest } from '../src/lib/link-audit-attestation/sign-chain';
 import { runSign } from '../src/lib/link-audit-attestation/sign-run';
 import {
+  createEvidenceSeal,
   createEvidenceSealV2,
   createKeyRetirementClosure,
   createSealedEvidenceProvenance,
@@ -140,6 +141,30 @@ test('passo 14: o autoteste julga os BYTES a gravar e exige que a cabeça autent
   failed(await run(textOf(seal), seal.entries, 'lixo'), 'PROOF_NOT_CONFIGURED', 'lista fora de forma');
   const elsewhere = nextSeal(null, S, 'auditoria-auto-outra');
   failed(await selfTestSeal({ sealsDir, trustKeys: item(S), seal: elsewhere, text: textOf(seal), entries: elsewhere.entries }, { fs: nodeFsOps }), 'SEAL_INVALID', 'bytes de outra auditoria na subpasta desta');
+});
+
+test('passo 14 em modo produção (acceptedVersions [2]): cadeia anterior com um v1 ⇒ SIGN_SELFTEST_FAILED (SEAL_VERSION_NOT_ALLOWED), embora a promoção v1 → v2 passe no padrão de biblioteca [1,2]', async () => {
+  const sealsDir = tmpDir('lasa-v1-');
+  const S = signer('ek-auto-s');
+  const v1 = createEvidenceSeal({ auditId: AUD, seq: 1, sealedAt: '2026-11-18T10:00:00.000Z', keyId: S.keyId, privateKey: S.privateKey, entries: E1 });
+  deliverSeal(sealsDir, AUD, 1, `${JSON.stringify(v1)}\n`);
+  const seal = createEvidenceSealV2({ auditId: AUD, seq: 2, sealedAt: NEW_AT, keyId: S.keyId, privateKey: S.privateKey, entries: E1, dossier: { id: 'dossie-auto-0001', sha256: 'e'.repeat(64) }, prevSealSha256: sealSha256(v1) });
+  failed(await selfTestSeal({ sealsDir, trustKeys: item(S), seal, text: textOf(seal), entries: seal.entries }, { fs: nodeFsOps }), 'SEAL_VERSION_NOT_ALLOWED', 'v1 na cadeia anterior');
+  const copy = tmpDir('lasa-v1-copia-');
+  fs.cpSync(sealsDir, copy, { recursive: true });
+  deliverSeal(copy, AUD, 2, textOf(seal));
+  const library = await createSealedEvidenceProvenance({ sealsDir: copy, keyring: parseTrustKeyring(item(S)) as TrustKeyring, acceptedVersions: [1, 2] }).classify(AUD, evidencesOf(seal));
+  assert.equal(library.status, 'AUTHENTICATED', 'no padrão [1,2] a promoção passaria (por isso o autoteste fixa [2])');
+});
+
+test('passo 14: o manifesto em memória nunca esconde um arquivo REAL de mesmo nome (seq já gravado na pasta ⇒ recusa, sem ler o arquivo real como se fosse o novo)', async () => {
+  const sealsDir = tmpDir('lasa-nome-');
+  const S = signer('ek-auto-s');
+  const seals = chainOn(sealsDir, AUD, [S, S]);
+  const rival = nextSeal(seals[0] as EvidenceSealFileV2, S, AUD); // seq 2, como o seal-0002.json que já existe
+  const refusal = await selfTestSeal({ sealsDir, trustKeys: item(S), seal: rival, text: textOf(rival), entries: rival.entries }, { fs: nodeFsOps });
+  assert.ok(refusal && refusal.code === 'SIGN_SELFTEST_FAILED', 'o nome já existe: o autoteste recusa');
+  assert.equal(fs.readFileSync(path.join(sealsDir, AUD, 'seal-0002.json'), 'utf8'), textOf(seals[1] as EvidenceSealFileV2), 'o arquivo real fica intacto');
 });
 
 /* =============================================================================================================== mesma fotografia, sem nova leitura */
