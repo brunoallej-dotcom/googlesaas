@@ -293,7 +293,7 @@ interface (`audit-page/validators.ts`).
 | G1.a | Volumes, segredos e chave de log: `stack.yml`, lista do entrypoint, `stop-first`, plano de backup e `operatorRef` com `GMN_LINK_AUDIT_LOG_KEY` | G0 (Q8, Q9 e o nome do secret da guarda) | G1.b, G1.c, R2, W4.6 | ⬜ |
 | G1.b | Guarda: adaptador real, contrato R6-10, ligação nas rotas, migração proposta, reconciliação externa e runbook | G0 (Q1–Q5); R1.6 na `main` | G1.a; G1.c só se Q6 = 3 | ⬜ |
 | G1.c | Papel administrativo (só se Q6 = 1 ou 2; com Q6 = 3, só o aceite formal) | G0 (Q6, Q7) e emenda da §16.8 da spec do livro; **se Q6 = 1 ou 2, também a G1.b na `main`** (as duas mexem no livro) | G1.a; G1.b só se Q6 = 3 (sem código) | ⬜ |
-| G2 | Integração e ensaio em homologação: roteiro EN-01 a EN-12 da spec §10.4 | G1.a, G1.b, G1.c (ou o aceite), o ambiente de homologação (Q12) e o **relatório da W5 aprovado** | nenhuma (com a W5, só em ambiente totalmente isolado, spec §10.4) | ⬜ |
+| G2 | Integração e ensaio em homologação: os 14 ensaios e as 2 atestações da spec §10.4 | G1.a, G1.b, G1.c (ou o aceite), o ambiente de homologação (Q12) e o **relatório da W5 aprovado** | nenhuma (com a W5, só em ambiente totalmente isolado, spec §10.4) | ⬜ |
 | G3 | Portão de produção (spec §10.1) ou piloto mínimo declarado (spec §10.2) | G2, os portões do P1 (R1, R2, W4.6, W5, W6) e as decisões e ações do responsável | — | ⬜ |
 
 Ordem prática, conforme a Q6:
@@ -355,10 +355,22 @@ Motivos:
   - **PG-V04 (VC-E8):** `deploy/hostinger/GUIA-DE-IMPLANTACAO.md` traz o procedimento de criação e conferência das
     pastas no host (dono `10001:10001`, modo `0700`, `stat`). A execução fica registrada no EN-12 da G2 e na linha G-3
     do portão;
+  - **atestações item a item** em `docs/phase6-auditoria-link/producao-g1a-atestacoes.md`, uma linha por item no formato `| AT-G1A-xx | SIM | arquivo:linha |`,
+    apontando onde cada item está cumprido:
+    - **AT-G1A-01** destinos de backup independentes (marcadores distintos) para os dois volumes de recibos e para o
+      livro, fora do disco dos dados que eles ancoram (VC-E6);
+    - **AT-G1A-02** nenhum comando de backup ou de restauração com `--delete` nem sobrescrita (VC-E6);
+    - **AT-G1A-03** pares do mesmo instante, `sha256sum` por arquivo e as cabeças guardadas junto do backup (VC-E6,
+      GE-R9);
+    - **AT-G1A-04** procedimento das pastas no host: dono `10001:10001`, modo `0700`, conferência por `stat` (VC-E8);
+    - **AT-G1A-05** chave do livro, chave de log e credencial da guarda documentadas como Swarm secrets, com nome em
+      marcador, e na lista do entrypoint (VC-E2, VC-E7);
+    - **AT-G1A-06** ordem de ativação: volumes e chaves ⇒ guarda ⇒ primeiro `ENROLL` (VC-E7);
+    - **AT-G1A-07** nenhum valor real, host ou caminho de produção nos arquivos alterados (VC-E1);
   - nenhum valor literal, host ou caminho real nos arquivos de implantação: só marcadores;
   - o Worker continua sem nenhuma variável `GMN_LINK_AUDIT_*`;
   - `src/lib/logger.ts` e `src/lib/redact.ts` sem diff (spec de observabilidade, "O que NÃO muda").
-- **Goal command**: `/goal scripts/run-isolated.sh npm run typecheck && scripts/run-isolated.sh node --require ./tests/register-typescript.cjs --test tests/deploy-config.test.ts tests/link-audit-observability*.test.ts && grep -q "PG-V01" tests/deploy-config.test.ts && grep -lq "PG-L01" tests/link-audit-observability*.test.ts && for v in GMN_LINK_AUDIT_DECISIONS_DIR GMN_LINK_AUDIT_DECISIONS_ANCHOR_DIR GMN_LINK_AUDIT_RESULTS_DIR GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR GMN_LINK_AUDIT_DECISIONS_LEDGER_DIR GMN_LINK_AUDIT_EVIDENCE_SEALS_DIR; do grep -q "$v" deploy/hostinger/PLANO-DE-BACKUP-E-RESTAURACAO.md || exit 1; done && grep -q "GMN_LINK_AUDIT_LEDGER_KEY" deploy/hostinger/PROVA-DE-ORIGEM-E-DE-COLETA.md && grep -q "GMN_LINK_AUDIT_LOG_KEY" deploy/hostinger/PROVA-DE-ORIGEM-E-DE-COLETA.md && grep -q "10001:10001" deploy/hostinger/GUIA-DE-IMPLANTACAO.md && git diff --quiet origin/main -- src/lib/logger.ts src/lib/redact.ts, stop after 6 tries`
+- **Goal command**: `/goal scripts/run-isolated.sh npm run typecheck && scripts/run-isolated.sh node --require ./tests/register-typescript.cjs --test tests/deploy-config.test.ts tests/link-audit-observability*.test.ts && grep -q "PG-V01" tests/deploy-config.test.ts && grep -lq "PG-L01" tests/link-audit-observability*.test.ts && for v in GMN_LINK_AUDIT_DECISIONS_DIR GMN_LINK_AUDIT_DECISIONS_ANCHOR_DIR GMN_LINK_AUDIT_RESULTS_DIR GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR GMN_LINK_AUDIT_DECISIONS_LEDGER_DIR GMN_LINK_AUDIT_EVIDENCE_SEALS_DIR; do grep -q "$v" deploy/hostinger/PLANO-DE-BACKUP-E-RESTAURACAO.md || exit 1; done && grep -q "GMN_LINK_AUDIT_LEDGER_KEY" deploy/hostinger/PROVA-DE-ORIGEM-E-DE-COLETA.md && grep -q "GMN_LINK_AUDIT_LOG_KEY" deploy/hostinger/PROVA-DE-ORIGEM-E-DE-COLETA.md && grep -q "10001:10001" deploy/hostinger/GUIA-DE-IMPLANTACAO.md && grep -q "0700" deploy/hostinger/GUIA-DE-IMPLANTACAO.md && grep -q "stat -c" deploy/hostinger/GUIA-DE-IMPLANTACAO.md && for n in 01 02 03 04 05 06 07; do grep -qE "^\| AT-G1A-$n \| SIM \|[^|]*[A-Za-z0-9_./-]+:[0-9]+[^|]*\|" docs/phase6-auditoria-link/producao-g1a-atestacoes.md || exit 1; done && git diff --quiet origin/main -- src/lib/logger.ts src/lib/redact.ts, stop after 6 tries` (cada atestação precisa de `SIM` e de um `arquivo:linha`)
 
 ### Onda G1.b — Guarda externa
 
@@ -416,21 +428,23 @@ Motivos:
 - **Escopo**:
   - pilha de homologação (Q12) com as pastas, as chaves descartáveis e a guarda num projeto ou esquema de laboratório;
   - auditorias **novas**, inscritas depois de ligar a guarda; as da W5 não são reaproveitadas (spec §5.1.4, regra 1);
-  - o roteiro EN-01 a EN-12 da spec §10.4: rollback coordenado, restaurações, rollback de imagem, queda do provedor,
+  - o roteiro da spec §10.4 (14 ensaios: EN-01, EN-02a, EN-02b, EN-02c, EN-03 a EN-12): rollback coordenado, restaurações, rollback de imagem, queda do provedor,
     falha de publicação depois do fecho, sequência falsa, reconciliação, `ANCHOR_PENDING`, `ENOSPC`, ações
     administrativas e pastas no host;
   - relatório `docs/phase6-auditoria-link/producao-relatorio-ensaio-g2.md`, com uma linha por ensaio no formato
-    `| EN-xx | PASSOU ou FALHOU | resultado observado | evidência |`.
+    `| EN-xx | PASSOU ou FALHOU | resultado observado | evidência |` e uma linha por atestação no formato
+    `| AT-G2-xx | SIM | evidência |` (AT-G2-01 nada em produção; AT-G2-02 chaves e credenciais do ensaio destruídas ou
+    revogadas, com data).
 - **Depende de / paralela com**: G1.a, G1.b, G1.c (ou o aceite da opção 3), o ambiente de homologação autorizado pelo
   responsável e o **relatório da W5 aprovado** (a W5 fecha antes: chave do ensaio destruída, relatório arquivado). Usa
   o mesmo ambiente da W5 só depois disso. Em paralelo com a W5, só em ambiente totalmente isolado (pilha, volumes,
   guarda e credenciais separados), com o isolamento registrado nos dois relatórios.
 - **Critérios de aceite**:
-  - as doze linhas EN-01 a EN-12 em `PASSOU`, cada uma com o resultado observado e a evidência (vista do livro, código
-    da resposta, saída da reconciliação, do `stat` ou do `docker service inspect`);
-  - nada em produção;
-  - chaves e credenciais do ensaio destruídas, com o fato registrado.
-- **Goal command**: `/goal test -f docs/phase6-auditoria-link/producao-relatorio-ensaio-g2.md && for n in 01 02 03 04 05 06 07 08 09 10 11 12; do grep -qE "^\| EN-$n \| PASSOU \|[^|]+\|[^|]*[^ |][^|]*\|" docs/phase6-auditoria-link/producao-relatorio-ensaio-g2.md || exit 1; done && ! grep -qE "^\| EN-[0-9]+ \| FALHOU" docs/phase6-auditoria-link/producao-relatorio-ensaio-g2.md, stop after 3 tries` (cada ensaio precisa de linha em `PASSOU` com resultado e evidência não vazios; nenhuma linha em `FALHOU`)
+  - as 14 linhas de ensaio em `PASSOU`, cada uma com o resultado observado e a evidência não vazios (vista do livro,
+    código da resposta, saída da reconciliação, do `stat` ou do `docker service inspect`), e nenhuma em `FALHOU`;
+  - **AT-G2-01** (nada em produção) e **AT-G2-02** (chaves e credenciais do ensaio destruídas ou revogadas, com data)
+    em `SIM`, com evidência.
+- **Goal command**: `/goal test -f docs/phase6-auditoria-link/producao-relatorio-ensaio-g2.md && for n in 01 02a 02b 02c 03 04 05 06 07 08 09 10 11 12; do grep -qE "^\| EN-$n \| PASSOU \| *[^| ][^|]*\| *[^| ][^|]*\|" docs/phase6-auditoria-link/producao-relatorio-ensaio-g2.md || exit 1; done && ! grep -qE "^\| EN-[0-9]+[a-c]? \| FALHOU" docs/phase6-auditoria-link/producao-relatorio-ensaio-g2.md && for n in 01 02; do grep -qE "^\| AT-G2-$n \| SIM \| *[^| ][^|]*\|" docs/phase6-auditoria-link/producao-relatorio-ensaio-g2.md || exit 1; done, stop after 3 tries` (cada ensaio em `PASSOU` com resultado e evidência que não sejam vazios nem só espaços; nenhum em `FALHOU`; as duas atestações em `SIM` com evidência)
 
 ### Onda G3 — Portão de produção (fora do código)
 
