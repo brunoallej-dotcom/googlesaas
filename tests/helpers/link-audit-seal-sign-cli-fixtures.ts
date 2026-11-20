@@ -318,6 +318,11 @@ export interface SignCliOptions {
 
 /** `npm run link-audit:seal -- sign …` em processo, com terminal falso, ambiente vazio e relatórios de diagnóstico falsos (todos ligados). */
 export async function runSign(argv: readonly string[], options: SignCliOptions = {}): Promise<SignCliRun> {
+  return runSealSubcommand('sign', argv, options);
+}
+
+/** Qualquer subcomando do `sign` (W4.5: também `close-key`) em processo, com as mesmas dependências falsas de `runSign`. */
+export async function runSealSubcommand(subcommand: 'sign' | 'close-key', argv: readonly string[], options: SignCliOptions = {}): Promise<SignCliRun> {
   const out: string[] = [];
   const err: string[] = [];
   const rawAtErr: boolean[] = [];
@@ -333,7 +338,7 @@ export async function runSign(argv: readonly string[], options: SignCliOptions =
     ...(options.keyFs ? { keyFs: options.keyFs } : {}),
   };
   const code = await runSealCli(
-    ['sign', ...argv],
+    [subcommand, ...argv],
     (line) => {
       out.push(line);
       options.out?.(line);
