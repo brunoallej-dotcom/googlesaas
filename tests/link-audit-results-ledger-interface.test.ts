@@ -98,8 +98,9 @@ test('vista do livro na tela: runs e decisionHead coerentes (kid de origem só c
   // runs só existe com o livro lido e autenticado: nunca no legado, na inscrição pendente ou sem livro
   for (const state of ['NOT_REQUIRED', 'LEGACY_READ_ONLY', 'ENROLLMENT_PENDING'] as const) {
     const ledger = { ...protectedLedger(), state, reason: state === 'LEGACY_READ_ONLY' ? 'LEDGER_ABSENT_WITH_HISTORY' : null, head: null, decisionHead: null, confirmedDecisions: 0 };
-    assert.equal(isDecisionsPayload(clone(decisionsFixture({ ledger })), AUDIT), false, `${state} com runs`);
-    assert.equal(isDecisionsPayload(clone(decisionsFixture({ ledger: { ...ledger, runs: undefined } })), AUDIT), true, `${state} sem runs`);
+    const finalizable = state === 'NOT_REQUIRED'; // fora de PROTECTED/NOT_REQUIRED nada é finalizável (contrato da 6B)
+    assert.equal(isDecisionsPayload(clone(decisionsFixture({ finalizable, ledger })), AUDIT), false, `${state} com runs`);
+    assert.equal(isDecisionsPayload(clone(decisionsFixture({ finalizable, ledger: { ...ledger, runs: undefined } })), AUDIT), true, `${state} sem runs`);
   }
   // as três contradições de resultado congelam tudo: nunca convivem com runs
   for (const reason of ['UNLEDGERED_RESULT', 'RESULT_DIVERGES', 'RESULT_PUBLISHED_AFTER_ABORT']) {

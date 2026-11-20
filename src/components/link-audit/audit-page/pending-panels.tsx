@@ -73,13 +73,23 @@ export function PendingRunPanel({ pending, busy, onComplete }: { readonly pendin
   const [ack, setAck] = useState(false);
   const id = useId();
   const name = `s${String(pending.seq).padStart(4, '0')}`;
+  // R1.5 (fase C do livro): o recibo existe, mas o livro de cabeças não confirmou — o recibo nunca é confirmação
+  const present = pending.receipt === 'PRESENT';
   return (
     <section aria-labelledby={`${id}-t`} className={BOX}>
-      <p id={`${id}-t`} className="font-semibold text-gmn-text">Resultado {name} gravado e NÃO confirmado (sem recibo): ele não vale.</p>
+      <p id={`${id}-t`} className="font-semibold text-gmn-text">
+        Resultado {name} gravado e NÃO confirmado ({present ? 'o recibo existe, mas falta a confirmação do livro de cabeças' : 'sem recibo'}): ele não vale.
+      </p>
       <div className="mt-2 space-y-1 text-gmn-muted" data-testid="pending-run-impact">
-        <p>
-          Uma gravação <strong className="text-gmn-text">interrompida</strong> e um recibo <strong className="text-gmn-text">removido</strong> de um resultado já confirmado têm o mesmo aspecto aqui; o sistema não consegue distingui-los sozinho. <strong className="text-gmn-text">Não apague nem mova o arquivo deste resultado:</strong> se ele era o último resultado confirmado, ele deixa de contar como resultado até o recibo ser concluído.
-        </p>
+        {present ? (
+          <p>
+            O recibo existe, mas o livro de cabeças ainda não registrou a confirmação: uma queda entre o recibo e o livro e um recibo fabricado por quem escreve na pasta de recibos têm o mesmo aspecto aqui. Só o autor conclui, com todas as reconferências. <strong className="text-gmn-text">Não apague nem mova o arquivo deste resultado nem o recibo.</strong>
+          </p>
+        ) : (
+          <p>
+            Uma gravação <strong className="text-gmn-text">interrompida</strong> e um recibo <strong className="text-gmn-text">removido</strong> de um resultado já confirmado têm o mesmo aspecto aqui; o sistema não consegue distingui-los sozinho. <strong className="text-gmn-text">Não apague nem mova o arquivo deste resultado:</strong> se ele era o último resultado confirmado, ele deixa de contar como resultado até o recibo ser concluído.
+          </p>
+        )}
         <p>Enquanto houver esta pendência, nenhum novo resultado é registrado nesta auditoria. Ela <strong className="text-gmn-text">não é uma confirmação</strong>.</p>
       </div>
       {pending.origin !== 'PROVEN' ? (
@@ -88,7 +98,7 @@ export function PendingRunPanel({ pending, busy, onComplete }: { readonly pendin
         <>
           <p className="mt-1 flex items-start gap-2 text-gmn-muted">
             <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-green-300" aria-hidden="true" />
-            <span>O servidor <strong className="text-gmn-text">comprovou</strong> que gravou este resultado em nome do seu usuário. Falta apenas o recibo.</span>
+            <span>O servidor <strong className="text-gmn-text">comprovou</strong> que gravou este resultado em nome do seu usuário. {present ? 'Falta a confirmação no livro de cabeças.' : 'Falta apenas o recibo.'}</span>
           </p>
           <dl className="mt-2 space-y-1">
             <Fact label="Gravado em" value={formatDateTime(pending.finalizedAt)} />
@@ -100,7 +110,9 @@ export function PendingRunPanel({ pending, busy, onComplete }: { readonly pendin
               value={pending.matchesCurrent === true ? 'é a mesma da gravação' : pending.matchesCurrent === false ? 'MUDOU desde a gravação: depois de concluído ele será HISTÓRICO' : 'não foi possível comparar agora'}
             />
           </dl>
-          <p className="mt-2 text-gmn-muted">Concluir cria o recibo do MESMO conteúdo; o servidor reconfere as evidências, a coleta e o histórico antes de dá-lo.</p>
+          <p className="mt-2 text-gmn-muted">
+            {present ? 'Concluir grava a confirmação no livro de cabeças (o recibo existente é conferido, nunca regravado); ' : 'Concluir cria o recibo do MESMO conteúdo e grava a confirmação no livro de cabeças; '}o servidor reconfere as evidências, a coleta e o histórico antes.
+          </p>
           <label className="mt-2 flex min-h-11 cursor-pointer items-start gap-2 text-gmn-text">
             <input type="checkbox" checked={ack} disabled={busy} onChange={(event) => setAck(event.target.checked)} className="mt-0.5 h-4 w-4 shrink-0 accent-[#1D68DB]" />
             <span>Conferi os dados acima e quero concluir a confirmação deste resultado.</span>
@@ -257,6 +269,20 @@ const LEDGER_REASON: Readonly<Record<string, string>> = {
   RESULTS_EVIDENCE_UNAVAILABLE: 'os resultados (testemunha independente do livro) não puderam ser lidos',
   GUARD_MISMATCH: 'a guarda externa guarda uma cabeça que o livro não contém (retrocesso)',
   GUARD_UNAVAILABLE: 'a guarda externa não pôde ser consultada',
+  // R1.5 (§16.17.5): contradições de RESULTADO que congelam também as decisões
+  UNLEDGERED_RESULT: 'há resultado na pasta de resultados que o livro nunca registrou (resultado forjado, anterior ao livro ou cuja operação foi removida do livro)',
+  RESULT_DIVERGES: 'um resultado difere do que o livro registrou naquela posição (arquivo trocado ou outro conteúdo no nome)',
+  RESULT_PUBLISHED_AFTER_ABORT: 'um resultado foi publicado depois de a operação de resultado ter sido abortada no livro',
+};
+/** Família de RESULTADOS não resolvida (§16.17.5): fecha só os resultados; as decisões seguem vigentes. */
+const RUNS_REASON: Readonly<Record<string, string>> = {
+  RESULT_RECEIPT_REMOVED: 'o recibo de um resultado já confirmado pelo livro foi removido',
+  RESULT_REGRESSED: 'um resultado confirmado pelo livro não está mais na pasta de resultados (volume restaurado sozinho ou arquivo removido)',
+};
+const RUN_PHASE_TEXT: Readonly<Record<'A' | 'B' | 'C', string>> = {
+  A: 'a gravação começou e o resultado ainda não foi publicado',
+  B: 'o resultado foi publicado e ainda falta o recibo (ele ainda não vale)',
+  C: 'o resultado e o recibo existem, mas o livro ainda não registrou a confirmação',
 };
 const GUARD_TEXT: Readonly<Record<string, string>> = {
   NOT_CONFIGURED: 'Guarda externa NÃO configurada: um retrocesso coordenado de todos os volumes NÃO é detectado.',
@@ -281,9 +307,10 @@ export function LedgerPanel({ ledger, canAct, onAction }: { readonly ledger: Led
   const guard = GUARD_TEXT[ledger.externalGuard] ?? '';
   if (ledger.state === 'PROTECTED') {
     const open = ledger.openOperation;
+    const runs = ledger.runs;
     const capacity = ledger.capacity;
     const coverage = ledger.keyCoverage;
-    const attention = (capacity !== undefined && capacity.level !== 'OK') || (coverage !== undefined && !coverage.covered);
+    const attention = (capacity !== undefined && capacity.level !== 'OK') || (coverage !== undefined && !coverage.covered) || (runs !== undefined && runs.state !== 'OK');
     return (
       <section role={attention ? 'alert' : 'note'} className={`rounded-xl border p-3 text-xs text-gmn-muted ${attention ? 'border-amber-400/50 bg-amber-500/[0.08]' : 'border-green-400/30 bg-green-500/[0.05]'}`} data-testid="ledger-protected">
         <p className="flex items-start gap-2">
@@ -300,6 +327,17 @@ export function LedgerPanel({ ledger, canAct, onAction }: { readonly ledger: Led
                 Recuperar
               </button>
             )}
+          </p>
+        )}
+        {runs?.open && (
+          <p className="mt-1" data-testid="ledger-open-run">
+            Resultado s{String(runs.open.runSeq).padStart(4, '0')} em andamento: {RUN_PHASE_TEXT[runs.open.phase]}{runs.open.phase === 'A' ? '.' : '; só o autor o conclui.'}
+            {runs.open.originKid !== null && <> Chave de origem do resultado: <code className="text-gmn-text">{safeText(runs.open.originKid, 32)}</code> (id público).</>} Nenhum novo resultado é registrado enquanto isso.
+          </p>
+        )}
+        {runs && runs.state !== 'OK' && (
+          <p className="mt-1" data-testid="ledger-runs-unresolved">
+            Resultados: {runs.reason ? (RUNS_REASON[runs.reason] ?? 'a família de resultados não está resolvida') : 'a família de resultados não está resolvida'}. As decisões seguem vigentes; as consultas e as finalizações de resultados estão fechadas e nada foi gravado.
           </p>
         )}
         {capacity && (

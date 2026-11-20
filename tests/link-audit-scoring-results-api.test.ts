@@ -83,7 +83,7 @@ const base = (auditId: string): string => `/api/link-audit/scoring/${auditId}`;
 const json = async (r: Response): Promise<Record<string, any>> => (await r.json()) as Record<string, any>;
 
 interface Ctx {
-  readonly w: World;
+  readonly w: World & { readonly ledgerDir: string };
   readonly dirs: Dirs;
   readonly ana: string;
   readonly auditId: string;
