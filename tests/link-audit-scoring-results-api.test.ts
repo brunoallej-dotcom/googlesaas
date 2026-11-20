@@ -109,9 +109,10 @@ const list = async (c: Ctx, who?: string) => listRoute(req(`${base(c.auditId)}/r
 const detail = async (c: Ctx, seq: string, who?: string) => detailRoute(req(`${base(c.auditId)}/results/${seq}`, { cookie: who ?? (await fresh()) }), ctxSeq(c.auditId, seq));
 
 /* ------------------------------------------------------------------------------------------------ contrato das rotas */
-test('as rotas exportam SOMENTE os verbos previstos (POST na finalização; GET nas consultas) e nenhuma lê parâmetros de consulta', () => {
+test('as rotas exportam SOMENTE os verbos previstos (POST na finalização; GET nas consultas; POST da reemissão do recibo na lista, R1.6) e nenhuma lê parâmetros de consulta', () => {
   assert.deepEqual(Object.keys(finalizeModule).sort(), ['POST', 'dynamic']);
-  assert.deepEqual(Object.keys(listModule).sort(), ['GET', 'dynamic']);
+  // R1.6 (spec do livro §16.17.5, D-12): a reemissão do recibo de resultado é uma ação PRÓPRIA em `POST …/results` (corpo estrito; `link-audit-results-ledger-reissue-route`)
+  assert.deepEqual(Object.keys(listModule).sort(), ['GET', 'POST', 'dynamic']);
   assert.deepEqual(Object.keys(detailModule).sort(), ['GET', 'dynamic']);
   const dir = path.join(__dirname, '..', 'src', 'app', 'api', 'link-audit', 'scoring', '[auditId]');
   for (const file of ['finalize/route.ts', 'results/route.ts', 'results/[seq]/route.ts']) {
