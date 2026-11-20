@@ -273,12 +273,16 @@ for (const [label, draft] of NOT_ADOPTED) {
 
 /* ============================================================================ caso (iii), releitura não confiável, limites */
 
-test('caso (iii): a operação do dono foi ABORTADA por outro processo antes do fecho ⇒ o dono recusa (RESULT_ANCHOR_PENDING) e nunca grava RUN_CONFIRMED depois do RUN_ABORTED', async () => {
+test('caso (iii): a operação do dono foi ABORTADA por outro processo antes do fecho ⇒ o dono recusa (RESULT_INTEGRITY, sem prometer conclusão por reenvio) e nunca grava RUN_CONFIRMED depois do RUN_ABORTED', async () => {
   const { w, e } = await protectedWorld();
   const hook = planter(w, 'RUN_CONFIRMED', (chain) => extend(LEDGER_AUTH_A, w, chain, runClosing('RUN_ABORTED', 'bia@empresa.com')));
   const refused = await finalizeAs(finalizerOver(w, e, { ledger: { fs: hook.ops } }), OP_A, w.auditId);
   assert.equal(hook.state.mismatch, null);
-  assert.equal(codeOf(refused), 'RESULT_ANCHOR_PENDING', show(refused));
+  // revisão da R1.4 (junin-02): RESULT_ANCHOR_PENDING diria "só o autor, reenviando o MESMO pedido, o conclui" — falso depois de um RUN_ABORTED (o resultado publicado depois do
+  // encerramento é a contradição RESULT_PUBLISHED_AFTER_ABORT, sem receita); a recusa diz que o reenvio NÃO conclui
+  assert.equal(codeOf(refused), 'RESULT_INTEGRITY', show(refused));
+  const issues = (refused as unknown as { issues: readonly string[] }).issues;
+  assert.ok(issues.some((issue) => /encerrada por outro processo antes da confirmação/.test(issue) && /NÃO pode ser concluído por reenvio/.test(issue)), show(refused));
   const records = await assertAuthentic(w);
   assert.deepEqual(records.map((r) => r.event), [...BASE, 'RUN_INTENT', 'RUN_ABORTED'], 'nada além do RUN_ABORTED alheio');
 });

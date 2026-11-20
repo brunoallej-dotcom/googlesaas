@@ -313,6 +313,14 @@ const fromRun = (refusal: RunRefusal): ResultsFailure => {
   const code = RUN_TO_RESULTS[refusal.code];
   return failure(code, ...(code === 'RESULT_DURABILITY_UNKNOWN' ? [] : refusal.issues.slice(0, 5)));
 };
+/**
+ * Recusa do FECHO QUE CONFIRMA (passo 11 e conclusão B/C), quando resultado e recibo já são duráveis: em regra a operação fica (ou volta a ficar) em fase C e só o autor conclui
+ * (`RESULT_ANCHOR_PENDING`), salvo durabilidade desconhecida. A operação ENCERRADA por outro processo antes da confirmação (`RUN_CLOSED`, p.ex. `RUN_ABORTED` alheio da fase A
+ * vencida) é outra coisa: o resultado publicado depois do encerramento nunca será confirmado (contradição `RESULT_PUBLISHED_AFTER_ABORT`, sem receita) — `RESULT_INTEGRITY`,
+ * nunca a promessa de concluir por reenvio (revisão da R1.4). Nenhum código novo (D-11).
+ */
+const anchorPendingOr = (refusal: RunRefusal): ResultsFailure =>
+  refusal.code === 'DURABILITY_UNKNOWN' ? fromRun(refusal) : failure(refusal.code === 'RUN_CLOSED' ? 'RESULT_INTEGRITY' : 'RESULT_ANCHOR_PENDING', ...refusal.issues.slice(0, 5));
 /** O que o `RUN_INTENT` precisa do resultado JÁ SELADO (formato v2: o resultado cita a cabeça de decisões do livro). */
 const draftOf = (run: ScoreRun): RunDraft | null =>
   run.ledgerHead
@@ -557,13 +565,13 @@ export function createScoringResultsService(deps: ResultsDeps) {
         const run = draftOf(sealed);
         if (!run || session === null) return refuse(failure('INTERNAL_ERROR'));
         // resultado e recibo existem e são duráveis; sem o RUN_CONFIRMED a operação fica em fase C (só o autor conclui): RESULT_ANCHOR_PENDING — salvo durabilidade desconhecida
-        return gateOf(await port.confirmed({ session, auditId, actor: operator, nowIso: deps.clock(), run }), (refusal) => (refusal.code === 'DURABILITY_UNKNOWN' ? fromRun(refusal) : failure('RESULT_ANCHOR_PENDING', ...refusal.issues.slice(0, 5))));
+        return gateOf(await port.confirmed({ session, auditId, actor: operator, nowIso: deps.clock(), run }), anchorPendingOr);
       },
       async conclude(sealed) {
         const run = draftOf(sealed);
         if (!run || session === null) return refuse(failure('INTERNAL_ERROR'));
         // o recibo já é durável; sem o RUN_CONFIRMED a operação fica (ou volta a ficar) em fase C: RESULT_ANCHOR_PENDING — salvo durabilidade desconhecida ou quem não é o autor
-        return gateOf(await port.conclude({ session, auditId, actor: operator, nowIso: deps.clock(), run }), (refusal) => (refusal.code === 'DURABILITY_UNKNOWN' || refusal.code === 'PENDING_UNCONFIRMED' ? fromRun(refusal) : failure('RESULT_ANCHOR_PENDING', ...refusal.issues.slice(0, 5))));
+        return gateOf(await port.conclude({ session, auditId, actor: operator, nowIso: deps.clock(), run }), (refusal) => (refusal.code === 'PENDING_UNCONFIRMED' ? fromRun(refusal) : anchorPendingOr(refusal)));
       },
     };
     /**

@@ -518,7 +518,7 @@ test('passo 1b / M-R22 (na finalização): R0 vê X (coerente, encadeado, com re
   assert.deepEqual(await footprintOf(wb, eb), before, 'nada gravado');
 });
 
-test('passo 11: a fase A é abortada por outro operador na janela entre o prazo do dono e o link() do resultado ⇒ o dono NUNCA grava RUN_CONFIRMED depois do RUN_ABORTED (RESULT_ANCHOR_PENDING) e o livro continua autêntico', async () => {
+test('passo 11: a fase A é abortada por outro operador na janela entre o prazo do dono e o link() do resultado ⇒ o dono NUNCA grava RUN_CONFIRMED depois do RUN_ABORTED (RESULT_INTEGRITY, sem prometer conclusão por reenvio) e o livro continua autêntico', async () => {
   const { w, e } = await protectedWorld();
   const target = runPath(e, 1, w.auditId);
   const abortFirst: FsOps = {
@@ -529,7 +529,9 @@ test('passo 11: a fase A é abortada por outro operador na janela entre o prazo 
     },
   };
   const done = await finalizeAs(finalizerOver(w, e, { resultsFs: abortFirst }), OP_A, w.auditId);
-  assert.ok(!done.ok && done.code === 'RESULT_ANCHOR_PENDING', show(done));
+  // revisão da R1.4: resultado publicado depois do encerramento (RESULT_PUBLISHED_AFTER_ABORT, sem receita) ⇒ RESULT_INTEGRITY, nunca "reenvie o mesmo pedido"
+  assert.ok(!done.ok && done.code === 'RESULT_INTEGRITY', show(done));
+  assert.ok(done.issues.some((issue) => /NÃO pode ser concluído por reenvio/.test(issue)), show(done));
   const records = await ledgerRecords(w);
   assert.deepEqual(records.map((r) => r.event), ['GENESIS', 'INTENT', 'CONFIRMED', 'RUN_INTENT', 'RUN_ABORTED'], 'nenhum RUN_CONFIRMED depois do aborto');
   assert.ok(replayLedger(records, w.auditId).ok, 'o livro continua válido (I-5)');
