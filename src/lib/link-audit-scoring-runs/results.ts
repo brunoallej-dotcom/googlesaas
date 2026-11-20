@@ -375,7 +375,13 @@ const AVAILABILITY_REASONS: ReadonlySet<LedgerReason> = new Set<LedgerReason>(['
  */
 const DECISION_ONLY_REASONS: ReadonlySet<LedgerReason> = new Set<LedgerReason>(['HISTORY_REGRESSED', 'HISTORY_DIVERGES', 'RECEIPT_REMOVED', 'UNLEDGERED_ENTRY', 'UNLEDGERED_PENDING', 'PUBLISHED_AFTER_ABORT', 'LEDGER_BEHIND', 'BEHIND_UNVERIFIABLE']);
 /** As três contradições de RESULTADO que vão em `ledger.reason` e congelam também as decisões (16.17.5, D-21). */
+/**
+ * Recusas da conclusão B/C que NÃO levam a pendente (revisão da R1.5): integridade (nenhum dado sai de um registro que não se explica, como nas consultas) e durabilidade
+ * desconhecida (nada se afirma enquanto a base está travada; mesma regra de `fromRun`).
+ */
+const CONCLUSION_WITHOUT_PENDING: ReadonlySet<ResultsFailureCode> = new Set<ResultsFailureCode>(['RESULT_INTEGRITY', 'RESULT_DURABILITY_UNKNOWN', 'DECISIONS_DURABILITY_UNKNOWN']);
 const RESULT_CONTRADICTIONS: ReadonlySet<LedgerReason> = new Set<LedgerReason>(['UNLEDGERED_RESULT', 'RESULT_DIVERGES', 'RESULT_PUBLISHED_AFTER_ABORT']);
+const NO_LEDGER_FOR_V2 = 'livro: há resultado que cita o livro de cabeças e este serviço não o lê; nenhum dado é exibido.';
 const CONSULT_MISMATCH = 'livro: os resultados lidos não são os que o livro de cabeças confirma (objeto diferente, ausente ou fora do livro); nenhum dado é exibido.';
 /** Recusa das consultas por uma razão do livro (MINOR-3, M-R34): disponibilidade ⇒ 503; integridade — inclusive razão desconhecida ou ausente (falha fechada) — ⇒ 409. Nenhum dado. */
 const refusedByLedger = (reason: LedgerReason | 'RESULT_RECEIPT_REMOVED' | 'RESULT_REGRESSED' | null): ResultsFailure =>
@@ -497,6 +503,8 @@ export function createScoringResultsService(deps: ResultsDeps) {
   const fromStore = (error: { readonly code: StoreErrorCode; readonly issues: readonly string[] }): ResultsFailure => {
     // fsync estrito da finalização pelo livro (D-15): nunca sucesso, nunca "armazenamento indisponível" genérico
     if (isDurabilityUnknown(error)) return failure('RESULT_DURABILITY_UNKNOWN');
+    // revisão da R1.5 (`junin-01`, MAJOR): erro de E/S ao LISTAR ou LER resultados/recibos é DISPONIBILIDADE (503, sem dado), nunca integridade; forma hostil continua 409
+    if (isReadIoFailure(error)) return failure('RESULTS_STORAGE_UNAVAILABLE');
     const code = STORE_TO_RESULTS[error.code];
     return failure(code, ...(DETAILED.has(code) ? error.issues : []));
   };
@@ -678,7 +686,11 @@ export function createScoringResultsService(deps: ResultsDeps) {
     for (let attempt = 1; ; attempt += 1) {
       const read = await readRunLog(deps.baseDir, auditId, storeOptions);
       if (!read.ok) return fromStore(read);
-      if (!deps.ledger) return { ok: true, value: { read: read.value, confirmation: 'RECEIPT_ONLY', confirmed: read.value.runs, pending: read.value.pending ? { run: read.value.pending, receipt: 'MISSING' } : null } };
+      if (!deps.ledger) {
+        // revisão da R1.5 (`junin-01`, MINOR): sem o livro, só v1 sem `ledgerHead` pode sair confirmado por recibo; um v2 CITA o livro e, sem a leitura dele, nada é afirmado
+        if (read.value.all.some((run) => run.schemaVersion !== RUN_SCHEMA_VERSION || run.ledgerHead !== undefined)) return failure('RESULT_INTEGRITY', NO_LEDGER_FOR_V2);
+        return { ok: true, value: { read: read.value, confirmation: 'RECEIPT_ONLY', confirmed: read.value.runs, pending: read.value.pending ? { run: read.value.pending, receipt: 'MISSING' } : null } };
+      }
       let ledger: ResultsLedgerRead;
       try {
         ledger = await deps.ledger.view({ auditId, nowIso: deps.clock() });
@@ -747,20 +759,22 @@ export function createScoringResultsService(deps: ResultsDeps) {
               // (1b) com o livro: a origem também comprovada pela testemunha que o livro lê (D-16)
               const unprovable = runLedger ? runLedger.conclusionBlocked('ORIGIN') : null;
               if (unprovable) return reject({ ...unprovable, ...pendingBody(last) });
-              if (!explains(last)) return reject(failure('RESULT_INTEGRITY')); // nunca se dá recibo a um registro que não se explica
+              if (!explains(last)) return reject(failure('RESULT_INTEGRITY')); // nunca se dá recibo a um registro que não se explica (integridade: sem dado)
+              // revisão da R1.5 (`junin-01`, MINOR): toda recusa da conclusão leva a pendente com o recibo da fase (MISSING na B, PRESENT na C), salvo integridade e durabilidade
+              const refuseConclusion = (f: ResultsFailure): { ok: false; failure: ResultsFailure } => reject(CONCLUSION_WITHOUT_PENDING.has(f.code) ? f : { ...f, ...pendingBody(last) });
               const now = await deps.preview.evaluate(actor, auditId);
-              if (!now.ok) return reject({ ...failure(now.code, ...now.issues), ...(now.head !== undefined ? { head: now.head } : {}) });
+              if (!now.ok) return refuseConclusion({ ...failure(now.code, ...now.issues), ...(now.head !== undefined ? { head: now.head } : {}) });
               // (2b) a conclusão também DEPENDE das evidências e do histórico de decisões: sem prova de coleta, ou com a integridade do histórico NÃO resolvida, ninguém dá recibo (falha fechada)
-              if (now.value.payload.blockers.some((b) => b.code === 'EVIDENCE_PROVENANCE_UNPROVEN' || b.code === 'DECISIONS_HISTORY_UNRESOLVED')) return reject({ ...failure('NOT_FINALIZABLE'), blockers: now.value.payload.blockers });
+              if (now.value.payload.blockers.some((b) => b.code === 'EVIDENCE_PROVENANCE_UNPROVEN' || b.code === 'DECISIONS_HISTORY_UNRESOLVED')) return refuseConclusion({ ...failure('NOT_FINALIZABLE'), blockers: now.value.payload.blockers });
               const problems = pendingEvidenceProblems(last, now.value);
-              if (problems.length > 0) return reject(failure('EVIDENCE_HASH_CHANGED', ...problems.slice(0, 10)));
+              if (problems.length > 0) return refuseConclusion(failure('EVIDENCE_HASH_CHANGED', ...problems.slice(0, 10)));
               const gravado = last.decisions.head;
               const hoje = now.value.decisions.head;
-              if (gravado !== null && (hoje === null || hoje.seq < gravado.seq)) return reject({ ...failure('HISTORY_REGRESSED'), head: hoje });
+              if (gravado !== null && (hoje === null || hoje.seq < gravado.seq)) return refuseConclusion({ ...failure('HISTORY_REGRESSED'), head: hoje });
               // (5) DURABILIDADE: concluir dá o recibo a um resultado que CITA o livro; o livro (e as decisões) precisam estar comprovadamente duráveis agora, e protegidos
               if (last.ledgerHead) {
                 const barrier = await deps.preview.durabilityBarrier(actor, auditId, {});
-                if (!barrier.ok) return reject(failure(barrier.code === 'DURABILITY_UNKNOWN' ? 'RESULT_DURABILITY_UNKNOWN' : 'INPUT_CHANGED', ...barrier.issues.slice(0, 3)));
+                if (!barrier.ok) return refuseConclusion(failure(barrier.code === 'DURABILITY_UNKNOWN' ? 'RESULT_DURABILITY_UNKNOWN' : 'INPUT_CHANGED', ...barrier.issues.slice(0, 3)));
               }
               // (6) com o livro (R1.4): a sessão do livro autorizou ESTA conclusão (só o autor, com receita); sem a autorização, nada é gravado — nem o recibo da fase B
               const ungranted = runLedger ? runLedger.conclusionBlocked('GRANT') : null;
@@ -967,6 +981,16 @@ const INTEGRITY_CODES: ReadonlySet<StoreErrorCode> = new Set(['CORRUPT', 'HASH_M
  * (recibos) com "leitura: E…" / "listagem … : E…" / "listagem: DESCONHECIDO …": isso é DISPONIBILIDADE, não adulteração. Só diagnóstico: as duas classes falham fechado.
  */
 const READ_ERRNO = /\b(?:leitura|listagem)[^:]*: (?:E[A-Z0-9]+|DESCONHECIDO)\b/;
+/** Arquivo de FORMATO hostil no lugar de um resultado/recibo (FIFO, soquete, diretório, link, grande demais, mudou durante a leitura): integridade, nunca "indisponível" (como no livro, R7-07). */
+const HOSTILE_SHAPE = /\b(?:leitura|listagem)[^:]*: (?:ENOTFILE|ETOOBIG|ECHANGED|ELOOP|EISDIR|ENOTDIR)\b/;
+/**
+ * Revisão da R1.5 (`junin-01`, MAJOR): o armazenamento rotula o erro do sistema operacional ao listar/ler resultados (`CORRUPT`) ou recibos (`ANCHOR_INTEGRITY`) como se fosse
+ * adulteração. Nas consultas e na finalização isso é DISPONIBILIDADE (503 `RESULTS_STORAGE_UNAVAILABLE`, sem dado; a finalização continua recusando, nada é gravado); conteúdo
+ * inválido e forma hostil continuam integridade (409).
+ */
+function isReadIoFailure(error: { readonly code: StoreErrorCode; readonly issues: readonly string[] }): boolean {
+  return (error.code === 'CORRUPT' || error.code === 'ANCHOR_INTEGRITY') && error.issues.some((issue) => READ_ERRNO.test(issue)) && !error.issues.some((issue) => HOSTILE_SHAPE.test(issue));
+}
 
 export interface ResultsKnownHeadsOptions {
   readonly baseDir: string;
