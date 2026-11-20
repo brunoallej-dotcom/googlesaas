@@ -273,7 +273,7 @@ interface (`audit-page/validators.ts`).
   - hash `--json` da coleta registrado em canal separado;
   - manifesto `v2` `AUTHENTICATED` para a coleta.
 - **Goal command**: não se aplica a goal loop (ação humana com custo). Conferência:
-  `/goal grep -q "W6.*✅" docs/plan/implementation-waves.md, stop after 1 tries`.
+  `/goal grep -qE "^\| W6 \|.*✅" docs/plan/implementation-waves.md, stop after 1 tries` (ancorado na linha da tabela: o padrão antigo casava com o próprio texto do comando e saía sempre verdadeiro).
 
 ## Portões de produção da Fase 6 (fora do P1)
 
