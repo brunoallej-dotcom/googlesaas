@@ -500,7 +500,9 @@ test('decisão 3 em processo REAL: com a linha do runbook, a sondagem de fsync n
   const key = makeKeyFile();
   const missing = path.join(tmpDir('lasa-vazia-'), 'nao-existe.json');
   const args = ['sign', '--audit', AUD, '--package', missing, '--approval', missing, '--dossier', missing, '--seals-dir', seals, '--expect-seq', '1', '--first', '--key-id', key.keyId, '--key-source', `file:${key.keyPath}`, '--custodian', CUSTODIAN, '--trust-keys', key.ring];
-  const line = [...RUNBOOK_FLAGS, `--allow-fs-read=${path.dirname(artifact.file)}`, ...PROC_GRANTS, '--allow-fs-read=/tmp', '--allow-fs-read=/var/tmp', '--allow-fs-read=/dev/shm', `--allow-fs-read=${seals}`, `--allow-fs-write=${seals}`];
+  // o artefato deste teste foi montado em /tmp: o grant de /tmp (que a custódia exige) já o cobre, e um grant aninhado dado antes faria o Node negar
+  // o mais curto (achado da W4.6: nenhum grant é prefixo de texto de outro)
+  const line = [...RUNBOOK_FLAGS, '--allow-fs-read=/tmp', '--allow-fs-read=/var/tmp', '--allow-fs-read=/dev/shm', ...PROC_GRANTS, `--allow-fs-read=${seals}`, `--allow-fs-write=${seals}`];
   const run = viaEnvI(line, artifact.file, args);
   assert.equal(run.status, 3, run.stderr);
   if (permissionFsync() === 'denied') {
@@ -515,8 +517,9 @@ test('decisão 3 em processo REAL: com a linha do runbook, a sondagem de fsync n
   const wide = viaEnvI([...line, '--allow-fs-write=/'], artifact.file, args);
   refusedBarrier(wide, '--allow-fs-write=/', /grants/);
   // segunda confirmação (b) sob --permission: o pai de um .git ausente não é concedido; ele só vale como ancestral de um grant conferido real
-  const holder = realTmpDir('lasa-links-');
-  fs.symlinkSync(realTmpDir('lasa-alvo-'), path.join(holder, 'pai-link'));
+  // num lugar NÃO concedido (o HOME da estação), para a leitura do pai ser negada pelo modelo de permissões
+  const holder = homeSealsDir();
+  fs.symlinkSync(homeSealsDir(), path.join(holder, 'pai-link'));
   refusedBarrier(viaEnvI([...line, `--allow-fs-read=${path.join(holder, 'pai-link', '.git')}`], artifact.file, args), '.git ausente sob pai que é link (sob --permission)', /grants/);
   assert.notEqual(viaEnvI([...line, `--allow-fs-read=${path.join(path.dirname(seals), '.git')}`], artifact.file, args).stderr.includes('Código: SIGN_RUNTIME_UNSAFE'), true, '.git ausente cujo pai é ancestral de um grant real passa');
 });
