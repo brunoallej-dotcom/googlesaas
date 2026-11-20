@@ -24,8 +24,9 @@ export const MAX_RUNS = 500;
 /** Teto de um registro (entrada + resultado). Medido no I4; ver `tests/link-audit-scoring-results-store.test.ts`. */
 export const MAX_RUN_BYTES = 1024 * 1024;
 export const MAX_RUN_ANCHOR_BYTES = 16 * 1024;
+/** Texto da R1.5 (spec §16.17.9, D-17): em auditoria protegida só vale o resultado confirmado pelo livro; o limite dos recibos (as DUAS pastas) continua declarado. */
 export const INTEGRITY_NOTE =
-  'O hash SHA-256 detecta alteração acidental ou inconsistência; não é assinatura. A remoção ou o retrocesso do histórico de resultados é detectado pelos recibos (pasta separada); quem altera as DUAS pastas ao mesmo tempo (ex.: root na VPS) não é detectado.';
+  'O hash SHA-256 detecta alteração acidental ou inconsistência; não é assinatura. Em auditoria protegida, só vale o resultado confirmado pelo livro de cabeças (pasta e chave próprias); sem o livro, a remoção ou o retrocesso é detectado pelos recibos (pasta separada), e quem altera as DUAS pastas ao mesmo tempo não é detectado.';
 
 export const pad = (n: number): string => String(n).padStart(4, '0');
 export const runFileName = (seq: number): string => `s${pad(seq)}.json`;

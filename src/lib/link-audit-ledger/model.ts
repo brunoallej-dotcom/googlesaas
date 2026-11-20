@@ -518,8 +518,13 @@ export function evaluateProtection(input: ProtectionInput): Evaluation {
     if (at(input.guard.head.ledgerSeq)?.contentSha256 !== input.guard.head.sha256) return unresolved('GUARD_MISMATCH', replay, { externalGuard: 'MISMATCH' });
   }
   // CRUZAMENTO DE RESULTADOS (§16.17.5): DEPOIS das testemunhas e ANTES do cruzamento livro × decisões — vale para toda vista montada daqui em diante, inclusive as de razão de DECISÃO.
-  // Uma releitura R2 que falhou não decide nada: a testemunha dos resultados está indisponível (falha fechada, como R1 ilegível).
+  // (1) As contradições julgadas SÓ sobre R1 (R1 → L: todo `sk` visto em R1 tem `RUN_INTENT` durável no livro lido depois) podem ser o único sinal de livro truncado ou refeito:
+  //     CONGELAM também as decisões (`ledger.reason`, D-21) e a vista sai SEM `runs` (16.17.2). Não dependem de R2 (nem de ela ter falhado).
+  const contradiction = resultContradiction(replay, results);
+  if (contradiction) return unresolved(contradiction, replay);
+  // (2) Uma releitura R2 que falhou não decide nada: a testemunha dos resultados está indisponível (falha fechada, como R1 ilegível).
   if (input.resultsAfterLedger && !input.resultsAfterLedger.ok) return unresolved('RESULTS_EVIDENCE_UNAVAILABLE', replay);
+  // (3) O que o LIVRO cita (L → R2) e a fase da operação aberta: fecham só os resultados (`runs.reason`).
   runs = judgeRuns(replay, results, input.resultsAfterLedger, input);
 
   // Uma entrada publicada DEPOIS do ABORTED da sua posição: dono lento que perdeu a corrida (falha fechada, declarada).
@@ -602,14 +607,43 @@ interface RunsJudgement {
 }
 
 /**
- * Julga a família de resultados sobre o livro autêntico e as leituras de resultados (R1 e, se houver, R2). Nesta fatia: o que o LIVRO cita (L → R2) e a fase da operação aberta.
+ * CONTRADIÇÕES julgadas SÓ sobre R1 (spec §16.17.5, "Algoritmo do cruzamento"; R1.5). R1 é lida ANTES do livro e cada `sk` só é publicado depois do `RUN_INTENT(k)` durável
+ * (passo 6 antes do 7), então todo `sk` visto em R1 tem de ser explicado pelo livro lido depois. Para cada `k` em R1 (ancorados e a pendente), em ordem:
+ *  - `k ≤ |C|` ⇒ o hash é o do `RUN_CONFIRMED(k)`, senão `RESULT_DIVERGES`;
+ *  - `k = O.runSeq` ⇒ o hash é o do `RUN_INTENT` aberto, senão `RESULT_PUBLISHED_AFTER_ABORT` se casar com um `RUN_ABORTED(k)`, senão `RESULT_DIVERGES`;
+ *  - demais `k` ⇒ `RESULT_PUBLISHED_AFTER_ABORT` se casar com um `RUN_ABORTED(k)`, senão `UNLEDGERED_RESULT` (inclui o forjado com etiqueta de origem válida, o v1 em auditoria
+ *    protegida e a cauda `RUN_*` removida do livro).
+ * O que SÓ a releitura R2 mostra nunca passa por aqui (pode ter sido gravado depois da leitura do livro; 16.17.8, M-R15). `null` = nada a acusar.
+ */
+function resultContradiction(replay: LedgerReplay, r1: ResultsEvidence): Extract<LedgerReason, 'UNLEDGERED_RESULT' | 'RESULT_DIVERGES' | 'RESULT_PUBLISHED_AFTER_ABORT'> | null {
+  if (!r1.ok) return null;
+  const runs = r1.runs ?? NO_RUNS;
+  const confirmed = replay.confirmedRuns;
+  const open = replay.openRun?.run ?? null;
+  const publishedAfterAbort = (seq: number, sha256: string): boolean => replay.abortedRuns.some((aborted) => aborted.run.runSeq === seq && aborted.run.runSha256 === sha256);
+  for (const ref of [...runs.anchored, ...(runs.pending ? [runs.pending] : [])]) {
+    const k = ref.seq;
+    if (k <= confirmed.length) {
+      if (ref.sha256 !== (confirmed[k - 1] as ConfirmedRun).runSha256) return 'RESULT_DIVERGES';
+      continue;
+    }
+    if (open !== null && k === open.runSeq) {
+      if (ref.sha256 === open.runSha256) continue;
+      return publishedAfterAbort(k, ref.sha256) ? 'RESULT_PUBLISHED_AFTER_ABORT' : 'RESULT_DIVERGES';
+    }
+    return publishedAfterAbort(k, ref.sha256) ? 'RESULT_PUBLISHED_AFTER_ABORT' : 'UNLEDGERED_RESULT';
+  }
+  return null;
+}
+
+/**
+ * Julga a família de resultados sobre o livro autêntico e as leituras de resultados (R1 e, se houver, R2), DEPOIS das contradições de R1 (`resultContradiction`): o que o LIVRO
+ * cita (L → R2) e a fase da operação aberta.
  *  - L → R2: todo `RUN_CONFIRMED(k)` tem `sk` e `ak` duráveis; R1 (lida ANTES do livro) pode legitimamente não vê-los ainda. Ancorado em R1 com o MESMO hash ⇒ resolvido; senão só a
- *    leitura POSTERIOR ao livro decide: sem `sk` (ou outro conteúdo no nome) ⇒ `RESULT_REGRESSED`; `sk` certo sem recibo ⇒ `RESULT_RECEIPT_REMOVED`. Sem R2, julga sobre R1 (falha
- *    fechada só para os resultados) e pede a releitura (`needsFreshResults`).
+ *    leitura POSTERIOR ao livro decide: sem `sk` (ou outro conteúdo no nome, visto só em R2) ⇒ `RESULT_REGRESSED`; `sk` certo sem recibo ⇒ `RESULT_RECEIPT_REMOVED`. Sem R2, julga
+ *    sobre R1 (falha fechada só para os resultados) e pede a releitura (`needsFreshResults`).
  *  - Operação aberta: fase pela leitura MAIS RECENTE, conferindo o hash — `sk` com o `runSha256` do `RUN_INTENT` ⇒ B (sem recibo) ou C (com recibo); nada ⇒ A. Um `sk` de OUTRO hash
- *    no lugar nunca é B/C (a acusação dele, julgada sobre R1, é da R1.5); a fase fica A, sem receita.
- * As contradições julgadas sobre R1 (`UNLEDGERED_RESULT`, `RESULT_DIVERGES`, `RESULT_PUBLISHED_AFTER_ABORT`) NÃO são avaliadas aqui: a finalização ainda não grava `RUN_*` (R1.3) e
- * todo resultado novo seria acusado (D-R1-5).
+ *    visto em R1 já foi acusado; visto só em R2, nunca é B/C nem acusação: a fase fica A, sem receita (a leitura seguinte, como R1, o julga).
  */
 function judgeRuns(replay: LedgerReplay, r1: ResultsEvidence, r2: ResultsEvidence | undefined, input: ProtectionInput): RunsJudgement {
   const settledInR1 = (run: ConfirmedRun): boolean => {
@@ -645,12 +679,13 @@ function describeOpenRun(intent: LedgerRecord | null, latest: ResultsEvidence, i
   const stale = ageMs >= input.staleMs;
   // receita (16.17.4): A vencida e com o lugar VAZIO ⇒ qualquer operador aborta (a R1.3 relê antes de gravar); B/C ⇒ só o autor conclui, e só com a origem comprovada (D-16)
   const recipe = ours ? ours.ref.originProven : seen === null && stale;
-  return { runOpId: run.runOpId, runSeq: run.runSeq, runSha256: run.runSha256, phase, ageMs, stale, recoverable: recipe };
+  // R1.5 (D-R1-6): o kid de origem SÓ do resultado cujo hash é o desta operação (o livro amarra o hash, logo a etiqueta); nunca o de outro conteúdo no nome
+  return { runOpId: run.runOpId, runSeq: run.runSeq, runSha256: run.runSha256, phase, ageMs, stale, recoverable: recipe, originKid: ours ? ours.ref.originKid : null };
 }
 
 /**
  * Plano da operação de resultado aberta (R1.3). `settled.open.recoverable` já exige `PROTECTED` e `runs.state = OK` (`settleRuns`); a conferência é repetida aqui de propósito
- * (falha fechada, M-R30). Fase A vencida SEM receita (o lugar não está vazio) não vira espera: não há o que esperar, e a acusação desse `sk` é da R1.5.
+ * (falha fechada, M-R30). Fase A vencida SEM receita (o lugar não está vazio, visto só em R2) não vira espera: não há o que esperar, e a leitura seguinte o acusa (R1.5).
  */
 function planRun(intent: LedgerRecord | null, settled: LedgerRuns | null, state: LedgerView['state']): RunPlan {
   const open = settled?.open ?? null;

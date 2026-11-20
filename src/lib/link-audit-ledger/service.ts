@@ -137,6 +137,10 @@ const MESSAGES: Partial<Record<LedgerReason, string>> = {
   RESULTS_EVIDENCE_UNAVAILABLE: 'Os resultados (testemunha independente) não puderam ser lidos.',
   GUARD_MISMATCH: 'A guarda externa guarda uma cabeça que o livro não contém.',
   GUARD_UNAVAILABLE: 'A guarda externa não pôde ser consultada.',
+  // R1.5 (§16.17.5, D-11): contradições de RESULTADO que congelam também as decisões — texto próprio (o das decisões diria "decisão" e mentiria ao operador)
+  UNLEDGERED_RESULT: 'Há resultado na pasta de resultados que o livro nunca registrou (sem a operação de resultado correspondente).',
+  RESULT_DIVERGES: 'Um resultado difere do que o livro registrou naquela posição (arquivo trocado ou outro conteúdo no nome).',
+  RESULT_PUBLISHED_AFTER_ABORT: 'Um resultado foi publicado depois de a operação de resultado ter sido abortada no livro.',
 };
 /** Razões da família de RESULTADOS que fecham só os resultados (§16.17.5); texto fixo, nunca eco de dado. */
 const RUNS_MESSAGES: Readonly<Record<RunsReason, string>> = {

@@ -4,8 +4,8 @@ import { judgeOrigin, originStatusOf, type OriginAuthenticator, type OriginStatu
 import { STORE_AUDIT_ID } from './audit-id-alias';
 import type { PreviewBlocker } from './blockers';
 import { MINIMUM_COVERAGE_PERCENT } from './outcome';
-import { PREVIEW_HTTP_STATUS, PREVIEW_MESSAGE, type DurabilityExpectation, type DurabilityOutcome, type Evaluation, type LedgerView, type PreviewActor, type PreviewFailure, type PreviewFailureCode, type ResultsLedgerPort, type RunDraft, type RunRefusal, type RunStep } from './preview';
-import { appendRun, assertResultsBase, isDurabilityUnknown, nodeFsOps, probeDirectory, readRunLog, type FsOps, type RunAnchorSummary, type RunLedgerContextGate, type RunLedgerGate, type RunLedgerHooks, type StoreErrorCode } from './results-store';
+import { PREVIEW_HTTP_STATUS, PREVIEW_MESSAGE, type DurabilityExpectation, type DurabilityOutcome, type Evaluation, type LedgerReason, type LedgerView, type PreviewActor, type PreviewFailure, type PreviewFailureCode, type ResultsLedgerPort, type ResultsLedgerRead, type RunDraft, type RunRefusal, type RunStep } from './preview';
+import { appendRun, assertResultsBase, isDurabilityUnknown, nodeFsOps, probeDirectory, readRunLog, type FsOps, type RunAnchorSummary, type RunLedgerContextGate, type RunLedgerGate, type RunLedgerHooks, type RunLog, type StoreErrorCode } from './results-store';
 import { finalizeBodySchema, INTEGRITY_NOTE, RUN_FILE_KIND, RUN_SCHEMA_VERSION, RUN_SCHEMA_VERSION_LEDGER, type RunHead as Head, type ScoreRun, type ScoreRunDraft } from './results-types';
 import { toPublicRun, verifyRunRecord } from './results-verify';
 import { MAPPER_VERSION } from './types';
@@ -92,7 +92,8 @@ export const RESULTS_MESSAGE: Readonly<Record<ResultsFailureCode, string>> = Obj
   RESULTS_NOT_CONFIGURED: 'O armazenamento de resultados não está configurado neste servidor.',
   RESULT_ANCHOR_NOT_CONFIGURED: 'O armazenamento de recibos de resultados não está configurado neste servidor; nenhum resultado é gravado.',
   RESULTS_MISCONFIGURED: 'O armazenamento de resultados ou de recibos está configurado de forma insegura (pastas iguais, aninhadas ou em área pública).',
-  RESULTS_STORAGE_UNAVAILABLE: 'O armazenamento de resultados não está disponível neste servidor.',
+  // D-17 (R1.5): as consultas também dependem do livro de cabeças (sem ele, ou com ele ilegível, nada é exibido)
+  RESULTS_STORAGE_UNAVAILABLE: 'O armazenamento de resultados, ou o livro de cabeças que os confirma, não está disponível neste servidor; nenhum resultado foi gravado ou exibido.',
   RESULT_ANCHOR_STORAGE_UNAVAILABLE: 'O armazenamento de recibos de resultados não está disponível neste servidor; nenhum resultado foi gravado.',
   RESULT_INTEGRITY: 'O histórico de resultados desta auditoria não passa na verificação de integridade; nenhum dado é exibido.',
   RESULT_TRUNCATED: 'O histórico de resultados está MENOR do que os recibos registram (arquivos removidos ou restaurados de cópia antiga); nenhum dado é exibido.',
@@ -145,8 +146,11 @@ export interface PendingRunDto {
   readonly originDetail: Exclude<OriginVerdict, 'PROVEN'> | null;
   /** Origem COMPROVADA e o autor autenticado é DESTA sessão. Nunca derivado só do campo `finalizedBy` do arquivo; o e-mail de ninguém é revelado. */
   readonly isMine: boolean;
-  /** Estado ESTRUTURADO para todos os perfis: o recibo falta (gravação interrompida OU recibo removido: indistinguíveis) e isso bloqueia novas finalizações. Nunca é confirmação. */
-  readonly receipt: 'MISSING';
+  /**
+   * Estado ESTRUTURADO para todos os perfis, e NUNCA confirmação (bloqueia novas finalizações nos dois casos): `MISSING` = o recibo falta (gravação interrompida OU recibo
+   * removido: indistinguíveis); `PRESENT` = fase C do livro (R1.5, spec §16.17.9, D-18): o recibo existe, mas o livro de cabeças não confirmou — só o autor conclui.
+   */
+  readonly receipt: 'MISSING' | 'PRESENT';
   readonly blocksFinalization: true;
   /** `outcome`, `level`, `coveragePercent` e `appliedDecisionCount` só são informados quando a origem foi comprovada (senão o conteúdo é do arquivo, não do servidor). */
   readonly outcome: 'PONTUADO' | 'INCONCLUSIVO' | null;
@@ -192,9 +196,17 @@ export interface RunSummaryDto {
   readonly decisionsChanged: boolean | null;
 }
 
+/**
+ * O que confirma os resultados devolvidos (R1.5; spec §16.17.9, MINOR-4, D-23): `LEDGER` = cada objeto devolvido como confirmado tem o hash do `RUN_CONFIRMED` do livro de
+ * cabeças (conferido no PRÓPRIO objeto); `RECEIPT_ONLY` = confirmado só por recibo, sem prova do livro (auditoria legada ou sem o livro, `NOT_REQUIRED`) — a tela diz isso e a
+ * Onda 7 (PDF) o recusa. Marcador UNIFORME no topo da lista e do detalhe.
+ */
+export type ResultsConfirmation = 'LEDGER' | 'RECEIPT_ONLY';
+
 export interface ListRunsPayload {
   readonly definitive: true;
   readonly auditId: string;
+  readonly confirmation: ResultsConfirmation;
   readonly results: readonly RunSummaryDto[];
   /** Head da cadeia de RESULTADOS confirmados. */
   readonly head: Head | null;
@@ -206,6 +218,7 @@ export interface ListRunsPayload {
 }
 
 export interface RunDetailPayload {
+  readonly confirmation: ResultsConfirmation;
   readonly stale: boolean | null;
   readonly decisionsChanged: boolean | null;
   readonly superseded: boolean;
@@ -254,8 +267,9 @@ export interface ResultsDeps {
   readonly origin?: OriginAuthenticator;
   /**
    * PORTA DE ESCRITA DO LIVRO (R1.3, D-R1-3; spec §16.17.3): com ela, toda finalização em auditoria protegida grava `RUN_INTENT` ANTES de publicar o resultado e `RUN_CONFIRMED`
-   * DEPOIS do recibo durável (fsync estrito de resultados e recibos), e só então responde sucesso. AUSENTE ⇒ o comportamento de antes (recibo = confirmação; a R1.5 marcará
-   * essas leituras `RECEIPT_ONLY`). As rotas sempre a ligam (`scoring/shared.ts`).
+   * DEPOIS do recibo durável (fsync estrito de resultados e recibos), e só então responde sucesso. AUSENTE ⇒ o comportamento de antes (recibo = confirmação) e as
+   * consultas marcadas `RECEIPT_ONLY` (R1.5, RL-26). Com ela, as consultas exigem o livro (`view`): cada objeto devolvido como confirmado tem o hash do `RUN_CONFIRMED`. As rotas
+   * sempre a ligam (`scoring/shared.ts`).
    */
   readonly ledger?: ResultsLedgerPort;
 }
@@ -351,13 +365,72 @@ function crossCheck(read: { readonly runs: readonly ScoreRun[]; readonly pending
   if (open.runSeq !== confirmed.length + 1 || !effective || effective.contentSha256 !== open.runSha256) return { kind: 'MISMATCH' };
   return { kind: 'OPEN', run: effective, receipt: read.pending !== effective };
 }
+/* ------------------------------------------------------------------ consultas pelo livro (R1.5; spec §16.17.9) */
+
+/** Razões de DISPONIBILIDADE (MINOR-3): sem a vista do livro nada é exibido e a resposta é 503 — nunca "sem livro = confie no recibo". */
+const AVAILABILITY_REASONS: ReadonlySet<LedgerReason> = new Set<LedgerReason>(['NOT_CONFIGURED', 'UNAVAILABLE', 'DURABILITY_UNKNOWN', 'GUARD_UNAVAILABLE', 'RESULTS_EVIDENCE_UNAVAILABLE']);
+/**
+ * Razões de DECISÃO com que os resultados seguem consultáveis (16.17.9): o cruzamento de resultados vem ANTES do livro × decisões, então `runs` existe e o livro autêntico
+ * continua provando os resultados. Qualquer outra razão de `HISTORY_UNRESOLVED` (testemunhas, chaves, as três contradições de resultado, disponibilidade) fecha as consultas.
+ */
+const DECISION_ONLY_REASONS: ReadonlySet<LedgerReason> = new Set<LedgerReason>(['HISTORY_REGRESSED', 'HISTORY_DIVERGES', 'RECEIPT_REMOVED', 'UNLEDGERED_ENTRY', 'UNLEDGERED_PENDING', 'PUBLISHED_AFTER_ABORT', 'LEDGER_BEHIND', 'BEHIND_UNVERIFIABLE']);
+/** As três contradições de RESULTADO que vão em `ledger.reason` e congelam também as decisões (16.17.5, D-21). */
+const RESULT_CONTRADICTIONS: ReadonlySet<LedgerReason> = new Set<LedgerReason>(['UNLEDGERED_RESULT', 'RESULT_DIVERGES', 'RESULT_PUBLISHED_AFTER_ABORT']);
+const CONSULT_MISMATCH = 'livro: os resultados lidos não são os que o livro de cabeças confirma (objeto diferente, ausente ou fora do livro); nenhum dado é exibido.';
+/** Recusa das consultas por uma razão do livro (MINOR-3, M-R34): disponibilidade ⇒ 503; integridade — inclusive razão desconhecida ou ausente (falha fechada) — ⇒ 409. Nenhum dado. */
+const refusedByLedger = (reason: LedgerReason | 'RESULT_RECEIPT_REMOVED' | 'RESULT_REGRESSED' | null): ResultsFailure =>
+  reason !== null && AVAILABILITY_REASONS.has(reason as LedgerReason) ? failure('RESULTS_STORAGE_UNAVAILABLE', `livro: ${reason}`) : failure('RESULT_INTEGRITY', `livro: ${reason ?? 'UNRESOLVED'}`);
+
+/** O que as consultas podem devolver depois de conferir R0 com a vista do livro: os confirmados (cada um com o hash do livro) e a pendente efetiva, com a marca de confirmação. */
+interface Consulted {
+  readonly confirmation: ResultsConfirmation;
+  readonly confirmed: readonly ScoreRun[];
+  readonly pending: { readonly run: ScoreRun; readonly receipt: PendingRunDto['receipt'] } | null;
+}
+type ConsultVerdict = ({ readonly kind: 'OK' } & Consulted) | { readonly kind: 'MISMATCH' } | { readonly kind: 'REFUSED'; readonly failure: ResultsFailure };
+const MISMATCH: ConsultVerdict = { kind: 'MISMATCH' };
+
+/**
+ * CONFERÊNCIA OBJETO × LIVRO DAS CONSULTAS (16.17.9, MAJOR-1, M-R19/M-R22). R0 (`readRunLog`) foi lida ANTES da vista; quem escreve nas pastas de resultados (sem chave) pode
+ * alternar o objeto entre as duas leituras. Um objeto só sai como CONFIRMADO se o hash DELE é o `runSha256` do `RUN_CONFIRMED` daquela posição (cada um, não só "seq ≤ |C|");
+ * a operação aberta em B/C sai como PENDENTE só se o hash é o do `RUN_INTENT` e a fase que R0 mostra (recibo ou não) é a da vista; em fase A, R0 não pode ter o número dela; R0
+ * nunca tem nada além disso. Diferença ⇒ `MISMATCH` (relê). Estados sem prova do livro: só o legado comprovado (`LEDGER_ABSENT_WITH_HISTORY`) é `RECEIPT_ONLY` (D-23).
+ */
+function consultAgainstLedger(read: RunLog & { readonly all: readonly ScoreRun[] }, ledger: ResultsLedgerRead): ConsultVerdict {
+  if (ledger.kind === 'UNAVAILABLE') return { kind: 'REFUSED', failure: failure('RESULTS_STORAGE_UNAVAILABLE', ...ledger.issues.slice(0, 5)) };
+  if (ledger.kind === 'INTEGRITY') return { kind: 'REFUSED', failure: failure('RESULT_INTEGRITY', ...ledger.issues.slice(0, 5)) };
+  const view = ledger.view;
+  if (view.state === 'LEGACY_READ_ONLY') {
+    if (view.reason !== 'LEDGER_ABSENT_WITH_HISTORY') return { kind: 'REFUSED', failure: refusedByLedger(view.reason) };
+    // legado: sem livro só existe v1 (um v2 cita o livro e seria LEDGER_REMOVED_WITNESSED na vista); um v2 em R0 é leitura diferente da vista ⇒ relê
+    if (read.all.some((run) => run.schemaVersion !== RUN_SCHEMA_VERSION || run.ledgerHead !== undefined)) return MISMATCH;
+    return { kind: 'OK', confirmation: 'RECEIPT_ONLY', confirmed: read.runs, pending: read.pending ? { run: read.pending, receipt: 'MISSING' } : null };
+  }
+  // ainda não inscrita: vacuidade verificável (§16.2: sem livro e sem histórico); resultado em R0 é leitura diferente da vista ⇒ relê
+  if (view.state === 'ENROLLMENT_PENDING') return read.all.length === 0 ? { kind: 'OK', confirmation: 'LEDGER', confirmed: [], pending: null } : MISMATCH;
+  // `NOT_REQUIRED` só existe SEM a porta (D-R1-3); vindo dela é anomalia ⇒ falha fechada
+  if (view.state !== 'PROTECTED' && view.state !== 'HISTORY_UNRESOLVED') return { kind: 'REFUSED', failure: failure('RESULTS_STORAGE_UNAVAILABLE', `livro: ${view.state}`) };
+  if (view.state === 'HISTORY_UNRESOLVED' && (view.reason === null || !DECISION_ONLY_REASONS.has(view.reason))) return { kind: 'REFUSED', failure: refusedByLedger(view.reason) };
+  const runs = view.runs;
+  if (!runs) return { kind: 'REFUSED', failure: refusedByLedger(view.reason) };
+  if (runs.state !== 'OK') return { kind: 'REFUSED', failure: refusedByLedger(runs.reason) };
+  const open = runs.open !== null && runs.open.phase !== 'A' ? runs.open : null;
+  const checked = crossCheck(read, { ...runs, open });
+  if (checked.kind === 'MISMATCH') return MISMATCH;
+  const confirmed = read.all.slice(0, runs.confirmed.length);
+  if (confirmed.some((run, index) => run.seq !== runs.confirmed[index]?.runSeq || run.contentSha256 !== runs.confirmed[index]?.runSha256)) return MISMATCH;
+  if (checked.kind === 'OK') return { kind: 'OK', confirmation: 'LEDGER', confirmed, pending: null };
+  if (checked.receipt !== (open?.phase === 'C')) return MISMATCH;
+  return { kind: 'OK', confirmation: 'LEDGER', confirmed, pending: { run: checked.run, receipt: checked.receipt ? 'PRESENT' : 'MISSING' } };
+}
+
 /** Quem olha e o que se sabe de HOJE: a origem da pendente é julgada pelo servidor; `currentInputSha256` (se conhecido) diz se ela já nasce histórica. */
 interface Viewer {
   readonly operator: string | null;
   readonly origin: OriginAuthenticator | undefined;
   readonly currentInputSha256?: string | null;
 }
-const pendingOf = (run: ScoreRun, viewer: Viewer): PendingRunDto => {
+const pendingOf = (run: ScoreRun, viewer: Viewer, receipt: PendingRunDto['receipt'] = 'MISSING'): PendingRunDto => {
   const verdict = judgeOrigin(viewer.origin, 'RUN', run);
   const proven = verdict === 'PROVEN';
   const totals = (run.result as { totals?: { coveragePercent?: unknown } }).totals;
@@ -367,7 +440,7 @@ const pendingOf = (run: ScoreRun, viewer: Viewer): PendingRunDto => {
     finalizedAt: run.finalizedAt,
     origin: originStatusOf(verdict),
     originDetail: proven ? null : verdict,
-    receipt: 'MISSING',
+    receipt,
     blocksFinalization: true,
     isMine: proven && viewer.operator !== null && run.finalizedBy === viewer.operator,
     outcome: proven ? run.outcome : null,
@@ -516,6 +589,8 @@ export function createScoringResultsService(deps: ResultsDeps) {
     let open: { readonly recoverable: boolean; readonly concludable: boolean } | null = null;
     let blockedByState: ResultsFailure | null = null;
     const refuse = (f: ResultsFailure): RunLedgerGate<ResultsFailure> => ({ kind: 'REFUSED', failure: f });
+    /** O recibo já é durável quando o fecho que confirma falha: a resposta `RESULT_ANCHOR_PENDING` leva a pendente na fase C (`receipt: 'PRESENT'`, 16.17.3 passo 11; R1.5). */
+    const inPhaseC = (f: ResultsFailure, sealed: ScoreRun): ResultsFailure => (f.code === 'RESULT_ANCHOR_PENDING' ? { ...f, pending: pendingOf(sealed, { operator, origin: deps.origin }, 'PRESENT') } : f);
     const gateOf = (outcome: RunStep, map: (refusal: RunRefusal) => ResultsFailure = fromRun): RunLedgerGate<ResultsFailure> =>
       outcome.kind === 'OK' ? { kind: 'OK' } : outcome.kind === 'RESTART' ? { kind: 'RESTART' } : refuse(map(outcome.refusal));
     const hooks: RunLedgerHooks<ResultsFailure> = {
@@ -533,7 +608,13 @@ export function createScoringResultsService(deps: ResultsDeps) {
           // idêntico (que não avalia) também é recusado com o livro não resolvido: durabilidade desconhecida, citação que não confere etc. nunca respondem 200.
           if (ctx.view.state === 'HISTORY_UNRESOLVED') {
             const reason = ctx.view.reason;
-            unresolved = reason === 'DURABILITY_UNKNOWN' ? failure('RESULT_DURABILITY_UNKNOWN') : failure(reason === 'NOT_CONFIGURED' ? 'LEDGER_NOT_CONFIGURED' : 'DECISIONS_HISTORY_UNRESOLVED', `livro: ${reason ?? 'UNRESOLVED'}`);
+            // R1.5: as três contradições de RESULTADO (16.17.5) respondem como as consultas (RESULT_INTEGRITY), nunca com o texto das decisões
+            unresolved =
+              reason === 'DURABILITY_UNKNOWN'
+                ? failure('RESULT_DURABILITY_UNKNOWN')
+                : reason !== null && RESULT_CONTRADICTIONS.has(reason)
+                  ? failure('RESULT_INTEGRITY', `livro: ${reason}`)
+                  : failure(reason === 'NOT_CONFIGURED' ? 'LEDGER_NOT_CONFIGURED' : 'DECISIONS_HISTORY_UNRESOLVED', `livro: ${reason ?? 'UNRESOLVED'}`);
           }
           // nenhuma conclusão de pendente fora de PROTECTED (o livro não autoriza nada; falha fechada mesmo que o resto passe)
           blockedByState = unresolved ?? failure(ctx.view.state === 'LEGACY_READ_ONLY' ? 'LEDGER_LEGACY_READ_ONLY' : ctx.view.state === 'ENROLLMENT_PENDING' ? 'LEDGER_ENROLLMENT_REQUIRED' : 'DECISIONS_HISTORY_UNRESOLVED');
@@ -564,14 +645,15 @@ export function createScoringResultsService(deps: ResultsDeps) {
       async confirmed(sealed) {
         const run = draftOf(sealed);
         if (!run || session === null) return refuse(failure('INTERNAL_ERROR'));
-        // resultado e recibo existem e são duráveis; sem o RUN_CONFIRMED a operação fica em fase C (só o autor conclui): RESULT_ANCHOR_PENDING — salvo durabilidade desconhecida
-        return gateOf(await port.confirmed({ session, auditId, actor: operator, nowIso: deps.clock(), run }), anchorPendingOr);
+        // resultado e recibo existem e são duráveis; sem o RUN_CONFIRMED a operação fica em fase C (só o autor conclui): RESULT_ANCHOR_PENDING com a pendente (`PRESENT`, R1.5) — salvo
+        // durabilidade desconhecida
+        return gateOf(await port.confirmed({ session, auditId, actor: operator, nowIso: deps.clock(), run }), (refusal) => inPhaseC(anchorPendingOr(refusal), sealed));
       },
       async conclude(sealed) {
         const run = draftOf(sealed);
         if (!run || session === null) return refuse(failure('INTERNAL_ERROR'));
         // o recibo já é durável; sem o RUN_CONFIRMED a operação fica (ou volta a ficar) em fase C: RESULT_ANCHOR_PENDING — salvo durabilidade desconhecida ou quem não é o autor
-        return gateOf(await port.conclude({ session, auditId, actor: operator, nowIso: deps.clock(), run }), (refusal) => (refusal.code === 'PENDING_UNCONFIRMED' ? fromRun(refusal) : anchorPendingOr(refusal)));
+        return gateOf(await port.conclude({ session, auditId, actor: operator, nowIso: deps.clock(), run }), (refusal) => (refusal.code === 'PENDING_UNCONFIRMED' ? fromRun(refusal) : inPhaseC(anchorPendingOr(refusal), sealed)));
       },
     };
     /**
@@ -585,6 +667,37 @@ export function createScoringResultsService(deps: ResultsDeps) {
       return open.concludable ? null : failure('RESULT_PENDING_UNCONFIRMED');
     };
     return { hooks, unresolved: () => unresolved, conclusionBlocked };
+  }
+
+  /**
+   * LEITURA DAS CONSULTAS (R1.5; spec §16.17.9): R0 (`readRunLog`) e depois a vista do livro (porta somente leitura, independente das evidências), conferidas objeto a objeto;
+   * diferença ⇒ relê as DUAS, até `OBJECT_LEDGER_ATTEMPTS` vezes (uma corrida legítima só acrescenta e se resolve na releitura); persistente ⇒ `RESULT_INTEGRITY` (409). Sem a porta
+   * (6B/6C isoladas, `NOT_REQUIRED`; D-R1-3): recibo = confirmação, marcado `RECEIPT_ONLY` (RL-26). As rotas sempre ligam a porta.
+   */
+  async function consult(auditId: string): Promise<{ readonly ok: true; readonly value: Consulted & { readonly read: RunLog } } | ResultsFailure> {
+    for (let attempt = 1; ; attempt += 1) {
+      const read = await readRunLog(deps.baseDir, auditId, storeOptions);
+      if (!read.ok) return fromStore(read);
+      if (!deps.ledger) return { ok: true, value: { read: read.value, confirmation: 'RECEIPT_ONLY', confirmed: read.value.runs, pending: read.value.pending ? { run: read.value.pending, receipt: 'MISSING' } : null } };
+      let ledger: ResultsLedgerRead;
+      try {
+        ledger = await deps.ledger.view({ auditId, nowIso: deps.clock() });
+      } catch {
+        ledger = { kind: 'UNAVAILABLE', issues: ['livro: UNAVAILABLE'] }; // exceção nunca vira "sem livro"
+      }
+      const verdict = consultAgainstLedger(read.value, ledger);
+      if (verdict.kind === 'REFUSED') return verdict.failure;
+      if (verdict.kind === 'OK') return { ok: true, value: { read: read.value, confirmation: verdict.confirmation, confirmed: verdict.confirmed, pending: verdict.pending } };
+      if (attempt >= OBJECT_LEDGER_ATTEMPTS) return failure('RESULT_INTEGRITY', CONSULT_MISMATCH);
+    }
+  }
+  /** A prévia é fonte OPCIONAL de `stale`/`decisionsChanged` (D-14, RL-27): falha ou exceção ⇒ "não foi possível comparar", nunca bloqueia nem decide a confirmação. */
+  async function evaluateOptional(actor: PreviewActor, auditId: string): Promise<Awaited<ReturnType<PreviewEvaluator['evaluate']>>> {
+    try {
+      return await deps.preview.evaluate(actor, auditId);
+    } catch {
+      return { ok: false, code: 'INTERNAL_ERROR', issues: [] };
+    }
   }
 
   return {
@@ -613,8 +726,8 @@ export function createScoringResultsService(deps: ResultsDeps) {
         auditId,
         async (ctx) => {
           const reject = (f: ResultsFailure): { ok: false; failure: ResultsFailure } => ({ ok: false, failure: f });
-          // a pendente só vai no corpo quando o DTO a descreve (sem recibo); a pendente efetiva da fase C do livro já tem recibo (o `'PRESENT'` é da R1.5)
-          const pendingBody = (run: ScoreRun): { pending?: PendingRunDto } => (ctx.pendingReceipt ? {} : { pending: pendingOf(run, viewer) });
+          // a pendente vai no corpo com o estado do recibo (R1.5): a pendente efetiva da fase C do livro já tem recibo (`PRESENT`), e isso continua NÃO sendo confirmação
+          const pendingBody = (run: ScoreRun): { pending: PendingRunDto } => ({ pending: pendingOf(run, viewer, ctx.pendingReceipt ? 'PRESENT' : 'MISSING') });
           // 1. reenvio idêntico (mesmo `inputSha256` e mesmo `head` das decisões) do último arquivo publicado
           const last = ctx.all[ctx.all.length - 1];
           if (last && last.inputSha256 === expectedInputSha256 && sameHead(last.decisions.head, expectedHead)) {
@@ -728,23 +841,26 @@ export function createScoringResultsService(deps: ResultsDeps) {
       return fromStore(appended as unknown as { readonly code: StoreErrorCode; readonly issues: readonly string[] });
     },
 
-    /** Lista os resultados CONFIRMADOS (verificados por inteiro) e a pendente à parte. Falha de integridade ⇒ nenhum dado. */
+    /**
+     * Lista os resultados CONFIRMADOS (verificados por inteiro e, com o livro, cada um com o hash do `RUN_CONFIRMED`) e a pendente à parte. Falha de integridade ⇒ nenhum dado;
+     * livro indisponível ⇒ 503 (R1.5; spec §16.17.9).
+     */
     async list(actor: PreviewActor, auditId: string): Promise<{ readonly ok: true; readonly value: ListRunsPayload } | ResultsFailure> {
       if (!validAuditId(auditId)) return failure('INVALID_PARAMS', 'auditId inválido.');
       const config = await checkConfiguration();
       if (config) return config;
-      const read = await readRunLog(deps.baseDir, auditId, storeOptions);
-      if (!read.ok) return fromStore(read);
-      const inconsistent = unexplained(read.value.runs);
+      const consulted = await consult(auditId);
+      if (!consulted.ok) return consulted;
+      const { read, confirmation, confirmed, pending } = consulted.value;
+      const inconsistent = unexplained(confirmed);
       if (inconsistent) return inconsistent;
-      const now = await deps.preview.evaluate(actor, auditId);
+      const now = await evaluateOptional(actor, auditId);
       // resultados já selados e verificados continuam consultáveis mesmo que a base atual não possa ser relida (`stale: null`); sem nenhum resultado, a auditoria inexistente é 404
-      if (!now.ok && now.code === 'AUDIT_NOT_FOUND' && read.value.runs.length === 0 && read.value.pending === null) return failure('AUDIT_NOT_FOUND');
+      if (!now.ok && now.code === 'AUDIT_NOT_FOUND' && confirmed.length === 0 && pending === null) return failure('AUDIT_NOT_FOUND');
       const currentInputSha256 = now.ok ? now.value.inputSha256 : null;
       const currentDecisionsHead = now.ok ? now.value.decisions.head : null;
-      const runs = read.value.runs;
-      const results: RunSummaryDto[] = runs.map((run, index) => {
-        const latest = index === runs.length - 1;
+      const results: RunSummaryDto[] = confirmed.map((run, index) => {
+        const latest = index === confirmed.length - 1;
         const outcome = toPublicRun(run).outcomePreview;
         return {
           seq: run.seq,
@@ -768,37 +884,36 @@ export function createScoringResultsService(deps: ResultsDeps) {
         value: {
           definitive: true,
           auditId,
+          confirmation,
           results,
-          head: chainHead(runs),
-          pending: read.value.pending ? pendingOf(read.value.pending, viewerOf(actor, currentInputSha256)) : null,
-          anchors: read.value.anchors,
+          head: chainHead(confirmed),
+          pending: pending ? pendingOf(pending.run, viewerOf(actor, currentInputSha256), pending.receipt) : null,
+          anchors: read.anchors,
           currentInputSha256,
           currentDecisionsHead,
-          integrity: { status: 'OK', algorithm: 'SHA-256', checkedFiles: read.value.checkedFiles, note: INTEGRITY_NOTE },
+          integrity: { status: 'OK', algorithm: 'SHA-256', checkedFiles: read.checkedFiles, note: INTEGRITY_NOTE },
         },
       };
     },
 
-    /** Um resultado CONFIRMADO, verificado (selo, bytes, recibos, encadeamento e semântica), em projeção pública. */
+    /** Um resultado CONFIRMADO (com o livro: o hash DELE é o do `RUN_CONFIRMED`), verificado (selo, bytes, recibos, encadeamento e semântica), em projeção pública. */
     async get(actor: PreviewActor, auditId: string, seq: number): Promise<{ readonly ok: true; readonly value: RunDetailPayload } | ResultsFailure> {
       if (!validAuditId(auditId) || !Number.isInteger(seq) || seq < 1) return failure('INVALID_PARAMS', 'Parâmetros inválidos.');
       const config = await checkConfiguration();
       if (config) return config;
-      const read = await readRunLog(deps.baseDir, auditId, storeOptions);
-      if (!read.ok) return fromStore(read);
-      const runs = read.value.runs;
-      const run = runs.find((item) => item.seq === seq);
-      if (!run) return read.value.pending?.seq === seq ? { ...failure('RESULT_PENDING_UNCONFIRMED'), pending: pendingOf(read.value.pending, viewerOf(actor)) } : failure('RESULT_NOT_FOUND');
-      const inconsistent = unexplained(runs); // consulta INTEGRAL: um registro inconsistente em qualquer posição invalida a consulta inteira
+      const consulted = await consult(auditId);
+      if (!consulted.ok) return consulted;
+      const { confirmation, confirmed, pending } = consulted.value;
+      const run = confirmed.find((item) => item.seq === seq);
+      // a pendente (B ou C) nunca é entregue como resultado: RESULT_PENDING_UNCONFIRMED com o resumo dela (16.17.9)
+      if (!run) return pending?.run.seq === seq ? { ...failure('RESULT_PENDING_UNCONFIRMED'), pending: pendingOf(pending.run, viewerOf(actor), pending.receipt) } : failure('RESULT_NOT_FOUND');
+      const inconsistent = unexplained(confirmed); // consulta INTEGRAL: um registro inconsistente em qualquer posição invalida a consulta inteira
       if (inconsistent) return inconsistent;
-      const latest = runs[runs.length - 1] === run;
+      const latest = confirmed[confirmed.length - 1] === run;
       let stale: boolean | null = null;
       let decisionsChanged: boolean | null = null;
-      if (latest) {
-        const now = await deps.preview.evaluate(actor, auditId);
-        ({ stale, decisionsChanged } = drift(now, run));
-      }
-      return { ok: true, value: { stale, decisionsChanged, superseded: !latest, run: toPublicRun(run).detail } };
+      if (latest) ({ stale, decisionsChanged } = drift(await evaluateOptional(actor, auditId), run));
+      return { ok: true, value: { confirmation, stale, decisionsChanged, superseded: !latest, run: toPublicRun(run).detail } };
     },
   };
 }
@@ -842,6 +957,8 @@ export interface KnownRunRef {
   readonly ledgerHead: { readonly ledgerSeq: number; readonly sha256: string } | null;
   readonly finalizedBy: string;
   readonly originProven: boolean;
+  /** Id PÚBLICO da chave de origem do arquivo (`origin.kid`; `null` sem etiqueta). Só diagnóstico (portão do runbook, R1.5); nunca prova. */
+  readonly originKid: string | null;
 }
 
 const INTEGRITY_CODES: ReadonlySet<StoreErrorCode> = new Set(['CORRUPT', 'HASH_MISMATCH', 'CHAIN_BROKEN', 'SEQUENCE_GAP', 'SCHEMA', 'SEMANTIC', 'TRUNCATED', 'ANCHOR_MISMATCH', 'ANCHOR_INTEGRITY']);
@@ -910,6 +1027,7 @@ export function createResultsKnownHeads(options: ResultsKnownHeadsOptions): Know
         ledgerHead: run.ledgerHead ? { ledgerSeq: run.ledgerHead.ledgerSeq, sha256: run.ledgerHead.sha256 } : null,
         finalizedBy: run.finalizedBy,
         originProven: judgeOrigin(options.origin, 'RUN', run) === 'PROVEN',
+        originKid: run.origin?.kid ?? null,
       });
       return {
         ok: true,
