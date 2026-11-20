@@ -25,14 +25,21 @@ const moduleFiles = walk(MODULE_DIR);
  * Política por arquivo (Onda 2). Todos os arquivos seguem as regras da Onda 1 (só './', zod e url-safety;
  * sem rede, sem ambiente, sem relógio). Exceções mínimas e declaradas:
  *  - canonical.ts: node:crypto (somente para o SHA-256);
- *  - snapshot-store.ts: node:crypto (nome de temporário), node:fs/promises e node:path (único arquivo com disco).
+ *  - snapshot-store.ts: node:crypto (nome de temporário) e node:path; o disco é o da porta abaixo.
+ * P1 W4.6: a porta de disco saiu do snapshot-store para módulos ESTREITOS (o artefato do `sign` usa a porta sem o resto do store):
+ *  - fs-ops.ts: só os TIPOS da porta (FsOps, FileInfo, BytesFsOps) e `errorCode`; nenhum import;
+ *  - node-fs-ops.ts: o adaptador de disco padrão (`nodeFsOps`), único arquivo do módulo que importa node:fs/promises.
+ * O snapshot-store os reexporta (consumidores existentes inalterados).
  * Rede, fetch, process.env, Date.now/new Date()/Math.random continuam proibidos em TODOS, inclusive no store.
  */
 const EXTRA_IMPORTS: Readonly<Record<string, readonly string[]>> = {
   'canonical.ts': ['node:crypto'],
-  'snapshot-store.ts': ['node:crypto', 'node:fs/promises', 'node:path'],
+  'snapshot-store.ts': ['node:crypto', 'node:path'],
+  'node-fs-ops.ts': ['node:fs/promises'],
 };
-const FS_ALLOWED_FILES: ReadonlySet<string> = new Set(['snapshot-store.ts']);
+const FS_ALLOWED_FILES: ReadonlySet<string> = new Set(['node-fs-ops.ts']);
+/** P1 W4.6: a porta de disco (tipos), o adaptador e o store que a usa: só eles citam operações de arquivo (mkdir, readFile, unlink…). */
+const DISK_PORT_FILES: ReadonlySet<string> = new Set(['fs-ops.ts', 'node-fs-ops.ts', 'snapshot-store.ts']);
 
 /*
  * Onda 4A: o módulo ganhou `url-redaction.ts` (usa `src/lib/redact.ts`, só texto) e a pasta `collector/`
@@ -70,10 +77,12 @@ test('o módulo da auditoria por link existe e tem os arquivos esperados', () =>
     'collector/summaries.ts',
     'collector/types.ts',
     'evidence.ts',
+    'fs-ops.ts',
     'identifiers.ts',
     'index.ts',
     'maps-link.ts',
     'methodology.ts',
+    'node-fs-ops.ts',
     'scoring/aggregate.ts',
     'scoring/confidence.ts',
     'scoring/context.ts',
@@ -143,21 +152,36 @@ test('o módulo não usa rede, processos, ambiente nem armazenamento', () => {
       assert.ok(!pattern.test(code), `${path.relative(ROOT, file)} usa ${label}`);
     }
     if (!FS_ALLOWED_FILES.has(path.basename(file))) {
-      assert.ok(!/node:fs\b/.test(code), `${path.relative(ROOT, file)} acessa disco; só snapshot-store.ts pode`);
+      assert.ok(!/node:fs\b/.test(code), `${path.relative(ROOT, file)} acessa disco; só node-fs-ops.ts pode`);
     }
   }
 });
 
 test('Onda 2: só o armazenamento toca o disco e só dentro de um diretório base informado', () => {
   const storeCode = stripComments(fs.readFileSync(path.join(MODULE_DIR, 'snapshot-store.ts'), 'utf8'));
-  assert.ok(/node:fs\/promises/.test(storeCode));
+  // P1 W4.6: o disco real mora no adaptador estreito node-fs-ops.ts; o store o usa pela porta (e o reexporta)
+  assert.ok(/node:fs\/promises/.test(stripComments(fs.readFileSync(path.join(MODULE_DIR, 'node-fs-ops.ts'), 'utf8'))));
+  assert.ok(!/node:fs\b/.test(storeCode), 'o store não importa disco direto (só pela porta)');
   assert.ok(!/['"`]public['"`]|\/public\b/.test(storeCode), 'o armazenamento não referencia public/');
   assert.ok(!/\.data['"`]\s*,\s*['"`]audits/.test(storeCode), 'o armazenamento não referencia .data/audits');
   assert.ok(/'\.data', 'link-audits'/.test(storeCode), 'a pasta padrão é .data/link-audits');
-  for (const file of moduleFiles.filter((f) => !FS_ALLOWED_FILES.has(path.basename(f)))) {
+  for (const file of moduleFiles.filter((f) => !DISK_PORT_FILES.has(path.relative(MODULE_DIR, f)))) {
     const code = stripComments(fs.readFileSync(file, 'utf8'));
     assert.ok(!/\bfsPromises\b|\bwriteFile\b|\breadFile\b|\bmkdir\b|\bunlink\b/.test(code), `${path.relative(ROOT, file)} usa operação de arquivo`);
   }
+});
+
+test('P1 W4.6: a porta de disco é estreita: fs-ops.ts não importa nada (tipos e errorCode), node-fs-ops.ts só node:fs/promises e a porta; o snapshot-store reexporta os MESMOS objetos', async () => {
+  const portImports = importStatements(fs.readFileSync(path.join(MODULE_DIR, 'fs-ops.ts'), 'utf8'));
+  assert.deepEqual(portImports, [], 'fs-ops.ts sem imports');
+  assert.ok(!/node:|process\.|\bfetch\b/.test(stripComments(fs.readFileSync(path.join(MODULE_DIR, 'fs-ops.ts'), 'utf8'))), 'fs-ops.ts sem módulo node, processo ou rede');
+  assert.deepEqual(importStatements(fs.readFileSync(path.join(MODULE_DIR, 'node-fs-ops.ts'), 'utf8')).map((s) => s.specifier).sort(), ['./fs-ops', 'node:fs/promises']);
+  const store = await import('../src/lib/link-audit/snapshot-store');
+  const port = await import('../src/lib/link-audit/fs-ops');
+  const adapter = await import('../src/lib/link-audit/node-fs-ops');
+  assert.equal(store.nodeFsOps, adapter.nodeFsOps, 'nodeFsOps reexportado (mesmo objeto)');
+  assert.equal(store.errorCode, port.errorCode, 'errorCode reexportado (mesma função)');
+  assert.deepEqual(Object.keys(adapter.nodeFsOps).sort(), ['chmod', 'link', 'lstat', 'mkdir', 'readFile', 'readFileBytes', 'readdir', 'realpath', 'syncDirectory', 'unlink', 'writeExclusive']);
 });
 
 test('isolamento: nada do Juiz, evidência antiga, PDF, agentes, banco, filas ou Serper aparece no módulo', () => {
@@ -241,24 +265,25 @@ const ATTESTATION_EVIDENCE_IMPORTS: ReadonlyMap<string, readonly string[]> = new
   // P1 W2: a montagem pura do pacote (função única basis → evidências) e o adaptador de disco do `export` (só os leitores e o FsOps)
   ['src/lib/link-audit-attestation/export.ts', ['evidence-to-prove', 'types']],
   ['src/lib/link-audit-attestation/export-run.ts', ['provenance', 'reader', 'scoring-basis', 'store']],
-  // P1 W4.2: a cadeia do `sign` é lida e verificada pelo verificador v2 real (só ele)
-  ['src/lib/link-audit-attestation/sign-chain.ts', ['provenance']],
-  // P1 W4.5: o fecho do `close-key` é montado, assinado e autotestado pelo verificador v2 real (só ele)
-  ['src/lib/link-audit-attestation/sign-closure.ts', ['provenance']],
+  // P1 W4.2: a cadeia do `sign` é lida e verificada pelo verificador v2 real (só ele); W4.6: pelo NÚCLEO, sem o disco padrão da fachada
+  ['src/lib/link-audit-attestation/sign-chain.ts', ['provenance-core']],
+  // P1 W4.5: o fecho do `close-key` é montado, assinado e autotestado pelo verificador v2 real (só ele); W4.6: pelo NÚCLEO
+  ['src/lib/link-audit-attestation/sign-closure.ts', ['provenance-core']],
 ]);
 const ATTESTATION_TARGETS: ReadonlySet<string> = new Set(['canonical.ts']);
 /** P1 W2: só o adaptador de disco do `export` usa também o FsOps (leitura O_NOFOLLOW/O_NONBLOCK e a criação exclusiva do --out). */
 const ATTESTATION_EXTRA_TARGETS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ['src/lib/link-audit-attestation/export-run.ts', new Set(['snapshot-store.ts'])],
-  // P1 W4.2: só o TIPO FsOps (o disco é injetado por quem chama; a leitura da cadeia nunca escreve)
-  ['src/lib/link-audit-attestation/sign-chain.ts', new Set(['snapshot-store.ts'])],
+  // P1 W4.2: só o TIPO FsOps (o disco é injetado por quem chama; a leitura da cadeia nunca escreve). W4.6: pela porta estreita (fs-ops.ts)
+  ['src/lib/link-audit-attestation/sign-chain.ts', new Set(['fs-ops.ts'])],
   // P1 W4.3: o disco do `sign` (tipos BytesFsOps/FsOps e `errorCode`): leitura única das entradas e a gravação temporário + link() exclusivo
-  ['src/lib/link-audit-attestation/sign-run.ts', new Set(['snapshot-store.ts'])],
-  // P1 W4.4: o comando `sign` usa o disco PADRÃO (nodeFsOps, injetável nos testes) para entregá-lo a sign-run.ts; não lê nem grava por conta própria
-  ['src/lib/link-audit-attestation/sign-cli.ts', new Set(['snapshot-store.ts'])],
+  ['src/lib/link-audit-attestation/sign-run.ts', new Set(['fs-ops.ts'])],
+  // P1 W4.4: o comando `sign` usa o disco PADRÃO (nodeFsOps, injetável nos testes) para entregá-lo a sign-run.ts; não lê nem grava por conta própria.
+  // W4.6: o adaptador estreito (node-fs-ops.ts), sem o resto do snapshot-store
+  ['src/lib/link-audit-attestation/sign-cli.ts', new Set(['fs-ops.ts', 'node-fs-ops.ts'])],
   // P1 W4.5: o `close-key` (tipos FsOps/BytesFsOps e `errorCode`): varredura somente leitura da cópia do servidor; a gravação é a de sign-run.ts.
   // Os recibos (sign-receipts.ts) são lidos pelo descritor da pasta, sem o snapshot-store (revisão da W4.5)
-  ['src/lib/link-audit-attestation/sign-closure.ts', new Set(['snapshot-store.ts'])],
+  ['src/lib/link-audit-attestation/sign-closure.ts', new Set(['fs-ops.ts'])],
 ]);
 const CLIENT_DIRS = ['src/components/link-audit/', 'src/app/auditoria-por-link/'];
 /** Único valor (não só tipo) que o navegador pode importar: constantes puras, sem nenhum import. */
