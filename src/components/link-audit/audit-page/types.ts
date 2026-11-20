@@ -168,10 +168,31 @@ export interface LedgerKeyCoverageInfo {
   readonly covered: boolean;
   readonly otherKeyRecords: number;
 }
+/** Operação de RESULTADO aberta (R1.5; spec §16.17.2, 16.17.4). `originKid`: id PÚBLICO da chave de origem do resultado em B/C (portão do runbook de chaves); nunca material. */
+export interface LedgerOpenRun {
+  readonly runOpId: string;
+  readonly runSeq: number;
+  readonly runSha256: string;
+  readonly phase: 'A' | 'B' | 'C';
+  readonly ageMs: number;
+  readonly stale: boolean;
+  readonly recoverable: boolean;
+  readonly originKid: string | null;
+}
+/** Família de RESULTADOS na vista do livro (só hashes e posições). `RESULT_RECEIPT_REMOVED`/`RESULT_REGRESSED` fecham só os resultados. */
+export interface LedgerRunsInfo {
+  readonly state: 'OK' | 'UNRESOLVED';
+  readonly reason: 'RESULT_RECEIPT_REMOVED' | 'RESULT_REGRESSED' | null;
+  readonly confirmed: ReadonlyArray<{ readonly runSeq: number; readonly runSha256: string }>;
+  readonly open: LedgerOpenRun | null;
+  readonly receiptReissuable: boolean;
+}
 export interface LedgerInfo {
   readonly state: LedgerState;
   readonly reason: string | null;
   readonly head: { readonly ledgerSeq: number; readonly sha256: string } | null;
+  /** Cabeça de DECISÕES do livro (§16.17.7): a que o resultado cita. Ausente em respostas sem o livro lido. */
+  readonly decisionHead?: { readonly ledgerSeq: number; readonly sha256: string } | null;
   readonly confirmedDecisions: number;
   readonly openOperation: LedgerOpenOperation | null;
   readonly recoverable: boolean;
@@ -179,6 +200,8 @@ export interface LedgerInfo {
   readonly externalGuard: LedgerGuardStatus;
   readonly capacity?: LedgerCapacityInfo;
   readonly keyCoverage?: LedgerKeyCoverageInfo;
+  /** Só com o livro lido, autenticado e sem contradição de resultado que congele as decisões. */
+  readonly runs?: LedgerRunsInfo;
 }
 /** O que a prévia informa do livro. */
 export interface PreviewLedgerInfo {
@@ -248,8 +271,11 @@ export interface DecisionsList {
 export interface PendingRun {
   readonly seq: number;
   readonly finalizedAt: string;
-  /** Estado estruturado do servidor, igual para todos os perfis: sem recibo ≠ confirmado; bloqueia novas finalizações. */
-  readonly receipt: 'MISSING';
+  /**
+   * Estado estruturado do servidor, igual para todos os perfis, e nunca confirmação (bloqueia novas finalizações): `MISSING` = sem recibo; `PRESENT` = o recibo existe, mas o
+   * livro de cabeças não confirmou (fase C; só o autor conclui).
+   */
+  readonly receipt: 'MISSING' | 'PRESENT';
   readonly blocksFinalization: true;
   readonly origin: PendingOrigin;
   readonly originDetail: PendingOriginDetail | null;
@@ -284,9 +310,12 @@ export interface RunSummary {
   readonly decisionsChanged: boolean | null;
 }
 
+/** O que confirma os resultados (R1.5): `LEDGER` = o livro de cabeças, objeto a objeto; `RECEIPT_ONLY` = só o recibo, sem prova do livro (legado ou sem livro). */
+export type ResultsConfirmation = 'LEDGER' | 'RECEIPT_ONLY';
 export interface ResultsList {
   readonly definitive: true;
   readonly auditId: string;
+  readonly confirmation: ResultsConfirmation;
   readonly results: readonly RunSummary[];
   readonly head: Head | null;
   readonly pending: PendingRun | null;
@@ -313,6 +342,7 @@ export interface RunDetail {
 }
 
 export interface RunDetailResponse {
+  readonly confirmation: ResultsConfirmation;
   readonly stale: boolean | null;
   readonly decisionsChanged: boolean | null;
   readonly superseded: boolean;

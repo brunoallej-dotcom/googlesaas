@@ -4,16 +4,21 @@ import { formatDateTime, LEVEL_LABELS, OUTCOME_LABELS, safeText } from './labels
 import { ResultPanel } from './result-panel';
 import type { DetailState } from './state';
 import { latestRun, runObsolescence } from './status';
-import type { ResultsList, RunDetail, RunSummary } from './types';
+import type { ResultsConfirmation, ResultsList, RunDetail, RunSummary } from './types';
 import { BUTTON_QUIET, CopyHash } from './ui-bits';
 
 const pad = (seq: number): string => `s${String(seq).padStart(4, '0')}`;
 
-function RunBadges({ run, changedAfter }: { readonly run: RunSummary; readonly changedAfter: boolean | null }): React.JSX.Element {
+/** O selo diz O QUE confirma (R1.5, D-23): o livro de cabeças, objeto a objeto; ou só o recibo, sem prova do livro (legado ou sem livro) — nunca o mesmo selo para os dois. */
+function ConfirmationBadge({ confirmation }: { readonly confirmation: ResultsConfirmation }): React.JSX.Element {
+  return confirmation === 'LEDGER' ? <StatusBadge tone="success" label="Confirmado pelo livro" icon={CircleCheck} /> : <StatusBadge tone="warning" label="Confirmado só por recibo (sem prova do livro)" icon={ShieldAlert} dashed />;
+}
+
+function RunBadges({ run, changedAfter, confirmation }: { readonly run: RunSummary; readonly changedAfter: boolean | null; readonly confirmation: ResultsConfirmation }): React.JSX.Element {
   const o = runObsolescence(run, changedAfter);
   return (
     <span className="flex flex-wrap items-center gap-1.5">
-      <StatusBadge tone="success" label="Confirmado" icon={CircleCheck} />
+      <ConfirmationBadge confirmation={confirmation} />
       {run.superseded && <StatusBadge tone="neutral" label="Substituído" icon={History} dashed />}
       {!run.superseded && o.historical && <StatusBadge tone="warning" label="Histórico" icon={FileClock} dashed />}
       {!run.superseded && run.stale === true && <StatusBadge tone="warning" label="Entrada mudou (stale)" icon={FileClock} dashed />}
@@ -38,8 +43,17 @@ export function ResultsPanel({ results, detail, changedAfter, onSelect }: Result
       {results.pending && (
         <div className="rounded-xl border border-dashed border-gmn-warning/60 bg-gmn-warning/[0.06] p-3 text-xs">
           <StatusBadge tone="warning" label="Pendente — não vale" icon={CircleDashed} dashed />
-          <p className="mt-2 text-gmn-muted">{pad(results.pending.seq)} · {results.pending.outcome ? OUTCOME_LABELS[results.pending.outcome] : 'origem não comprovada'} · {formatDateTime(results.pending.finalizedAt)}. Gravado sem recibo: não é um resultado confirmado e não aparece como atual.{results.pending.origin === 'PROVEN' ? '' : ' A origem deste arquivo não foi comprovada pelo servidor; ele não pode ser concluído.'}</p>
+          <p className="mt-2 text-gmn-muted">
+            {pad(results.pending.seq)} · {results.pending.outcome ? OUTCOME_LABELS[results.pending.outcome] : 'origem não comprovada'} · {formatDateTime(results.pending.finalizedAt)}.{' '}
+            {results.pending.receipt === 'PRESENT' ? 'O recibo existe, mas o livro de cabeças ainda não registrou a confirmação: não é um resultado confirmado e não aparece como atual; só o autor o conclui.' : 'Gravado sem recibo: não é um resultado confirmado e não aparece como atual.'}
+            {results.pending.origin === 'PROVEN' ? '' : ' A origem deste arquivo não foi comprovada pelo servidor; ele não pode ser concluído.'}
+          </p>
         </div>
+      )}
+      {results.confirmation === 'RECEIPT_ONLY' && runs.length > 0 && (
+        <p role="note" className="rounded-xl border border-dashed border-gmn-warning/60 bg-gmn-warning/[0.06] p-3 text-xs text-amber-200" data-testid="results-receipt-only">
+          Estes resultados estão confirmados só por recibo, sem prova do livro de cabeças (auditoria legada ou sem o livro): a remoção ou a troca coordenada das pastas de resultados e de recibos não seria detectada. Não servem como registro atestado.
+        </p>
       )}
       {runs.length === 0 ? (
         <p className="rounded-xl border border-dashed border-white/15 p-4 text-center text-xs text-gmn-muted">Nenhum resultado registrado. A prévia acima não é um resultado definitivo.</p>
@@ -54,7 +68,7 @@ export function ResultsPanel({ results, detail, changedAfter, onSelect }: Result
                   <button type="button" aria-expanded={selected} onClick={() => onSelect(selected ? null : run.seq)} className={BUTTON_QUIET}>{selected ? 'Ocultar detalhe' : 'Ver detalhe verificado'}</button>
                 </div>
                 <p className="mt-1 text-gmn-muted">{formatDateTime(run.finalizedAt)} · por {safeText(run.finalizedBy, 120)} · cobertura {run.coveragePercent}%</p>
-                <div className="mt-2"><RunBadges run={run} changedAfter={run === latest ? changedAfter : null} /></div>
+                <div className="mt-2"><RunBadges run={run} changedAfter={run === latest ? changedAfter : null} confirmation={results.confirmation} /></div>
                 <p className="mt-2 text-gmn-muted">entrada <CopyHash value={run.inputSha256} label="hash da entrada" /> · registro <CopyHash value={run.contentSha256} label="hash do registro" /></p>
                 {selected && <DetailView detail={detail} />}
               </li>

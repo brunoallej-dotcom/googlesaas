@@ -11,7 +11,7 @@ import { ANA, BIA, clock, hashTree, must, rec, registerCleanup, tmpDir } from '.
 import { faulty } from './helpers/link-audit-evidence-fixtures';
 import { decisionsOver, LEDGER_AUTH_A, ledgerFor, ledgerRecords, ledgerWorld, type LedgerWorld } from './helpers/link-audit-ledger-fixtures';
 import { sealResult, servicesOver, witnessOver } from './helpers/link-audit-ledger-results-fixtures';
-import { appendLedger, hashOf, hideFile, runMakersFor, runRefOf } from './helpers/link-audit-results-ledger-fixtures';
+import { appendLedger, hashOf, hideFile, runIntentMaker, runMakersFor, runRefOf } from './helpers/link-audit-results-ledger-fixtures';
 import { receiptPath, resultsEnv, runPath, type ResultsEnv } from './helpers/link-audit-results-fixtures';
 
 /*
@@ -149,6 +149,8 @@ test('RL-34 / M-R33: na gravação, resultado (ou citação, ou recibo) que a re
   const records = await ledgerRecords(w);
   const cite = { ledgerSeq: 3, sha256: (records[2] as { contentSha256: string }).contentSha256 };
   const sha = hashOf('resultado-concorrente');
+  // R1.5: o resultado concorrente tem o RUN_INTENT dele no livro (o passo 6 vem antes da publicação); sem ele, um resultado visto em R1 seria UNLEDGERED_RESULT
+  await appendLedger(w, LEDGER_AUTH_A, runIntentMaker({ runSha256: sha }));
   const grown: Array<[string, ResultsEvidence]> = [
     ['resultado novo (RUN_INTENT + sk concorrentes)', { ok: true, hasResults: true, ledgerHeads: [cite], unverifiedLedgerHeads: [], runs: { anchored: [], pending: runRefOf(1, sha, { ledgerHead: cite }) } }],
     ['só uma citação nova', { ...R1_ONLY, hasResults: true, ledgerHeads: [cite] }],
@@ -227,7 +229,8 @@ test('RL-17 (c) [regressão]: carga — decisões, finalizações e leituras con
     }
   };
   const finalizer = async (): Promise<void> => {
-    for (let round = 0; round < 3; round += 1) await sealResult(w, e).catch(() => undefined); // corrida com as decisões: INPUT_CHANGED/HEAD_MISMATCH são desfechos legítimos
+    // R1.5: finalizações REAIS pelo livro (RUN_INTENT/RUN_CONFIRMED), agora com as razões de resultado ativas; corrida com as decisões: INPUT_CHANGED/HEAD_MISMATCH são desfechos legítimos
+    for (let round = 0; round < 3; round += 1) await sealResult(w, e, { viaLedger: true }).catch(() => undefined);
   };
   const reader = async (): Promise<void> => {
     for (let round = 0; round < 12; round += 1) {

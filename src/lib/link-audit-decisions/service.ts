@@ -3,14 +3,14 @@ import type { OperatorRecord } from '../link-audit/scoring/input';
 import { findClientProvidedScoreKeys } from '../link-audit/scoring/input';
 import type { FsOps } from '../link-audit/snapshot-store';
 import { nodeFsOps } from '../link-audit/snapshot-store';
-import { judgeOrigin, originStatusOf, type OriginAuthenticator, type OriginStatus, type OriginVerdict } from '../link-audit-origin';
+import { judgeOrigin, KEY_ID_PATTERN, originStatusOf, type OriginAuthenticator, type OriginStatus, type OriginVerdict } from '../link-audit-origin';
 import type { AnchorSummary } from './anchor-store';
 import { checkOperatorRecordsContract } from './contract';
 import { availableRefs, captureRef, parseEvidenceRef, referencedEvidence, reportRef, type VersionLike } from './evidence-refs';
 import { assertBase, DURABILITY_UNPROVEN_MESSAGE, type StoreErrorCode, type StoreFailure } from './files';
 import { canSupersede, effectiveScoringRecords, slotConflicts, toScoringRecord, type DecisionView, type LogState } from './project';
 import { appendEntry, assertDecisionBase, findReplay, readLog, syncDecisionDirectories, type OperationSpec, type PendingFailure, ledgerSnapshotOf } from './store';
-import { isLedgerBlocking, LEDGER_NOT_REQUIRED, NOT_REQUIRED_VIEW, type LedgerRefusal, type LedgerSource, type LedgerView, type ResultsEvidence, type ResultsLedgerContext, type ResultsLedgerPort, type ResultsRuns, type RunRef, type RunRefusal } from './ledger-port';
+import { isLedgerBlocking, LEDGER_NOT_REQUIRED, NOT_REQUIRED_VIEW, type LedgerRefusal, type LedgerSource, type LedgerView, type ResultsEvidence, type ResultsLedgerContext, type ResultsLedgerPort, type ResultsLedgerRead, type ResultsRuns, type RunRef, type RunRefusal } from './ledger-port';
 import { evaluateKnownHeads, isUnresolved, WITNESS_NOT_REQUIRED, type KnownHeadsRead, type WitnessSource, type WitnessVerdict } from './witness';
 import {
   AUDIT_ID_PATTERN,
@@ -669,8 +669,11 @@ export function createDecisionService(options: DecisionServiceOptions) {
       if (ref.seq !== seq || !sha(ref.sha256) || ref.prevSha256 !== prevSha256 || (ref.schemaVersion !== 1 && ref.schemaVersion !== 2)) return null;
       if (!(ref.ledgerHead === null || ledgerOk(ref.ledgerHead as { ledgerSeq?: unknown; sha256?: unknown })) || typeof ref.originProven !== 'boolean') return null;
       if (typeof author !== 'string' || author.length === 0 || author.length > 254) return null;
+      // R1.5: id PÚBLICO da chave de origem (diagnóstico do portão do runbook). Ausente = sem etiqueta; fora do formato de id ⇒ a testemunha inteira não é confiável
+      const kid = ref.originKid === undefined ? null : ref.originKid;
+      if (!(kid === null || (typeof kid === 'string' && KEY_ID_PATTERN.test(kid)))) return null;
       const head = ref.ledgerHead as { ledgerSeq: number; sha256: string } | null;
-      return { seq, sha256: ref.sha256, prevSha256, schemaVersion: ref.schemaVersion, ledgerHead: head ? { ledgerSeq: head.ledgerSeq, sha256: head.sha256 } : null, finalizedBy: author, originProven: ref.originProven };
+      return { seq, sha256: ref.sha256, prevSha256, schemaVersion: ref.schemaVersion, ledgerHead: head ? { ledgerSeq: head.ledgerSeq, sha256: head.sha256 } : null, finalizedBy: author, originProven: ref.originProven, originKid: kid };
     };
     const refs: RunRef[] = [];
     for (const value of anchored) {
@@ -1134,9 +1137,39 @@ export function createDecisionService(options: DecisionServiceOptions) {
     }
     return refused('LEDGER_OPERATION_IN_PROGRESS', ['O livro mudou a cada tentativa de preparar a finalização; nada foi gravado. Tente novamente.']);
   }
+  /** Falhas do histórico de DECISÕES que são de INTEGRIDADE (o resto é disponibilidade ou configuração): a vista das consultas de resultados não é montada sobre elas. */
+  const DECISIONS_INTEGRITY_FAILURES: ReadonlySet<ServiceErrorCode> = new Set<ServiceErrorCode>(['DECISIONS_INTEGRITY', 'DECISIONS_TRUNCATED', 'ANCHOR_MISMATCH', 'ANCHOR_INTEGRITY']);
+  /**
+   * VISTA DO LIVRO PARA AS CONSULTAS DE RESULTADOS (R1.5; spec §16.17.9, D-14). Somente leitura, na MESMA ordem das outras leituras (`takeSnapshot`: R1 → guarda → livro →
+   * decisões → R2 condicional em `view`) e com a releitura ÚNICA das razões transitórias de decisão (como `list`). NÃO depende das evidências (`getIntegrity` não é chamado: RL-27).
+   * Diferente de `ledgerViewOf`, um histórico de decisões ilegível NUNCA vira `NOT_REQUIRED_VIEW` (que as consultas leriam como "sem livro"): vira `UNAVAILABLE` ou `INTEGRITY`.
+   */
+  async function resultsLedgerView(input: { readonly auditId: string; readonly nowIso: string }): Promise<ResultsLedgerRead> {
+    if (!ledgerPort) return { kind: 'UNAVAILABLE', issues: ['livro: NOT_CONFIGURED'] };
+    if (!validAuditId(input.auditId) || !ISO_MS.test(input.nowIso)) return { kind: 'UNAVAILABLE', issues: ['Parâmetros inválidos para a leitura do livro.'] };
+    const config = await checkConfiguration();
+    if (config) return { kind: 'UNAVAILABLE', issues: ['O armazenamento de decisões ou de âncoras está configurado de forma insegura.'] };
+    const { auditId, nowIso } = input;
+    const readOnce = async (): Promise<ResultsLedgerRead> => {
+      const taken = await takeSnapshot(auditId);
+      if (!taken.log.ok) {
+        const failed = fromStore(taken.log);
+        const text = 'O histórico de decisões não pôde ser lido para conferir os resultados; nenhum resultado é exibido.';
+        return DECISIONS_INTEGRITY_FAILURES.has(failed.code) ? { kind: 'INTEGRITY', issues: [`decisões: ${failed.code}`, text] } : { kind: 'UNAVAILABLE', issues: [`decisões: ${failed.code}`, text] };
+      }
+      return { kind: 'VIEW', view: await ledgerViewOf(taken, auditId, nowIso) };
+    };
+    const first = await readOnce();
+    // a fronteira livro × decisões pode parecer atrasada só por corrida (o livro é lido antes das decisões): relê UMA vez antes de acusar, como a consulta das decisões
+    if (first.kind !== 'VIEW' || first.view.state !== 'HISTORY_UNRESOLVED' || first.view.reason === null || !TRANSIENT_LEDGER.has(first.view.reason)) return first;
+    await pause(30);
+    return readOnce();
+  }
+
   const resultsLedger: ResultsLedgerPort | null =
     ledgerPort && options.knownHeads !== WITNESS_NOT_REQUIRED
       ? {
+          view: resultsLedgerView,
           context: runContext,
           intent: (input) => ledgerPort.runIntent(input),
           gate: (input) => ledgerPort.runGate(input),

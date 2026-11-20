@@ -10,12 +10,14 @@ import { sealResult, servicesOver, witnessOver } from './helpers/link-audit-ledg
 import { previewOver } from './helpers/link-audit-preview-fixtures';
 import { appendLedger, chainOf, hashOf, runIntentMaker, runMakersFor, runRefOf, type Chain, type RunBody } from './helpers/link-audit-results-ledger-fixtures';
 import { makeService, OP_A, receiptPath, resultsEnv, runPath } from './helpers/link-audit-results-fixtures';
+import { TEST_ORIGIN } from './helpers/link-audit-origin-fixtures';
 
 /*
  * R1.2 — `runs` NA VISTA DO LIVRO (spec §16.17.2, 16.17.4, 16.17.5 e 16.17.9, no que esta fatia deriva do livro e da testemunha dos resultados): resultados confirmados
  * pelo livro, a operação de resultado aberta (fase A/B/C pela leitura mais recente), `RESULT_REGRESSED` / `RESULT_RECEIPT_REMOVED` (só resultados, julgados SÓ sobre R2,
  * D-21) e a reemissão anunciada. `runs` só existe depois das TESTEMUNHAS (citações `ledgerHead` e guarda; R6-05, RL-24) e o cruzamento de resultados vem ANTES do
- * cruzamento livro × decisões (M-R21). As contradições julgadas sobre R1 (UNLEDGERED_RESULT, RESULT_DIVERGES, RESULT_PUBLISHED_AFTER_ABORT) são da R1.5 (D-R1-5).
+ * cruzamento livro × decisões (M-R21). As contradições julgadas sobre R1 (UNLEDGERED_RESULT, RESULT_DIVERGES, RESULT_PUBLISHED_AFTER_ABORT) entraram na R1.5
+ * (`link-audit-results-ledger-contradictions`); os casos daqui que as tocavam foram ajustados (spec §16.17.9: mudam os testes que gravam resultado direto no disco).
  */
 registerCleanup();
 const AUD = 'auditoria-runs-0003';
@@ -75,15 +77,21 @@ test('runs.open: fase pela leitura mais recente — A (nada no disco), B (sk com
     ['B com origem NÃO comprovada (D-16: aberta, sem receita)', seen([], runRefOf(1, sha, { originProven: false })), 200_000, 'B', true, false],
     ['C (só o autor conclui)', seen([runRefOf(1, sha)]), 1_000, 'C', false, true],
     ['C com origem NÃO comprovada', seen([runRefOf(1, sha, { originProven: false })]), 1_000, 'C', false, false],
-    ['sk de OUTRO hash no lugar (contradição da R1.5): nunca B/C e nunca receita, nem vencida', seen([], runRefOf(1, hashOf('outro'))), 200_000, 'A', true, false],
   ];
   for (const [label, results, age, phase, stale, recoverable] of cases) {
     const evaluation = evaluate(chain, results, ages(age));
     assert.equal(evaluation.view.state, 'PROTECTED', `${label}: nenhuma fase é contradição`);
-    assert.deepEqual(evaluation.view.runs?.open, { runOpId: intent?.runOpId, runSeq: 1, runSha256: sha, phase, ageMs: age, stale, recoverable }, label);
+    assert.deepEqual(evaluation.view.runs?.open, { runOpId: intent?.runOpId, runSeq: 1, runSha256: sha, phase, ageMs: age, stale, recoverable, originKid: null }, label);
     assert.deepEqual([evaluation.view.openOperation, evaluation.view.recoverable], [null, false], `${label}: os campos de topo continuam só de decisão`);
   }
   assert.ok(keys.includes(`run:${intent?.runOpId}`), `idade observada pela chave da operação de resultado (${keys.join(', ')})`);
+  // sk de OUTRO hash no lugar: visto em R1 é a contradição RESULT_DIVERGES (R1.5, congela tudo); visto SÓ em R2, nunca B/C nem receita (nem vencida) e nunca acusado
+  const other = runRefOf(1, hashOf('outro'));
+  const inR1 = evaluate(chain, seen([], other), ages(200_000));
+  assert.deepEqual([inR1.view.state, inR1.view.reason, inR1.view.runs], ['HISTORY_UNRESOLVED', 'RESULT_DIVERGES', undefined]);
+  const onlyR2 = evaluate(chain, NONE, { ...ages(200_000), resultsAfterLedger: seen([], other) });
+  assert.equal(onlyR2.view.state, 'PROTECTED');
+  assert.deepEqual(onlyR2.view.runs?.open, { runOpId: intent?.runOpId, runSeq: 1, runSha256: sha, phase: 'A', ageMs: 200_000, stale: true, recoverable: false, originKid: null });
 });
 
 test('L → R2: confirmado NÃO ancorado em R1 pede R2; só R2 decide RESULT_REGRESSED / RESULT_RECEIPT_REMOVED, que fecham só os resultados (D-21)', () => {
@@ -98,8 +106,10 @@ test('L → R2: confirmado NÃO ancorado em R1 pede R2; só R2 decide RESULT_REG
     ['R2 com sk de outro hash', NONE, seen([runRefOf(1, hashOf('outro'))]), 'UNRESOLVED', 'RESULT_REGRESSED'],
     ['R2 com sk certo e sem recibo', NONE, seen([], runRefOf(1, sha)), 'UNRESOLVED', 'RESULT_RECEIPT_REMOVED'],
     ['R1 já sem recibo, R2 idem', seen([], runRefOf(1, sha)), seen([], runRefOf(1, sha)), 'UNRESOLVED', 'RESULT_RECEIPT_REMOVED'],
-    ['R1 e R2 com OUTRO conteúdo ancorado no número (recibo coerente com o arquivo trocado)', seen([runRefOf(1, hashOf('outro'))]), seen([runRefOf(1, hashOf('outro'))]), 'UNRESOLVED', 'RESULT_REGRESSED'],
   ];
+  // R1.5: OUTRO conteúdo no número visto em R1 (recibo coerente com o arquivo trocado) deixou de ser "resultado ausente": é RESULT_DIVERGES, que congela tudo (D-21)
+  const swapped = evaluate(chain, seen([runRefOf(1, hashOf('outro'))]), { resultsAfterLedger: seen([runRefOf(1, hashOf('outro'))]) });
+  assert.deepEqual([swapped.view.state, swapped.view.reason, swapped.view.runs], ['HISTORY_UNRESOLVED', 'RESULT_DIVERGES', undefined]);
   for (const [label, r1, r2, state, reason] of cases) {
     assert.equal(evaluate(chain, r1).needsFreshResults, true, `${label}: R1 não resolve (ancorado e com o MESMO hash é a única coisa que resolve)`);
     const evaluation = evaluate(chain, r1, { resultsAfterLedger: r2 });
@@ -179,7 +189,8 @@ test('testemunha dos resultados: createResultsKnownHeads entrega runs (ancorados
   const first = await sealResult(w, e);
   const read = await witnessOver(w, e)(w.auditId);
   assert.ok(read.ok);
-  assert.deepEqual(read.runs, { anchored: [{ seq: 1, sha256: first.contentSha256, prevSha256: null, schemaVersion: 2, ledgerHead: first.ledgerHead, finalizedBy: 'ana@empresa.com', originProven: true }], pending: null });
+  assert.deepEqual(read.runs, { anchored: [{ seq: 1, sha256: first.contentSha256, prevSha256: null, schemaVersion: 2, ledgerHead: first.ledgerHead, finalizedBy: 'ana@empresa.com', originProven: true, originKid: first.origin?.kid ?? 'ausente' }], pending: null });
+  assert.equal(first.origin?.kid, TEST_ORIGIN.keyId, 'R1.5: o kid PÚBLICO da chave de origem vai junto (só diagnóstico)');
   // sem autenticador de origem (ou com origem não comprovável) o resultado é entregue com originProven: false — nunca promovido
   const blind = await createResultsKnownHeads({ baseDir: e.base, anchorDir: e.anchors, otherDirs: [w.decisionsDir, w.anchorDir, w.evidenceDir, w.ledgerDir] })(w.auditId);
   assert.ok(blind.ok);
@@ -200,6 +211,8 @@ test('testemunha dos resultados: createResultsKnownHeads entrega runs (ancorados
     ['origem sem booleano', { anchored: [{ ...good, originProven: 'sim' }], pending: null }],
     ['versão desconhecida', { anchored: [{ ...good, schemaVersion: 3 }], pending: null }],
     ['autor ausente', { anchored: [{ ...good, finalizedBy: '' }], pending: null }],
+    ['kid de origem fora do formato de id (R1.5)', { anchored: [{ ...good, originKid: 'KID COM ESPAÇO' }], pending: null }],
+    ['kid de origem que não é texto (R1.5)', { anchored: [{ ...good, originKid: 7 }], pending: null }],
   ];
   for (const [label, runs] of malformed) {
     const provider: KnownHeadsProvider = async () => ({ ok: true, heads: [], unverifiedHeads: [], hasResults: true, ledgerHeads: [], unverifiedLedgerHeads: [], runs }) as never;

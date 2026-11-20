@@ -69,7 +69,9 @@ function finalizer(s: Stack, decisionsFs: FsOps) {
   const ledger: LedgerPort = ledgerFor(s.w, { guard: null });
   const decisions = decisionsOver(s.w, { ledger, knownHeads: witnessOver(s.w, s.e), fs: decisionsFs });
   const preview = previewOver({ evidenceDir: s.w.evidenceDir, raw: decisions });
-  const results = makeService(s.e, preview);
+  // R1.5: a finalização passa pela porta de escrita do livro (como nas rotas); gravado sem o par RUN_* o resultado seria UNLEDGERED_RESULT e congelaria a auditoria
+  const port = decisions.resultsLedger;
+  const results = makeService(s.e, preview, port ? { ledger: port } : {});
   return {
     decisions,
     async run() {
@@ -128,8 +130,10 @@ for (const target of TARGETS) {
     assert.ok(disk.state.synced.slice(syncedBefore).includes(dir), 'depois de restabelecida, a barreira sincronizou de novo, com sucesso, o diretório cujo fsync tinha falhado');
     const [run] = await runsOf(s);
     const records = await ledgerRecords(w);
-    assert.equal(run?.ledgerHead?.ledgerSeq, records.length, 'cita a cabeça atual do livro');
-    assert.equal(run?.ledgerHead?.sha256, records[records.length - 1]?.contentSha256);
+    // R1.5: a cauda é o par RUN_INTENT + RUN_CONFIRMED desta finalização; o resultado cita a cabeça de DECISÕES (cauda − 2, §16.17.7)
+    assert.deepEqual(records.slice(-2).map((r) => r.event), ['RUN_INTENT', 'RUN_CONFIRMED']);
+    assert.equal(run?.ledgerHead?.ledgerSeq, records.length - 2, 'cita a cabeça de decisões comprovada');
+    assert.equal(run?.ledgerHead?.sha256, records[records.length - 3]?.contentSha256);
 
     // controle: o MESMO pedido de gravação recusado em (4) agora é aceito, então a recusa vinha só do travamento
     const accepted = await finalizer(s, disk.ops).decisions.create(ANA, w.auditId, body, clock);

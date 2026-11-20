@@ -134,11 +134,43 @@ const capacityOk = (c: unknown): boolean =>
     (c.usedRecords as number) <= (c.maxRecords as number) && (c.remainingRecords as number) === Math.max(0, (c.maxRecords as number) - (c.usedRecords as number)) &&
     oneOf(c.level, ['OK', 'REVOKE_ONLY', 'EXHAUSTED'] as const) &&
     (c.level === 'OK' ? (c.decisionsAvailable as number) > 0 : c.level === 'REVOKE_ONLY' ? c.decisionsAvailable === 0 && (c.revocationsAvailable as number) > 0 : c.decisionsAvailable === 0 && c.revocationsAvailable === 0));
-const keyCoverageOk = (c: unknown): boolean => c === undefined || (isObj(c) && str(c.keyId) && /^[a-z0-9][a-z0-9-]{3,31}$/.test(c.keyId) && bool(c.covered) && int(c.otherKeyRecords));
+const KEY_ID = /^[a-z0-9][a-z0-9-]{3,31}$/;
+const keyCoverageOk = (c: unknown): boolean => c === undefined || (isObj(c) && str(c.keyId) && KEY_ID.test(c.keyId) && bool(c.covered) && int(c.otherKeyRecords));
+/** As três contradições de RESULTADO congelam tudo (spec §16.17.5, D-21): a vista sai sem `runs`. */
+const RESULT_CONTRADICTIONS = ['UNLEDGERED_RESULT', 'RESULT_DIVERGES', 'RESULT_PUBLISHED_AFTER_ABORT'];
+/**
+ * Família de RESULTADOS na vista do livro (R1.5). Ausente é válido (livro não lido); presente, só com o livro autenticado (PROTECTED ou não resolvido por razão de DECISÃO) e
+ * coerente: confirmados contíguos 1..n; a operação aberta é a próxima; `originKid` só como id PÚBLICO e só em B/C; receita só em PROTECTED com `runs` resolvido; reemissão só
+ * com o recibo removido.
+ */
+const runsOk = (r: unknown, ledger: Rec): boolean => {
+  if (r === undefined) return true;
+  if (!isObj(r) || !oneOf(r.state, ['OK', 'UNRESOLVED']) || !bool(r.receiptReissuable)) return false;
+  if (ledger.state !== 'PROTECTED' && ledger.state !== 'HISTORY_UNRESOLVED') return false;
+  if (typeof ledger.reason === 'string' && RESULT_CONTRADICTIONS.includes(ledger.reason)) return false;
+  if (r.state === 'OK' ? r.reason !== null : !oneOf(r.reason, ['RESULT_RECEIPT_REMOVED', 'RESULT_REGRESSED'])) return false;
+  if (r.receiptReissuable !== (r.reason === 'RESULT_RECEIPT_REMOVED')) return false;
+  if (!Array.isArray(r.confirmed) || !(r.confirmed as unknown[]).every((c, index) => isObj(c) && c.runSeq === index + 1 && isHex64(c.runSha256))) return false;
+  const open = r.open;
+  if (open === null) return true;
+  if (!isObj(open) || !str(open.runOpId) || !/^[0-9a-f]{32}$/.test(open.runOpId) || open.runSeq !== (r.confirmed as unknown[]).length + 1 || !isHex64(open.runSha256)) return false;
+  if (!oneOf(open.phase, ['A', 'B', 'C']) || !int(open.ageMs) || !bool(open.stale) || !bool(open.recoverable)) return false;
+  if (!(open.originKid === null || (str(open.originKid) && KEY_ID.test(open.originKid))) || (open.phase === 'A' && open.originKid !== null)) return false;
+  return open.recoverable !== true || (ledger.state === 'PROTECTED' && r.state === 'OK');
+};
+/** Cabeça de DECISÕES (§16.17.7): ausente é válido; presente, nunca à frente da cabeça do livro, e em PROTECTED nunca nula. */
+const decisionHeadOk = (h: unknown, ledger: Rec): boolean => {
+  if (h === undefined) return true;
+  if (!ledgerHeadOk(h)) return false;
+  if (h === null) return ledger.state !== 'PROTECTED';
+  const top = ledger.head as { ledgerSeq: number } | null;
+  return top !== null && (h as { ledgerSeq: number }).ledgerSeq <= top.ledgerSeq;
+};
 const ledgerOk = (l: unknown): boolean => {
   if (!isObj(l) || !oneOf(l.state, LEDGER_STATES) || !(l.reason === null || (str(l.reason) && /^[A-Z_]{3,40}$/.test(l.reason))) || !ledgerHeadOk(l.head) || !int(l.confirmedDecisions) || !oneOf(l.externalGuard, GUARD_STATUSES)) return false;
   if (!bool(l.recoverable) || !bool(l.receiptReissuable)) return false;
   if (!capacityOk(l.capacity) || !keyCoverageOk(l.keyCoverage)) return false;
+  if (!decisionHeadOk(l.decisionHead, l) || !runsOk(l.runs, l)) return false;
   const open = l.openOperation;
   if (!(open === null || (isObj(open) && str(open.opId) && /^[0-9a-f]{32}$/.test(open.opId) && int(open.decisionSeq) && ['A', 'B', 'C'].includes(open.phase as string) && int(open.ageMs) && bool(open.stale)))) return false;
   if (l.state === 'HISTORY_UNRESOLVED' && l.reason === null) return false;
@@ -213,7 +245,7 @@ const pendingRunOk = (p: unknown): boolean =>
   int(p.seq) &&
   (p.seq as number) >= 1 &&
   str(p.finalizedAt) &&
-  p.receipt === 'MISSING' &&
+  oneOf(p.receipt, ['MISSING', 'PRESENT']) &&
   p.blocksFinalization === true &&
   originOk(p) &&
   (p.origin === 'PROVEN' ? oneOf(p.outcome, OUTCOMES) && percentN(p.coveragePercent) && (p.appliedDecisionCount === null || int(p.appliedDecisionCount)) && strN(p.level) : p.outcome === null && p.level === null && p.coveragePercent === null && p.appliedDecisionCount === null) &&
@@ -224,6 +256,9 @@ const pendingRunOk = (p: unknown): boolean =>
 
 export function isResultsPayload(value: unknown, auditId?: string): value is ResultsList {
   if (!isObj(value) || value.definitive !== true || !str(value.auditId) || (auditId !== undefined && value.auditId !== auditId) || !headN(value.head)) return false;
+  // R1.5: o que confirma os resultados é obrigatório; sem o livro (RECEIPT_ONLY) o recibo É a confirmação, então nunca há pendente "com recibo"
+  if (!oneOf(value.confirmation, CONFIRMATIONS)) return false;
+  if (value.confirmation === 'RECEIPT_ONLY' && isObj(value.pending) && value.pending.receipt === 'PRESENT') return false;
   if (!arr<RunSummary>(value.results, runSummaryOk) || !(value.pending === null || pendingRunOk(value.pending)) || !(value.currentInputSha256 === null || isHex64(value.currentInputSha256)) || !headN(value.currentDecisionsHead)) return false;
   const runs = value.results as RunSummary[];
   // numeração contínua 1..n; só o último é "mais recente"; só ele traz stale/decisionsChanged
@@ -252,8 +287,9 @@ function runOk(run: unknown, auditId?: string): boolean {
   return resultOk(run.result, run.outcome, true);
 }
 
+const CONFIRMATIONS = ['LEDGER', 'RECEIPT_ONLY'] as const;
 export function isRunDetailPayload(value: unknown, auditId?: string, seq?: number): value is RunDetailResponse {
-  if (!isObj(value) || !boolN(value.stale) || !boolN(value.decisionsChanged) || !bool(value.superseded) || !runOk(value.run, auditId)) return false;
+  if (!isObj(value) || !oneOf(value.confirmation, CONFIRMATIONS) || !boolN(value.stale) || !boolN(value.decisionsChanged) || !bool(value.superseded) || !runOk(value.run, auditId)) return false;
   return seq === undefined || (value.run as { seq: number }).seq === seq;
 }
 

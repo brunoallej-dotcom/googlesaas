@@ -43,6 +43,11 @@ export interface RunRef {
   readonly ledgerHead: LedgerHead | null;
   readonly finalizedBy: string;
   readonly originProven: boolean;
+  /**
+   * Id PÚBLICO da chave de ORIGEM que assinou o resultado (`origin.kid` do arquivo; `null` sem etiqueta). Nunca material, nunca prova: só diagnóstico (R1.5; portão do
+   * runbook de chaves, §16.17.4/D-R1-6), exposto na vista apenas para o resultado cujo hash é o da operação aberta (`runs.open.originKid`).
+   */
+  readonly originKid: string | null;
 }
 /** Resultados ANCORADOS (com recibo), em ordem 1..n, e o pendente (a cauda sem recibo, no máximo 1). */
 export interface ResultsRuns {
@@ -91,7 +96,17 @@ export type LedgerReason =
   | 'RESULT_LEDGER_MISMATCH'
   | 'RESULTS_EVIDENCE_UNAVAILABLE'
   | 'GUARD_MISMATCH'
-  | 'GUARD_UNAVAILABLE';
+  | 'GUARD_UNAVAILABLE'
+  /*
+   * Contradições de RESULTADO julgadas SÓ sobre R1 (spec §16.17.5; D-11, D-21): podem ser o único sinal de livro truncado ou refeito, então CONGELAM também as decisões
+   * (`HISTORY_UNRESOLVED`). Não confundir com `PUBLISHED_AFTER_ABORT` (decisões).
+   */
+  /** `sNNNN` em R1 sem `RUN_INTENT` vivo que o explique (resultado forjado, v1 em auditoria protegida, cauda `RUN_*` removida). */
+  | 'UNLEDGERED_RESULT'
+  /** `sNNNN` em R1 com hash diferente do `RUN_CONFIRMED(k)` ou do `RUN_INTENT` aberto (arquivo trocado, outro conteúdo no nome). */
+  | 'RESULT_DIVERGES'
+  /** `sNNNN` com o `runSha256` de um `RUN_ABORTED(k)` e sem `RUN_INTENT` vivo com esse hash (dono lento que publicou depois do aborto). */
+  | 'RESULT_PUBLISHED_AFTER_ABORT';
 
 /** `A`: INTENT sem entrada nem recibo. `B`: entrada igual ao INTENT, sem recibo (pendente). `C`: entrada e recibo presentes, sem CONFIRMED. */
 export type OperationPhase = 'A' | 'B' | 'C';
@@ -149,6 +164,12 @@ export interface OpenRun {
   readonly stale: boolean;
   /** Há receita segura agora: fase A vencida (qualquer operador aborta) ou B/C com origem comprovada (só o autor conclui). Só em `PROTECTED` e com `runs.state = OK`. */
   readonly recoverable: boolean;
+  /**
+   * R1.5 (pendência da R1.4, D-R1-6): id PÚBLICO da chave de origem do resultado em B/C — o `origin.kid` do `sNNNN` cujo hash é EXATAMENTE o `runSha256` deste `RUN_INTENT`
+   * (o livro amarra o hash, logo também a etiqueta). `null` na fase A, sem etiqueta ou quando o que está no nome não é o resultado da operação. Para o portão do runbook
+   * ("nenhuma chave de origem aposentada vence com resultado em B/C assinado por ela"); nunca material de chave, nunca identidade de pessoa.
+   */
+  readonly originKid: string | null;
 }
 /** Família de resultados no livro (spec §16.17.2): só hashes e posições, nunca identidade. */
 export interface LedgerRuns {
@@ -347,7 +368,19 @@ export type ResultsLedgerContext =
   /** `concludable` (R1.4): esta sessão tem a autorização de UMA conclusão B/C (só o autor, com receita). Sem ela, o serviço de resultados recusa ANTES de gravar qualquer coisa. */
   | { readonly kind: 'OK'; readonly session: unknown; readonly view: LedgerView; readonly concludable: boolean }
   | { readonly kind: 'REFUSED'; readonly refusal: RunRefusal };
+/**
+ * Leitura do livro para as CONSULTAS de resultados (R1.5; spec §16.17.9, D-14): somente leitura, na ordem da §16.17.8 (R1 → guarda → livro → decisões → R2 condicional), com a
+ * releitura única das razões transitórias de decisão e SEM depender das evidências (RL-27). `VIEW` traz a vista em qualquer estado (quem consulta decide o que ela permite);
+ * as demais dizem que a vista NÃO pôde ser montada — dependência ilegível nunca vira "sem livro" nem `NOT_REQUIRED`: `UNAVAILABLE` (disponibilidade: armazenamento das
+ * decisões ou configuração) ⇒ 503; `INTEGRITY` (o histórico de decisões não passa na verificação) ⇒ 409. Frases fixas, sem caminho.
+ */
+export type ResultsLedgerRead =
+  | { readonly kind: 'VIEW'; readonly view: LedgerView }
+  | { readonly kind: 'UNAVAILABLE'; readonly issues: readonly string[] }
+  | { readonly kind: 'INTEGRITY'; readonly issues: readonly string[] };
 export interface ResultsLedgerPort {
+  /** Consultas de resultados (R1.5): a vista do livro, somente leitura e independente das evidências. Nunca grava, nunca autoriza gravação. */
+  view(input: { readonly auditId: string; readonly nowIso: string }): Promise<ResultsLedgerRead>;
   /** Passo 1: contexto do livro e a receita da fase A (vencida ⇒ `RUN_ABORTED` depois da releitura TOCTOU; recente ⇒ espera limitada e então `LEDGER_OPERATION_IN_PROGRESS`). */
   context(input: { readonly auditId: string; readonly actor: string; readonly nowIso: string }): Promise<ResultsLedgerContext>;
   /** Passo 6: `RUN_INTENT` (ANTES de publicar o resultado). */
