@@ -145,7 +145,7 @@ test('T-008 pelo CLI: sign e close-key com --heapsnapshot-signal em execArgv ou 
 
 const hasTsx = fs.existsSync(TSX);
 function realRun(args: readonly string[], env: Readonly<Record<string, string>>): { readonly status: number | null; readonly stderr: string } {
-  const result = spawnSync(TSX, args, { cwd: ROOT, env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', ...env }, encoding: 'utf8', timeout: 60_000 });
+  const result = spawnSync(TSX, args, { cwd: ROOT, env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', ...env } as unknown as NodeJS.ProcessEnv, encoding: 'utf8', timeout: 60_000 });
   return { status: result.status, stderr: result.stderr };
 }
 

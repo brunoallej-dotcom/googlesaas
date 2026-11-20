@@ -472,7 +472,7 @@ test('revisão da W4.5 (MINOR): os tetos valem DURANTE a enumeração (opendir i
   assert.equal(over.ok ? 'OK' : over.code, 'CLOSE_RECEIPTS_INVALID', 'limite + 1 recusado');
   assert.deepEqual(limits, [3], 'o teto vai para a enumeração (não é conferido depois de listar tudo)');
   const rootLimits: number[] = [];
-  const crowded: CloseFsOps = { ...nodeCloseFsOps, listDir: async (target, limit) => (rootLimits.push(limit), null) };
+  const crowded: CloseFsOps = { ...nodeCloseFsOps, listDir: async (_target, limit) => (rootLimits.push(limit), null) };
   const refusal = refused(world, await runCloseKey(world.input(), closeDeps(world, { closeFs: crowded })), 'CLOSE_SERVER_COPY_INVALID', 'raiz da cópia acima do teto');
   assert.equal(refusal.chainReason, 'TOO_MANY_AUDITS');
   assert.deepEqual(rootLimits, [MAX_SERVER_ENTRIES], 'a raiz é enumerada com o teto');
@@ -551,18 +551,20 @@ test('criação exclusiva: _closures/<R>.json já existente ⇒ CLOSE_ALREADY_EX
 });
 
 test('cópia do servidor: --seals-dir inexistente ou arquivo, erro de E/S ao ler uma posição, ou nome de manifesto em outra caixa ⇒ CLOSE_SERVER_COPY_INVALID antes da confirmação e da chave', async () => {
-  const cases: ReadonlyArray<readonly [string, (world: CloseWorld) => { readonly sealsDir?: string; readonly fs?: BytesFsOps }]> = [
+  const cases: ReadonlyArray<readonly [string, (world: CloseWorld) => { readonly sealsDir?: string; readonly fs?: BytesFsOps; readonly closeFs?: CloseFsOps }]> = [
     ['inexistente', (world) => ({ sealsDir: path.join(world.sealsDir, 'nao-existe') })],
     ['arquivo', () => ({ sealsDir: writeReceipt(tmpDir('lack-arq-'), 'x.json', {}) })],
     ['E/S ao ler um manifesto', () => ({ fs: { ...nodeFsOps, readFile: async () => Promise.reject(errno('EIO')) } })],
-    ['E/S ao listar a cópia', (world) => ({ fs: { ...nodeFsOps, readdir: async (dir: string) => (dir === fs.realpathSync(world.sealsDir) ? Promise.reject(errno('EACCES')) : nodeFsOps.readdir(dir)) } })],
+    // revisão da W4.5: a raiz é enumerada com teto pelo disco do close-key (opendir iterativo), não pela fotografia
+    ['E/S ao listar a cópia', (world) => ({ closeFs: { ...nodeCloseFsOps, listDir: async (dir: string, limit: number) => (dir === fs.realpathSync(world.sealsDir) ? Promise.reject(errno('EACCES')) : nodeCloseFsOps.listDir(dir, limit)) } })],
+    ['E/S ao ler uma auditoria', (world) => ({ fs: { ...nodeFsOps, readdir: async (dir: string) => (dir === path.join(fs.realpathSync(world.sealsDir), X) ? Promise.reject(errno('EACCES')) : nodeFsOps.readdir(dir)) } })],
     ['nome em outra caixa', (world) => (fs.copyFileSync(path.join(world.sealsDir, X, 'seal-0001.json'), path.join(world.sealsDir, X, 'SEAL-0002.json')), {})],
   ];
   for (const [label, setup] of cases) {
     const world = closeWorld();
     writeReceipts(world.receiptsDir, chainOn(world.sealsDir, X, [world.retired]));
-    const { sealsDir, fs: ops } = setup(world);
-    const deps = closeDeps(world, ops ? { fs: ops } : {});
+    const { sealsDir, fs: ops, closeFs } = setup(world);
+    const deps = closeDeps(world, { ...(ops ? { fs: ops } : {}), ...(closeFs ? { closeFs } : {}) });
     refused(world, await runCloseKey(world.input(sealsDir ? { sealsDir } : {}), deps), 'CLOSE_SERVER_COPY_INVALID', label);
     assert.deepEqual(deps.order(), [], `${label}: nem confirmação nem chave`);
   }

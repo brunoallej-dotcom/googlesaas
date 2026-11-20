@@ -387,7 +387,9 @@ test('argumentos: opção desconhecida na forma --x=valor ecoa SÓ o nome da op�
 
 test('subcomando sign (W4.4) com argumentos incompletos: erro de uso do sign, sem ler nada (o sign tem testes próprios em link-audit-seal-sign-*.test.ts)', async () => {
   for (const json of [false, true]) {
-    const run = await runCli(['sign', '--audit', 'auditoria-teste-0001', '--package', '/nao/existe.json', ...(json ? ['--json'] : [])]);
+    // W4.5 (T-008): o execArgv deste processo é o carregador dos TESTES e o node --test põe NODE_TEST_CONTEXT no ambiente, que a barreira do runtime
+    // recusaria; o do produto tem teste em processo real
+    const run = await runCli(['sign', '--audit', 'auditoria-teste-0001', '--package', '/nao/existe.json', ...(json ? ['--json'] : [])], undefined, { sign: { execArgv: [], env: { PATH: '/usr/bin' } } });
     assert.equal(run.code, 1);
     assert.equal(json ? jsonOf(run).code : 'USAGE', 'USAGE');
     if (!json) assert.match(run.stderr, /Uso: npm run link-audit:seal -- sign/);
