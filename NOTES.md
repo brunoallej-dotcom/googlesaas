@@ -1,6 +1,6 @@
 # GMN Intelligence Platform: notas do projeto
 
-Uso **interno** (não é SaaS). Documentação detalhada por fase em `docs/`. Última atualização: 20/11/2026 (**Onda 6C ENCERRADA** em 16/11/2026; **P1 em andamento**: W0–W3 concluídas; **R1 e W4 em fatias** (R1.1–R1.4 e W4.1–W4.4 na `main`; R1.5 e W4.5 em andamento); correção antecipada do defeito RL-32 do livro; repositório **público** desde 17/11/2026, com proteções; plano em `docs/plan/implementation-waves.md`; ver o fim do arquivo).
+Uso **interno** (não é SaaS). Documentação detalhada por fase em `docs/`. Última atualização: 20/11/2026 (**Onda 6C ENCERRADA** em 16/11/2026; **P1 em andamento**: W0–W3 concluídas; **R1 e W4 em fatias** (R1.1–R1.5 e W4.1–W4.5 na `main`; W4.6 em andamento); correção antecipada do defeito RL-32 do livro; repositório **público** desde 17/11/2026, com proteções; plano em `docs/plan/implementation-waves.md`; ver o fim do arquivo).
 
 ## Baseline Git local e versão (28/10/2026)
 - **Atualização 07/11/2026:** o repositório agora tem o remoto `origin` (`https://github.com/brunoallej-dotcom/googlesaas.git`); os PRs #1 (`765a93a`, Onda 6B), #2 (`24c19e9`, Onda 6C) e #3 (`7013b2a`, bootstrap/CI/Node 22) estão mergeados na `main`; tag `v1.0.1` mantida. O texto abaixo ("sem remote") é o registro histórico de 28/10/2026.
@@ -270,7 +270,9 @@ Endurecimento de código (antes de expor): bypass `GMN_AUTH_DISABLED` desligado 
   - **W4.4** (#44, `45624ed`): CLI `sign` com chave K1 (PKCS#8 cifrada, custódia pelo descritor via `/proc/self/fd`), frase só no terminal sem eco, barreiras de argv e ambiente, confirmação e recibo. A revisão bloqueou por TOCTOU na custódia; depois, três MINOR. O gitleaks derrubou o CI duas vezes por falso positivo em teste (memória do manager: sentinelas não se chamam `secret`, moldura PEM montada por partes).
   - **R1.4** (#46, `3c25492`): conclusão de B/C só pelo autor, fechos intercalados `RUN_*` e portão do runbook para a chave de origem aposentada com resultado em B/C (D-R1-6). A revisão (MINOR) pegou uma mensagem que prometia concluir por reenvio depois de um `RUN_ABORTED` alheio; agora a recusa é `RESULT_INTEGRITY` (`RUN_CLOSED` no livro), sem código novo.
   - **Dependabot #47** (`9a69acf`): `next` 15.5.28 → 15.5.29 (três avisos de segurança moderados). Só código na `main`; **nada foi implantado**.
-- **Em andamento:** R1.5 (leituras estritas pelo livro, razões novas, `RECEIPT_ONLY`, DTOs, `kid` de origem da operação B/C na vista) e W4.5 (autoteste do passo 14 e `close-key`; a revisão bloqueou por frase exposta a diagnóstico do runtime via `NODE_OPTIONS` e TOCTOU na pasta de recibos; correção em curso).
+  - **W4.5** (#48, `e4a10a6`): autoteste do passo 14 com a lista completa, os fechos e `acceptedVersions: [2]`; subcomando `close-key` (heads só dos recibos externos, `UNKNOWN_SEAL_ON_SERVER` excluída, gravação exclusiva em `_closures/<R>.json`). A revisão **bloqueou** (frase exposta a diagnóstico do runtime via `NODE_OPTIONS`/`execArgv`; TOCTOU na pasta de recibos); corrigido com barreira `SIGN_RUNTIME_UNSAFE` e recibos lidos por descritor. Preload via `NODE_OPTIONS=--require` ficou como limite declarado; o controle forte é critério da W4.6/W5 (`env -i`, `--permission`, `/proc/self/cmdline` e `environ`).
+  - **R1.5** (este PR): leituras estritas pelo livro (`list`/`get` conferem o hash de cada objeto contra o `RUN_CONFIRMED`, releitura limitada), contradições `UNLEDGERED_RESULT`/`RESULT_DIVERGES`/`RESULT_PUBLISHED_AFTER_ABORT`, `confirmation: 'LEDGER' | 'RECEIPT_ONLY'`, 503 × 409, leituras independentes das evidências (RL-27), `runs.open.originKid` na vista (o runbook §2.1 passa a usá-lo) e a interface.
+- **Em andamento:** W4.6 (artefato único do `sign`: núcleo do verificador separado, esbuild reprodutível, lista literal de imports, `node --permission` e hash versionado no CI). Depois: R1.6 (reemissão do recibo de resultado e sync estrito do reenvio confirmado), R2, W5 e W6 (W6 só com autorização escrita).
 - **Pergunta nova para o responsável (junto da §13.3):** operador = custodiante não marca `requiresLaterReview`; a spec não trata o caso.
 
 ## Roadmap P1 (espelho de `docs/plan/implementation-waves.md`, que é a fonte da verdade)
@@ -281,8 +283,8 @@ Endurecimento de código (antes de expor): bypass `GMN_AUTH_DISABLED` desligado 
 | W1 | Função única `basis → EvidenceToProve[]`, esquemas e `packageSha256` | ✅ mergeada (PR #24, `bd07e35`) |
 | W2 | CLI `export` (somente leitura) | ✅ mergeada (PR #29, `a5bd321`) |
 | W3 | Verificador `v2` + contrato próprio | ✅ concluída (contrato PR #25; W3.1–W3.5: #30, #32, #33, #34, #35; `16ff609`) |
-| R1 | Confirmação de resultados pelo livro (ADR-0002) | 🟡 R1.1 (#39), R1.2 (#41), R1.3 (#45) e R1.4 (#46) mergeadas; R1.5 em andamento |
+| R1 | Confirmação de resultados pelo livro (ADR-0002) | 🟡 R1.1 (#39), R1.2 (#41), R1.3 (#45), R1.4 (#46) e R1.5 mergeadas; R1.6 a seguir |
 | R2 | Proveniência registrada no resultado (portão antes do primeiro resultado de produção) | ⬜ |
-| W4 | CLI `sign` (manifesto `v2`) | 🟡 W4.1 (#38), W4.2 (#40), W4.3 (#42) e W4.4 (#44) mergeadas; W4.5 em andamento |
+| W4 | CLI `sign` (manifesto `v2`) | 🟡 W4.1 (#38), W4.2 (#40), W4.3 (#42), W4.4 (#44) e W4.5 (#48) mergeadas; W4.6 em andamento |
 | W5 | Procedimento, dossiê e ensaio em homologação | ⬜ |
 | W6 | Coleta LIVE nova da TUVAPLAST (autorização escrita específica) | ⬜ |
