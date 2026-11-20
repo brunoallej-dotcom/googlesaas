@@ -228,7 +228,22 @@ export function parseCloseKeyArgs(tokens: readonly string[]): CloseKeyArgs | Sig
  * NODE_PATH…) são recusa; `NODE_ENV` não muda nada no comando e passa. Inspector: sem importar `node:inspector` (fora da lista RS-14), ele só liga
  * na partida por essas opções; `process.debugPort` existe sempre (9229) e não indica nada. Limite declarado: outro processo do MESMO usuário pode
  * ligá-lo depois (SIGUSR1) ou ler a memória (`/proc/<pid>/mem`); isso está fora da garantia (estação dedicada, W5).
+ *
+ * W4.6 (confirmação da revisão da W4.5, critério ii): uma pré-carga roda ANTES do comando e pode limpar `process.env` e `process.execArgv`. A barreira
+ * confere também o bloco ORIGINAL do exec (`/proc/self/cmdline` e `/proc/self/environ`), que isso não altera: na linha original, só as opções do node
+ * ANTES do script (o script e os argumentos do comando nunca são decodificados), com a mesma lista permitida; no ambiente original, só os NOMES
+ * (nenhum valor é decodificado), com as regras do §8.1 e do `NODE_*`. Bloco ilegível ⇒ recusa (falha fechada). No ARTEFATO ÚNICO, além disso: sem o
+ * carregador do `tsx`; `--permission` (ou `--experimental-permission`) e `--disable-sigusr1` obrigatórios em `execArgv` e na linha original; ambiente
+ * VAZIO (`env -i`) no original e em `process.env`. Limite declarado: código que roda antes da barreira (pré-carga, `LD_PRELOAD`) pode até reescrever a
+ * memória do processo; a barreira pega a configuração que ficou no bloco do exec, não uma estação comprometida (W5).
  */
+
+/** O bloco original do exec (Linux: `/proc/self/cmdline` e `/proc/self/environ`, registros terminados por NUL); estrutural, sem disco aqui. */
+export interface ExecBlockReader {
+  cmdline(): Promise<Uint8Array>;
+  environ(): Promise<Uint8Array>;
+}
+
 export interface RuntimeFacts {
   /** `process.execArgv` (injetável). */
   readonly execArgv: readonly string[];
@@ -238,9 +253,16 @@ export interface RuntimeFacts {
   readonly projectRoot: string;
   /** Caminho real (só metadados; o da custódia da chave, `KeyFileOps.realpath`). */
   readonly realpath: (target: string) => Promise<string>;
+  /** W4.6: o bloco ORIGINAL do exec (padrão do CLI: `/proc/self`, `sign-runtime.ts`). */
+  readonly execBlock: ExecBlockReader;
+  /** W4.6: rodando como o ARTEFATO ÚNICO (sem carregador; modelo de permissões, `--disable-sigusr1` e ambiente vazio obrigatórios). */
+  readonly artifact: boolean;
 }
 
 const PERMISSION_FLAGS: ReadonlySet<string> = new Set(['--permission', '--experimental-permission', '--disable-sigusr1']);
+/** W4.6: o artefato exige o modelo de permissões (um dos dois nomes) e o inspector desligado para SIGUSR1. */
+const PERMISSION_MODEL_FLAGS: ReadonlySet<string> = new Set(['--permission', '--experimental-permission']);
+const DISABLE_SIGUSR1 = '--disable-sigusr1';
 /** As duas opções do par do carregador. Por expressão (`r[e]quire`): a guarda textual de carregamento dinâmico do teste de isolamento recusa a palavra solta. */
 const PRELOAD_CJS = /^--r[e]quire$/;
 const PRELOAD_ESM = /^--import$/;
@@ -255,6 +277,22 @@ const runtimeUnsafe = (why: string): SignRefusal => ({
   message: `${why}: elas podem despejar a memória do processo (onde estaria a frase da chave) ou abrir um depurador (T-008). Rode o comando num shell limpo, pelo npm run link-audit:seal (ou pelo artefato da W4.6), sem NODE_OPTIONS e sem opções extras do node. ${RUNTIME_NOTHING}`,
 });
 const EXEC_ARGV_UNSAFE = runtimeUnsafe('O Node foi iniciado com opções além do carregador do projeto e do modelo de permissões (diagnóstico, depuração, perfil ou pré-carga); os valores não são ecoados');
+const ARTIFACT_LINE = 'rode o artefato pela linha fixada no runbook: env -i <node por caminho absoluto> --disable-sigusr1 --permission --allow-fs-read=… --allow-fs-write=… <artefato> <subcomando>';
+const EXEC_BLOCK_UNREADABLE: SignRefusal = {
+  ok: false,
+  code: 'SIGN_RUNTIME_UNSAFE',
+  message: `Não foi possível ler o bloco ORIGINAL do exec (/proc/self/cmdline e /proc/self/environ): sem ele a barreira do runtime não é provada (sistema sem /proc, fora do Linux, ou sob --permission sem --allow-fs-read para esses dois arquivos). ${RUNTIME_NOTHING}`,
+};
+const ARTIFACT_NO_PERMISSION: SignRefusal = {
+  ok: false,
+  code: 'SIGN_RUNTIME_UNSAFE',
+  message: `O artefato único só roda sob o modelo de permissões do Node (--permission, com --allow-fs-read/--allow-fs-write estreitos) e com --disable-sigusr1, nas opções do node e na linha original do exec: ${ARTIFACT_LINE}. ${RUNTIME_NOTHING}`,
+};
+const artifactEnvNotEmpty = (names: readonly string[]): SignRefusal => {
+  const shown = names.filter((name) => ECHOABLE_ENV_NAME.test(name)).slice(0, MAX_ECHOED_ENV_NAMES);
+  const list = shown.length > 0 ? ` (${shown.join(', ')}${names.length > shown.length ? ', …' : ''}; só os nomes são lidos)` : '';
+  return { ok: false, code: 'SIGN_RUNTIME_UNSAFE', message: `O artefato único só roda com o ambiente VAZIO (env -i); há variáveis no ambiente${list}: ${ARTIFACT_LINE}. ${RUNTIME_NOTHING}` };
+};
 
 /** Caminho de uma URL `file://` absoluta, sem `node:url` (fora da lista RS-14); outra forma ⇒ `null`. */
 function fileUrlPath(url: string): string | null {
@@ -280,14 +318,13 @@ async function isProjectLoader(preflight: string | undefined, loaderUrl: string 
   }
 }
 
-/** `execArgv` só com a lista permitida (cabeçalho acima). */
-async function execArgvAllowed(facts: RuntimeFacts): Promise<boolean> {
-  const tokens = facts.execArgv;
+/** Opções do node (as de `execArgv` ou as da linha original) só com a lista permitida (cabeçalho acima); no artefato, sem o carregador. */
+async function execArgvAllowed(tokens: readonly string[], facts: RuntimeFacts): Promise<boolean> {
   let loaderSeen = false;
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index] ?? '';
     if (PERMISSION_FLAGS.has(token) || PERMISSION_PATHS.test(token)) continue;
-    if (!PRELOAD_CJS.test(token) || loaderSeen || !PRELOAD_ESM.test(tokens[index + 2] ?? '')) return false;
+    if (facts.artifact || !PRELOAD_CJS.test(token) || loaderSeen || !PRELOAD_ESM.test(tokens[index + 2] ?? '')) return false;
     if (!(await isProjectLoader(tokens[index + 1], tokens[index + 3], facts))) return false;
     loaderSeen = true;
     index += 3;
@@ -295,18 +332,104 @@ async function execArgvAllowed(facts: RuntimeFacts): Promise<boolean> {
   return true;
 }
 
+/** `NODE_*` (salvo `NODE_ENV`) entre os nomes ⇒ recusa citando até 3 nomes. */
+function nodeEnvRefusal(names: readonly string[], where: string): SignRefusal | null {
+  const nodeNames = names.filter((name) => NODE_ENV_NAME.test(name) && !HARMLESS_NODE_ENV.has(name));
+  if (nodeNames.length === 0) return null;
+  const shown = nodeNames.filter((name) => ECHOABLE_ENV_NAME.test(name)).slice(0, MAX_ECHOED_ENV_NAMES);
+  return runtimeUnsafe(`Há configuração do Node no ambiente${where} (${shown.join(', ')}${nodeNames.length > shown.length ? ', …' : ''}; só os nomes são lidos)`);
+}
+
+const NUL_BYTE = 0;
+const EQUALS_BYTE = 0x3d;
+const DASH_BYTE = 0x2d;
+const LATIN1 = new TextDecoder('latin1');
+const UTF8 = new TextDecoder('utf-8');
+
+/** Os registros (subarrays, sem copiar nem decodificar) de um bloco terminado por NUL; um último registro sem NUL também conta. */
+function nulRecords(bytes: Uint8Array): Uint8Array[] {
+  const records: Uint8Array[] = [];
+  let start = 0;
+  for (let index = 0; index < bytes.length; index += 1) {
+    if (bytes[index] !== NUL_BYTE) continue;
+    records.push(bytes.subarray(start, index));
+    start = index + 1;
+  }
+  if (start < bytes.length) records.push(bytes.subarray(start));
+  return records;
+}
+
+/** Só os NOMES do ambiente original: os bytes antes do primeiro `=` de cada registro (o registro inteiro, se não houver `=`). Valores nunca. */
+export function environNames(bytes: Uint8Array): string[] {
+  return nulRecords(bytes)
+    .filter((record) => record.length > 0)
+    .map((record) => {
+      const equals = record.indexOf(EQUALS_BYTE);
+      return LATIN1.decode(equals < 0 ? record : record.subarray(0, equals));
+    });
+}
+
+/**
+ * As opções do node na linha ORIGINAL: os registros depois do programa e ANTES do script (o primeiro registro que não começa com `-`). O script e
+ * os argumentos do comando nunca são decodificados. Os valores do par do carregador (`--require <arquivo>`, `--import <url>`) vão junto para a
+ * conferência; qualquer outra opção com valor separado é recusada pela lista permitida. `null` = bloco vazio ou sem o nome do programa.
+ */
+export function cmdlineNodeOptions(bytes: Uint8Array): string[] | null {
+  const records = nulRecords(bytes);
+  if (records.length === 0 || (records[0] as Uint8Array).length === 0) return null;
+  const options: string[] = [];
+  for (let index = 1; index < records.length; index += 1) {
+    const record = records[index] as Uint8Array;
+    if (record[0] !== DASH_BYTE) break;
+    const token = UTF8.decode(record);
+    options.push(token);
+    const value = records[index + 1];
+    if ((PRELOAD_CJS.test(token) || PRELOAD_ESM.test(token)) && value !== undefined) {
+      options.push(UTF8.decode(value));
+      index += 1;
+    }
+  }
+  return options;
+}
+
+/** O bloco original lido e interpretado: opções do node antes do script e nomes do ambiente; qualquer falha ⇒ `null` (recusa fechada). */
+async function originalExec(reader: ExecBlockReader): Promise<{ readonly options: readonly string[]; readonly envNames: readonly string[] } | null> {
+  try {
+    const [cmdline, environ] = await Promise.all([reader.cmdline(), reader.environ()]);
+    const options = cmdline instanceof Uint8Array && environ instanceof Uint8Array ? cmdlineNodeOptions(cmdline) : null;
+    return options === null ? null : { options, envNames: environNames(environ) };
+  } catch {
+    return null;
+  }
+}
+
+/** No artefato, o modelo de permissões e `--disable-sigusr1` estão nas opções (de `execArgv` ou da linha original). */
+const hasArtifactFlags = (tokens: readonly string[]): boolean => tokens.some((token) => PERMISSION_MODEL_FLAGS.has(token)) && tokens.includes(DISABLE_SIGUSR1);
+
+/** O bloco original (W4.6): ambiente original (§8.1, `NODE_*`), opções da linha original e, no artefato, linha e ambiente do runbook. */
+async function originalExecRefusal(facts: RuntimeFacts): Promise<SignRefusal | null> {
+  const original = await originalExec(facts.execBlock);
+  if (original === null) return EXEC_BLOCK_UNREADABLE;
+  const envRefusal = secretEnvRefusal(original.envNames) ?? nodeEnvRefusal(original.envNames, ' ORIGINAL do processo (/proc/self/environ)');
+  if (envRefusal) return envRefusal;
+  if (!(await execArgvAllowed(original.options, facts))) return EXEC_ARGV_UNSAFE;
+  if (!facts.artifact) return null;
+  if (!hasArtifactFlags(facts.execArgv) || !hasArtifactFlags(original.options)) return ARTIFACT_NO_PERMISSION;
+  const names = [...new Set([...original.envNames, ...facts.envNames])];
+  return names.length > 0 ? artifactEnvNotEmpty(names) : null;
+}
+
 /**
  * Barreira do runtime (revisão da W4.5, T-008), no CLI do `sign` e do `close-key` logo depois da barreira de ambiente do §8.1 e antes do analisador:
  * nada é lido, o terminal não é tocado e a frase nunca é pedida. Recusa `SIGN_RUNTIME_UNSAFE` (código 3) citando só NOMES de variáveis. Nunca lança.
+ * W4.6: confere também o bloco ORIGINAL do exec e, no artefato único, a linha e o ambiente do runbook (cabeçalho acima).
  */
 export async function runtimeRefusal(facts: RuntimeFacts): Promise<SignRefusal | null> {
   try {
-    const nodeNames = facts.envNames.filter((name) => NODE_ENV_NAME.test(name) && !HARMLESS_NODE_ENV.has(name));
-    if (nodeNames.length > 0) {
-      const shown = nodeNames.filter((name) => ECHOABLE_ENV_NAME.test(name)).slice(0, MAX_ECHOED_ENV_NAMES);
-      return runtimeUnsafe(`Há configuração do Node no ambiente (${shown.join(', ')}${nodeNames.length > shown.length ? ', …' : ''}; só os nomes são lidos)`);
-    }
-    return (await execArgvAllowed(facts)) ? null : EXEC_ARGV_UNSAFE;
+    const current = nodeEnvRefusal(facts.envNames, '');
+    if (current) return current;
+    if (!(await execArgvAllowed(facts.execArgv, facts))) return EXEC_ARGV_UNSAFE;
+    return await originalExecRefusal(facts);
   } catch {
     return EXEC_ARGV_UNSAFE;
   }
