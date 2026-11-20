@@ -6,6 +6,7 @@ import { runSealCli } from '../../scripts/link-audit-seal';
 import type { BytesFsOps } from '../../src/lib/link-audit/snapshot-store';
 import type { CandidatePackage } from '../../src/lib/link-audit-attestation';
 import type { ExecBlockReader } from '../../src/lib/link-audit-attestation/sign-args';
+import type { FsyncProbeResult } from '../../src/lib/link-audit-attestation/sign-runtime';
 import type { KeyFileOps } from '../../src/lib/link-audit-attestation/sign-key';
 import type { CloseFsOps } from '../../src/lib/link-audit-attestation/sign-receipts';
 import { tmpDir } from './link-audit-evidence-fixtures';
@@ -321,6 +322,8 @@ export interface SignCliOptions {
    * EXATAMENTE com `execArgv` e `env` acima (o do processo de teste tem o carregador dos TESTES e o NODE_TEST_CONTEXT do `node --test`).
    */
   readonly execBlock?: ExecBlockReader;
+  /** W4.6 (decisão 3): a sondagem antecipada de fsync na raiz de `--seals-dir`. Padrão: a real (`nodeFsyncProbe`), na pasta temporária do teste. */
+  readonly fsyncProbe?: (dir: string) => Promise<FsyncProbeResult>;
   /** W4.5: o disco do `close-key` (pasta de recibos por descritor) e o usuário dono esperado. */
   readonly closeFs?: CloseFsOps;
   readonly uid?: number;
@@ -365,6 +368,7 @@ export async function runSealSubcommand(subcommand: 'sign' | 'close-key', argv: 
     ...(options.keyFs ? { keyFs: options.keyFs } : {}),
     execArgv,
     execBlock: options.execBlock ?? faithfulExecBlock(execArgv, env, [subcommand, ...argv]),
+    ...(options.fsyncProbe ? { fsyncProbe: options.fsyncProbe } : {}),
     ...(options.closeFs ? { closeFs: options.closeFs } : {}),
     ...(options.uid !== undefined ? { uid: options.uid } : {}),
   };

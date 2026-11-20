@@ -6,6 +6,7 @@ import test from 'node:test';
 import { nodeFsOps, type BytesFsOps } from '../src/lib/link-audit/snapshot-store';
 import { runtimeRefusal, type ExecBlockReader } from '../src/lib/link-audit-attestation/sign-args';
 import { nodeKeyFileOps, type KeyFileOps } from '../src/lib/link-audit-attestation/sign-key';
+import { nodeFsyncProbe } from '../src/lib/link-audit-attestation/sign-runtime';
 import { registerCleanup, tmpDir } from './helpers/link-audit-evidence-fixtures';
 import { cliWorld, runSealSubcommand, type SignCliRun } from './helpers/link-audit-seal-sign-cli-fixtures';
 
@@ -228,6 +229,50 @@ test('W4.6 (ii) pelo CLI: o padrão do bloco original é /proc/self; injetado co
     assert.equal(data.calls.length, 0, `${subcommand}: nada lido`);
     assert.ok(run.stderr.includes('NODE_OPTIONS') && !run.stderr.includes('heapsnapshot'));
   }
+});
+
+/* =============================================================================================================== W4.6 (decisão 3): sondagem de fsync */
+
+test('W4.6 (decisão 3): sondagem antecipada de fsync na raiz de --seals-dir; "blocked" (o node bloqueia fsync sob --permission) ⇒ SIGN_RUNTIME_NO_FSYNC (código 3) no sign e no close-key, DEPOIS do analisador e ANTES de ler qualquer entrada, da confirmação, da custódia e da frase; "ok" e "unprobed" seguem', async () => {
+  const world = cliWorld();
+  const closeArgv = ['--retired-key-id', 'ek-cli-fecho-r', '--seals-dir', world.sealsDir, '--receipts-dir', tmpDir('lasr-rec-'), '--key-id', world.key.keyId, '--key-source', `file:${world.key.keyPath}`, '--custodian', 'CUST-01', '--trust-keys', world.key.ring];
+  for (const [subcommand, argv] of [['sign', world.argv()], ['close-key', closeArgv]] as const) {
+    const probed: string[] = [];
+    const data = spyOps<BytesFsOps>(nodeFsOps);
+    const key = spyOps<KeyFileOps>(nodeKeyFileOps);
+    const run = await runSealSubcommand(subcommand, argv, { typed: world.typed(), fs: data.ops, keyFs: key.ops, fsyncProbe: async (dir) => (probed.push(dir), 'blocked') });
+    assert.equal(run.code, 3, `${subcommand}: ${run.stderr}`);
+    const at = run.err.findIndex((line) => line.startsWith('RECUSADO: '));
+    assert.equal(run.err[at + 1], 'Código: SIGN_RUNTIME_NO_FSYNC', subcommand);
+    assert.match(run.err[at] ?? '', /bloqueia fsync sob --permission/);
+    assert.match(run.err[at] ?? '', /versão do node fixada no runbook/);
+    assert.match(run.err[at] ?? '', /Nada foi lido nem assinado/);
+    assert.deepEqual(probed, [world.sealsDir], `${subcommand}: a sonda recebe a raiz de --seals-dir`);
+    assert.equal(data.calls.length, 0, `${subcommand}: nenhuma entrada lida`);
+    assert.ok(key.calls.every((call) => call.op === 'realpath'), `${subcommand}: da chave, nada`);
+    assert.deepEqual([run.terminal.rawCalls, run.terminal.reads], [[], 0], `${subcommand}: terminal intocado (nem confirmação nem frase)`);
+    const json = await runSealSubcommand(subcommand, [...argv, '--json'], { typed: world.typed(), fsyncProbe: async () => 'blocked' });
+    assert.equal((JSON.parse(json.out[0] ?? '{}') as Record<string, unknown>).code, 'SIGN_RUNTIME_NO_FSYNC');
+    const usageFirst = await runSealSubcommand(subcommand, ['--foo'], { typed: world.typed(), fsyncProbe: async () => 'blocked' });
+    assert.equal(usageFirst.code, 1, `${subcommand}: o analisador vem antes da sonda`);
+    const barrierFirst = await runSealSubcommand(subcommand, argv, { typed: world.typed(), execArgv: ['--expose-gc'], fsyncProbe: async () => 'blocked' });
+    assert.match(barrierFirst.stderr, /Código: SIGN_RUNTIME_UNSAFE/, `${subcommand}: a barreira do runtime vem antes da sonda`);
+  }
+  for (const result of ['ok', 'unprobed'] as const) {
+    const fresh = cliWorld();
+    const run = await runSealSubcommand('sign', fresh.argv(), { typed: fresh.typed(), fsyncProbe: async () => result });
+    assert.equal(run.code, 0, `sonda "${result}": o sign segue e assina: ${run.stderr}`);
+  }
+});
+
+test('W4.6 (decisão 3): a sonda real (nodeFsyncProbe) abre a pasta só para leitura e sincroniza o descritor: pasta comum ⇒ "ok"; inexistente ou arquivo ⇒ "unprobed" (o fluxo normal decide); nada é gravado', async () => {
+  const dir = tmpDir('lasr-sonda-');
+  assert.equal(await nodeFsyncProbe(dir), 'ok');
+  assert.deepEqual(fs.readdirSync(dir), [], 'nada gravado');
+  assert.equal(await nodeFsyncProbe(path.join(dir, 'nao-existe')), 'unprobed');
+  const file = path.join(dir, 'arquivo');
+  fs.writeFileSync(file, 'x');
+  assert.equal(await nodeFsyncProbe(file), 'unprobed');
 });
 
 /* =============================================================================================================== processo REAL (tsx) */

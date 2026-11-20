@@ -316,10 +316,13 @@ test('P1 W4.6 (§5.5.1 item 7): pelo grafo de FONTES a partir da entrada do arte
   for (const file of graph.keys()) assert.deepEqual(dynamicLoads(strip(fs.readFileSync(file, 'utf8'))), [], `${path.relative(ROOT, file)}: carregamento dinâmico`);
 });
 
-test('P1 W4.6: sign-runtime.ts só LÊ (o bloco original do exec em /proc/self e os bytes do artefato), pelo descritor aberto O_RDONLY|O_NOFOLLOW|O_NONBLOCK, com teto; nunca escreve, nunca usa process nem decodifica valores do ambiente', () => {
+test('P1 W4.6: sign-runtime.ts só LÊ (o bloco original do exec em /proc/self e os bytes do artefato), pelo descritor aberto O_RDONLY|O_NOFOLLOW|O_NONBLOCK, com teto; a sondagem de fsync abre a pasta O_RDONLY|O_DIRECTORY e só sincroniza esse descritor; nunca escreve, nunca usa process nem decodifica valores do ambiente', () => {
   const code = signCode('sign-runtime.ts');
-  assert.equal([...code.matchAll(/\.open\s*\(/g)].length, 1, 'um único open');
+  assert.equal([...code.matchAll(/\.open\s*\(/g)].length, 2, 'dois opens: a leitura com teto e a pasta da sondagem');
   assert.ok(/\.open\s*\(\s*target\s*,\s*constants\.O_RDONLY\s*\|\s*\(constants\.O_NOFOLLOW \?\? 0\)\s*\|\s*\(constants\.O_NONBLOCK \?\? 0\)\s*\)/.test(code), 'open O_RDONLY | O_NOFOLLOW | O_NONBLOCK');
+  // decisão do manager (W4.6, item 3): a sondagem antecipada de fsync, só leitura e só na pasta indicada; nada é gravado
+  assert.ok(/\.open\s*\(\s*dir\s*,\s*constants\.O_RDONLY\s*\|\s*constants\.O_DIRECTORY\s*\)/.test(code), 'open da sondagem O_RDONLY | O_DIRECTORY');
+  assert.deepEqual([...code.matchAll(/(\w+)\.sync\s*\(/g)].map((m) => m[1]), ['probe'], 'fsync só do descritor da sondagem');
   assert.ok(!/writeFile|appendFile|\.write\s*\(|\.mkdir|\.mkdtemp|\.unlink|\.rm\s*\(|\.rmdir|\.rename|\.chmod|\.chown|\.link\s*\(|\.symlink|\.copyFile|\.truncate|createWriteStream|readFile\b|\.realpath\s*\(/.test(code), 'escrita ou leitura por caminho fora do descritor');
   assert.ok(!/process\./.test(code), 'process');
   assert.deepEqual([...code.matchAll(/'\/proc\/self\/(\w+)'/g)].map((m) => m[1]).sort(), ['cmdline', 'environ'], 'só o bloco original do exec');

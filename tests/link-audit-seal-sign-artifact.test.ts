@@ -182,6 +182,25 @@ test('critérios i e ii em processo REAL: por env -i com o node por caminho abso
   assert.ok(!hidden.stderr.includes(preload), 'o valor da variável nunca é ecoado');
 });
 
+test('decisão 3 em processo REAL: com a linha do runbook, a sondagem de fsync na raiz de --seals-dir vem logo depois do analisador: node que bloqueia fsync sob --permission ⇒ SIGN_RUNTIME_NO_FSYNC antes de ler qualquer entrada; node que permite ⇒ segue e só então recusa a entrada inexistente (SIGN_INPUT_UNREADABLE)', { timeout: LIMIT_MS }, async () => {
+  const artifact = await built();
+  const seals = tmpDir('lasa-manifestos-');
+  const key = makeKeyFile();
+  const missing = path.join(tmpDir('lasa-vazia-'), 'nao-existe.json');
+  const args = ['sign', '--audit', AUD, '--package', missing, '--approval', missing, '--dossier', missing, '--seals-dir', seals, '--expect-seq', '1', '--first', '--key-id', key.keyId, '--key-source', `file:${key.keyPath}`, '--custodian', CUSTODIAN, '--trust-keys', key.ring];
+  const line = [...RUNBOOK_FLAGS, `--allow-fs-read=${path.dirname(artifact.file)}`, ...PROC_GRANTS, `--allow-fs-read=${seals}`, `--allow-fs-write=${seals}`];
+  const run = viaEnvI(line, artifact.file, args);
+  assert.equal(run.status, 3, run.stderr);
+  if (permissionFsync() === 'denied') {
+    assert.match(run.stderr, /Código: SIGN_RUNTIME_NO_FSYNC/);
+    assert.match(run.stderr, /bloqueia fsync sob --permission/);
+  } else {
+    assert.match(run.stderr, /Código: SIGN_INPUT_UNREADABLE/, 'a sonda passou e o fluxo seguiu até a primeira leitura');
+  }
+  assert.ok(!/12 primeiros caracteres|Frase-senha/.test(run.stderr), 'nem confirmação nem frase');
+  assert.deepEqual(fs.readdirSync(seals), [], 'a sondagem não grava nada');
+});
+
 /* =============================================================================================================== assinatura completa (PTY) */
 
 /** Uma "estação" no HOME: fora das pastas temporárias e de qualquer árvore com `.git`, como a custódia exige. `null` se não for possível. */
@@ -224,14 +243,44 @@ function runbookGrants(layout: { readonly artifactDir: string; readonly inputs: 
 
 const quote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
 
+/** Saídas da sonda do teste: 0 = fsync permitido; 7 = fsync NEGADO pelo modelo de permissões; qualquer outra coisa = a sonda quebrou. */
+const PROBE_ALLOWED = 0;
+const PROBE_DENIED = 7;
+const PROBE_SCRIPT = `const fs = require('node:fs/promises');
+(async () => {
+  let probe;
+  try {
+    probe = await fs.open(process.argv[2], fs.constants.O_RDONLY | fs.constants.O_DIRECTORY);
+  } catch (error) {
+    process.stderr.write('SONDA_OPEN ' + String(error && error.code) + ' ' + String(error && error.message) + '\\n');
+    process.exit(9);
+  }
+  try {
+    await probe.sync();
+    process.exitCode = ${PROBE_ALLOWED};
+  } catch (error) {
+    process.stderr.write('SONDA_SYNC ' + String(error && error.code) + ' ' + String(error && error.message) + '\\n');
+    process.exitCode = error && error.code === 'ERR_ACCESS_DENIED' ? ${PROBE_DENIED} : 8;
+  } finally {
+    await probe.close();
+  }
+})();
+`;
+
 /**
- * O node deste processo deixa `fsync` sob `--permission`? O Node 24.22.0 passou a bloquear `fsync`/`fdatasync` com o modelo de permissões
- * (nodejs/node#65431); a gravação à prova de queda do `sign` (§5.5.1 item 4: fsync do arquivo e da pasta) então recusa, fechada (SIGN_WRITE_FAILED).
+ * O node deste processo deixa `fsync` sob `--permission`? Desde o Node 24.22.0 o modelo de permissões BLOQUEIA `fsync`/`fdatasync`
+ * (nodejs/node#65431); a linha 22 (CI e estação, decisão do manager) permite. A sonda usa a MESMA operação do `sign` (`FileHandle.sync()` numa pasta
+ * aberta O_RDONLY|O_DIRECTORY), roda de um arquivo (não de `-e`) e distingue "negado" (`ERR_ACCESS_DENIED` no sync) de "quebrou" (qualquer outra
+ * saída: o teste FALHA mostrando o que aconteceu).
  */
-function permissionAllowsFsync(): boolean {
+function permissionFsync(): 'allowed' | 'denied' {
   const dir = tmpDir('lasa-fsync-');
-  const code = `const fs=require('node:fs');const fd=fs.openSync(${JSON.stringify(path.join(dir, 'x'))},'wx');try{fs.fsyncSync(fd);process.exitCode=0}catch{process.exitCode=7}finally{fs.closeSync(fd)}`;
-  return spawnSync(process.execPath, ['--permission', `--allow-fs-read=${dir}`, `--allow-fs-write=${dir}`, '-e', code], { encoding: 'utf8', timeout: 30_000 }).status === 0;
+  const script = path.join(tmpDir('lasa-sonda-'), 'sonda-fsync.cjs');
+  fs.writeFileSync(script, PROBE_SCRIPT);
+  const result = spawnSync(process.execPath, ['--permission', `--allow-fs-read=${path.dirname(script)}`, `--allow-fs-read=${dir}`, `--allow-fs-write=${dir}`, script, dir], { encoding: 'utf8', timeout: 30_000 });
+  if (result.status === PROBE_ALLOWED) return 'allowed';
+  if (result.status === PROBE_DENIED) return 'denied';
+  return assert.fail(`a sonda de fsync sob --permission quebrou (${process.version}; status ${String(result.status)}, sinal ${String(result.signal)}): ${result.stderr}${result.stdout}`);
 }
 
 /** Roda a linha no pseudo-terminal e digita a confirmação e a frase quando os pedidos aparecem (como o teste PTY da W4.4). */
@@ -283,17 +332,16 @@ test('critério i, assinatura completa: env -i + node absoluto + --permission co
     const files = writeStation(layout.inputs, { pkg });
     const key: TestKeyFile = makeKeyFile({ dir: layout.keyDir });
     const args = ['sign', '--audit', AUD, '--package', files.packagePath, '--approval', files.approvalPath, '--dossier', files.dossierPath, '--seals-dir', layout.seals, '--expect-seq', '1', '--first', '--key-id', key.keyId, '--key-source', `file:${key.keyPath}`, '--custodian', CUSTODIAN, '--trust-keys', key.ring];
+    const fsyncUnderPermission = permissionFsync();
     const run = await runInPty(['env', '-i', process.execPath, ...runbookGrants(layout), artifactFile, ...args], pkg.packageSha256.slice(0, CONFIRM_LENGTH), key.passphrase);
     for (const sentinel of key.sentinels) assert.ok(!run.screen.includes(sentinel), 'a frase (ou a chave) apareceu na tela');
-    if (!permissionAllowsFsync()) {
-      // barreira, custódia sob grants estreitos, chave e autoteste passaram; a gravação precisa de fsync e recusa fechada: nada gravado nem recibo
+    if (fsyncUnderPermission === 'denied') {
+      // decisão 3: a sondagem antecipada recusa ANTES de ler as entradas, da confirmação, da custódia e da frase; nada gravado nem recibo
       assert.equal(run.code, 3, run.screen);
-      assert.match(run.screen, /Chave aberta; pública derivada/);
-      assert.match(run.screen, /Código: SIGN_WRITE_FAILED/);
-      assert.ok(!/Recibo \(JSON\)/.test(run.screen), 'nenhum recibo');
-      const written = (fs.readdirSync(layout.seals, { recursive: true, encoding: 'utf8' }) as string[]).filter((name) => /seal-\d{4}\.json/.test(name));
-      assert.deepEqual(written, [], 'nenhum manifesto (nem temporário) gravado');
-      if (STRICT) assert.fail(`LINK_AUDIT_ARTIFACT_STRICT=1: o node ${process.version} bloqueia fsync sob --permission (nodejs/node#65431); a assinatura completa sob o modelo de permissões não é possível sem decisão (notas da W4.6)`);
+      assert.match(run.screen, /Código: SIGN_RUNTIME_NO_FSYNC/);
+      assert.ok(!/12 primeiros caracteres|Frase-senha|Chave aberta/.test(run.screen), 'nem confirmação, nem frase, nem chave');
+      assert.deepEqual(fs.readdirSync(layout.seals), [], 'nada gravado na pasta de manifestos');
+      if (STRICT) assert.fail(`LINK_AUDIT_ARTIFACT_STRICT=1: o node ${process.version} bloqueia fsync sob --permission (nodejs/node#65431); a estação e o CI usam a linha 22 (notas da W4.6)`);
       return;
     }
     assert.equal(run.code, 0, run.screen);
