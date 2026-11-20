@@ -610,7 +610,7 @@ interface RunsJudgement {
   /** A operação aberta, com `recoverable` = "haveria receita" (ainda sem exigir `PROTECTED`). */
   readonly open: OpenRun | null;
   readonly needsFreshResults: boolean;
-  /** R1.6: o `RUN_CONFIRMED` cujo recibo pode ser reemitido — o ÚLTIMO, único não resolvido, com `sk` certo e sem recibo NA RELEITURA R2; `null` em qualquer outro caso. */
+  /** R1.6: o `RUN_CONFIRMED` cujo recibo pode ser reemitido — o ÚLTIMO, e só ele, com `sk` certo e sem recibo NA RELEITURA R2; `null` em qualquer outro caso. */
   readonly reissue: ConfirmedRun | null;
 }
 
