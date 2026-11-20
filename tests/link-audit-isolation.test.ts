@@ -243,6 +243,8 @@ const ATTESTATION_EVIDENCE_IMPORTS: ReadonlyMap<string, readonly string[]> = new
   ['src/lib/link-audit-attestation/export-run.ts', ['provenance', 'reader', 'scoring-basis', 'store']],
   // P1 W4.2: a cadeia do `sign` é lida e verificada pelo verificador v2 real (só ele)
   ['src/lib/link-audit-attestation/sign-chain.ts', ['provenance']],
+  // P1 W4.5: o fecho do `close-key` é montado, assinado e autotestado pelo verificador v2 real (só ele)
+  ['src/lib/link-audit-attestation/sign-closure.ts', ['provenance']],
 ]);
 const ATTESTATION_TARGETS: ReadonlySet<string> = new Set(['canonical.ts']);
 /** P1 W2: só o adaptador de disco do `export` usa também o FsOps (leitura O_NOFOLLOW/O_NONBLOCK e a criação exclusiva do --out). */
@@ -254,6 +256,10 @@ const ATTESTATION_EXTRA_TARGETS: ReadonlyMap<string, ReadonlySet<string>> = new 
   ['src/lib/link-audit-attestation/sign-run.ts', new Set(['snapshot-store.ts'])],
   // P1 W4.4: o comando `sign` usa o disco PADRÃO (nodeFsOps, injetável nos testes) para entregá-lo a sign-run.ts; não lê nem grava por conta própria
   ['src/lib/link-audit-attestation/sign-cli.ts', new Set(['snapshot-store.ts'])],
+  // P1 W4.5: o `close-key` (tipos FsOps/BytesFsOps e `errorCode`): leitura dos recibos e varredura somente leitura da cópia do servidor; a gravação é
+  // a de sign-run.ts
+  ['src/lib/link-audit-attestation/sign-receipts.ts', new Set(['snapshot-store.ts'])],
+  ['src/lib/link-audit-attestation/sign-closure.ts', new Set(['snapshot-store.ts'])],
 ]);
 const CLIENT_DIRS = ['src/components/link-audit/', 'src/app/auditoria-por-link/'];
 /** Único valor (não só tipo) que o navegador pode importar: constantes puras, sem nenhum import. */
