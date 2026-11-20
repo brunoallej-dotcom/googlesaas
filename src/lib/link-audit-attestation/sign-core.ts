@@ -49,6 +49,8 @@ export const SIGN_REFUSAL_CODES = [
   'SIGN_KEY_REJECTED',
   // W4.5: autoteste do passo 14 (`sign-chain.ts`) e do fecho (`sign-closure.ts`), depois da assinatura e antes da gravação; nunca por este núcleo
   'SIGN_SELFTEST_FAILED',
+  // W4.5 (revisão, T-008): processo do Node configurado para despejar a memória ou abrir depurador (NODE_OPTIONS/NODE_*, execArgv), pelo CLI
+  'SIGN_RUNTIME_UNSAFE',
   // W4.5: o comando de fecho `close-key` (`sign-receipts.ts`, `sign-closure.ts`; spec §5.5.1 item 9, contrato do verificador v2 §6)
   'CLOSE_KEY_STATE_INVALID',
   'CLOSE_RECEIPTS_INVALID',
@@ -93,6 +95,12 @@ export type SealChainFacts =
   | { readonly status: 'EMPTY' }
   | { readonly status: 'VERIFIED'; readonly last: VerifiedLastSeal }
   | { readonly status: 'INVALID'; readonly reason: string };
+/**
+ * `--key-id`/`--retired-key-id` (spec §5.5, tabela de argumentos): o MESMO padrão de id de chave do verificador v2 (`TRUST_KEY_ID`, não exportado).
+ * Cópia deliberada, para não mudar o verificador; paridade travada por teste contra `parseTrustKeyring`. Mora aqui, no núcleo sem verificador
+ * (revisão da W4.5): os recibos do `close-key` o usam sem alcançar o verificador; `sign-chain.ts` o reexporta.
+ */
+export const SIGN_KEY_ID_PATTERN = /^[a-z0-9][a-z0-9-]{3,31}$/;
 /** Maior `seq` de um manifesto `v2` (contrato do verificador v2 §2, `MAX_CHAIN_SEALS`). Cópia deliberada (o núcleo não importa o verificador); paridade travada por teste. */
 export const MAX_SEAL_SEQ = 256;
 

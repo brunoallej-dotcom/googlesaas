@@ -22,7 +22,7 @@ import {
 import { auditId as auditIdSchema, shortLabel } from './schemas';
 import { chainSnapshot, isTrustKeyringText, keyMismatchRefusal, resolveSealsRoot, SIGN_KEY_ID_PATTERN, withVirtualFile } from './sign-chain';
 import type { CloseConfirmationFacts, SignRefusal, SignRefusalCode } from './sign-core';
-import { closureHeads, readReceipts, type ClosureHead, type ClosureHeadsResult, type ServerAuditFacts, type ServerPositionFacts } from './sign-receipts';
+import { closureHeads, readReceipts, type CloseFsOps, type ClosureHead, type ClosureHeadsResult, type ServerAuditFacts, type ServerPositionFacts } from './sign-receipts';
 import { CLOSURES_DIR, publishClosure } from './sign-run';
 
 /*
@@ -38,7 +38,8 @@ import { CLOSURES_DIR, publishClosure } from './sign-run';
  * Segundo e último arquivo do `sign` que importa o verificador (a W4.6 separa o núcleo dele do `FsOps` de disco). Nunca escreve por conta própria.
  */
 
-const MAX_SERVER_AUDITS = 10_000;
+/** Teto de ENTRADAS na raiz da cópia do servidor (auditorias, `_closures` e o resto), contado DURANTE a enumeração (revisão da W4.5). */
+export const MAX_SERVER_ENTRIES = 10_000;
 /** Teto do que a varredura lê da cópia do servidor (manifestos); a fotografia os guarda em memória para o autoteste. */
 const MAX_SCAN_BYTES = 256 * 1024 * 1024;
 const SEAL_FILE_ANY_CASE = new RegExp(SEAL_FILE.source, 'i');
@@ -62,8 +63,12 @@ export interface CloseKeyInput {
   readonly custodian: string;
 }
 export interface CloseKeyDeps {
-  /** Leitura dos recibos (bytes), da cópia do servidor, e a gravação de `_closures/<R>.json`. */
+  /** Leitura da cópia do servidor (pela fotografia) e a gravação de `_closures/<R>.json`. */
   readonly fs: BytesFsOps;
+  /** A pasta de recibos por descritor e a enumeração com teto (revisão da W4.5; `nodeCloseFsOps` no CLI). */
+  readonly closeFs: CloseFsOps;
+  /** O usuário que roda o comando (`process.getuid()` no CLI): dono exigido da pasta de recibos e de cada recibo; `undefined` ⇒ recusa. */
+  readonly uid: number | undefined;
   /** Relógio injetado (`sealedAt` do fecho, informativo). */
   readonly now: () => Date;
   /** Confirmação humana: devolve o que o custodiante digitou, comparado EXATAMENTE com o id de R. Lançar é recusa. */
@@ -176,13 +181,15 @@ async function scanAudit(ops: FsOps, root: string, auditId: string, retired: { r
 
 /**
  * TODA a cópia do servidor, somente leitura, pela fotografia (cada arquivo lido uma vez; o autoteste reusa os mesmos bytes): cada subpasta com nome
- * de auditoria (`_closures` e outros nomes ficam de fora, como no verificador) e cada `seal-NNNN.json` dela. Erro de E/S ⇒ recusa: uma varredura
+ * de auditoria (`_closures` e outros nomes ficam de fora, como no verificador) e cada `seal-NNNN.json` dela. A raiz é enumerada com teto (até
+ * `MAX_SERVER_ENTRIES` entradas, parando na seguinte). Erro de E/S ⇒ recusa: uma varredura
  * parcial poderia esconder uma posição de R.
  */
-async function scanServerCopy(ops: FsOps, root: string, retired: { readonly keyId: string; readonly key: KeyObject }): Promise<readonly ScannedAudit[] | SignRefusal> {
+async function scanServerCopy(ops: FsOps, lister: CloseFsOps, root: string, retired: { readonly keyId: string; readonly key: KeyObject }): Promise<readonly ScannedAudit[] | SignRefusal> {
   try {
-    const auditIds = (await ops.readdir(root)).filter((name) => auditIdSchema.safeParse(name).success).sort();
-    if (auditIds.length > MAX_SERVER_AUDITS) return copyInvalid(`mais de ${MAX_SERVER_AUDITS} auditorias`, 'TOO_MANY_AUDITS');
+    const listed = await lister.listDir(root, MAX_SERVER_ENTRIES); // revisão da W4.5: o teto vale durante a enumeração
+    if (listed === null) return copyInvalid(`mais de ${MAX_SERVER_ENTRIES} entradas na raiz`, 'TOO_MANY_AUDITS');
+    const auditIds = listed.filter((name) => auditIdSchema.safeParse(name).success).sort();
     const budget: ScanBudget = { remaining: MAX_SCAN_BYTES };
     const audits: ScannedAudit[] = [];
     for (const auditId of auditIds) {
@@ -355,10 +362,10 @@ async function prepare(input: CloseKeyInput, deps: CloseKeyDeps): Promise<Prepar
   const snapshot = chainSnapshot(deps.fs);
   const resolved = await resolveSealsRoot(snapshot, input.sealsDir);
   if (!resolved.ok) return resolved.reason === 'VERIFICATION_ERROR' ? COPY_IO : copyInvalid('inexistente ou não é diretório (provável erro de digitação)', resolved.reason);
-  const receipts = await readReceipts(deps.fs, { receiptsDir: input.receiptsDir, sealsRoot: resolved.root });
+  const receipts = await readReceipts(deps.closeFs, { receiptsDir: input.receiptsDir, sealsRoot: resolved.root, uid: deps.uid });
   if (!receipts.ok) return receipts;
   const retired = { keyId: input.retiredKeyId, key: (ring.get(input.retiredKeyId) as { readonly key: KeyObject }).key };
-  const scanned = await scanServerCopy(snapshot, resolved.root, retired);
+  const scanned = await scanServerCopy(snapshot, deps.closeFs, resolved.root, retired);
   if ('code' in scanned) return scanned;
   const existing = await closuresRefusal(snapshot, resolved.root, input.retiredKeyId);
   if (existing) return existing;

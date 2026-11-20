@@ -1,9 +1,10 @@
 import { nodeFsOps, type BytesFsOps } from '../link-audit/snapshot-store';
-import { parseCloseKeyArgs, parseSignArgs, secretArgvRefusal, secretEnvRefusal, type CloseKeyArgs, type SignArgs } from './sign-args';
+import { parseCloseKeyArgs, parseSignArgs, runtimeRefusal, secretArgvRefusal, secretEnvRefusal, type CloseKeyArgs, type SignArgs } from './sign-args';
 import { sealDigest } from './sign-chain';
 import { runCloseKey, type CloseKeyDone, type CloseKeyResult } from './sign-closure';
 import type { SignRefusal } from './sign-core';
 import { defaultTempRoots, nodeKeyFileOps, openK1Key, publicKeyText, type KeyFileOps, type KeySource } from './sign-key';
+import { nodeCloseFsOps, type CloseFsOps } from './sign-receipts';
 import { runSign, type SignRunDeps, type SignRunResult } from './sign-run';
 import { openHiddenInput, terminalCloseConfirm, terminalConfirm, terminalPassphrase, type HiddenInput, type SignTerminal } from './sign-terminal';
 
@@ -59,6 +60,12 @@ export interface SignCliDeps {
   readonly tempRoots?: readonly string[];
   /** Só para teste: o sufixo do temporário do manifesto. */
   readonly tempSuffix?: () => string;
+  /** W4.5 (T-008): as opções com que o Node foi iniciado (padrão: `process.execArgv`); só o carregador do projeto e o modelo de permissões passam. */
+  readonly execArgv?: readonly string[];
+  /** W4.5: a pasta de recibos do `close-key` por descritor e a enumeração com teto (padrão: `nodeCloseFsOps`). */
+  readonly closeFs?: CloseFsOps;
+  /** W4.5: o usuário que roda o comando, dono exigido da pasta de recibos (padrão: `process.getuid()`; fora do Linux, ausente ⇒ recusa). */
+  readonly uid?: number;
 }
 
 type Line = (line: string) => void;
@@ -186,13 +193,24 @@ async function signWithTerminal(args: SignArgs, out: Line, err: Line, now: () =>
   }
 }
 
+/**
+ * As barreiras antes do analisador, na ordem (passo 1, §8.1 e revisão da W4.5): segredo em argv → nome de segredo no ambiente → runtime do Node
+ * (`NODE_OPTIONS`/`NODE_*` e `execArgv`, T-008). Nada é lido, o terminal não é tocado e a frase nunca é pedida.
+ */
+async function earlyRefusal(tokens: readonly string[], env: Readonly<Record<string, string | undefined>>, deps: SignCliDeps): Promise<SignRefusal | null> {
+  const names = Object.keys(env);
+  const secret = secretArgvRefusal(tokens) ?? secretEnvRefusal(names);
+  if (secret) return secret;
+  return runtimeRefusal({ execArgv: deps.execArgv ?? process.execArgv, envNames: names, projectRoot: deps.projectRoot, realpath: (deps.keyFs ?? nodeKeyFileOps).realpath });
+}
+
 /** Subcomando `sign`: devolve o código de saída (0 assinado, 1 uso, 3 recusa, 4 falha inesperada). Nunca lança. */
 export async function runSignCli(tokens: readonly string[], out: Line, err: Line, now: () => Date, deps: SignCliDeps): Promise<number> {
   const json = tokens.includes('--json');
   try {
     disableDiagnosticReports(deps.report ?? process.report);
     const env = deps.env ?? process.env;
-    const early = secretArgvRefusal(tokens) ?? secretEnvRefusal(Object.keys(env));
+    const early = await earlyRefusal(tokens, env, deps);
     if (early) return refusalOut(early, json, out, err);
     const args = parseSignArgs(tokens);
     if ('ok' in args) return refusalOut(args, json, out, err);
@@ -253,7 +271,7 @@ async function closeWithTerminal(args: CloseKeyArgs, out: Line, err: Line, now: 
     const { retiredKeyId, keyId, sealsDir, receiptsDir, trustKeys, custodian } = args;
     return await runCloseKey(
       { retiredKeyId, signerKeyId: keyId, sealsDir, receiptsDir, trustKeys, custodian },
-      { fs: deps.fs ?? nodeFsOps, now, confirm: terminalCloseConfirm(input, err), openKey: keyOpener(args, input, deps, env, { out, err }), ...(deps.tempSuffix ? { tempSuffix: deps.tempSuffix } : {}) },
+      { fs: deps.fs ?? nodeFsOps, closeFs: deps.closeFs ?? nodeCloseFsOps, uid: deps.uid ?? process.getuid?.(), now, confirm: terminalCloseConfirm(input, err), openKey: keyOpener(args, input, deps, env, { out, err }), ...(deps.tempSuffix ? { tempSuffix: deps.tempSuffix } : {}) },
     );
   } finally {
     input.close();
@@ -266,7 +284,7 @@ export async function runCloseKeyCli(tokens: readonly string[], out: Line, err: 
   try {
     disableDiagnosticReports(deps.report ?? process.report);
     const env = deps.env ?? process.env;
-    const early = secretArgvRefusal(tokens) ?? secretEnvRefusal(Object.keys(env));
+    const early = await earlyRefusal(tokens, env, deps);
     if (early) return refusalOut(early, json, out, err, CLOSE_KEY_USAGE);
     const args = parseCloseKeyArgs(tokens);
     if ('ok' in args) return refusalOut(args, json, out, err, CLOSE_KEY_USAGE);

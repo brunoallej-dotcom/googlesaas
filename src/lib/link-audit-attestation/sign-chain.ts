@@ -16,7 +16,7 @@ import {
   type EvidenceToProve,
 } from '../link-audit-evidence/provenance';
 import { auditId as auditIdSchema, MAX_PACKAGE_ENTRIES } from './schemas';
-import { runSignCore, type SealChainFacts, type SignCoreDeps, type SignCoreInput, type SignCoreResult, type SigningKeyStatus, type SignPlan, type SignRefusal } from './sign-core';
+import { runSignCore, SIGN_KEY_ID_PATTERN, type SealChainFacts, type SignCoreDeps, type SignCoreInput, type SignCoreResult, type SigningKeyStatus, type SignPlan, type SignRefusal } from './sign-core';
 
 /*
  * P1 W4.2 — a CADEIA e o MANIFESTO do `sign` (spec §5.5 passos 7 e 13; §5.5.1 item 2; §7.1; contrato do verificador v2 §2–§6). Único arquivo do
@@ -194,11 +194,8 @@ export interface SignWithChainInput extends Omit<SignCoreInput, 'chain' | 'signi
   readonly keyId: string;
 }
 
-/**
- * `--key-id` (spec §5.5, tabela de argumentos): o MESMO padrão de id de chave do verificador v2 (`TRUST_KEY_ID`, não exportado). Cópia deliberada,
- * para não mudar o verificador; a paridade é travada por teste contra `parseTrustKeyring`.
- */
-export const SIGN_KEY_ID_PATTERN = /^[a-z0-9][a-z0-9-]{3,31}$/;
+/** `--key-id`: o padrão de id de chave mora em `sign-core.ts` (revisão da W4.5); reexportado aqui para quem já o importava deste arquivo. */
+export { SIGN_KEY_ID_PATTERN };
 const BAD_KEY_ID: SignRefusal = { ok: false, code: 'USAGE', message: '--key-id inválido (minúsculas, dígitos e "-", 4 a 32 caracteres, começando por letra ou dígito). Nada foi assinado nem gravado.' };
 
 /** Estado de `--key-id` na lista com estado já parseada pelo verificador (contrato v2 §5). Lista inválida ⇒ `absent` (a cadeia já a recusa no passo 7). */

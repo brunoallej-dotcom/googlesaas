@@ -211,3 +211,103 @@ export function parseCloseKeyArgs(tokens: readonly string[]): CloseKeyArgs | Sig
   if (custodian === undefined || !shortLabel.safeParse(custodian).success) return usage('Informe --custodian <rótulo curto> (iniciais ou ID; sem e-mail nem telefone).');
   return { retiredKeyId, sealsDir, receiptsDir, ...key, custodian, json: flags.has('json') };
 }
+
+/* ------------------------------------------------------------------------------------------------------------------- runtime do Node (W4.5, T-008) */
+
+/**
+ * Revisão da W4.5 (MAJOR; modelo de ameaças T-008): opções do NODE que despejam a memória (onde estará a frase da chave) ou abrem um depurador
+ * (`--heapsnapshot-signal`, `--heapsnapshot-near-heap-limit`, `--heap-prof`, `--cpu-prof`, `--diagnostic-dir`, `--report-*`, `--inspect*`, pré-carga
+ * extra por `--require`/`--import`, `--expose-gc`, `--env-file`…) chegam por `NODE_OPTIONS` ou por `process.execArgv`. Lista PERMITIDA explícita;
+ * tudo o mais é recusa:
+ *  - o carregador do `npm run link-audit:seal` (conferido num processo real: o `tsx` põe EXATAMENTE `--require <…>/tsx/dist/preflight.cjs --import
+ *    file://<…>/tsx/dist/loader.mjs` em `execArgv`, e nada em `NODE_OPTIONS`), uma vez, nesta ordem, com os dois arquivos sendo, pelo caminho
+ *    real, os do `node_modules` do PRÓPRIO projeto;
+ *  - o modelo de permissões do artefato único da W4.6 (`node --permission --allow-fs-read=… artefato.js`): `--permission` (ou o antigo
+ *    `--experimental-permission`), `--allow-fs-read=<…>`, `--allow-fs-write=<…>` (só na forma com `=`) e `--disable-sigusr1` (que só restringe).
+ * O ambiente é olhado só pelos NOMES (como a barreira do §8.1): `NODE_OPTIONS` (mesmo vazio) e qualquer outro `NODE_*` (NODE_DEBUG, NODE_V8_COVERAGE,
+ * NODE_PATH…) são recusa; `NODE_ENV` não muda nada no comando e passa. Inspector: sem importar `node:inspector` (fora da lista RS-14), ele só liga
+ * na partida por essas opções; `process.debugPort` existe sempre (9229) e não indica nada. Limite declarado: outro processo do MESMO usuário pode
+ * ligá-lo depois (SIGUSR1) ou ler a memória (`/proc/<pid>/mem`); isso está fora da garantia (estação dedicada, W5).
+ */
+export interface RuntimeFacts {
+  /** `process.execArgv` (injetável). */
+  readonly execArgv: readonly string[];
+  /** Os NOMES do ambiente (nunca os valores). */
+  readonly envNames: readonly string[];
+  /** A raiz do projeto: o carregador aceito é o do `node_modules` dela. */
+  readonly projectRoot: string;
+  /** Caminho real (só metadados; o da custódia da chave, `KeyFileOps.realpath`). */
+  readonly realpath: (target: string) => Promise<string>;
+}
+
+const PERMISSION_FLAGS: ReadonlySet<string> = new Set(['--permission', '--experimental-permission', '--disable-sigusr1']);
+/** As duas opções do par do carregador. Por expressão (`r[e]quire`): a guarda textual de carregamento dinâmico do teste de isolamento recusa a palavra solta. */
+const PRELOAD_CJS = /^--r[e]quire$/;
+const PRELOAD_ESM = /^--import$/;
+const PERMISSION_PATHS = /^--allow-fs-(?:read|write)=.+$/;
+const NODE_ENV_NAME = /^NODE_/;
+const HARMLESS_NODE_ENV: ReadonlySet<string> = new Set(['NODE_ENV']);
+const FILE_URL_PREFIX = 'file://';
+const RUNTIME_NOTHING = 'Nada foi lido, assinado nem gravado.';
+const runtimeUnsafe = (why: string): SignRefusal => ({
+  ok: false,
+  code: 'SIGN_RUNTIME_UNSAFE',
+  message: `${why}: elas podem despejar a memória do processo (onde estaria a frase da chave) ou abrir um depurador (T-008). Rode o comando num shell limpo, pelo npm run link-audit:seal (ou pelo artefato da W4.6), sem NODE_OPTIONS e sem opções extras do node. ${RUNTIME_NOTHING}`,
+});
+const EXEC_ARGV_UNSAFE = runtimeUnsafe('O Node foi iniciado com opções além do carregador do projeto e do modelo de permissões (diagnóstico, depuração, perfil ou pré-carga); os valores não são ecoados');
+
+/** Caminho de uma URL `file://` absoluta, sem `node:url` (fora da lista RS-14); outra forma ⇒ `null`. */
+function fileUrlPath(url: string): string | null {
+  if (!url.startsWith(FILE_URL_PREFIX)) return null;
+  try {
+    const decoded = decodeURIComponent(url.slice(FILE_URL_PREFIX.length));
+    return decoded.startsWith('/') && !decoded.includes('\0') ? decoded : null;
+  } catch {
+    return null;
+  }
+}
+
+/** O par do carregador do `tsx` aponta, pelo caminho REAL, para os arquivos do `node_modules` do PRÓPRIO projeto. Qualquer falha ⇒ `false`. */
+async function isProjectLoader(preflight: string | undefined, loaderUrl: string | undefined, facts: RuntimeFacts): Promise<boolean> {
+  const loader = loaderUrl === undefined ? null : fileUrlPath(loaderUrl);
+  if (preflight === undefined || loader === null || !preflight.startsWith('/')) return false;
+  const dist = `${facts.projectRoot.replace(/\/+$/, '')}/node_modules/tsx/dist`;
+  try {
+    const [given, expected, givenLoader, expectedLoader] = await Promise.all([facts.realpath(preflight), facts.realpath(`${dist}/preflight.cjs`), facts.realpath(loader), facts.realpath(`${dist}/loader.mjs`)]);
+    return given === expected && givenLoader === expectedLoader;
+  } catch {
+    return false;
+  }
+}
+
+/** `execArgv` só com a lista permitida (cabeçalho acima). */
+async function execArgvAllowed(facts: RuntimeFacts): Promise<boolean> {
+  const tokens = facts.execArgv;
+  let loaderSeen = false;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index] ?? '';
+    if (PERMISSION_FLAGS.has(token) || PERMISSION_PATHS.test(token)) continue;
+    if (!PRELOAD_CJS.test(token) || loaderSeen || !PRELOAD_ESM.test(tokens[index + 2] ?? '')) return false;
+    if (!(await isProjectLoader(tokens[index + 1], tokens[index + 3], facts))) return false;
+    loaderSeen = true;
+    index += 3;
+  }
+  return true;
+}
+
+/**
+ * Barreira do runtime (revisão da W4.5, T-008), no CLI do `sign` e do `close-key` logo depois da barreira de ambiente do §8.1 e antes do analisador:
+ * nada é lido, o terminal não é tocado e a frase nunca é pedida. Recusa `SIGN_RUNTIME_UNSAFE` (código 3) citando só NOMES de variáveis. Nunca lança.
+ */
+export async function runtimeRefusal(facts: RuntimeFacts): Promise<SignRefusal | null> {
+  try {
+    const nodeNames = facts.envNames.filter((name) => NODE_ENV_NAME.test(name) && !HARMLESS_NODE_ENV.has(name));
+    if (nodeNames.length > 0) {
+      const shown = nodeNames.filter((name) => ECHOABLE_ENV_NAME.test(name)).slice(0, MAX_ECHOED_ENV_NAMES);
+      return runtimeUnsafe(`Há configuração do Node no ambiente (${shown.join(', ')}${nodeNames.length > shown.length ? ', …' : ''}; só os nomes são lidos)`);
+    }
+    return (await execArgvAllowed(facts)) ? null : EXEC_ARGV_UNSAFE;
+  } catch {
+    return EXEC_ARGV_UNSAFE;
+  }
+}
