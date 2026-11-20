@@ -385,12 +385,16 @@ test('argumentos: opção desconhecida na forma --x=valor ecoa SÓ o nome da op�
   }
 });
 
-test('subcomando sign (onda W4) ainda não existe: responde erro de uso, sem ler nada', async () => {
+test('subcomando sign (W4.4) com argumentos incompletos: erro de uso do sign, sem ler nada (o sign tem testes próprios em link-audit-seal-sign-*.test.ts)', async () => {
   for (const json of [false, true]) {
     const run = await runCli(['sign', '--audit', 'auditoria-teste-0001', '--package', '/nao/existe.json', ...(json ? ['--json'] : [])]);
     assert.equal(run.code, 1);
-    assert.match(json ? String(jsonOf(run).message) : run.stderr, /W4/);
+    assert.equal(json ? jsonOf(run).code : 'USAGE', 'USAGE');
+    if (!json) assert.match(run.stderr, /Uso: npm run link-audit:seal -- sign/);
   }
+  const none = await runCli(['--json']);
+  assert.equal(none.code, 1);
+  assert.match(String(jsonOf(none).message), /export ou sign/);
 });
 
 /* -------------------------------------------------------------------- saída estável (humana e --json) */
