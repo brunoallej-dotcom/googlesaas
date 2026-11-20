@@ -24,7 +24,7 @@ registerCleanup();
 const witnessOver = (w: LedgerWorld, e: ResultsEnv) => createResultsKnownHeads({ baseDir: e.base, anchorDir: e.anchors, otherDirs: [w.decisionsDir, w.anchorDir, w.evidenceDir, w.ledgerDir], origin: TEST_ORIGIN });
 const servicesOver = (w: LedgerWorld, e: ResultsEnv) => decisionsOver(w, { ledger: ledgerFor(w, { guard: null }), knownHeads: witnessOver(w, e) });
 
-/** Auditoria protegida com uma decisão e um resultado selado sobre ela. */
+/** Auditoria protegida com uma decisão e um resultado selado sobre ela PELO LIVRO (R1.3: `RUN_INTENT` + `RUN_CONFIRMED`; R1.5: sem o par seria `UNLEDGERED_RESULT`). */
 async function sealedWorld(): Promise<{ w: LedgerWorld; e: ResultsEnv; run: ScoreRun }> {
   const w = await ledgerWorld();
   const e = resultsEnv();
@@ -34,24 +34,28 @@ async function sealedWorld(): Promise<{ w: LedgerWorld; e: ResultsEnv; run: Scor
   const evaluated = await preview.evaluate(OP_A, w.auditId);
   assert.ok(evaluated.ok, JSON.stringify(evaluated).slice(0, 200));
   assert.equal(evaluated.value.decisions.ledger.state, 'PROTECTED');
-  const done = await makeService(e, preview).finalize(OP_A, w.auditId, { expectedHead: evaluated.value.decisions.head, expectedInputSha256: evaluated.value.inputSha256 as string });
+  const port = decisions.resultsLedger;
+  assert.ok(port, 'porta de escrita do livro');
+  const done = await makeService(e, preview, { ledger: port }).finalize(OP_A, w.auditId, { expectedHead: evaluated.value.decisions.head, expectedInputSha256: evaluated.value.inputSha256 as string });
   assert.ok(done.ok, JSON.stringify(done).slice(0, 240));
   const read = await readRunLog(e.base, w.auditId, { anchorDir: e.anchors });
   assert.ok(read.ok);
   return { w, e, run: read.value.runs[0] as ScoreRun };
 }
 
-test('o resultado NOVO de uma auditoria protegida é v2 e carrega a cabeça do livro do instante da finalização; a leitura segue íntegra e a auditoria PROTEGIDA', async () => {
+test('o resultado NOVO de uma auditoria protegida é v2 e carrega a cabeça de DECISÕES do livro do instante da finalização; a leitura segue íntegra e a auditoria PROTEGIDA', async () => {
   const { w, e, run } = await sealedWorld();
   assert.equal(run.schemaVersion, 2);
   const records = await ledgerRecords(w);
-  assert.deepEqual(run.ledgerHead, { ledgerSeq: records.length, sha256: records[records.length - 1]?.contentSha256 });
+  // §16.17.9 (R1.5): o resultado cita a cabeça de DECISÕES (§16.17.7), nunca uma posição RUN_* — a cauda é o par RUN_INTENT + RUN_CONFIRMED desta finalização (cauda − 2)
+  assert.deepEqual(records.slice(-2).map((r) => r.event), ['RUN_INTENT', 'RUN_CONFIRMED']);
+  assert.deepEqual(run.ledgerHead, { ledgerSeq: records.length - 2, sha256: records[records.length - 3]?.contentSha256 });
   assert.ok(scoreRunSchema.safeParse(run).success);
   const view = await must(servicesOver(w, e).list(BIA, w.auditId));
   assert.deepEqual([view.ledger.state, view.witness.status, view.finalizable], ['PROTECTED', 'CONSISTENT', true]);
   // o provedor da testemunha informa ao livro o que o resultado cita
   const provider = await witnessOver(w, e)(w.auditId);
-  assert.ok(provider.ok && provider.hasResults === true && provider.ledgerHeads?.length === 1 && provider.ledgerHeads[0]?.ledgerSeq === records.length);
+  assert.ok(provider.ok && provider.hasResults === true && provider.ledgerHeads?.length === 1 && provider.ledgerHeads[0]?.ledgerSeq === records.length - 2);
   // a auditoria continua andando: o livro cresce e o resultado cita um PREFIXO dele
   const head = (await must(servicesOver(w, e).list(ANA, w.auditId))).head;
   await must(servicesOver(w, e).revoke(ANA, w.auditId, { revokes: 'op-0001', reason: 'Revogada porque o juízo estava errado e foi refeito pelo operador.', expectedHead: head }, clock()));
@@ -83,7 +87,7 @@ test('formato versionado: v1 continua válido SEM ledgerHead; v2 exige ledgerHea
 test('LIVRO TRUNCADO ou REFEITO por quem também refez as decisões (3 pastas): o resultado selado (4ª pasta) cita uma posição que o livro não tem ⇒ RESULT_LEDGER_MISMATCH', async () => {
   const { w, e, run } = await sealedWorld();
   // rollback coordenado do livro, das decisões e dos recibos até ANTES da primeira decisão (o atacante tem acesso a ESSAS três pastas, não à de resultados)
-  for (const seq of [3, 2]) fs.rmSync(ledgerPath(w, seq));
+  for (const seq of [5, 4, 3, 2]) fs.rmSync(ledgerPath(w, seq)); // R1.5: inclui o par RUN_* da finalização
   fs.rmSync(entryPath(w, 1));
   fs.rmSync(anchorPath(w, 1));
   const view = await must(servicesOver(w, e).list(BIA, w.auditId));
@@ -121,10 +125,12 @@ test('resultado PENDENTE forjado (sem origem) que cita o livro é só INDÍCIO: 
   forge(run.ledgerHead as { ledgerSeq: number; sha256: string });
   const same = await witnessOver(w, e)(w.auditId);
   assert.ok(same.ok && same.ledgerHeads?.length === 0 && same.unverifiedLedgerHeads?.length === 1, 'indício, não testemunha');
-  assert.equal((await must(servicesOver(w, e).list(BIA, w.auditId))).ledger.state, 'PROTECTED', 'o que confere é ignorado');
+  // o INDÍCIO que confere é ignorado como testemunha; mas, desde a R1.5, o próprio arquivo trocado na posição que o livro confirmou é contradição (RESULT_DIVERGES, §16.17.5)
+  const conferring = await must(servicesOver(w, e).list(BIA, w.auditId));
+  assert.deepEqual([conferring.ledger.state, conferring.ledger.reason], ['HISTORY_UNRESOLVED', 'RESULT_DIVERGES'], 'o indício não é acusado; o livro acusa o objeto trocado');
   forge({ ledgerSeq: 3, sha256: 'e'.repeat(64) });
   const contradicts = await must(servicesOver(w, e).list(BIA, w.auditId));
-  assert.deepEqual([contradicts.ledger.state, contradicts.ledger.reason, contradicts.decisions], ['HISTORY_UNRESOLVED', 'UNTRUSTED', []]);
+  assert.deepEqual([contradicts.ledger.state, contradicts.ledger.reason, contradicts.decisions], ['HISTORY_UNRESOLVED', 'UNTRUSTED', []], 'o indício que contradiz vence (testemunhas antes do cruzamento de resultados)');
 });
 
 test('finalizar exige livro PROTEGIDO e sem operação aberta: a inscrever, legada, não resolvida ou com operação no meio ⇒ NOT_FINALIZABLE, nada gravado', async () => {

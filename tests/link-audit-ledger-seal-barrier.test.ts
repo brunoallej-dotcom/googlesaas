@@ -48,7 +48,9 @@ function finalizer(s: Stack, over: { ledgerFs?: FsOps; decisionsFs?: FsOps; port
   const ledger = over.port ?? ledgerFor(s.w, { guard: null, ...(over.ledgerFs ? { fs: over.ledgerFs } : {}) });
   const decisions = decisionsOver(s.w, { ledger, knownHeads: witnessOver(s.w, s.e), ...(over.decisionsFs ? { fs: over.decisionsFs } : {}) });
   const preview = previewOver({ evidenceDir: s.w.evidenceDir, raw: decisions });
-  const results = makeService(s.e, preview, over.resultsFs ? { fs: over.resultsFs } : {});
+  // R1.5: a finalização passa pela porta de escrita do livro (como nas rotas); sem o par RUN_* o resultado seria UNLEDGERED_RESULT e congelaria a auditoria
+  const port = decisions.resultsLedger;
+  const results = makeService(s.e, preview, { ...(over.resultsFs ? { fs: over.resultsFs } : {}), ...(port ? { ledger: port } : {}) });
   return {
     preview,
     results,
@@ -75,8 +77,10 @@ test('BARREIRA: antes de selar, o livro (pasta da auditoria E raiz), as decisõe
   for (const dir of expected) assert.ok(log.includes(dir), `a barreira sincronizou ${path.basename(dir)} (log: ${log.map((d) => path.basename(d)).join(', ')})`);
   const [run] = await runsOf(s);
   const records = await ledgerRecords(s.w);
-  assert.equal(run?.ledgerHead?.ledgerSeq, records.length, 'cita a cabeça atual do livro');
-  assert.equal(run?.ledgerHead?.sha256, records[records.length - 1]?.contentSha256);
+  // R1.5: pela porta do livro, a cauda é o par RUN_INTENT + RUN_CONFIRMED desta finalização; o resultado cita a cabeça de DECISÕES (cauda − 2, §16.17.7)
+  assert.deepEqual(records.slice(-2).map((r) => r.event), ['RUN_INTENT', 'RUN_CONFIRMED']);
+  assert.equal(run?.ledgerHead?.ledgerSeq, records.length - 2, 'cita a cabeça de decisões sincronizada pela barreira');
+  assert.equal(run?.ledgerHead?.sha256, records[records.length - 3]?.contentSha256);
 });
 
 test('BARREIRA com falha de fsync: nada é selado (RESULT_DURABILITY_UNKNOWN), a 2ª finalização com o disco "saudável" TAMBÉM não sela (base travada), e reiniciado o resultado sai citando a cabeça comprovada', async () => {
@@ -123,7 +127,7 @@ test('BARREIRA sem janela TOCTOU: uma gravação CONCORRENTE entre a primeira le
   assert.equal(second.ok, true, JSON.stringify(second));
   const [run] = await runsOf(s);
   const records = await ledgerRecords(s.w);
-  assert.equal(run?.ledgerHead?.ledgerSeq, records.length, 'a cabeça citada é a nova');
+  assert.equal(run?.ledgerHead?.ledgerSeq, records.length - 2, 'a cabeça de decisões citada é a nova (R1.5: a cauda é o par RUN_* desta finalização)');
   assert.equal(run?.decisions.count, 2, 'e as duas decisões estão no resultado');
 });
 

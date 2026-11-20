@@ -318,6 +318,7 @@ export const runRefOf = (seq: number, sha256: string, over: Record<string, unkno
   ledgerHead: null,
   finalizedBy: 'ana@empresa.com',
   originProven: true,
+  originKid: null as string | null,
   ...over,
 });
 

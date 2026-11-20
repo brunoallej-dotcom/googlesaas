@@ -114,10 +114,11 @@ test('M29 (recuperação de PENDÊNCIA): decisão pendente (sem recibo) quando o
   const pending = await flaky.create(ANA, w.auditId, { record: rec.c3(), expectedHead: head }, clock());
   assert.ok(!pending.ok && pending.code === 'ANCHOR_PENDING', JSON.stringify(pending).slice(0, 200));
   assert.ok(fs.existsSync(entryPath(w, 2)) && !fs.existsSync(anchorPath(w, 2)), 'decisão 2 publicada, recibo ausente');
-  assert.deepEqual(await ledgerEvents(w), ['GENESIS', 'INTENT', 'CONFIRMED', 'INTENT'], 'a segunda operação está aberta no livro');
+  // R1.5: o resultado é gravado PELO LIVRO (RUN_INTENT + RUN_CONFIRMED, posições 4 e 5); sem o par ele seria UNLEDGERED_RESULT
+  assert.deepEqual(await ledgerEvents(w), ['GENESIS', 'INTENT', 'CONFIRMED', 'RUN_INTENT', 'RUN_CONFIRMED', 'INTENT'], 'a segunda operação está aberta no livro');
 
-  // o livro perde a cabeça citada pelo resultado E a INTENT da pendência (quem escreve só no livro)
-  fs.rmSync(ledgerPath(w, cited + 1));
+  // o livro perde a cabeça citada pelo resultado E tudo o que veio depois, inclusive a INTENT da pendência (quem escreve só no livro)
+  fs.rmSync(ledgerPath(w, cited + 3));
   dropCitedHead(w, cited);
   const before = trees(w, e);
   const service = servicesOver(w, e);
