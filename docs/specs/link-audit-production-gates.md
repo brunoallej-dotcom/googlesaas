@@ -142,7 +142,7 @@ resultado de produção**, separando o que é código, que o manager faz sozinho
 | GE-E5 | Reconciliação externa: um CLI somente leitura (nome proposto `scripts/link-audit-guard-reconcile.ts`) que compara as cabeças da guarda com uma cópia de backup do livro e com o registro anterior da própria reconciliação. Usa uma **credencial só de leitura que não fica na VPS**. Saída `--json` estável, com divergência ⇒ código de saída ≠ 0 | código + rotina do responsável (Q2) |
 | GE-E6 | Eventos de alarme: guarda indisponível, `MISMATCH`, atraso acima do limite e falha de publicação depois do fecho. Usam o envelope da spec de observabilidade (§9) | código |
 | GE-E7 | Runbook da guarda: ativação, rotação da credencial, indisponibilidade, restauração com conferência da guarda e reconciliação | documentação |
-| GE-E8 | Ensaio em homologação, depois da W5: o roteiro EN-01 a EN-12 da §10.4, com o EN-02 dividido em a, b e c (rollback coordenado, restaurações, rollback de imagem, queda do provedor, falha de publicação depois do fecho, sequência falsa, reconciliação) | onda G2 |
+| GE-E8 | Ensaio em homologação, depois da W5: o roteiro EN-01 a EN-12 da §10.4, com o EN-02 dividido em a, b, c, d e e (rollback coordenado, restaurações, rollback de imagem, queda do provedor, falha de publicação depois do fecho, sequência falsa, reconciliação) | onda G2 |
 
 #### 5.1.4 Regras do contrato da guarda real (fecham GE-R3 a GE-R6)
 
@@ -542,9 +542,10 @@ acontece num laboratório autorizado pelo responsável ou pelo próprio respons�
 - [ ] **PG-G06** `latest` com erro, resposta fora do esquema ou prazo esgotado ⇒ `GUARD_UNAVAILABLE` (nunca "nenhuma cabeça").
 - [ ] **PG-G07** Sem credencial da guarda ⇒ `externalGuard: NOT_CONFIGURED`, e o verificador do portão (§10.1, G-1) acusa.
 - [ ] **PG-G08** (só se Q1 = opção 1, Supabase), com evidência registrada no laboratório e depois em produção:
-  - **privilégios:** a migração aborta se `service_role`, `anon`, `authenticated` ou `PUBLIC` tiver qualquer privilégio na tabela, no esquema ou na função de publicação, ou se o `gmn_guard_writer` tiver algo além de `EXECUTE` na função e `SELECT` na tabela;
-  - **função `SECURITY DEFINER`:** em `pg_proc`, `proowner` = o dono dedicado (`gmn_guard_owner`), `prosecdef` = verdadeiro e `proconfig` contém `search_path=""`; `has_function_privilege` falso para `PUBLIC`, `anon`, `authenticated` e `service_role`, e verdadeiro só para o `gmn_guard_writer`;
-  - **papéis:** `has_schema_privilege(gmn_guard_writer, <esquema>, 'CREATE')` falso; o `gmn_guard_writer` e o dono não são membros de nenhum papel privilegiado (`pg_auth_members`) e não têm `rolsuper`, `rolcreaterole`, `rolcreatedb`, `rolreplication` nem `rolbypassrls`;
+  - **`PUBLIC` pelo ACL:** `PUBLIC` é pseudopapel, então a conferência é no ACL e não por `has_*_privilege`. `proacl` da função de publicação (e das funções dos gatilhos), `relacl` da tabela e `nspacl` do esquema são **não nulos** (nulo é o padrão, que nas funções dá `EXECUTE` a `PUBLIC`), e nenhum item de `aclexplode(...)` tem grantee `0` (`PUBLIC`);
+  - **papéis reais:** `has_table_privilege`, `has_schema_privilege` e `has_function_privilege` dão falso para `anon`, `authenticated` e `service_role` na tabela, no esquema e na função; o `gmn_guard_writer` só tem `USAGE` no esquema, `EXECUTE` na função e `SELECT` na tabela (`has_table_privilege` falso para `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`); a migração aborta se divergir;
+  - **função `SECURITY DEFINER`:** em `pg_proc`, `proowner` = o dono dedicado (`gmn_guard_owner`), `prosecdef` = verdadeiro e `proconfig` contém `search_path=""`;
+  - **papéis:** `has_schema_privilege(gmn_guard_writer, <esquema>, 'CREATE')` falso; `rolcanlogin` = falso para o `gmn_guard_owner`; o `gmn_guard_writer` e o dono não são membros de nenhum papel privilegiado (`pg_auth_members`) e não têm `rolsuper`, `rolcreaterole`, `rolcreatedb`, `rolreplication` nem `rolbypassrls`;
   - **gatilhos:** `UPDATE`, `DELETE`, `TRUNCATE` e um `INSERT` direto fora da regra 7 são recusados mesmo para um papel com o privilégio concedido. Isso é defesa em profundidade e **não** substitui o `REVOKE` nem a prova pela Data API: um `INSERT` direto com sequência válida passaria;
   - **Data API (REST):** requisições de leitura e de escrita à tabela e à função, com as chaves `anon`, `authenticated` (sessão de teste) e `service_role`, falham sem expor dados; e *Exposed schemas* não inclui o esquema da guarda, registrado com data. Hoje o estado de *Exposed schemas* não está verificado (`docs/phase5/g5-s0-relatorio-2026-11-07.md:82`);
   - no laboratório, com autorização; em produção, pelo responsável, só leitura, depois de aplicar a migração.
@@ -654,7 +655,7 @@ consultas pagas, custo, aplicação de migração em produção, secrets reais).
 | G-3 | **Volumes e chaves**: VC-E1–E7 na `main` (PG-V01 a PG-V03); secrets criados; pastas no host com dono e modo conferidos e registrados (VC-E8, PG-V04); backups independentes configurados (Q9) | §5.3 | código + responsável (secrets, host, destinos) |
 | G-4 | **Chave de log** usada pelo código (PG-L01) e provisionada; destino dos logs decidido (Q8) ou aceite de que, por ora, ficam só na VPS | §5.3.4 | código + responsável |
 | G-5 | **D5**: autorizada no documento próprio **ou** aceite formal de que todo resultado sai INCONCLUSIVO, comunicado à equipe (checklist §0 e §9) | §5.4 | responsável |
-| G-6 | **Ensaio da G2 aprovado**: os 14 ensaios da §10.4 (EN-01, EN-02a, EN-02b, EN-02c, EN-03 a EN-12) e as atestações AT-G2-01 e AT-G2-02 com resultado e evidência no relatório, executados **depois** do ensaio da W5 (ou em ambiente totalmente isolado, §10.4) | §5.1.3 GE-E8; §10.4; checklist §10 itens 4–5 | código + responsável (homologação) |
+| G-6 | **Ensaio da G2 aprovado**: os 16 ensaios da §10.4 (EN-01, EN-02a a EN-02e, EN-03 a EN-12) e as atestações AT-G2-01 e AT-G2-02 com resultado e evidência no relatório, executados **depois** do ensaio da W5 (ou em ambiente totalmente isolado, §10.4) | §5.1.3 GE-E8; §10.4; checklist §10 itens 4–5 | código + responsável (homologação) |
 | P-8 | **Demais itens do checklist de produção**: autorização escrita da implantação (§0); os riscos P-1 a P-4 **do checklist** decididos (§12; não confundir com as linhas P-1 a P-4 desta tabela); ensaio de queda de energia (R6-07; risco P-4 do checklist); fatias de log da spec de observabilidade que o responsável exigir; revisão independente sem BLOCKER; plano de teste do §10 | `onda6c-checklist-producao.md` | código + responsável |
 | P-9 | **Deploy pelo CI**, por decisão do responsável, com verificação pós-deploy e o primeiro teste de escrita só numa auditoria sintética combinada (checklist §10 item 6) | `CLAUDE.md` (deploy só por CI) | responsável |
 
@@ -726,8 +727,8 @@ resultado de ensaio com chave descartável. Na mesma pilha e ao mesmo tempo, uma
 
 **Roteiro.** O relatório (`docs/phase6-auditoria-link/producao-relatorio-ensaio-g2.md`) traz duas tabelas:
 
-- uma linha por ensaio, no formato `| EN-xx | PASSOU ou FALHOU | resultado observado | evidência |`, para os 14
-  ensaios abaixo (EN-01, EN-02a, EN-02b, EN-02c, EN-03 a EN-12). A evidência é a vista do livro, o código da resposta,
+- uma linha por ensaio, no formato `| EN-xx | PASSOU ou FALHOU | resultado observado | evidência |`, para os 16
+  ensaios abaixo (EN-01, EN-02a a EN-02e, EN-03 a EN-12). A evidência é a vista do livro, o código da resposta,
   a saída da reconciliação ou do `stat`;
 - uma linha por atestação, no formato `| AT-G2-xx | SIM | evidência |`:
   - **AT-G2-01**, nada em produção: nenhum deploy, migração, secret, chamada ou dado de produção durante o ensaio;
@@ -741,11 +742,13 @@ vazia.
 |---|---|---|
 | EN-01 | Rollback coordenado de decisões, recibos e livro (e de resultados com `RUN_*`) a um instante anterior à última cabeça publicada | `GUARD_MISMATCH`; nada vigente; escrita recusada |
 | EN-02a | Restauração dos pares do mesmo instante cuja cabeça do livro é **exatamente** a última cabeça publicada | `PROTECTED` com `externalGuard` = `CONSISTENT`; leituras normais; a escrita seguinte publica e prossegue; reconciliação sem divergência |
-| EN-02b | Restauração dos pares do mesmo instante com o livro **à frente** da guarda por até `L_max` registros | `PROTECTED` com `externalGuard` = `BEHIND`; leituras normais (decisões vigentes); a escrita seguinte publica a cabeça atual antes de começar (`:763`/`:893`) e a vista volta a `CONSISTENT`; com o provedor fora do ar, essa escrita recusa com `LEDGER_GUARD_UNAVAILABLE`; alarme se o atraso passar de `T` |
+| EN-02b | Restauração dos pares do mesmo instante com o livro **à frente** da guarda por até `L_max` registros, com o provedor no ar | Leitura: `PROTECTED` com `externalGuard` = `BEHIND`, decisões vigentes. A escrita seguinte publica a cabeça atual antes de começar (`service.ts:763`/`:893`) e prossegue. O `CONSISTENT` é conferido numa **leitura nova**, porque o `publishGuard` não atualiza a cabeça da guarda guardada na sessão (`service.ts:404-408`). Alarme se o atraso passar de `T` |
+| EN-02d | Como o EN-02b, com o provedor **já fora do ar quando a sessão lê a guarda** (bloqueio de rede ou credencial inválida antes da leitura) | O `latest` falha (`service.ts:246-248`) ⇒ `HISTORY_UNRESOLVED` com razão `GUARD_UNAVAILABLE` (`model.ts:489`); nada vigente; a escrita recusa com `DECISIONS_HISTORY_UNRESOLVED` (mapeamento de estado em `service.ts:342-347`); nada gravado; alarme |
+| EN-02e | Como o EN-02b, com o provedor caindo **depois do `latest` e antes do `publish`** (no laboratório, revogar o `EXECUTE` da função de publicação: o `latest` continua lendo) | Leitura: `BEHIND`. A escrita recusa com `LEDGER_GUARD_UNAVAILABLE` na publicação obrigatória (`service.ts:763` ou `:893`); nada gravado; alarme |
 | EN-02c | Livro à frente da guarda por **mais** de `L_max` registros (produzido no ensaio desligando a publicação, porque o fluxo legítimo não chega lá) | `HISTORY_UNRESOLVED` com `GUARD_LAGGING`; nada vigente; nada finalizável; toda escrita recusada; alarme; sem reabertura pela aplicação enquanto o papel administrativo não existir |
 | EN-03 | Restauração de backup mais velho que a guarda | Auditoria congelada (`GUARD_MISMATCH`), com o efeito sem papel administrativo descrito |
 | EN-04 | Rollback para a imagem anterior (posterior ao livro) com `stop-first`, sobre os mesmos volumes | Dados íntegros; nunca dois processos web gravando ao mesmo tempo |
-| EN-05 | Provedor da guarda fora do ar (bloqueio de rede ou credencial inválida) | `GUARD_UNAVAILABLE`; nada vigente; escrita recusada; alarme |
+| EN-05 | Provedor da guarda fora do ar (bloqueio de rede ou credencial inválida) numa auditoria sem atraso | `GUARD_UNAVAILABLE`; nada vigente; escrita recusada com `DECISIONS_HISTORY_UNRESOLVED`; alarme |
 | EN-06 | Publicação falha depois de um `CONFIRMED` de decisão (S8) | Sucesso com `BEHIND`; alarme; a próxima operação recusa até publicar |
 | EN-07 | Sequência falsa publicada com a credencial de escrita | Auditoria congelada (`GUARD_MISMATCH`); a reconciliação acusa |
 | EN-08 | Reconciliação contra um backup atrasado e contra uma guarda à frente do backup | Divergência acusada nos dois casos, com código de saída ≠ 0 |

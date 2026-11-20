@@ -293,7 +293,7 @@ interface (`audit-page/validators.ts`).
 | G1.a | Volumes, segredos e chave de log: `stack.yml`, lista do entrypoint, `stop-first`, plano de backup e `operatorRef` com `GMN_LINK_AUDIT_LOG_KEY` | G0 (Q8, Q9 e o nome do secret da guarda) | G1.b, G1.c, R2, W4.6 | ⬜ |
 | G1.b | Guarda: adaptador real, contrato R6-10, ligação nas rotas, migração proposta, reconciliação externa e runbook | G0 (Q1–Q5); R1.6 na `main` | G1.a; G1.c só se Q6 = 3 | ⬜ |
 | G1.c | Papel administrativo (só se Q6 = 1 ou 2; com Q6 = 3, só o aceite formal) | G0 (Q6, Q7) e emenda da §16.8 da spec do livro; **se Q6 = 1 ou 2, também a G1.b na `main`** (as duas mexem no livro) | G1.a; G1.b só se Q6 = 3 (sem código) | ⬜ |
-| G2 | Integração e ensaio em homologação: os 14 ensaios e as 2 atestações da spec §10.4 | G1.a, G1.b, G1.c (ou o aceite), o ambiente de homologação (Q12) e o **relatório da W5 aprovado** | nenhuma (com a W5, só em ambiente totalmente isolado, spec §10.4) | ⬜ |
+| G2 | Integração e ensaio em homologação: os 16 ensaios e as 2 atestações da spec §10.4 | G1.a, G1.b, G1.c (ou o aceite), o ambiente de homologação (Q12) e o **relatório da W5 aprovado** | nenhuma (com a W5, só em ambiente totalmente isolado, spec §10.4) | ⬜ |
 | G3 | Portão de produção (spec §10.1) ou piloto mínimo declarado (spec §10.2) | G2, os portões do P1 (R1, R2, W4.6, W5, W6) e as decisões e ações do responsável | — | ⬜ |
 
 Ordem prática, conforme a Q6:
@@ -428,7 +428,7 @@ Motivos:
 - **Escopo**:
   - pilha de homologação (Q12) com as pastas, as chaves descartáveis e a guarda num projeto ou esquema de laboratório;
   - auditorias **novas**, inscritas depois de ligar a guarda; as da W5 não são reaproveitadas (spec §5.1.4, regra 1);
-  - o roteiro da spec §10.4 (14 ensaios: EN-01, EN-02a, EN-02b, EN-02c, EN-03 a EN-12): rollback coordenado, restaurações, rollback de imagem, queda do provedor,
+  - o roteiro da spec §10.4 (16 ensaios: EN-01, EN-02a a EN-02e, EN-03 a EN-12): rollback coordenado, restaurações, rollback de imagem, queda do provedor,
     falha de publicação depois do fecho, sequência falsa, reconciliação, `ANCHOR_PENDING`, `ENOSPC`, ações
     administrativas e pastas no host;
   - relatório `docs/phase6-auditoria-link/producao-relatorio-ensaio-g2.md`, com uma linha por ensaio no formato
@@ -440,11 +440,11 @@ Motivos:
   o mesmo ambiente da W5 só depois disso. Em paralelo com a W5, só em ambiente totalmente isolado (pilha, volumes,
   guarda e credenciais separados), com o isolamento registrado nos dois relatórios.
 - **Critérios de aceite**:
-  - as 14 linhas de ensaio em `PASSOU`, cada uma com o resultado observado e a evidência não vazios (vista do livro,
+  - as 16 linhas de ensaio em `PASSOU`, cada uma com o resultado observado e a evidência não vazios (vista do livro,
     código da resposta, saída da reconciliação, do `stat` ou do `docker service inspect`), e nenhuma em `FALHOU`;
   - **AT-G2-01** (nada em produção) e **AT-G2-02** (chaves e credenciais do ensaio destruídas ou revogadas, com data)
     em `SIM`, com evidência.
-- **Goal command**: `/goal test -f docs/phase6-auditoria-link/producao-relatorio-ensaio-g2.md && for n in 01 02a 02b 02c 03 04 05 06 07 08 09 10 11 12; do grep -qE "^\| EN-$n \| PASSOU \| *[^| ][^|]*\| *[^| ][^|]*\|" docs/phase6-auditoria-link/producao-relatorio-ensaio-g2.md || exit 1; done && ! grep -qE "^\| EN-[0-9]+[a-c]? \| FALHOU" docs/phase6-auditoria-link/producao-relatorio-ensaio-g2.md && for n in 01 02; do grep -qE "^\| AT-G2-$n \| SIM \| *[^| ][^|]*\|" docs/phase6-auditoria-link/producao-relatorio-ensaio-g2.md || exit 1; done, stop after 3 tries` (cada ensaio em `PASSOU` com resultado e evidência que não sejam vazios nem só espaços; nenhum em `FALHOU`; as duas atestações em `SIM` com evidência)
+- **Goal command**: `/goal test -f docs/phase6-auditoria-link/producao-relatorio-ensaio-g2.md && for n in 01 02a 02b 02c 02d 02e 03 04 05 06 07 08 09 10 11 12; do grep -qE "^\| EN-$n \| PASSOU \| *[^| ][^|]*\| *[^| ][^|]*\|" docs/phase6-auditoria-link/producao-relatorio-ensaio-g2.md || exit 1; done && ! grep -qE "^\| EN-[0-9]+[a-e]? \| FALHOU" docs/phase6-auditoria-link/producao-relatorio-ensaio-g2.md && for n in 01 02; do grep -qE "^\| AT-G2-$n \| SIM \| *[^| ][^|]*\|" docs/phase6-auditoria-link/producao-relatorio-ensaio-g2.md || exit 1; done, stop after 3 tries` (cada ensaio em `PASSOU` com resultado e evidência que não sejam vazios nem só espaços; nenhum em `FALHOU`; as duas atestações em `SIM` com evidência)
 
 ### Onda G3 — Portão de produção (fora do código)
 
