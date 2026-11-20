@@ -263,6 +263,21 @@ export function signSealManifest(plan: SignPlan, keyId: string, privateKey: KeyO
   }
 }
 
+/** `sealSha256` do manifesto assinado (contrato v2 §2), para o recibo do passo 16 (W4.4): o CLI não importa o verificador. */
+export const sealDigest = (seal: EvidenceSealFileV2): string => sealSha256(seal);
+
+/**
+ * `--trust-keys` no formato da lista com estado do contrato v2 (§5), pelo PRÓPRIO parser do verificador: o CLI (W4.4) recusa a lista fora de forma
+ * como USAGE antes de ler qualquer arquivo (nota da W4.2). Nunca lança.
+ */
+export function isTrustKeyringText(text: string): boolean {
+  try {
+    return typeof text === 'string' && parseTrustKeyring(text) !== null;
+  } catch {
+    return false;
+  }
+}
+
 /** Nome do arquivo = `seq` ASSINADO (`seal-NNNN.json`, o que `SEAL_FILE` casa e o verificador confere contra o corpo). */
 export const sealFileName = (seal: { readonly seq: number }): string => `seal-${String(seal.seq).padStart(4, '0')}.json`;
 
