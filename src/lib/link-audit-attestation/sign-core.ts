@@ -47,6 +47,15 @@ export const SIGN_REFUSAL_CODES = [
   'SECRET_NOT_ENCRYPTED',
   'SIGN_KEY_UNPROTECTED',
   'SIGN_KEY_REJECTED',
+  // W4.5: autoteste do passo 14 (`sign-chain.ts`) e do fecho (`sign-closure.ts`), depois da assinatura e antes da gravação; nunca por este núcleo
+  'SIGN_SELFTEST_FAILED',
+  // W4.5: o comando de fecho `close-key` (`sign-receipts.ts`, `sign-closure.ts`; spec §5.5.1 item 9, contrato do verificador v2 §6)
+  'CLOSE_KEY_STATE_INVALID',
+  'CLOSE_RECEIPTS_INVALID',
+  'CLOSE_RECEIPTS_CONFLICT',
+  'CLOSE_SERVER_COPY_INVALID',
+  'CLOSE_TOO_MANY_HEADS',
+  'CLOSE_ALREADY_EXISTS',
   'UNEXPECTED',
 ] as const;
 export type SignRefusalCode = (typeof SIGN_REFUSAL_CODES)[number];
@@ -57,7 +66,10 @@ export interface SignRefusal {
   readonly message: string;
   /** Só em `SIGN_EVIDENCE_CHANGED`: até 5 refs (rótulos fixos, já validados). */
   readonly refs?: readonly string[];
-  /** Só em `SIGN_SEAL_CHAIN_INVALID`: o código FIXO do que a leitura da cadeia achou (razão do verificador v2 ou do `sign`), nunca dado de arquivo. */
+  /**
+   * Só em `SIGN_SEAL_CHAIN_INVALID` e `SIGN_SELFTEST_FAILED` (W4.5): o código FIXO do que a leitura da cadeia ou o autoteste achou (razão do
+   * verificador v2 ou do `sign`), nunca dado de arquivo.
+   */
   readonly chainReason?: string;
 }
 
@@ -124,6 +136,20 @@ export interface ConfirmationFacts {
   readonly seq: number;
   /** Quantas entradas o manifesto vai atestar (o conjunto exato do pacote). */
   readonly entries: number;
+}
+
+/**
+ * O que a tela da confirmação humana do `close-key` (W4.5) pode mostrar: a chave que ASSINA o fecho e as contagens. NUNCA o id da chave a aposentar:
+ * o custodiante o digita a partir do registro de rotação, fora da tela (como os 12 caracteres do `sign` vêm do dossiê).
+ */
+export interface CloseConfirmationFacts {
+  readonly signerKeyId: string;
+  /** Auditorias cobertas pelo fecho (uma cabeça por auditoria). */
+  readonly heads: number;
+  /** Cadeias com posição de R no servidor sem recibo (`UNKNOWN_SEAL_ON_SERVER`), fora do fecho. */
+  readonly unknown: number;
+  /** Auditorias cuja cabeça do registro não está, idêntica, na cópia do servidor, fora do fecho. */
+  readonly missing: number;
 }
 
 export interface SignCoreDeps<K> {

@@ -11,13 +11,22 @@
  *       --seals-dir <pasta> --expect-seq <N> [--first] --key-id <id> --key-source file:<caminho> --custodian <rótulo> --trust-keys <lista> [--json]
  *
  * `sign` (spec §5.5, W4.4): todo o comando está em `src/lib/link-audit-attestation/sign-cli.ts`; aqui só a entrega do subcomando, com a raiz do
- * projeto (a chave nunca pode estar dentro dela). A frase da chave é pedida só no terminal, sem eco.
+ * projeto (a chave nunca pode estar dentro dela). A frase da chave é pedida só no terminal, sem eco. W4.5: antes de gravar, o `sign` autotesta o
+ * manifesto novo com o verificador v2 (lista completa com estado, fechos da pasta, só v2; passo 14).
+ *
+ *   npm run link-audit:seal -- close-key --retired-key-id <R> --seals-dir <pasta> --receipts-dir <pasta de recibos> --key-id <S> \
+ *       --key-source file:<caminho> --custodian <rótulo> --trust-keys <lista> [--json]
+ *
+ * `close-key` (spec §5.5.1 item 9, W4.5; contrato do verificador v2 §6): fecho de aposentadoria da chave R, assinado pela chave ATIVA S ≠ R, com as
+ * cabeças tiradas SÓ dos recibos (registro externo); cadeia de R no servidor sem recibo sai como UNKNOWN_SEAL_ON_SERVER e fica fora. Grava
+ * `<seals-dir>/_closures/<R>.json` (criação exclusiva) e mostra o `closureSha256`, que o runbook fixa na lista (`R:<pública>:retired:<hash>`);
+ * sem essa fixação, R não conta. Também em `sign-cli.ts` (mesmas barreiras, terminal sem eco e chave K1 do `sign`).
  */
 import path from 'node:path';
 import { captureLabel, isValidAuditId, MAX_GAP_HOURS, type ExportRefusal } from '@/lib/link-audit-attestation/export';
 import { exportCandidatePackage, serializePackage, type DeltaStatus, type FsOps } from '@/lib/link-audit-attestation/export-run';
 import { isSafeText, type CandidatePackage } from '@/lib/link-audit-attestation/schemas';
-import { runSignCli, SIGN_USAGE, type SignCliDeps } from '@/lib/link-audit-attestation/sign-cli';
+import { CLOSE_KEY_USAGE, runCloseKeyCli, runSignCli, SIGN_USAGE, type SignCliDeps } from '@/lib/link-audit-attestation/sign-cli';
 
 export const USAGE = [
   'Uso: npm run link-audit:seal -- export --evidence-dir <base> --audit <auditId> --collector-hash cNNNN=<hex64> [...] --max-gap-hours <N>',
@@ -25,6 +34,7 @@ export const USAGE = [
   '  --collector-hash: uma por captura nova (o hash que o operador registrou do coletor em --json); é a única opção repetível.',
   '  --max-gap-hours: obrigatório para captura nova, sem valor padrão. Sem --out, o pacote só vai para a saída padrão com --show-summary.',
   ...SIGN_USAGE,
+  ...CLOSE_KEY_USAGE,
 ];
 const HASH_NOTICE = 'Hash não é assinatura; a conferência de procedência (contrato §4) ainda é necessária.';
 const UNEXPECTED_MESSAGE = 'Falha inesperada.';
@@ -120,7 +130,7 @@ export interface SealCliDeps {
   /** Gravação do `--out`. */
   readonly outFs?: FsOps;
   readonly projectRoot?: string;
-  /** Dependências do `sign` (terminal, ambiente, disco, pastas temporárias proibidas; testes). A raiz do projeto vem de `projectRoot`. */
+  /** Dependências do `sign` e do `close-key` (terminal, ambiente, disco, pastas temporárias proibidas; testes). A raiz do projeto vem de `projectRoot`. */
   readonly sign?: Omit<SignCliDeps, 'projectRoot'>;
 }
 
@@ -214,7 +224,8 @@ export async function runSealCli(argv: readonly string[], out: Line, err: Line, 
   try {
     const [command, ...rest] = argv;
     if (command === 'sign') return await runSignCli(rest, out, err, now, { ...deps.sign, projectRoot: deps.projectRoot ?? path.resolve(__dirname, '..') });
-    if (command !== 'export') return usage('Informe o subcomando: export ou sign.', json, out, err);
+    if (command === 'close-key') return await runCloseKeyCli(rest, out, err, now, { ...deps.sign, projectRoot: deps.projectRoot ?? path.resolve(__dirname, '..') });
+    if (command !== 'export') return usage('Informe o subcomando: export, sign ou close-key.', json, out, err);
     const args = parseExportArgs(rest);
     if (typeof args === 'string') return usage(args, json, out, err);
     return await runExport(args, out, err, now, deps);

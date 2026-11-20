@@ -1,4 +1,4 @@
-import { CONFIRM_PREFIX_LENGTH, type ConfirmationFacts } from './sign-core';
+import { CONFIRM_PREFIX_LENGTH, type CloseConfirmationFacts, type ConfirmationFacts } from './sign-core';
 
 /*
  * P1 W4.4 — o TERMINAL do `sign` (spec §5.5 passos 11 e 12; §5.5.1 item 8; §8 K1; IA-04, IA-15, IA-23; RS-11). Lê UMA linha digitada pelo
@@ -226,6 +226,24 @@ export function terminalConfirm(input: HiddenInput, say: (line: string) => void)
     input.hideEcho(); // revisão da W4.4: o eco sai ANTES da tela (sob carga, uma digitação rápida chegou antes do modo bruto e ecoou)
     say(`Confirmação humana (passo 11): auditoria ${facts.auditId}, manifesto seq ${facts.seq}, ${facts.entries} entradas a atestar.`);
     say(`Digite os ${CONFIRM_PREFIX_LENGTH} primeiros caracteres de packageSha256 conforme o DOSSIÊ de aprovação (a digitação não aparece na tela) e tecle Enter:`);
+    const typed = await input.readLine(MAX_CONFIRMATION_BYTES);
+    try {
+      return typed.toString('utf8');
+    } finally {
+      typed.fill(0);
+    }
+  };
+}
+
+/**
+ * Porta `confirm` do `close-key` (W4.5): mostra a chave que ASSINA o fecho e as contagens (cobertas, desconhecidas no servidor, cabeças ausentes) e
+ * pede o id da chave a APOSENTAR conforme o registro de rotação, fora desta tela (que não o mostra), sem eco, como a confirmação do `sign`.
+ */
+export function terminalCloseConfirm(input: HiddenInput, say: (line: string) => void): (facts: CloseConfirmationFacts) => Promise<string> {
+  return async (facts) => {
+    input.hideEcho();
+    say(`Confirmação humana (fecho de aposentadoria): assinado pela chave ativa ${facts.signerKeyId}; ${facts.heads} auditoria(s) coberta(s); ${facts.unknown} cadeia(s) UNKNOWN_SEAL_ON_SERVER e ${facts.missing} cabeça(s) do registro ausente(s) no servidor ficam FORA do fecho.`);
+    say('Digite o id da chave a aposentar conforme o registro de rotação (a digitação não aparece na tela) e tecle Enter:');
     const typed = await input.readLine(MAX_CONFIRMATION_BYTES);
     try {
       return typed.toString('utf8');

@@ -2,18 +2,19 @@ import { randomBytes, type KeyObject } from 'node:crypto';
 import path from 'node:path';
 import { errorCode, type BytesFsOps, type FileInfo, type FsOps } from '../link-audit/snapshot-store';
 import { auditId as auditIdSchema } from './schemas';
-import { keyMismatchRefusal, runSignWithChain, sealFileName, serializeSealFile, signSealManifest, type SealManifest, type SignWithChainDeps } from './sign-chain';
+import { chainSnapshot, keyMismatchRefusal, runSignWithChain, sealFileName, selfTestSeal, serializeSealFile, SIGN_KEY_ID_PATTERN, signSealManifest, type SealManifest, type SignWithChainDeps } from './sign-chain';
 import type { SignCoreResult, SignPlan, SignRefusal, SignRefusalCode } from './sign-core';
 
 /*
  * P1 W4.3 — o DISCO do `sign` (spec §5.5 preâmbulo e passo 15; §5.5.1 item 4; §7.3; IA-12, IA-18; RS-04, RS-12). Encadeia: leitura ÚNICA de
  * `--package`, `--approval`, `--dossier` e, se indicado, `--risk-acceptance` (bytes exatos, pelo `FsOps` injetado, sem seguir link, com limite) → cadeia +
  * núcleo (`runSignWithChain`: recusas dos passos 1–10, confirmação humana pela porta injetada e só então a chave injetada) → corpo e assinatura
- * (`signSealManifest`) → gravação à prova de queda em `<seals-dir>/<auditId>/`:
+ * (`signSealManifest`) → autoteste do passo 14 sobre a mesma fotografia da cadeia (`selfTestSeal`, W4.5) → gravação à prova de queda em `<seals-dir>/<auditId>/`:
  * temporário não secreto `.seal-NNNN.json.tmp-<aleatório>` + fsync do arquivo + `link()` exclusivo + remoção do temporário + fsync da pasta.
  * Único arquivo do `sign` que ESCREVE: só cria a subpasta da auditoria, o temporário e o nome final (por `link()`), e só remove o próprio temporário;
- * nunca apaga nem altera um `seal-NNNN.json`, nunca renomeia nem muda permissão. Sem CLI, tela TTY da confirmação, chave real, recibo nem autoteste
- * (W4.4/W4.5); sem relógio implícito (o instante vem de quem chama) e sem o verificador (o texto gravado vem conferido de `sign-chain.ts`).
+ * nunca apaga nem altera um `seal-NNNN.json`, nunca renomeia nem muda permissão. W4.5: a MESMA criação exclusiva grava o fecho de aposentadoria do
+ * `close-key` em `<seals-dir>/_closures/<R>.json` (`publishClosure`). Sem CLI, tela TTY da confirmação, chave real nem recibo (W4.4); sem relógio
+ * implícito (o instante vem de quem chama) e sem o verificador (o texto gravado e o autoteste vêm de `sign-chain.ts`).
  */
 
 /**
@@ -72,14 +73,16 @@ export type SignRunResult = (SealWritten & { readonly seal: SealManifest; readon
 
 const refuse = (code: SignRefusalCode, message: string): SignRefusal => ({ ok: false, code, message });
 const NOTHING_SIGNED = 'Nada foi assinado.';
-const NOTHING_WRITTEN = 'Nada foi gravado como manifesto.';
+const NOTHING_WRITTEN = 'Nada foi gravado como manifesto (nem como fecho).';
 const TEMP_LEFT = ' Pode ter ficado um temporário .seal-NNNN.json.tmp-* na pasta da auditoria: o verificador o ignora; o runbook manda apagá-lo.';
+/** O mesmo aviso para a gravação compartilhada com o fecho do `close-key` (W4.5). */
+const TEMP_LEFT_ANY = ' Pode ter ficado um temporário (.seal-NNNN.json.tmp-* na pasta da auditoria, ou .<id>.json.tmp-* em _closures): o verificador o ignora; o runbook manda apagá-lo.';
 const BAD_AUDIT = refuse('USAGE', '--audit inválido (minúsculas, dígitos, "-" ou "_", 8 a 64 caracteres): nunca vira caminho. Nada foi gravado.');
 const OTHER_AUDIT = refuse('UNEXPECTED', `O manifesto assinado não é da auditoria de --audit. ${NOTHING_WRITTEN}`);
 const BAD_SUFFIX = refuse('UNEXPECTED', `Nome de temporário fora de forma. ${NOTHING_WRITTEN}`);
-const UNSAFE_DIR = refuse('SIGN_WRITE_FAILED', `A pasta de manifestos ou a subpasta da auditoria não é um diretório comum (link simbólico, arquivo, ausente) ou mudou durante o sign. ${NOTHING_WRITTEN}`);
+const UNSAFE_DIR = refuse('SIGN_WRITE_FAILED', `A pasta de manifestos ou a subpasta de destino (da auditoria, ou _closures) não é um diretório comum (link simbólico, arquivo, ausente) ou mudou durante o comando. ${NOTHING_WRITTEN}`);
 const BEFORE_WRITE = refuse('UNEXPECTED', `Falha inesperada antes da gravação (cadeia, núcleo ou abertura da chave). ${NOTHING_WRITTEN}`);
-const writeFailed = (tempLeft: boolean): SignRefusal => refuse('SIGN_WRITE_FAILED', `Falha ao gravar o manifesto (escrita, fsync ou link do temporário; sem espaço, erro de disco ou permissão). ${NOTHING_WRITTEN}${tempLeft ? TEMP_LEFT : ''}`);
+const writeFailed = (tempLeft: boolean): SignRefusal => refuse('SIGN_WRITE_FAILED', `Falha ao gravar (escrita, fsync ou link do temporário; sem espaço, erro de disco ou permissão). ${NOTHING_WRITTEN}${tempLeft ? TEMP_LEFT_ANY : ''}`);
 const seqConflict = (fileName: string, tempLeft = false): SignRefusal =>
   refuse('SIGN_SEQ_CONFLICT', `${fileName} já existe na pasta da auditoria (outra execução gravou este seq): nada foi sobrescrito. Confira o registro externo e refaça a partir da cadeia atualizada.${tempLeft ? TEMP_LEFT : ''}`);
 const unconfirmed = (fileName: string): SignRefusal =>
@@ -132,16 +135,18 @@ async function pinnedRoot(fs: FsOps, sealsDir: string): Promise<string> {
 
 /**
  * Leitura única → cadeia + núcleo (passos 1–10, `--key-id` ativo, confirmação humana no 11, chave no 12) → chave aberta = pública de `--key-id` na lista
- * (`SIGN_KEY_MISMATCH`) → corpo e assinatura (13) → gravação (15). Devolve o gravado ou a recusa.
+ * (`SIGN_KEY_MISMATCH`) → corpo e assinatura (13) → autoteste (14, W4.5) → gravação (15). Devolve o gravado ou a recusa. A cadeia é lida por UMA
+ * fotografia somente leitura, a mesma que o autoteste usa: ele julga os bytes que a leitura da cadeia viu, sem nova leitura do disco.
  */
 export async function runSign(input: SignRunInput, deps: SignRunDeps): Promise<SignRunResult> {
   const bytes = await readInputs(deps.fs, input);
   if ('ok' in bytes) return bytes;
   const root = await pinnedRoot(deps.fs, input.sealsDir);
+  const snapshot = chainSnapshot(deps.fs);
   let decided: SignCoreResult<KeyObject | SignRefusal>;
   try {
     const { auditId, custodian, trustKeys, expectSeq, first, keyId } = input;
-    decided = await runSignWithChain({ auditId, custodian, ...bytes, sealsDir: root, trustKeys, expectSeq, first, keyId }, { fs: deps.fs, now: deps.now, confirm: deps.confirm, openKey: deps.openKey });
+    decided = await runSignWithChain({ auditId, custodian, ...bytes, sealsDir: root, trustKeys, expectSeq, first, keyId }, { fs: snapshot, now: deps.now, confirm: deps.confirm, openKey: deps.openKey });
   } catch {
     return BEFORE_WRITE; // o objeto de erro nunca sai daqui (pode vir do leitor de chave, RS-13)
   }
@@ -151,6 +156,10 @@ export async function runSign(input: SignRunInput, deps: SignRunDeps): Promise<S
   if (mismatch) return mismatch;
   const signed = signSealManifest(decided.plan, input.keyId, decided.key);
   if (!signed.ok) return signed;
+  const text = serializeSealFile(signed.seal); // os BYTES a gravar (tamanho e leitura de volta conferidos): é isso que o autoteste julga
+  if (!text.ok) return text;
+  const failed = await selfTestSeal({ sealsDir: root, trustKeys: input.trustKeys, seal: signed.seal, text: text.text, entries: decided.plan.entries }, { fs: snapshot });
+  if (failed) return failed; // passo 14: nada gravado
   const written = await publishSeal(deps.fs, { sealsDir: root, auditId: input.auditId, seal: signed.seal }, deps.tempSuffix ? { tempSuffix: deps.tempSuffix } : {});
   return written.ok ? { ...written, seal: signed.seal, plan: decided.plan } : written;
 }
@@ -193,11 +202,11 @@ async function rootIsReal(fs: FsOps, sealsDir: string): Promise<boolean> {
 }
 
 /**
- * `<raiz>/<auditId>/`, sem seguir link: criada se ausente (e a raiz sincronizada, para a pasta nova sobreviver a uma queda); link simbólico, arquivo
- * ou caminho real diferente ⇒ recusa.
+ * `<raiz>/<nome>/` (a subpasta da auditoria, ou `_closures` no `close-key`), sem seguir link: criada se ausente (e a raiz sincronizada, para a pasta
+ * nova sobreviver a uma queda); link simbólico, arquivo ou caminho real diferente ⇒ recusa.
  */
-async function auditDir(fs: FsOps, root: string, auditId: string): Promise<{ readonly ok: true; readonly dir: string } | SignRefusal> {
-  const dir = path.join(root, auditId);
+async function subDir(fs: FsOps, root: string, name: string): Promise<{ readonly ok: true; readonly dir: string } | SignRefusal> {
+  const dir = path.join(root, name);
   let info: FileInfo;
   let created = false;
   try {
@@ -228,7 +237,8 @@ async function auditDir(fs: FsOps, root: string, auditId: string): Promise<{ rea
  * escrita direta não atômica do nome final. Antes do `link()` o temporário (se for deste processo) é removido em qualquer falha; depois dele, o
  * manifesto existe e nunca é apagado, e qualquer falha é `SIGN_WRITE_UNCONFIRMED`, nunca sucesso.
  */
-async function commitSeal(fs: FsOps, dir: string, fileName: string, temp: string, text: string): Promise<SignRefusal | null> {
+async function commitFile(fs: FsOps, target: ExclusiveTarget, dir: string, temp: string): Promise<SignRefusal | null> {
+  const { fileName, text } = target;
   try {
     await fs.writeExclusive(temp, text, SEAL_MODE);
   } catch (error) {
@@ -241,11 +251,36 @@ async function commitSeal(fs: FsOps, dir: string, fileName: string, temp: string
   } catch (error) {
     const tempLeft = !(await attempt(() => fs.unlink(temp)));
     // revisão da W4.3: o conflito também avisa quando a limpeza do temporário falhou (o resíduo não é secreto, mas precisa de limpeza pelo runbook)
-    return errorCode(error) === 'EEXIST' ? seqConflict(fileName, tempLeft) : writeFailed(tempLeft);
+    return errorCode(error) === 'EEXIST' ? target.conflict(tempLeft) : writeFailed(tempLeft);
   }
   const removed = await attempt(() => fs.unlink(temp));
   const synced = await attempt(() => fs.syncDirectory(dir));
-  return removed && synced ? null : unconfirmed(fileName);
+  return removed && synced ? null : target.unconfirmed;
+}
+
+interface ExclusiveTarget {
+  /** A raiz da cópia da estação pelo CAMINHO REAL. */
+  readonly root: string;
+  /** A subpasta da raiz (a da auditoria, ou `_closures`). */
+  readonly dirName: string;
+  readonly fileName: string;
+  /** Os bytes exatos a gravar (já conferidos por quem chama). */
+  readonly text: string;
+  /** O nome final já existe (outra execução o gravou): nada sobrescrito. */
+  readonly conflict: (tempLeft: boolean) => SignRefusal;
+  /** Falha depois do `link()`: o arquivo existe, mas não está confirmado. */
+  readonly unconfirmed: SignRefusal;
+}
+
+/** Raiz real → subpasta (criada se ausente) → temporário + `link()` exclusivo + fsync (`commitFile`). Nunca lança e nunca sobrescreve. */
+async function linkExclusive(fs: FsOps, target: ExclusiveTarget, tempSuffix: (() => string) | undefined): Promise<{ readonly ok: true; readonly file: string } | SignRefusal> {
+  const suffix = tempSuffixOf(tempSuffix);
+  if (suffix === null) return BAD_SUFFIX;
+  if (!(await rootIsReal(fs, target.root))) return UNSAFE_DIR;
+  const prepared = await subDir(fs, target.root, target.dirName);
+  if (!prepared.ok) return prepared;
+  const failed = await commitFile(fs, target, prepared.dir, path.join(prepared.dir, `.${target.fileName}.tmp-${suffix}`));
+  return failed ?? { ok: true, file: path.join(prepared.dir, target.fileName) };
 }
 
 /**
@@ -257,12 +292,45 @@ export async function publishSeal(fs: FsOps, target: SealTarget, options: { read
   if (target.seal?.auditId !== target.auditId) return OTHER_AUDIT;
   const text = serializeSealFile(target.seal);
   if (!text.ok) return text;
-  const suffix = tempSuffixOf(options.tempSuffix);
-  if (suffix === null) return BAD_SUFFIX;
-  if (!(await rootIsReal(fs, target.sealsDir))) return UNSAFE_DIR;
-  const prepared = await auditDir(fs, target.sealsDir, target.auditId);
-  if (!prepared.ok) return prepared;
   const fileName = sealFileName(target.seal);
-  const failed = await commitSeal(fs, prepared.dir, fileName, path.join(prepared.dir, `.${fileName}.tmp-${suffix}`), text.text);
-  return failed ?? { ok: true, seq: target.seal.seq, fileName, file: path.join(prepared.dir, fileName) };
+  const conflict = (tempLeft: boolean): SignRefusal => seqConflict(fileName, tempLeft);
+  const written = await linkExclusive(fs, { root: target.sealsDir, dirName: target.auditId, fileName, text: text.text, conflict, unconfirmed: unconfirmed(fileName) }, options.tempSuffix);
+  return written.ok ? { ok: true, seq: target.seal.seq, fileName, file: written.file } : written;
+}
+
+/* ------------------------------------------------------------------------------------------------------------------- fecho de aposentadoria (W4.5) */
+
+/** A pasta dos fechos na cópia da estação (contrato do verificador v2 §6: nome que nenhum `auditId` casa). */
+export const CLOSURES_DIR = '_closures';
+/** Teto do texto do fecho (contrato do verificador v2 §2, `MAX_CLOSURE_BYTES`). Cópia deliberada: este arquivo não importa o verificador. */
+const MAX_CLOSURE_TEXT_BYTES = 256 * 1024;
+
+export interface ClosureTarget {
+  /** A raiz da cópia da estação pelo CAMINHO REAL. */
+  readonly sealsDir: string;
+  /** `--retired-key-id` (R): o arquivo é `_closures/<R>.json`. */
+  readonly retiredKeyId: string;
+  /** Os BYTES exatos do fecho já autotestado (o hash fixado na lista é destes bytes, §6). */
+  readonly text: string;
+}
+export type ClosureWriteResult = { readonly ok: true; readonly fileName: string; readonly file: string } | SignRefusal;
+
+const BAD_RETIRED = refuse('UNEXPECTED', `Id da chave a aposentar fora de forma. Nada foi gravado como fecho.`);
+const BAD_CLOSURE_TEXT = refuse('UNEXPECTED', `Texto do fecho vazio ou acima de ${MAX_CLOSURE_TEXT_BYTES} bytes. Nada foi gravado como fecho.`);
+const closureConflict = (fileName: string) => (tempLeft: boolean): SignRefusal =>
+  refuse('CLOSE_ALREADY_EXISTS', `${fileName} já existe na pasta de manifestos (outro fecho desta chave, ou outra execução): nada foi sobrescrito. Reemissão só pelo runbook, depois de conferir o fecho existente.${tempLeft ? ' Pode ter ficado um temporário .<id>.json.tmp-* em _closures: o verificador o ignora; o runbook manda apagá-lo.' : ''}`);
+const closureUnconfirmed = (fileName: string): SignRefusal =>
+  refuse('SIGN_WRITE_UNCONFIRMED', `${fileName} foi criado, mas a confirmação em disco falhou (remoção do temporário ou fsync da pasta): a gravação NÃO está confirmada. Não entregue o fecho nem fixe o hash; o close-key nunca o apaga. Trate como incidente (runbook).`);
+
+/**
+ * W4.5: grava o fecho em `<sealsDir>/_closures/<R>.json` pela MESMA criação exclusiva do manifesto (temporário + fsync + `link()` exclusivo + remoção
+ * do temporário + fsync da pasta; `_closures` criada se ausente). Já existe ⇒ `CLOSE_ALREADY_EXISTS`, nada sobrescrito. Nunca lança.
+ */
+export async function publishClosure(fs: FsOps, target: ClosureTarget, options: { readonly tempSuffix?: () => string } = {}): Promise<ClosureWriteResult> {
+  if (typeof target.retiredKeyId !== 'string' || !SIGN_KEY_ID_PATTERN.test(target.retiredKeyId)) return BAD_RETIRED;
+  if (typeof target.text !== 'string' || target.text.length === 0 || Buffer.byteLength(target.text, 'utf8') > MAX_CLOSURE_TEXT_BYTES) return BAD_CLOSURE_TEXT;
+  const name = `${target.retiredKeyId}.json`;
+  const fileName = `${CLOSURES_DIR}/${name}`;
+  const written = await linkExclusive(fs, { root: target.sealsDir, dirName: CLOSURES_DIR, fileName: name, text: target.text, conflict: closureConflict(fileName), unconfirmed: closureUnconfirmed(fileName) }, options.tempSuffix);
+  return written.ok ? { ok: true, fileName, file: written.file } : written;
 }

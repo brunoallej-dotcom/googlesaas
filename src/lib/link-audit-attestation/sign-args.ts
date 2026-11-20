@@ -8,7 +8,8 @@ import { parseKeySource, type KeySource } from './sign-key';
  * qualquer outra análise, duas barreiras de higiene (passo 1): nenhuma opção com nome de segredo (senha, chave, PIN…) nem material de chave em
  * qualquer argumento ⇒ `SECRET_VIA_ARGV_FORBIDDEN`; nenhuma variável de ambiente com nome de segredo ⇒ `SECRET_VIA_ENV_FORBIDDEN` (só os NOMES são
  * olhados). Depois o analisador estrito: opção desconhecida, repetida ou sem valor, argumento posicional e formato inválido ⇒ USAGE (código 1).
- * Nenhuma mensagem ecoa o VALOR de uma opção (pode ser caminho, rótulo ou segredo colado por engano).
+ * Nenhuma mensagem ecoa o VALOR de uma opção (pode ser caminho, rótulo ou segredo colado por engano). W4.5: o analisador do `close-key`
+ * (`parseCloseKeyArgs`), com as mesmas barreiras e as mesmas regras de `--key-id`, `--key-source` e `--trust-keys`.
  */
 
 export interface SignArgs {
@@ -30,8 +31,10 @@ export interface SignArgs {
 
 const VALUE_FLAGS: ReadonlySet<string> = new Set(['audit', 'package', 'approval', 'dossier', 'risk-acceptance', 'seals-dir', 'expect-seq', 'key-id', 'key-source', 'custodian', 'trust-keys']);
 const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(['first', 'json']);
-/** As únicas opções com "key" no nome que o `sign` aceita: nenhuma recebe segredo (rótulo público, caminho e lista de PÚBLICAS). */
-const KEY_NAMED_FLAGS: ReadonlySet<string> = new Set(['key-id', 'key-source', 'trust-keys']);
+const CLOSE_VALUE_FLAGS: ReadonlySet<string> = new Set(['retired-key-id', 'seals-dir', 'receipts-dir', 'key-id', 'key-source', 'custodian', 'trust-keys']);
+const CLOSE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set(['json']);
+/** As únicas opções com "key" no nome que o `sign` e o `close-key` aceitam: nenhuma recebe segredo (rótulos públicos, caminho e lista de PÚBLICAS). */
+const KEY_NAMED_FLAGS: ReadonlySet<string> = new Set(['key-id', 'key-source', 'trust-keys', 'retired-key-id']);
 /** Nome de opção que sugere segredo (§8.1, IA-15). Mais largo de propósito: uma opção desconhecida com esse nome é recusa de segredo, não de uso. */
 const SECRET_FLAG_NAME = /pass|senha|secret|segredo|pin|token|priv|chave|key|pwd|credential|credencia|seed|semente|mnemonic/i;
 /** Material de chave reconhecível em QUALQUER argumento: armadura PEM, PKCS#8 Ed25519 em base64/base64url ou em hex. */
@@ -94,19 +97,19 @@ function unknownFlag(token: string): SignRefusal {
 }
 
 /** Tokens → valores e sinalizadores, sem validar o conteúdo (flag desconhecida, repetida ou sem valor ⇒ USAGE). */
-function tokenize(tokens: readonly string[]): { readonly values: ReadonlyMap<string, string>; readonly flags: ReadonlySet<string> } | SignRefusal {
+function tokenize(tokens: readonly string[], valueFlags: ReadonlySet<string> = VALUE_FLAGS, booleanFlags: ReadonlySet<string> = BOOLEAN_FLAGS): { readonly values: ReadonlyMap<string, string>; readonly flags: ReadonlySet<string> } | SignRefusal {
   const values = new Map<string, string>();
   const flags = new Set<string>();
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index] ?? '';
     if (!token.startsWith('--')) return usage(`Argumento inesperado na posição ${index + 2} (as opções começam com --).`);
     const name = token.slice(2);
-    if (BOOLEAN_FLAGS.has(name)) {
+    if (booleanFlags.has(name)) {
       if (flags.has(name)) return usage(`Opção repetida: --${name}.`);
       flags.add(name);
       continue;
     }
-    if (!VALUE_FLAGS.has(name)) return unknownFlag(token);
+    if (!valueFlags.has(name)) return unknownFlag(token);
     const value = tokens[index + 1];
     if (value === undefined || value.startsWith('--')) return usage(`A opção --${name} exige um valor.`);
     if (values.has(name)) return usage(`Opção repetida: --${name}.`);
@@ -172,4 +175,39 @@ export function parseSignArgs(tokens: readonly string[]): SignArgs | SignRefusal
   const custodian = values.get('custodian');
   if (custodian === undefined || !shortLabel.safeParse(custodian).success) return usage('Informe --custodian <rótulo curto> (iniciais ou ID; sem e-mail nem telefone).');
   return { auditId, ...paths, ...seq, ...key, custodian, json: flags.has('json') };
+}
+
+/* ------------------------------------------------------------------------------------------------------------------- close-key (W4.5) */
+
+export interface CloseKeyArgs {
+  readonly retiredKeyId: string;
+  readonly sealsDir: string;
+  readonly receiptsDir: string;
+  readonly keyId: string;
+  readonly keySource: KeySource;
+  readonly custodian: string;
+  readonly trustKeys: string;
+  readonly json: boolean;
+}
+
+/**
+ * Analisador ESTRITO do `close-key` (depois das MESMAS barreiras de segredo do `sign`): `--retired-key-id` (R) e `--key-id` (S) no padrão de id de
+ * chave e diferentes (uma chave nunca fecha a si mesma), `--seals-dir`, `--receipts-dir`, `--key-source file:`, `--custodian` e `--trust-keys` como
+ * no `sign`. Devolve os argumentos ou a recusa (USAGE, ou segredo em `--key-source`).
+ */
+export function parseCloseKeyArgs(tokens: readonly string[]): CloseKeyArgs | SignRefusal {
+  const parsed = tokenize(tokens, CLOSE_VALUE_FLAGS, CLOSE_BOOLEAN_FLAGS);
+  if ('ok' in parsed) return parsed;
+  const { values, flags } = parsed;
+  const retiredKeyId = values.get('retired-key-id');
+  if (retiredKeyId === undefined || !SIGN_KEY_ID_PATTERN.test(retiredKeyId)) return usage('Informe --retired-key-id válido (o id da chave a aposentar: minúsculas, dígitos e "-", 4 a 32 caracteres).');
+  const [sealsDir, receiptsDir] = ['seals-dir', 'receipts-dir'].map((name) => values.get(name));
+  if (!isPath(sealsDir)) return usage('Informe --seals-dir <pasta de manifestos da estação> (a cópia do servidor).');
+  if (!isPath(receiptsDir)) return usage('Informe --receipts-dir <pasta de recibos> (o registro externo das assinaturas).');
+  const key = keyArgs(values);
+  if ('ok' in key) return key;
+  if (key.keyId === retiredKeyId) return usage('--key-id igual a --retired-key-id: uma chave nunca fecha a si mesma; o fecho é assinado por uma chave ATIVA diferente.');
+  const custodian = values.get('custodian');
+  if (custodian === undefined || !shortLabel.safeParse(custodian).success) return usage('Informe --custodian <rótulo curto> (iniciais ou ID; sem e-mail nem telefone).');
+  return { retiredKeyId, sealsDir, receiptsDir, ...key, custodian, json: flags.has('json') };
 }
