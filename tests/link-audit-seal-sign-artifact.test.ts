@@ -7,6 +7,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { ARTIFACT_FILE_NAME, ARTIFACT_NODE_MODULES, ArtifactBuildError, buildSignArtifact, checkArtifactText, hashLine, VERSIONED_HASH_FILE, versionedSha256, ZOD_FUNCTION_EXCEPTIONS, type BuiltArtifact } from '../scripts/build-sign-artifact';
 import { runSignArtifact } from '../scripts/link-audit-sign-artifact';
+import { config as zodConfig } from 'zod';
 import { createSealedEvidenceProvenance, parseTrustKeyring, type TrustKeyring } from '../src/lib/link-audit-evidence/provenance';
 import { nodeFsOps } from '../src/lib/link-audit/node-fs-ops';
 import { nodeKeyFileOps, type KeyFileOps } from '../src/lib/link-audit-attestation/sign-key';
@@ -124,19 +125,40 @@ test('guardas do build (mutações): módulo fora da lista (node:os, node:net, f
   assert.deepEqual(checkArtifactText('var c = require("node:crypto"), p = require( "node:path" );', []), ['node:crypto', 'node:path']);
 });
 
-test('revisão independente da W4.6 (2): exceções EXATAS e justificadas do zod embutido ao identificador Function (aliases do teste de eval, do JIT do Doc.compile e do z.compile, e uma mensagem); cada uma tem de aparecer exatamente uma vez, e qualquer outro uso de Function é recusado', async () => {
+test('confirmação da revisão da W4.6 (2a): cada exceção do zod ao identificador Function fixa a função ou o trecho INTEIRO, pelo texto exato e pelo SHA-256; prefixo seguido de outro uso do apelido F, 1 caractere mudado ou repetição ⇒ ArtifactBuildError', async () => {
   // util.allowsEval (testa se o runtime gera código), core/doc.js (JIT dos validadores), core/compile.js (z.compile, não usado pelo sign) e texto
-  assert.deepEqual([...ZOD_FUNCTION_EXCEPTIONS], [
-    'try{const F=Function;new F("");return true}catch(_){return false}',
-    'compile(){const F=Function;',
-    'const F=Function;const factoryCode=',
-    '"Function types cannot be represented in JSON Schema"',
-  ]);
+  assert.deepEqual(ZOD_FUNCTION_EXCEPTIONS.map((exception) => exception.name), ['util.allowsEval', 'Doc.compile', 'z.compile (compileFn)', 'mensagem do JSON Schema']);
+  for (const exception of ZOD_FUNCTION_EXCEPTIONS) assert.equal(sha256Of(Buffer.from(exception.text, 'utf8')), exception.sha256, `${exception.name}: o SHA-256 fixado é o do texto`);
   const text = fs.readFileSync((await built()).file, 'utf8');
-  for (const exception of ZOD_FUNCTION_EXCEPTIONS) assert.equal(text.split(exception).length - 1, 1, `exceção presente exatamente uma vez: ${exception}`);
-  assert.throws(() => checkArtifactText(`${ZOD_FUNCTION_EXCEPTIONS[1]}${ZOD_FUNCTION_EXCEPTIONS[1]}`, []), (error: unknown) => error instanceof ArtifactBuildError && error.code === 'DYNAMIC_LOAD', 'uma exceção repetida não esconde a segunda');
+  for (const exception of ZOD_FUNCTION_EXCEPTIONS) assert.equal(text.split(exception.text).length - 1, 1, `${exception.name}: presente exatamente uma vez, inteira`);
+  const refused = (sample: string, label: string): void => {
+    assert.throws(() => checkArtifactText(sample, []), (error: unknown) => error instanceof ArtifactBuildError && error.code === 'DYNAMIC_LOAD', label);
+  };
+  const docCompile = (ZOD_FUNCTION_EXCEPTIONS[1] as { readonly text: string }).text;
+  refused('compile(){const F=Function;return new F("return process")()}', 'o prefixo antigo seguido de outro uso de F');
+  refused(docCompile.replace('Object.values', 'Object.entries'), '1 caractere a mais ou a menos no trecho');
+  refused(docCompile.replace('closed))}', 'closed));F("x")}'), 'uso do apelido F acrescentado no fim do trecho');
+  refused(`${docCompile}${docCompile}`, 'uma exceção repetida não esconde a segunda');
+  assert.deepEqual(checkArtifactText(ZOD_FUNCTION_EXCEPTIONS.map((exception) => exception.text).join(';'), []), [], 'as quatro, inteiras, passam');
 });
 
+test('confirmação da revisão da W4.6 (2b): a entrada do artefato configura o zod SEM JIT antes de qualquer esquema existir (jitless); no artefato real, carregar os módulos não chama Function nenhuma vez (contado por uma pré-carga que só observa)', { timeout: LIMIT_MS }, async () => {
+  assert.equal(zodConfig().jitless, true, 'a entrada (importada por este teste) ligou o jitless');
+  const artifact = await built();
+  const dir = tmpDir('lasa-jit-');
+  const counter = path.join(dir, 'conta-function.cjs');
+  fs.writeFileSync(counter, [
+    'const Original = Function;',
+    'let calls = 0;',
+    'globalThis.Function = new Proxy(Original, { construct(target, args) { calls += 1; return Reflect.construct(target, args); }, apply(target, self, args) { calls += 1; return Reflect.apply(target, self, args); } });',
+    "process.on('exit', () => process.stderr.write('FUNCTION_CALLS=' + calls + '\\n'));",
+    '',
+  ].join('\n'));
+  // sem o modelo de permissões: a barreira do artefato recusa (código 3) DEPOIS de todos os módulos (e esquemas) carregados, que é o que importa aqui
+  const run = spawnSync('env', ['-i', process.execPath, '--require', counter, artifact.file, 'sign'], { encoding: 'utf8', timeout: 60_000 });
+  assert.match(run.stderr, /Código: SIGN_RUNTIME_UNSAFE/, run.stderr);
+  assert.match(run.stderr, /FUNCTION_CALLS=0\b/, `nenhuma geração de código com o jitless: ${run.stderr}`);
+});
 /* =============================================================================================================== recibo (em processo) */
 
 const NUL = '\0';
@@ -304,7 +326,7 @@ test('revisão independente da W4.6 (3): no artefato, --allow-fs-write só na ra
   const passing: ReadonlyArray<(root: string) => string[]> = [
     (root) => [`--allow-fs-write=${root}`, `--allow-fs-read=${root}`],
     (root) => [`--allow-fs-write=${path.join(root, AUD)}`],
-    () => ['--allow-fs-read=/tmp', '--allow-fs-read=/.git', '--allow-fs-read=/home/.git', '--allow-fs-read=/var/tmp', '--allow-fs-read=/dev/shm'],
+    () => ['--allow-fs-read=/tmp', '--allow-fs-read=/.git', '--allow-fs-read=/home/.git', '--allow-fs-read=/var/tmp', '--allow-fs-read=/dev/shm', '--allow-fs-read=/proc/self/fd'],
   ];
   for (const grants of passing) {
     const fresh = cliWorld();
@@ -327,6 +349,48 @@ test('revisão independente da W4.6 (3): no artefato, --allow-fs-write só na ra
   }
   const closures = await closeWith([`--allow-fs-write=${path.join(seals, '_closures')}`, '--allow-fs-read=/home']);
   assert.notEqual(codeOf(closures), 'SIGN_RUNTIME_UNSAFE', `close-key: escrita só em _closures passa (a leitura ampla é limite declarado até a W5): ${closures.out.join('\n')}`);
+});
+
+test('confirmação da revisão da W4.6 (3): no artefato, cada grant é o próprio caminho real (existe e nenhum componente é link); a escrita é comparada com a raiz REAL de --seals-dir. Exceções que falham fechado: os caminhos fixos /proc/self/* e as raízes temporárias, e os .git da custódia, que podem não existir', async () => {
+  const file = await custodiedCopy();
+  const base = [...RUNBOOK_FLAGS, `--allow-fs-read=${path.dirname(file)}`];
+  const outside = tmpDir('lasa-fora-');
+  const holder = tmpDir('lasa-links-');
+  const linkOut = path.join(holder, 'link-para-fora');
+  fs.symlinkSync(outside, linkOut);
+  fs.mkdirSync(path.join(outside, 'sub'));
+  const refusedSign = async (extra: (seals: string) => string[], label: string, sealsArg?: (seals: string) => string): Promise<void> => {
+    const world = cliWorld();
+    const seals = fs.realpathSync(world.sealsDir);
+    const argv = sealsArg ? world.argv({ 'seals-dir': sealsArg(seals) }) : world.argv();
+    const run = await runAsArtifact('sign', file, argv, { typed: world.typed(), nodeOptions: [...base, ...extra(seals)] });
+    assert.equal(run.code, 3, `${label}: ${run.err.join('\n')}`);
+    assert.equal(codeOf(run), 'SIGN_RUNTIME_UNSAFE', label);
+    assert.match(String((JSON.parse(run.out[0] ?? '{}') as Record<string, unknown>).message), /grants/, label);
+  };
+  await refusedSign(() => [`--allow-fs-read=${linkOut}`], 'leitura que é link para fora');
+  await refusedSign(() => [`--allow-fs-read=${path.join(linkOut, 'sub')}`], 'leitura com um componente intermediário que é link');
+  await refusedSign(() => [`--allow-fs-read=${path.join(outside, 'nao-existe')}`], 'leitura que não existe (fora das exceções)');
+  await refusedSign((seals) => {
+    fs.symlinkSync(outside, path.join(seals, 'fora'));
+    return [`--allow-fs-write=${path.join(seals, 'fora')}`];
+  }, 'escrita que, resolvida, cai fora de --seals-dir');
+  await refusedSign((seals) => {
+    const alias = path.join(holder, `apelido-${path.basename(seals)}`);
+    fs.symlinkSync(seals, alias);
+    return [`--allow-fs-write=${alias}`];
+  }, 'escrita por um link para a própria pasta de manifestos');
+  const gitLink = path.join(holder, 'repo');
+  fs.mkdirSync(gitLink);
+  fs.symlinkSync(outside, path.join(gitLink, '.git'));
+  await refusedSign(() => [`--allow-fs-read=${path.join(gitLink, '.git')}`], '.git que existe e é link');
+  // --seals-dir dado por um link: a comparação é entre caminhos REAIS (o grant do caminho real passa)
+  const world = cliWorld();
+  const seals = fs.realpathSync(world.sealsDir);
+  const sealsAlias = path.join(holder, 'manifestos-apelido');
+  fs.symlinkSync(seals, sealsAlias);
+  const viaAlias = await runAsArtifact('sign', file, world.argv({ 'seals-dir': sealsAlias }), { typed: world.typed(), nodeOptions: [...base, `--allow-fs-write=${seals}`, `--allow-fs-read=${seals}`] });
+  assert.notEqual(codeOf(viaAlias), 'SIGN_RUNTIME_UNSAFE', `--seals-dir por link, grant pelo caminho real: ${viaAlias.out.join('\n')} ${viaAlias.err.join('\n')}`);
 });
 
 /* =============================================================================================================== processo REAL (env -i, --permission) */
