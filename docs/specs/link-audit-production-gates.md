@@ -42,7 +42,7 @@ resultado de produção**, separando o que é código, que o manager faz sozinho
   isso é ação do responsável, fora do código (§10.1).
 - Mudar o motor (`src/lib/link-audit/scoring/`), a régua D3B ou o mínimo de 40 % de cobertura.
 - Os demais itens do checklist de produção (P-1 a P-4, ensaio de queda de energia, CSP, testes em staging): continuam no
-  `onda6c-checklist-producao.md` e entram no portão só por referência (§10.1, item P-10).
+  `onda6c-checklist-producao.md` e entram no portão só por referência (§10.1, item P-8).
 
 ## 3. Atores
 
@@ -142,7 +142,7 @@ resultado de produção**, separando o que é código, que o manager faz sozinho
 | GE-E5 | Reconciliação externa: um CLI somente leitura (nome proposto `scripts/link-audit-guard-reconcile.ts`) que compara as cabeças da guarda com uma cópia de backup do livro e com o registro anterior da própria reconciliação. Usa uma **credencial só de leitura que não fica na VPS**. Saída `--json` estável, com divergência ⇒ código de saída ≠ 0 | código + rotina do responsável (Q2) |
 | GE-E6 | Eventos de alarme: guarda indisponível, `MISMATCH`, atraso acima do limite e falha de publicação depois do fecho. Usam o envelope da spec de observabilidade (§9) | código |
 | GE-E7 | Runbook da guarda: ativação, rotação da credencial, indisponibilidade, restauração com conferência da guarda e reconciliação | documentação |
-| GE-E8 | Ensaio em homologação: rollback coordenado ⇒ `GUARD_MISMATCH`; restauração dos pares do mesmo instante ⇒ consistente; queda do provedor ⇒ falha fechada; falha de publicação depois de `CONFIRMED` ⇒ `BEHIND` + alarme + a próxima operação recusa | onda G2 |
+| GE-E8 | Ensaio em homologação, depois da W5: o roteiro EN-01 a EN-12 da §10.4 (rollback coordenado, restaurações, rollback de imagem, queda do provedor, falha de publicação depois do fecho, sequência falsa, reconciliação) | onda G2 |
 
 #### 5.1.4 Regras do contrato da guarda real (fecham GE-R3 a GE-R6)
 
@@ -499,7 +499,7 @@ São do CLI de coleta; onde ele roda em produção é **a confirmar**.
     `scoring/publication.ts:17`; a constante de exibição está em `link-audit-scoring-runs/outcome.ts:11`).
   - O portão que falha leva a `INCONCLUSIVO` (`outcome.ts:29-31`).
 - **Para o produto:** todo resultado real sai **INCONCLUSIVO**, sem índice Lumos, classificação nem pontos obtidos. A tela
-  diz "Auditoria inconclusiva" (checklist §9). Isso vale também para o piloto e para a coleta nova da TUVAPLAST (W6). O
+  diz "Auditoria inconclusiva" (checklist §9). Isso vale também para o piloto e para a coleta nova da auditoria-alvo da W6. O
   primeiro resultado de produção seria um **registro técnico**, não uma nota para o cliente.
 - **Mesmo com a D5:** sem custo de API (D5-0, parsers e site), o teto sobe a 27 %. Os 40 % exigem `/reviews`, de custo
   desconhecido e com decisão de LGPD pendente, ou o painel anexado pelo operador, que é upload de arquivos e nova
@@ -509,17 +509,43 @@ São do CLI de coleta; onde ele roda em produção é **a confirmar**.
 
 ## 6. Critérios de aceite (cada um vira ao menos um teste com o identificador no nome)
 
+Os critérios de provedor (PG-G08, PG-G10, PG-G11) e os de implantação (PG-V02, PG-V03) são conferências documentadas, não
+testes automatizados: chamar o Supabase, o GitHub ou um fornecedor de armazenamento é chamada externa real, que só
+acontece num laboratório autorizado pelo responsável ou pelo próprio responsável (`CLAUDE.md`, "Anti-patterns").
+
 **Guarda (G1.b):**
 
 - [ ] **PG-G01** Com a guarda configurada, `head: null` e livro com ≥ 2 registros ⇒ `HISTORY_UNRESOLVED` (`GUARD_HEAD_MISSING`); com 1 registro ⇒ aceito.
 - [ ] **PG-G02** Atraso > `L_max` ⇒ `HISTORY_UNRESOLVED` (`GUARD_LAGGING`); atraso ≤ `L_max` ⇒ `PROTECTED` com `externalGuard: BEHIND`. `L_max` é igual à contagem do protocolo, travada em teste.
-- [ ] **PG-G03** A publicação falha depois de `CONFIRMED`, `ABORTED`, `RUN_CONFIRMED` ou `RUN_ABORTED` ⇒ resposta de sucesso, vista `BEHIND`, evento de alarme emitido; a próxima operação recusa com `LEDGER_GUARD_UNAVAILABLE` até publicar.
+- [ ] **PG-G03** Para **cada um dos nove pontos S1–S9** (§5.1.2), um teste faz a publicação falhar logo depois do registro gravado e confere o desfecho da regra 4 da §5.1.4: (i) a resposta nunca diz que nada foi gravado; (ii) a vista mostra `BEHIND` (S1, S6, S7, S8, S9, e S3–S5 quando a sessão termina num `RECOVER`), ou a publicação obrigatória seguinte recusa com `LEDGER_GUARD_UNAVAILABLE` (S2–S5 quando a sessão segue para uma operação nova); (iii) o evento de alarme é emitido; (iv) a operação nova seguinte recusa até conseguir publicar. São nove testes, cada um com `PG-G03` e o ponto (`S1`…`S9`) no nome, incluindo o `CHECKPOINT` (S6) e o `RECEIPT_REISSUED` (S7).
 - [ ] **PG-G04** Rollback coordenado de decisões, recibos e livro (e de resultados) com a guarda real atrás da porta ⇒ `GUARD_MISMATCH`. O teste "LIMITE DECLARADO" continua valendo para a configuração **sem** guarda.
-- [ ] **PG-G05** Inserção forjada com `ledgerSeq` maior ⇒ congela (`GUARD_MISMATCH`), nunca esconde retrocesso; inserção com `ledgerSeq` ≤ o maior ⇒ recusada pelo provedor (contrato do adaptador, com o provedor simulado sem rede).
+- [ ] **PG-G05** Contrato da publicação (regra 7 da §5.1.4), no adaptador e no provedor simulado, sem rede:
+  - o mesmo trio republicado ⇒ aceito sem registro novo, também numa posição abaixo do maior;
+  - mesmo `ledgerSeq` com outro `sha256` ⇒ `CONFLICT`;
+  - `ledgerSeq` novo menor que o maior ⇒ `STALE`;
+  - `ledgerSeq` maior que o maior ⇒ gravado.
+  - Sequência falsa acima da real ⇒ a auditoria congela (`GUARD_MISMATCH`) e nunca esconde retrocesso.
+  - `STALE` coberto por uma cabeça maior que está no livro ⇒ sem alarme; `CONFLICT` ⇒ alarme.
 - [ ] **PG-G06** `latest` com erro, resposta fora do esquema ou prazo esgotado ⇒ `GUARD_UNAVAILABLE` (nunca "nenhuma cabeça").
 - [ ] **PG-G07** Sem credencial da guarda ⇒ `externalGuard: NOT_CONFIGURED`, e o verificador do portão (§10.1, G-1) acusa.
-- [ ] **PG-G08** (opção 1) A migração aborta se `service_role`, `anon`, `authenticated` ou `PUBLIC` tiver qualquer privilégio na tabela, ou se `UPDATE`, `DELETE` ou `TRUNCATE` não forem recusados. É conferido no laboratório antes de produção.
+- [ ] **PG-G08** (só se Q1 = opção 1, Supabase), com evidência registrada no laboratório e depois em produção:
+  - **privilégios:** a migração aborta se `service_role`, `anon`, `authenticated` ou `PUBLIC` tiver qualquer privilégio na tabela, no esquema ou na função de publicação, ou se o `gmn_guard_writer` tiver algo além de `EXECUTE` na função e `SELECT` na tabela;
+  - **gatilhos:** `UPDATE`, `DELETE`, `TRUNCATE` e um `INSERT` direto fora da regra 7 são recusados mesmo para um papel com o privilégio concedido;
+  - **Data API (REST):** requisições de leitura e de escrita à tabela e à função, com as chaves `anon`, `authenticated` (sessão de teste) e `service_role`, falham sem expor dados; e *Exposed schemas* não inclui o esquema da guarda, registrado com data. Hoje o estado de *Exposed schemas* não está verificado (`docs/phase5/g5-s0-relatorio-2026-11-07.md:82`);
+  - no laboratório, com autorização; em produção, pelo responsável, só leitura, depois de aplicar a migração.
 - [ ] **PG-G09** A reconciliação acusa: cabeça da guarda ausente do backup; guarda que regrediu em relação ao registro anterior; backup à frente da guarda além de `L_max`. Saída `--json` estável; não escreve na guarda.
+- [ ] **PG-G10** (só se Q1 = opção 2, GitHub), com evidência registrada:
+  - regra de proteção ativa na branch do repositório da guarda, sem push forçado e sem exclusão, com a lista de exceções vazia ou só com o dono, declarado;
+  - token fine-grained restrito a esse repositório, só com `contents: write` (mais o `metadata: read` obrigatório), sem `administration`, com a expiração anotada;
+  - com o token, um push forçado e a exclusão da branch são recusados;
+  - a leitura reconstrói as cabeças pelo histórico de commits;
+  - o plano pago (repositório privado) está autorizado, ou o repositório é público com `auditId` pseudonimizado (Q5).
+- [ ] **PG-G11** (só se Q1 = opção 3, Object Lock), com evidência registrada:
+  - bucket com versionamento e Object Lock em modo *compliance*, com retenção padrão decidida na G0;
+  - a credencial da VPS só tem `PutObject` (nada de apagar objeto ou versão, contornar ou alterar retenção, nem mudar a política ou a configuração de Object Lock do bucket);
+  - com essa credencial, apagar uma versão e encurtar a retenção falham;
+  - a gravação não sobrescreve chave existente (escrita condicional) ou o leitor considera todas as versões;
+  - o custo está autorizado.
 
 **Papel administrativo (G1.c, só se Q6 = 1 ou 2):**
 
@@ -531,6 +557,9 @@ São do CLI de coleta; onde ele roda em produção é **a confirmar**.
 **Volumes e chaves (G1.a):**
 
 - [ ] **PG-V01** `tests/deploy-config.test.ts`: sete pastas no web; evidências e manifestos só leitura; o Worker sem `GMN_LINK_AUDIT_*` nem bind novo; os nomes novos na lista do entrypoint; `stop-first` no web; nenhum valor literal.
+- [ ] **PG-V02** (VC-E6) O plano de backup cita as seis variáveis de pasta da Fase 6, com destinos independentes (em marcador) para os dois volumes de recibos e para o livro, pares do mesmo instante, `sha256sum` por arquivo, sem `--delete`, e as cabeças guardadas junto.
+- [ ] **PG-V03** (VC-E7) `PROVA-DE-ORIGEM-E-DE-COLETA.md` e o checklist de produção citam a chave do livro, a chave de log, a credencial da guarda e a ordem de ativação (volumes e chaves ⇒ guarda ⇒ primeiro `ENROLL`).
+- [ ] **PG-V04** (VC-E8) O runbook traz o procedimento de criação e conferência das pastas no host (dono `10001:10001`, modo `0700`, conferido por `stat`). A conferência executada fica registrada no relatório da G2 (homologação, ensaio EN-12) e na tabela do portão (produção, G-3).
 - [ ] **PG-L01** `operatorRef` determinístico com `GMN_LINK_AUDIT_LOG_KEY`; chave ausente ou fraca ⇒ `UNAVAILABLE`; chave igual à de origem ou à do livro ⇒ recusada; e-mail nunca no log (critérios §10.2 da spec de observabilidade).
 
 ## 7. Casos-limite transversais
@@ -561,8 +590,13 @@ normativo `docs/phase6-auditoria-link/onda6c-modelo-de-ameacas-recuperacao.md`),
 **Ameaças novas trazidas por esta spec** (a superfície muda com a integração de um terceiro; o modelo STRIDE próprio é
 entrega da G0, em `docs/security/threats/link-audit-portoes-producao.md`):
 
-- **Credencial da guarda na VPS:** permite congelar auditorias por inserção (DoS) e ler cabeças. Mitigação: regra 7 da
-  §5.1.4 e Q5.
+- **Credencial da guarda na VPS:** permite congelar auditorias publicando uma sequência falsa acima da real (DoS) e ler
+  cabeças. Mitigação: regra 7 da §5.1.4 (nunca esconde retrocesso), alarme de `CONFLICT` e Q5. Sem papel
+  administrativo, a auditoria congelada não reabre.
+- **Web comprometido mente sobre o `latest`:** esconde um retrocesso das telas. Só a reconciliação externa detecta, e
+  depois do fato (GE-E5).
+- **Dono ou administrador do provedor** (opções 1 e 2): altera ou remove a guarda. Risco declarado; só a opção 3
+  oferece independência contra o dono da conta.
 - **Disponibilidade acoplada ao provedor da guarda** em toda leitura. Mitigação: prazo de resposta curto e falha fechada
   declarada (Q3).
 - **Caminho administrativo:** é uma elevação de privilégio nova, se a opção for 1 ou 2. Mitigação: §5.2.4 e PG-A01–A04.
@@ -600,17 +634,17 @@ consultas pagas, custo, aplicação de migração em produção, secrets reais).
 | P-5 | **Aceite formal de risco assinado** (D15.1) e **cerimônia da chave real** (D15.7) | P1 §13.4 | responsável |
 | P-6 | **W6**: uma coleta LIVE nova, atestada com a chave real. Autorizada (D16) para depois do ensaio da W5; o responsável executa a consulta paga | plano, onda W6; P1 D16 | responsável |
 | P-7 | Chave pública ativa na lista `GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS` e verificador `v2` implantado com `acceptedVersions: [2]` (`scoring/shared.ts:99-104`) | P1 §12; runbook de chaves §4 | responsável (configuração e deploy) |
-| G-1 | **Guarda operante**: provedor decidido (Q1); GE-E1–E7 na `main`; migração aplicada (opção 1); `externalGuard` = `CONSISTENT` em homologação; reconciliação rodando (Q2) | §5.1 | código + responsável (Q1, migração, credenciais) |
+| G-1 | **Guarda operante**: provedor decidido (Q1); GE-E1–E7 na `main`; critério do provedor escolhido atendido com evidência (PG-G08, PG-G10 ou PG-G11); migração aplicada (opção 1); `externalGuard` = `CONSISTENT` em homologação; reconciliação rodando (Q2) | §5.1 | código + responsável (Q1, migração, credenciais) |
 | G-2 | **Papel administrativo**: implementado (Q6 = 1 ou 2, PG-A01–A04) **ou** aceite formal de manter o 403 (Q6 = 3) | §5.2 | responsável (decisão) + código, se 1 ou 2 |
-| G-3 | **Volumes e chaves**: VC-E1–E7 na `main`; secrets criados; pastas no host com dono e modo conferidos (VC-E8); backups independentes configurados (Q9) | §5.3 | código + responsável (secrets, host, destinos) |
+| G-3 | **Volumes e chaves**: VC-E1–E7 na `main` (PG-V01 a PG-V03); secrets criados; pastas no host com dono e modo conferidos e registrados (VC-E8, PG-V04); backups independentes configurados (Q9) | §5.3 | código + responsável (secrets, host, destinos) |
 | G-4 | **Chave de log** usada pelo código (PG-L01) e provisionada; destino dos logs decidido (Q8) ou aceite de que, por ora, ficam só na VPS | §5.3.4 | código + responsável |
 | G-5 | **D5**: autorizada no documento próprio **ou** aceite formal de que todo resultado sai INCONCLUSIVO, comunicado à equipe (checklist §0 e §9) | §5.4 | responsável |
-| G-6 | **Ensaio da G2 aprovado** (rollback coordenado, restauração, rollback de imagem com `stop-first`, queda do provedor, falha de publicação depois do fecho), com relatório | §5.1.3 GE-E8; checklist §10 itens 4–5 | código + responsável (homologação) |
-| P-10 | **Demais itens do checklist de produção**: autorização escrita da implantação (§0); P-1 a P-4 decididos (§12); ensaio de queda de energia (R6-07, P-4); fatias de log da spec de observabilidade que o responsável exigir; revisão independente sem BLOCKER; plano de teste do §10 | `onda6c-checklist-producao.md` | código + responsável |
-| P-11 | **Deploy pelo CI**, por decisão do responsável, com verificação pós-deploy e o primeiro teste de escrita só numa auditoria sintética combinada (checklist §10 item 6) | `CLAUDE.md` (deploy só por CI) | responsável |
+| G-6 | **Ensaio da G2 aprovado**: todos os ensaios EN-01 a EN-12 da §10.4 com resultado e evidência no relatório, executados **depois** do ensaio da W5 (ou em ambiente totalmente isolado, §10.4) | §5.1.3 GE-E8; §10.4; checklist §10 itens 4–5 | código + responsável (homologação) |
+| P-8 | **Demais itens do checklist de produção**: autorização escrita da implantação (§0); os riscos P-1 a P-4 **do checklist** decididos (§12; não confundir com as linhas P-1 a P-4 desta tabela); ensaio de queda de energia (R6-07; risco P-4 do checklist); fatias de log da spec de observabilidade que o responsável exigir; revisão independente sem BLOCKER; plano de teste do §10 | `onda6c-checklist-producao.md` | código + responsável |
+| P-9 | **Deploy pelo CI**, por decisão do responsável, com verificação pós-deploy e o primeiro teste de escrita só numa auditoria sintética combinada (checklist §10 item 6) | `CLAUDE.md` (deploy só por CI) | responsável |
 
-O portão só abre com **todas** as linhas atendidas. A única exceção prevista é o piloto da §10.2, que é declarada e tem
-prazo.
+Numeração: **P-1 a P-9** são os portões do P1 e da implantação; **G-1 a G-6** são os desta spec. São 15 linhas ao todo.
+O portão só abre com **todas** atendidas. A única exceção prevista é o piloto da §10.2, que é declarada e tem prazo.
 
 ### 10.2 (f) Piloto mínimo: exceção declarada, não encerramento
 
@@ -618,7 +652,7 @@ Um piloto pode rodar **antes** de G-2 e G-5 estarem resolvidos no sentido forte 
 desde que **todas** as condições abaixo valham e fiquem escritas:
 
 1. **Uma auditoria nova e vazia**, inscrita depois da guarda ativa. Nunca uma auditoria legada nem a pasta antiga da
-   TUVAPLAST. A coleta da W6 entra numa auditoria nova.
+   auditoria-alvo da W6. A coleta da W6 entra numa auditoria nova.
 2. **Guarda, volumes e chaves operantes:** G-1, G-3 e G-4 atendidos, e `externalGuard` = `CONSISTENT` na tela antes da
    primeira decisão.
 3. **Ações administrativas continuam em 403** (Q6 = 3 durante o piloto).
@@ -629,7 +663,7 @@ desde que **todas** as condições abaixo valham e fiquem escritas:
    - o prazo e o escopo do piloto.
 5. **Os portões do P1 continuam obrigatórios** (P-1 a P-7): sem eles, a finalização segue `NOT_FINALIZABLE` e não há
    resultado.
-6. **Deploy só pelo CI**, por decisão do responsável (P-11).
+6. **Deploy só pelo CI**, por decisão do responsável (P-9).
 
 O piloto **não encerra** os bloqueadores. Termina com um relatório (`docs/phase6-auditoria-link/` ou a seção da G3 no
 plano) e com a decisão de seguir para o portão completo ou parar.
@@ -644,12 +678,49 @@ plano) e com a decisão de seguir para o portão completo ou parar.
 - **Migração do Supabase (opção 1):** só em `supabase/proposed/` até o responsável aplicar; o rollback acompanha a
   migração e **não** apaga linhas da guarda.
 
+### 10.4 Ensaio da G2: sequência em relação à W5 e roteiro verificável
+
+**Sequência.** A G2 faz rollback de volumes, restaurações e derruba o provedor da guarda. A W5 grava e finaliza um
+resultado de ensaio com chave descartável. Na mesma pilha e ao mesmo tempo, uma corromperia a prova da outra. Regra:
+
+- **padrão: a G2 roda depois do relatório da W5 aprovado.** A W5 fecha antes (chave do ensaio destruída e registrada,
+  relatório arquivado), e a G2 começa com **auditorias novas** inscritas depois de ligar a guarda (§5.1.4, regra 1); as da
+  W5 não são reaproveitadas. Justificativa:
+  - a G3 já depende das duas, então a ordem não atrasa o portão;
+  - um ambiente basta;
+  - com a W5 pronta, a G2 também consegue ensaiar o retrocesso de um livro com registros `RUN_*`, o caso mais
+    realista;
+- **paralelo, só com isolamento total:** pilhas separadas, volumes separados, projeto ou esquema de laboratório da guarda
+  separado e credenciais separadas (nenhum segredo, chave descartável ou credencial em comum). O isolamento fica
+  registrado nos dois relatórios.
+
+**Roteiro.** O relatório (`docs/phase6-auditoria-link/producao-relatorio-ensaio-g2.md`) traz uma tabela com uma linha
+por ensaio no formato `| EN-xx | PASSOU ou FALHOU | resultado observado | evidência |`. A evidência é a vista do livro,
+o código da resposta, a saída da reconciliação ou do `stat`. A G2 só fecha com todas as linhas em `PASSOU`.
+
+| Ensaio | O que se faz | Resultado esperado |
+|---|---|---|
+| EN-01 | Rollback coordenado de decisões, recibos e livro (e de resultados com `RUN_*`) a um instante anterior à última cabeça publicada | `GUARD_MISMATCH`; nada vigente; escrita recusada |
+| EN-02 | Restauração dos pares do mesmo instante, igual ou mais nova que a guarda | `PROTECTED` com `externalGuard` = `CONSISTENT`; reconciliação sem divergência |
+| EN-03 | Restauração de backup mais velho que a guarda | Auditoria congelada (`GUARD_MISMATCH`), com o efeito sem papel administrativo descrito |
+| EN-04 | Rollback para a imagem anterior (posterior ao livro) com `stop-first`, sobre os mesmos volumes | Dados íntegros; nunca dois processos web gravando ao mesmo tempo |
+| EN-05 | Provedor da guarda fora do ar (bloqueio de rede ou credencial inválida) | `GUARD_UNAVAILABLE`; nada vigente; escrita recusada; alarme |
+| EN-06 | Publicação falha depois de um `CONFIRMED` de decisão (S8) | Sucesso com `BEHIND`; alarme; a próxima operação recusa até publicar |
+| EN-07 | Sequência falsa publicada com a credencial de escrita | Auditoria congelada (`GUARD_MISMATCH`); a reconciliação acusa |
+| EN-08 | Reconciliação contra um backup atrasado e contra uma guarda à frente do backup | Divergência acusada nos dois casos, com código de saída ≠ 0 |
+| EN-09 | Volume de recibos só leitura (força `ANCHOR_PENDING`) e depois a recuperação | Pendência visível; o autor conclui; nada é perdido |
+| EN-10 | Disco cheio (`ENOSPC`) num volume gravável | Escrita recusada, sem sucesso falso; alarme |
+| EN-11 | `ADOPT`, `RESTORE_ACK` e `QUARANTINE_ACK` | Conforme a Q6: 403 `ADMIN_APPROVAL_UNAVAILABLE`, ou o fluxo decidido com PG-A01 a PG-A04 |
+| EN-12 | Conferência das pastas no host (dono `10001:10001`, modo `0700`, por `stat`) e do Worker sem montagem nova | Saída do `stat` e de `docker service inspect` anexadas (VC-E8, PG-V04) |
+
 ## 11. Questões abertas para o responsável
 
 Cada questão traz a recomendação do manager. Nenhuma está decidida.
 
-1. **Provedor da guarda.** Recomendação: **opção (1) Supabase**, com o desenho da §5.1.6. Opção (3) como reforço futuro,
-   com custo autorizado. Opção (2) não.
+1. **Provedor da guarda.** Recomendação: **opção (1) Supabase**, com o desenho da §5.1.6, para o risco "VPS
+   comprometida". Ela não protege contra o dono ou administrador do projeto Supabase. Se essa independência também for
+   exigida, a resposta é a opção (3), com custo autorizado. Opção (2) não. Critério de cada opção: PG-G08, PG-G10 ou
+   PG-G11.
 2. **Quem reconcilia e com que frequência.** Recomendação: o responsável, com credencial só de leitura fora da VPS,
    **toda semana**, **depois de cada backup do livro** e **obrigatoriamente antes de qualquer restauração**.
 3. **Política de indisponibilidade da guarda.** Recomendação: **falha fechada também na leitura** (é o comportamento de
@@ -673,8 +744,10 @@ Cada questão traz a recomendação do manager. Nenhuma está decidida.
 11. **Piloto mínimo (§10.2).** Recomendação: **aceitar a exceção** depois da G2, limitada a uma auditoria nova, com aceite
     escrito e prazo (proposta: 30 dias).
 12. **Ambiente de homologação para a G2 e a W5.** Hoje "Deploy staging: not defined" (`CLAUDE.md`). Recomendação: uma
-    única pilha isolada, sem dados reais e sem Serper, usada pelos dois ensaios, com o laboratório Supabase descartável
-    que o G5 já previa (`NOTES.md:140`).
+    pilha isolada, sem dados reais e sem Serper, com o laboratório Supabase descartável que o G5 já previa
+    (`NOTES.md:140`), usada **em sequência**: primeiro a W5, depois a G2, com auditorias novas (§10.4). **Nunca os dois
+    ensaios ao mesmo tempo na mesma pilha.** Rodar em paralelo só com pilhas, volumes, guarda e credenciais totalmente
+    separados.
 
 ## 12. Referências
 
