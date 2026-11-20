@@ -517,8 +517,8 @@ Fecham lacunas apontadas no mapa da W4; prevalecem sobre o texto acima onde houv
   - pelo `metafile`, todo import que sobrou é externo, por `require` estático, e da lista literal;
   - pelo texto final, todo `require(` tem como argumento uma string literal da lista, e não há `import(`, `require.resolve`, `module.require`, `createRequire`, `process.binding`/`process.dlopen` nem caminho absoluto da máquina do build.
 
-  O artefato atual carrega só `node:crypto`, `node:fs/promises` e `node:path` (749 964 bytes). O build é reprodutível: o mesmo SHA-256 em pastas de saída diferentes, numa cópia do repositório em outro caminho e com o Node 24 local. Ele não depende da versão do node que chama o esbuild (o binário nativo é o travado no lockfile): o CI (Node v22.23.5) recompilou o mesmo hash.
-- **Hash versionado (item 6):** `docs/phase6-auditoria-link/p1-sign-artifact.sha256`, no formato do `sha256sum -c` (`<sha256>  link-audit-sign.cjs`); hoje `2198b1bea7fe59c25ba21f465de17e65462c626ec1970ff3a6863949529f9513` (depois da confirmação da revisão independente, abaixo; conferido de novo em duas pastas e numa cópia do repositório em outro caminho). Muda a cada mudança de CÓDIGO no grafo do artefato (comentários não contam), e o PR que muda o código atualiza o arquivo; o teste e o CI recompilam e recusam a diferença. O limite declarado do item 6 continua: os dois lugares estão sob a mesma conta do GitHub.
+  O artefato atual carrega só `node:crypto`, `node:fs/promises` e `node:path` (751 417 bytes). O build é reprodutível: o mesmo SHA-256 em pastas de saída diferentes, numa cópia do repositório em outro caminho e com o Node 24 local. Ele não depende da versão do node que chama o esbuild (o binário nativo é o travado no lockfile): o CI (Node v22.23.5) recompilou o mesmo hash.
+- **Hash versionado (item 6):** `docs/phase6-auditoria-link/p1-sign-artifact.sha256`, no formato do `sha256sum -c` (`<sha256>  link-audit-sign.cjs`); hoje `395d5ba946e3f6b45c9689828947ca49107d3a9940db4f4ca4574233c1dda17d` (depois da segunda confirmação da revisão independente, abaixo; conferido de novo em duas pastas e numa cópia do repositório em outro caminho). Muda a cada mudança de CÓDIGO no grafo do artefato (comentários não contam), e o PR que muda o código atualiza o arquivo; o teste e o CI recompilam e recusam a diferença. O limite declarado do item 6 continua: os dois lugares estão sob a mesma conta do GitHub.
 - **Barreira do runtime (confirmação da revisão da W4.5, critério ii):** confere também o bloco ORIGINAL do exec:
   - em `/proc/self/cmdline`, só as opções do node ANTES do script, com a mesma lista permitida; o script e os argumentos do comando nunca são decodificados;
   - em `/proc/self/environ`, só os NOMES, com as regras do §8.1 (`SECRET_VIA_ENV_FORBIDDEN`) e do `NODE_*`; nenhum valor é decodificado;
@@ -615,6 +615,25 @@ Fecham lacunas apontadas no mapa da W4; prevalecem sobre o texto acima onde houv
    Testes: grant que é link para fora, grant com um componente intermediário que é link, leitura inexistente, escrita que, resolvida, cai fora de `--seals-dir` (link dentro da pasta de manifestos), escrita por um apelido da própria pasta e `.git` que é link. Todos dão `SIGN_RUNTIME_UNSAFE` antes de qualquer entrada. As pastas dos testes passaram a ser usadas pelo caminho real.
 
 O hash versionado passou a `2198b1bea7fe59c25ba21f465de17e65462c626ec1970ff3a6863949529f9513` (749 964 bytes). O módulo do `jitless` muda o artefato. Foi conferido em duas pastas e numa cópia do repositório em outro caminho.
+
+**Segunda confirmação da revisão da W4.6 (20/11/2026, `junin-02`, sobre `980e6f1`):** itens 1 e 2 fechados. O item 3 tinha dois furos, corrigidos com testes antes do código:
+
+- **(a) Manifesto nunca em pasta temporária.** A comparação aceitava igualdade com a raiz de `--seals-dir`: com `--seals-dir /tmp` (ou `/var/tmp`, `/dev/shm`, ou o caminho real de uma delas), um grant de escrita igual à raiz passava, contra a regra de que as raízes temporárias são só leitura. Agora, no artefato:
+  - a raiz REAL de `--seals-dir` que coincide com uma raiz temporária, fica dentro dela ou a contém é recusada (`SIGN_RUNTIME_UNSAFE`);
+  - qualquer grant de escrita que se sobreponha a uma raiz temporária também é recusado;
+  - as raízes são as PADRÃO da custódia (`/tmp`, `/var/tmp`, `/dev/shm` e TMPDIR/TMP/TEMP do ambiente, vazio no artefato), pelo caminho dado e pelo real (`bothForms` da custódia, agora exportado), nunca as injetáveis dos testes;
+  - raiz temporária cujo caminho real não se resolve ⇒ recusa (a linha do runbook já concede leitura às três).
+
+  Testes: cada raiz como `--seals-dir`, uma pasta dentro de cada uma (com e sem grant de escrita) e o caso válido fora delas. Os testes do artefato em processo passaram a manter a pasta de manifestos numa estação no HOME (as entradas e a chave continuam em pastas temporárias); a assinatura completa no pseudo-terminal já criava a estação no HOME.
+- **(b) Pai real do `.git` ausente.** Uma leitura inexistente terminada em `.git` passava sem conferir o pai: `link/.git` ausente sob um pai que é link também passava. Agora o pai tem de existir e ser o próprio caminho real:
+  - prova direta: `realpath(pai) = pai`;
+  - sob `--permission`, o pai (uma pasta acima da chave, como `/home` ou `/`) não é concedido e a leitura dele é negada. Aí a prova é o pai ser a própria pasta ou uma pasta acima de um grant já conferido como o próprio caminho real e existente: sem nenhum componente link nesse grant, as pastas acima dele também não têm link e existem;
+  - qualquer outra falha (pai inexistente, link, outro erro) ⇒ recusa.
+
+  Testes: `.git` ausente sob pai que é link e sob pai inexistente, em processo e sob `--permission` (pai fora dos grants); `.git` ausente cujo pai está acima de um grant real passa.
+- **Achado na verificação:** o teste em processo real com o artefato montado em `/tmp` concedia a pasta do artefato antes de `/tmp`. Pelo comportamento já registrado do Node 24.22 (grant mais longo dado antes do mais curto), a leitura de `/tmp` era negada. O teste passou a conceder só `/tmp`, que já cobre o artefato.
+
+O hash versionado passou a `395d5ba946e3f6b45c9689828947ca49107d3a9940db4f4ca4574233c1dda17d` (751 417 bytes), conferido em duas pastas e numa cópia do repositório em outro caminho.
 
 ### 5.6 Manifesto `v2` e verificador `v2` (onda W3, contrato próprio)
 
