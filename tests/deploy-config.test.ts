@@ -384,7 +384,8 @@ test('PG-V01 stack: nenhum valor literal nas variáveis da Fase 6 nem material d
     const text = read(file);
     assert.ok(!/[0-9a-f]{64}/i.test(text), `${file}: material hexadecimal de chave`);
     assert.ok(!/[a-z0-9][a-z0-9-]{3,31}:[A-Za-z0-9_-]{43}\b/.test(text), `${file}: chave pública/ID com material`);
-    assert.ok(!/\b(?:\d{1,3}\.){3}\d{1,3}\b/.test(stripComments(text).replace(/node:\d+\.\d+\.\d+|redis:\d+\.\d+\.\d+/g, '')), `${file}: endereço IP`);
+    const withoutLocal = stripComments(text).replace(/\b(?:0\.0\.0\.0|127\.0\.0\.1)\b/g, ''); // escuta em todas as interfaces e loopback: não são hosts reais
+    assert.ok(!/\b(?:\d{1,3}\.){3}\d{1,3}\b/.test(withoutLocal), `${file}: endereço IP real`);
   }
 });
 
