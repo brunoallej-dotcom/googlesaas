@@ -161,8 +161,9 @@ resultado de produção**, separando o que é código, que o manager faz sozinho
    razão nova (nome proposto `GUARD_HEAD_MISSING`).
 3. **Atraso máximo.**
    - `L_max` é o maior número de registros que o protocolo grava entre duas publicações obrigatórias, contando as famílias
-     de decisão e de resultado (`RUN_*`) e as receitas do `RECOVER`. É contado na G1 e travado em teste.
-   - Atraso ≤ `L_max` ⇒ a vista mostra `BEHIND`, e o alarme dispara se o atraso durar mais que `T` (Q4).
+     de decisão e de resultado (`RUN_*`) e as receitas do `RECOVER`. **Contado na G0: `L_max` = 5** (D-G0-4; contagem e
+     condição de validade na §5.1.7). A G1.b o trava em teste (PG-G02).
+   - Atraso ≤ `L_max` ⇒ a vista mostra `BEHIND`, e o alarme dispara se o atraso durar mais que **`T` = 15 min** (D-G0-4).
    - Atraso > `L_max` ⇒ `HISTORY_UNRESOLVED` (nome proposto `GUARD_LAGGING`). Um fluxo legítimo não chega lá, porque
      toda operação nova publica antes de começar.
    - **Janela residual declarada:** a guarda detecta o retrocesso a qualquer ponto **anterior à última cabeça
@@ -374,6 +375,67 @@ Mais a ameaça comum.
 > custo autorizado e é a revisão futura registrada no ADR-0003. O critério do provedor é o **PG-G08**; o PG-G10 e o
 > PG-G11 não se aplicam.
 
+#### 5.1.7 Números do contrato da guarda (G0, 20/11/2026)
+
+Conferidos no código em `3899a67`. São os números que a G1.b implementa e trava em teste; a regra de cada um é a decisão
+da §11, e o valor só muda com registro aqui (número novo e motivo).
+
+| Número | Valor | Decisão | Quem confirma |
+|---|---|---|---|
+| `L_max` (atraso máximo aceito como `BEHIND`) | **5 registros** | D-G0-4 (regra); contagem abaixo | G1.b, por teste que enumera os fluxos do protocolo (PG-G02) |
+| `T` (alarme de `BEHIND` prolongado) | **15 min** | D-G0-4 | G1.b (evento GE-E6) |
+| Prazo de resposta da guarda | **3 s** por chamada (`latest` e `publish`); esgotado ⇒ indisponível | D-G0-3 | G1.b, pela latência medida no laboratório (PG-G08) |
+| Chave do pseudônimo `audit_ref` | `GMN_LINK_AUDIT_GUARD_KEY`, formato `<id>:<64 hex>` | D-G0-5 | G1.a (secret), G1.b (uso) |
+| Credencial de escrita da guarda | `GMN_LINK_AUDIT_GUARD_DB_URL` (papel `gmn_guard_writer`) | D-G0-1 | G1.a (secret), G1.b (uso) |
+
+**Contagem de `L_max`.** Publicações **obrigatórias** (falha ⇒ recusa, nada novo começa): a do `prepare`, antes da
+`INTENT` (`src/lib/link-audit-ledger/service.ts:774`); a do `runIntent`, antes do `RUN_INTENT` (`:904`); e a do `ENROLL`,
+depois do `GENESIS` (`:1022`). As outras nove são de melhor esforço (S1–S9, §5.1.2). `L_max` é o maior número de
+registros que entram no livro depois da última publicação aceita pela guarda, num fluxo legítimo em que **todas** as
+publicações de melhor esforço falham:
+
+| Parcela | Registros | Por que no máximo isso (código em `3899a67`) |
+|---|---|---|
+| Uma operação de decisão iniciada logo depois da publicação obrigatória | 2: `INTENT` + o fecho dela (`CONFIRMED`; `ABORTED` da receita; ou `CONFIRMED` da fase C) | Outra operação nova exige outra publicação obrigatória: aceita, recomeça a conta; recusada, nada novo entra (`service.ts:774`, `:904`) |
+| O fecho do resultado que já estava aberto antes da publicação | 1: `RUN_CONFIRMED` ou `RUN_ABORTED` | Cai entre a `INTENT` e o fecho da decisão pela regra dos fechos intercalados (`service.ts:453-461`). Um `RUN_INTENT` novo não entra com decisão aberta (`:892`) nem sem publicação obrigatória (`:904`) |
+| Uma reemissão de recibo de decisão | 1: `RECEIPT_REISSUED` | Só do último confirmado e sem decisão aberta (`model.ts:556`); no máximo uma por entrada confirmada (`service.ts:805`). A reemissão do recibo de **resultado** não grava no livro (`service.ts:968-1002`) |
+| Um ponto de verificação | 1: `CHECKPOINT` | O automático (a cada 64 registros, `types.ts:26`; `model.ts:276-278`) é gravado **antes** da publicação obrigatória (`service.ts:767-774`) e fica no livro se ela falhar. O da rotação vem do `RECOVER` (`service.ts:731-746`), também com operação aberta. Depois de um, o próximo só é devido 64 registros adiante ou noutra rotação |
+| **Total** | **5** | Quando a janela começa no `runIntent`, o total é 4 (`RUN_INTENT` + fecho + reemissão + `CHECKPOINT`); quando começa no `ENROLL`, a janela começa vazia |
+
+**Condição de validade:** cada **rotação da chave do livro** concluída dentro da mesma janela soma 1 (um novo
+`CHECKPOINT` de rotação, `model.ts:262-266`). Por isso o runbook da guarda (GE-E7) exige `externalGuard` = `CONSISTENT`
+na auditoria antes do `RECOVER` da rotação; com essa regra, o total não passa de 5. Sem ela, um atraso de 6 vira
+`GUARD_LAGGING` e congela a auditoria sem reabertura pela aplicação (D-G0-6). A G1.b pode também impor a regra no
+código (recusar o `CHECKPOINT` de rotação com `externalGuard` = `BEHIND`); se impuser, a recusa vira teste.
+
+**Idade do atraso (`T`).** O servidor não guarda estado entre requisições (regra 6). Proposta para a G1.b: a idade do
+`BEHIND` é a distância entre o relógio do servidor e o `recordedAt` do primeiro registro do livro ainda não publicado.
+
+**Rotação da `GMN_LINK_AUDIT_GUARD_KEY` (D-G0-5).** O pseudônimo é a chave de busca na guarda: trocar a chave troca o
+pseudônimo, e uma auditoria com dois ou mais registros sem cabeça sob o pseudônimo novo cairia em `GUARD_HEAD_MISSING`
+(regra 2). Por isso:
+
+- **sem rotação periódica.** A chave protege só a confidencialidade do `auditId` (quem lê a tabela não liga cabeça a
+  auditoria). A integridade é da imutabilidade e da regra 7;
+- **rotação por comprometimento** (ou por decisão do responsável), no padrão das outras chaves da Fase 6: chave nova
+  como atual e a antiga em `GMN_LINK_AUDIT_GUARD_RETIRED_KEYS`. O `latest` consulta o pseudônimo de cada chave (atual e
+  aposentadas) e fica com o maior `ledgerSeq`; a publicação usa só a atual; a primeira publicação com a chave nova é a
+  cabeça do livro naquele instante. A aposentada só sai da lista quando toda auditoria protegida tiver cabeça publicada
+  com a atual, conferido pela reconciliação;
+- cada registro guarda o **id** da chave que gerou o pseudônimo;
+- a chave fica no web e com o responsável, que a usa na reconciliação fora da VPS (GE-E5);
+- o procedimento detalhado vai no runbook GE-E7, e a G1.b trava em teste que a rotação não produz
+  `GUARD_HEAD_MISSING` nem esconde retrocesso.
+
+**Correspondência de linhas `a506ffd` → `3899a67`** (a R1.6 deslocou as citações das §5.1.2, §5.1.4, §5.1.5 e §10.4):
+
+| Arquivo | Em `a506ffd` (texto da spec) | Em `3899a67` |
+|---|---|---|
+| `src/lib/link-audit-ledger/service.ts` | `:239`, `:244-248`, `:342-347`, `:404-408` | `:250`, `:255-259`, `:353-358`, `:415-419` |
+| idem, S1–S9 | `:555`, `:590`, `:671`, `:690`, `:710`, `:732`, `:806`, `:829`, `:923` | `:566`, `:601`, `:682`, `:701`, `:721`, `:743`, `:817`, `:840`, `:934` |
+| idem, publicações obrigatórias e `ENROLL` | `:763`, `:893`, `:969-972` | `:774`, `:904`, `:1019-1022` |
+| `src/lib/link-audit-ledger/model.ts` | `:454`, `:489`, `:493-494`, `:517-519`, `:577-582` | `:460`, `:495`, `:499-500`, `:523-525`, `:583-588` |
+
 ### 5.2 (b) Papel administrativo com dupla aprovação
 
 #### 5.2.1 Requisitos (origem)
@@ -560,7 +622,7 @@ são mantidos abaixo só como registro, para o caso de a decisão ser revista (A
 **Guarda (G1.b):**
 
 - [ ] **PG-G01** Com a guarda configurada, `head: null` e livro com ≥ 2 registros ⇒ `HISTORY_UNRESOLVED` (`GUARD_HEAD_MISSING`); com 1 registro ⇒ aceito.
-- [ ] **PG-G02** Atraso > `L_max` ⇒ `HISTORY_UNRESOLVED` (`GUARD_LAGGING`); atraso ≤ `L_max` ⇒ `PROTECTED` com `externalGuard: BEHIND`. `L_max` é igual à contagem do protocolo, travada em teste.
+- [ ] **PG-G02** Atraso > `L_max` ⇒ `HISTORY_UNRESOLVED` (`GUARD_LAGGING`); atraso ≤ `L_max` ⇒ `PROTECTED` com `externalGuard: BEHIND`. `L_max` é igual à contagem do protocolo, travada em teste: **5** (§5.1.7), com um teste que enumera os fluxos legítimos e mostra que nenhum passa de 5 com a regra da rotação.
 - [ ] **PG-G03** Para **cada um dos nove pontos S1–S9** (§5.1.2), um teste faz a publicação falhar logo depois do registro gravado e confere o desfecho da regra 4 da §5.1.4: (i) a resposta nunca diz que nada foi gravado; (ii) a vista mostra `BEHIND` (S1, S6, S7, S8, S9, e S3–S5 quando a sessão termina num `RECOVER`), ou a publicação obrigatória seguinte recusa com `LEDGER_GUARD_UNAVAILABLE` (S2–S5 quando a sessão segue para uma operação nova); (iii) o evento de alarme é emitido; (iv) a operação nova seguinte recusa até conseguir publicar. São nove testes, cada um com `PG-G03` e o ponto (`S1`…`S9`) no nome, incluindo o `CHECKPOINT` (S6) e o `RECEIPT_REISSUED` (S7).
 - [ ] **PG-G04** Rollback coordenado de decisões, recibos e livro (e de resultados) com a guarda real atrás da porta ⇒ `GUARD_MISMATCH`. O teste "LIMITE DECLARADO" continua valendo para a configuração **sem** guarda.
 - [ ] **PG-G05** Contrato da publicação (regra 7 da §5.1.4), no adaptador e no provedor simulado, sem rede:
