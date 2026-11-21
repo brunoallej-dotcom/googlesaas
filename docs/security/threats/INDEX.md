@@ -13,6 +13,7 @@
 | [`link-audit-api-e-interface.md`](link-audit-api-e-interface.md) | Rotas `/api/link-audit/*`, sessão, CSRF, limitadores, zod, CSP, páginas | Complementa `docs/phase5/security-review.md` |
 | [`plataforma-download-de-pdf.md`](plataforma-download-de-pdf.md) | `GET /api/audit/[id]/pdf`, `serve.ts`, bucket privado | Detalha R2-INFO-3 (FIFO; corrigido no PR #12, mergeado em 16/11/2026) |
 | [`link-audit-p1-atestacao.md`](link-audit-p1-atestacao.md) | Produtor P1 (atestação offline da coleta, manifesto Ed25519, custódia da chave) — 18 ameaças, requisitos RS-01..RS-21 | Novo (16/11/2026); requisitos rastreados em `docs/specs/link-audit-p1-attestation.md` §16 |
+| [`link-audit-portoes-producao.md`](link-audit-portoes-producao.md) | Portões de produção: guarda externa no Supabase (sequência falsa, `latest` mentiroso, dono do projeto, indisponibilidade, configuração, pseudônimo, falso `GUARD_LAGGING`, reconciliação), caminho administrativo em 403, logs exportados, backups, homologação — 17 ameaças PP-xx | Novo (20/11/2026, onda G0); ameaças da §8 de `docs/specs/link-audit-production-gates.md`; ADR-0003 |
 
 Modelo pré-existente e normativo para a recuperação de pendências e a fronteira de evidências: [`docs/phase6-auditoria-link/onda6c-modelo-de-ameacas-recuperacao.md`](../../phase6-auditoria-link/onda6c-modelo-de-ameacas-recuperacao.md).
 
@@ -20,8 +21,8 @@ Modelo pré-existente e normativo para a recuperação de pendências e a fronte
 
 | # | Risco | Documento | Status |
 |---|---|---|---|
-| 1 | Rollback coordenado de decisões + recibos + livro **não é detectado**: não existe guarda externa (só adaptador sintético de teste) | ledger-e-resultados (L-T2) | aberto — bloqueador de produção declarado |
-| 2 | Auditoria congelada (`HISTORY_UNRESOLVED`/`UNTRUSTED`/`EXHAUSTED`/incidente de chave) sem reabertura: papel administrativo com dupla aprovação não existe | ledger-e-resultados (L-D2) | aberto — bloqueador declarado |
+| 1 | Rollback coordenado de decisões + recibos + livro **não é detectado**: não existe guarda externa (só adaptador sintético de teste) | ledger-e-resultados (L-T2) | aberto — bloqueador de produção declarado; provedor decidido em 20/11/2026 (Supabase, ADR-0003), implementação na onda G1.b; ameaças da guarda em portoes-producao |
+| 2 | Auditoria congelada (`HISTORY_UNRESOLVED`/`UNTRUSTED`/`EXHAUSTED`/incidente de chave) sem reabertura: papel administrativo com dupla aprovação não existe | ledger-e-resultados (L-D2) | aberto — bloqueador declarado; para o piloto, 403 mantido e risco aceito (D-G0-6, portoes-producao PP-E2) |
 | 3 | Rotas da Fase 6 sem nenhum log estruturado; erros 500 engolidos sem registro | api-e-interface (A-R1), decisões (D-R1) | aberto — spec de correção em `docs/specs/link-audit-observability.md` (16/11/2026) |
 | 4 | FIFO na pasta de PDF compartilhada com o Worker trava o pool de I/O do web | download-de-pdf (P-D1) | mitigado (PR #12, mergeado em 16/11/2026) |
 | 5 | Nenhuma evidência é autêntica até existir o produtor P1; finalização fechada por desenho (disponibilidade) e telas de evidências mostram só a integridade | evidências-e-selos (E-S1, E-T1) | aberto (dependência P1) |
