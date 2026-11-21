@@ -40,10 +40,10 @@ const ledgerMaterials = (env: Readonly<Record<string, string | undefined>>): Key
  */
 export const KEY_FINGERPRINT_LABEL = 'gmn.link-audit.key-fingerprint.v1';
 
-/** Impressões digitais de mão única: ids PÚBLICOS e SHA-256 (com o rótulo acima) do material. Nunca o material. */
-export interface KeyFingerprints {
-  readonly ids: readonly string[];
-  readonly materialDigests: readonly string[];
+/** Impressão digital de mão única de UMA chave: o id PÚBLICO e o SHA-256 (com o rótulo acima) do material, sempre em par. Nunca o material. */
+export interface KeyFingerprint {
+  readonly id: string;
+  readonly materialDigest: string;
 }
 
 const fingerprintOf = (hex: string): string => createHash('sha256').update(`${KEY_FINGERPRINT_LABEL}\n`).update(Buffer.from(hex, 'hex')).digest('hex');
@@ -55,10 +55,8 @@ const fingerprintOf = (hex: string): string => createHash('sha256').update(`${KE
  * módulo dono já as recusa). Fora do barrel público do livro: o ponto de composição futuro importa direto deste arquivo e chama
  * `operatorRefSourceFromEnv(phase6KeyFingerprints(env), env)`.
  */
-export const phase6KeyFingerprints = (env: Readonly<Record<string, string | undefined>>): KeyFingerprints => {
-  const keys = [...originMaterials(env), ...ledgerMaterials(env)];
-  return { ids: keys.map((key) => key.id), materialDigests: keys.map((key) => fingerprintOf(key.hex)) };
-};
+export const phase6KeyFingerprints = (env: Readonly<Record<string, string | undefined>>): ReadonlyArray<KeyFingerprint> =>
+  [...originMaterials(env), ...ledgerMaterials(env)].map((key) => ({ id: key.id, materialDigest: fingerprintOf(key.hex) }));
 
 /** Lê do AMBIENTE DO PROCESSO (as rotas não recebem nem repassam o ambiente inteiro: só este módulo o lê, como o de origem). */
 export const ledgerConfigFromProcess = (now?: () => Date): LedgerConfig => ledgerConfigFromEnv(process.env, now);

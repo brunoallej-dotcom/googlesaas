@@ -12,7 +12,7 @@ import { z } from 'zod';
  *
  * FALHA FECHADA PARA PII (aberta para o log): sem chave, com chave fraca ou malformada, ou com chave que repete o id ou o material de uma
  * chave de origem ou do livro (atual ou aposentada), o valor é `UNAVAILABLE`. Essas outras chaves chegam por PARÂMETRO OBRIGATÓRIO, sem
- * padrão, e só como IMPRESSÕES DIGITAIS de mão única (ids públicos e SHA-256 do material com o rótulo `KEY_FINGERPRINT_LABEL`), nunca o
+ * padrão, e só como IMPRESSÕES DIGITAIS de mão única, em PARES (id público e SHA-256 do material com o rótulo `KEY_FINGERPRINT_LABEL`), nunca o
  * material: este módulo não cita os nomes das variáveis delas nem importa outro módulo da Fase 6. Quem compõe é o livro, com
  * `phase6KeyFingerprints(env)` de `link-audit-ledger/config.ts` (import direto, fora do barrel). Lista ausente ou inválida ⇒
  * `LOG_KEY_UNVERIFIED` (nunca `READY`). Ponto de composição futuro (com o `emit` das próximas fatias; nada liga isto a rota ou logger
@@ -45,10 +45,10 @@ const LOG_KEY_PATTERN = /^([a-z0-9][a-z0-9-]{3,31}):([0-9a-f]{64})$/;
 
 export type LogKeyStatus = 'READY' | 'LOG_KEY_NOT_CONFIGURED' | 'LOG_KEY_WEAK' | 'LOG_KEY_REUSED' | 'LOG_KEY_UNVERIFIED';
 
-/** Impressões digitais das chaves de OUTRA finalidade (origem, livro), que a de log não pode repetir: ids públicos e digests, nunca material. */
-export interface OtherKeyFingerprints {
-  readonly ids: readonly string[];
-  readonly materialDigests: readonly string[];
+/** Impressão digital de UMA chave de OUTRA finalidade (origem, livro), que a de log não pode repetir: id público e digest em par, nunca material. */
+export interface OtherKeyFingerprint {
+  readonly id: string;
+  readonly materialDigest: string;
 }
 export type OperatorRef = typeof OPERATOR_REF_UNAVAILABLE | `${string}:${string}`;
 
@@ -93,11 +93,11 @@ const emailSchema = z
   .toLowerCase()
   .regex(/^[^\s@\p{Cc}]+@[^\s@\p{Cc}]+$/u);
 
-/** Formato estrito da lista recebida: ids no padrão das chaves, digests de 64 hex minúsculos, nenhum campo a mais (material, por exemplo). */
-const otherKeysSchema = z.strictObject({
-  ids: z.array(z.string().regex(/^[a-z0-9][a-z0-9-]{3,31}$/)),
-  materialDigests: z.array(z.string().regex(/^[0-9a-f]{64}$/)),
-});
+/**
+ * Formato estrito da lista recebida: um PAR por chave (id no padrão das chaves e digest de 64 hex minúsculos), sem campo a mais (material, por
+ * exemplo). Par incompleto, lista truncada ou listas paralelas ⇒ inválida: um digest omitido nunca deixa passar reúso por material.
+ */
+const otherKeysSchema = z.array(z.strictObject({ id: z.string().regex(/^[a-z0-9][a-z0-9-]{3,31}$/), materialDigest: z.string().regex(/^[0-9a-f]{64}$/) }));
 
 const fingerprintOf = (hex: string): string => createHash('sha256').update(`${KEY_FINGERPRINT_LABEL}\n`).update(Buffer.from(hex, 'hex')).digest('hex');
 
@@ -107,7 +107,7 @@ const unavailable = (status: Exclude<LogKeyStatus, 'READY'>): OperatorRefSource 
  * Lê a chave de log do ambiente do SERVIDOR (injetável nos testes) e a compara com `otherKeys` (obrigatório, sem padrão: uma lista vazia
  * explícita é aceita; ausente ou inválida falha fechada). O material fica só no fecho da função, nunca no objeto devolvido.
  */
-export function operatorRefSourceFromEnv(otherKeys: OtherKeyFingerprints, env: Readonly<Record<string, string | undefined>> = process.env): OperatorRefSource {
+export function operatorRefSourceFromEnv(otherKeys: ReadonlyArray<OtherKeyFingerprint>, env: Readonly<Record<string, string | undefined>> = process.env): OperatorRefSource {
   const others = otherKeysSchema.safeParse(otherKeys);
   if (!others.success) return unavailable('LOG_KEY_UNVERIFIED');
   const raw = env[LOG_KEY_ENV];
@@ -115,7 +115,8 @@ export function operatorRefSourceFromEnv(otherKeys: OtherKeyFingerprints, env: R
   const parsed = logKeySchema.safeParse(raw);
   if (!parsed.success) return unavailable('LOG_KEY_WEAK');
   const { keyId, hex } = parsed.data;
-  if (others.data.ids.includes(keyId) || others.data.materialDigests.includes(fingerprintOf(hex))) return unavailable('LOG_KEY_REUSED');
+  const ownDigest = fingerprintOf(hex);
+  if (others.data.some((other) => other.id === keyId || other.materialDigest === ownDigest)) return unavailable('LOG_KEY_REUSED');
   const derived = Buffer.from(hkdfSync('sha256', Buffer.from(hex, 'hex'), HKDF_SALT, HKDF_INFO, KEY_BYTES));
   return {
     status: 'READY',
