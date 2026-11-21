@@ -286,29 +286,31 @@ interface (`audit-page/validators.ts`).
 
 ## Portões de produção da Fase 6 (fora do P1)
 
-> Spec de origem: `docs/specs/link-audit-production-gates.md` (PROPOSTA de 20/11/2026). Ela cobre a guarda externa
+> Spec de origem: `docs/specs/link-audit-production-gates.md` (APROVADA na onda G0, 20/11/2026; decisões D-G0-1 a
+> D-G0-12 na §11). Ela cobre a guarda externa
 > (§5.1), o papel administrativo (§5.2), os volumes e as chaves do `stack.yml` (§5.3) e a consequência da D5 (§5.4), e
 > consolida o portão de produção (§10.1) e o piloto mínimo (§10.2). Os critérios PG-xx são os da spec §6. Valem as
 > **regras de todas as ondas** acima. Por cima delas:
 >
 > - **nenhuma onda G faz deploy**, aplica migração no Supabase, cria secret real ou contrata serviço: são ações do
 >   responsável (spec §10.1);
-> - a migração da guarda (se a Q1 for a opção 1) fica em `supabase/proposed/` até o responsável aplicar;
+> - a migração da guarda (Q1 = opção 1, Supabase, D-G0-1) fica em `supabase/proposed/` até o responsável aplicar;
 > - testes do provedor da guarda usam um provedor simulado, sem rede.
 
 | Onda | Entrega | Depende de | Paralela com | Status |
 |------|---------|------------|--------------|--------|
-| G0 | Decisões Q1–Q12 da spec; ADR-0003 (provedor da guarda); modelo de ameaças da guarda e do caminho administrativo; números do contrato da guarda (`L_max`, `T`, prazo de resposta) | spec | todas as ondas do P1 | ⬜ |
-| G1.a | Volumes, segredos e chave de log: `stack.yml`, lista do entrypoint, `stop-first`, plano de backup e `operatorRef` com `GMN_LINK_AUDIT_LOG_KEY` | G0 (Q8, Q9 e o nome do secret da guarda) | G1.b, G1.c, R2, W4.6 | ⬜ |
-| G1.b | Guarda: adaptador real, contrato R6-10, ligação nas rotas, migração proposta, reconciliação externa e runbook | G0 (Q1–Q5); R1.6 na `main` | G1.a; G1.c só se Q6 = 3 | ⬜ |
-| G1.c | Papel administrativo (só se Q6 = 1 ou 2; com Q6 = 3, só o aceite formal) | G0 (Q6, Q7) e emenda da §16.8 da spec do livro; **se Q6 = 1 ou 2, também a G1.b na `main`** (as duas mexem no livro) | G1.a; G1.b só se Q6 = 3 (sem código) | ⬜ |
-| G2 | Integração e ensaio em homologação: os 16 ensaios e as 2 atestações da spec §10.4 | G1.a, G1.b, G1.c (ou o aceite), o ambiente de homologação (Q12) e o **relatório da W5 aprovado** | nenhuma (com a W5, só em ambiente totalmente isolado, spec §10.4) | ⬜ |
+| G0 | Decisões Q1–Q12 da spec; ADR-0003 (provedor da guarda); modelo de ameaças da guarda e do caminho administrativo; números do contrato da guarda (`L_max`, `T`, prazo de resposta) | spec | todas as ondas do P1 | ✅ 20/11/2026: D-G0-1 a D-G0-12 (spec §11; "tudo aprovado" pelo responsável, Q5 pelo manager); ADR-0003 Supabase; `link-audit-portoes-producao.md`; `L_max` = 5, `T` = 15 min, 3 s (spec §5.1.7) |
+| G1.a | Volumes, segredos e chave de log: `stack.yml`, lista do entrypoint, `stop-first`, plano de backup, exportação diária cifrada dos logs e `operatorRef` com `GMN_LINK_AUDIT_LOG_KEY` | G0 ✅ (D-G0-8, D-G0-9; secrets da guarda `GMN_LINK_AUDIT_GUARD_DB_URL` e `GMN_LINK_AUDIT_GUARD_KEY`) | G1.b, G1.c (aceite), R2 | ⬜ |
+| G1.b | Guarda no Supabase: adaptador real, contrato R6-10 com os números da spec §5.1.7, ligação nas rotas, migração proposta, reconciliação externa e runbook | G0 ✅ (D-G0-1 a D-G0-5); R1.6 na `main` ✅ (#52) | G1.a; G1.c (só o aceite, sem código) | ⬜ |
+| G1.c | Papel administrativo: com a D-G0-6 (Q6 = 3), **só o aceite formal** de manter o 403, sem código | G0 ✅ (D-G0-6; a Q7 não se aplica) | G1.a e G1.b (sem código, corre em paralelo) | ⬜ |
+| G2 | Integração e ensaio em homologação: os 16 ensaios e as 2 atestações da spec §10.4 | G1.a, G1.b, o aceite da G1.c, o ambiente de homologação (D-G0-12) e o **relatório da W5 aprovado** | nenhuma (com a W5, só em ambiente totalmente isolado, spec §10.4) | ⬜ |
 | G3 | Portão de produção (spec §10.1) ou piloto mínimo declarado (spec §10.2) | G2, os portões do P1 (R1, R2, W4.6, W5, W6) e as decisões e ações do responsável | — | ⬜ |
 
-Ordem prática, conforme a Q6:
+Ordem prática, conforme a Q6. **Vale a primeira linha** (D-G0-6, Q6 = 3, decidida na G0):
 
-- **Q6 = 3** (manter o 403): G0 → {G1.a ∥ G1.b ∥ G1.c (só o aceite)} → [relatório da W5 aprovado] → G2 → G3.
-- **Q6 = 1 ou 2** (com código): G0 → {G1.a ∥ (G1.b → G1.c)} → [relatório da W5 aprovado] → G2 → G3.
+- **Q6 = 3** (manter o 403, **vigente**): G0 ✅ → {G1.a ∥ G1.b ∥ G1.c (só o aceite)} → [relatório da W5 aprovado] → G2 → G3.
+- **Q6 = 1 ou 2** (com código; só se a Q6 for revista, com a emenda da §16.8): G0 → {G1.a ∥ (G1.b → G1.c)} →
+  [relatório da W5 aprovado] → G2 → G3.
 
 Motivos:
 
@@ -337,6 +339,25 @@ Motivos:
   - o modelo de ameaças novo lista as ameaças da spec §8 com status.
   - As decisões são do responsável: o goal loop só confere que estão escritas.
 - **Goal command**: `/goal grep -q "APROVADA na onda G0" docs/specs/link-audit-production-gates.md && ls docs/adr/0003-*.md >/dev/null && grep -q "0003" docs/adr/README.md && test -f docs/security/threats/link-audit-portoes-producao.md, stop after 3 tries`
+- **Resultado (✅ 20/11/2026, branch `docs/link-audit-production-g0-decisions`):**
+  - **decisões:** D-G0-1 a D-G0-12 na spec §11, com data, a frase do responsável ("tudo aprovado") e a coluna de quem
+    decidiu. Na Q5 a escolha foi do manager, pelo lado fechado: `auditId` pseudonimizado por HMAC com a chave própria
+    `GMN_LINK_AUDIT_GUARD_KEY`. Em resumo: Supabase (Q1); reconciliação semanal pelo responsável, fora da VPS (Q2); falha
+    fechada com 3 s (Q3); `L_max` = contagem, alarme em 15 min (Q4); 403 no piloto (Q6; Q7 não se aplica); logs
+    exportados diariamente e cifrados para o destino dos backups, expurgo em 90 dias (Q8); destino independente por
+    volume de recibos e para o livro, cópia diária, ensaio na G2 e trimestral (Q9); produção só com INCONCLUSIVO, D5 não
+    autorizada (Q10); piloto aceito em princípio, uma auditoria nova, 30 dias (Q11); pilha de homologação isolada, W5
+    antes da G2 (Q12);
+  - **ADR-0003** `docs/adr/0003-supabase-external-ledger-guard.md` (Accepted), com o limite do dono ou administrador do
+    projeto Supabase e a revisão futura para Object Lock com custo autorizado;
+  - **ameaças:** `docs/security/threats/link-audit-portoes-producao.md` (17 ameaças PP-xx com status) e a linha no
+    `INDEX.md`;
+  - **números do contrato (spec §5.1.7):** `L_max` = **5**, contado no código em `3899a67` (uma operação de decisão,
+    o fecho do resultado já aberto, uma reemissão de recibo de decisão e um `CHECKPOINT`), válido com a regra do runbook
+    de só rotacionar a chave do livro com `externalGuard` = `CONSISTENT`; `T` = 15 min; prazo de resposta de 3 s. A
+    G1.b confirma os dois últimos pela latência medida e trava o primeiro em teste (PG-G02);
+  - **critérios do provedor:** PG-G08 vale; PG-G10, PG-G11 e PG-A01–A04 ficam não aplicáveis;
+  - nenhuma emenda da §16.8 (Q6 = 3).
 
 ### Onda G1.a — Volumes, segredos e chave de log
 
@@ -353,8 +374,9 @@ Motivos:
   - `deploy/hostinger/GUIA-DE-IMPLANTACAO.md`: procedimento das pastas no host (VC-E8);
   - a fatia 1 da spec de observabilidade, no mínimo `operatorRef` com `GMN_LINK_AUDIT_LOG_KEY` (spec §5.3.4), em
     `src/lib/link-audit-observability/` (nome da spec de observabilidade), com testes `tests/link-audit-observability*.test.ts`.
-- **Depende de / paralela com**: G0 (destino dos logs e dos backups, nome do secret da guarda). Paralela com G1.b e G1.c
-  (arquivos disjuntos) e com R2 e W4.6.
+- **Depende de / paralela com**: G0 ✅ (destino dos logs e dos backups, D-G0-8 e D-G0-9; nomes dos secrets da guarda,
+  `GMN_LINK_AUDIT_GUARD_DB_URL` e `GMN_LINK_AUDIT_GUARD_KEY`, spec §5.3.1 e §5.1.7). Paralela com G1.b e G1.c
+  (arquivos disjuntos) e com R2. A W4.6 já está na `main` (#50).
 - **Critérios de aceite**:
   - PG-V01 e PG-L01 cobertos por testes com o identificador no nome;
   - **PG-V02 (VC-E6):** o plano de backup cita as seis variáveis de pasta da Fase 6 com destinos independentes (em
@@ -391,20 +413,22 @@ Motivos:
     depois do fecho) e eventos de alarme (GE-E6);
   - `src/app/api/link-audit/decisions/ledger-wiring.ts`: a guarda passa a `createLedgerService` (GE-E2);
   - rótulos e validadores da interface para as razões novas;
-  - se a Q1 for a opção 1: `supabase/proposed/<NNN>_link_audit_guard.sql` e o rollback, com a conferência de privilégios
-    no próprio SQL (GE-E4, PG-G08);
+  - `supabase/proposed/<NNN>_link_audit_guard.sql` e o rollback (Q1 = opção 1, D-G0-1), com a conferência de privilégios
+    no próprio SQL e o pseudônimo `audit_ref` (GE-E4, PG-G08, D-G0-5);
   - `scripts/link-audit-guard-reconcile.ts` (GE-E5) e o runbook da guarda em `docs/phase6-auditoria-link/` (GE-E7);
   - testes `tests/link-audit-guard-*.test.ts`. O `tests/link-audit-ledger-guard.test.ts` atual continua travando o
     limite **sem** guarda.
-- **Depende de / paralela com**: G0 (Q1–Q5 e os números do contrato) e a R1.6 na `main` (mesmo `service.ts`). Paralela
-  com G1.a.
+- **Depende de / paralela com**: G0 ✅ (D-G0-1 a D-G0-5 e os números da spec §5.1.7) e a R1.6 na `main` ✅ (#52, mesmo
+  `service.ts`). Paralela com G1.a e com o aceite da G1.c.
 - **Critérios de aceite**:
   - PG-G01 a PG-G07 e PG-G09 cobertos por testes com o identificador no nome, todos sem rede (provedor simulado);
   - PG-G03 com **nove** testes, um por ponto S1–S9 da spec §5.1.2 (`CHECKPOINT` e `RECEIPT_REISSUED` incluídos);
   - PG-G05 com a regra do trio idempotente, `CONFLICT` e `STALE` (spec §5.1.4, regra 7);
   - o critério do provedor escolhido, com evidência anexada ao PR: **PG-G08** (opção 1, laboratório Supabase descartável,
     incluindo a prova de que a tabela não responde pela Data API com `anon`, `authenticated` e `service_role`),
-    **PG-G10** (opção 2) ou **PG-G11** (opção 3). Nada disso roda em produção pela onda;
+    PG-G10 e PG-G11 não se aplicam (D-G0-1). Nada disso roda em produção pela onda;
+  - `L_max` = 5 travado por um teste que enumera os fluxos legítimos (PG-G02, spec §5.1.7); prazo de 3 s confirmado pela
+    latência medida no laboratório, ou o número novo registrado na spec §5.1.7 com o motivo;
   - 100 % das mutações dos pontos novos do modelo mortas (equivalentes justificadas);
   - toda a suíte do livro e dos resultados verde;
   - motor intacto.
@@ -413,6 +437,10 @@ Motivos:
 - **Goal command**: `/goal scripts/run-isolated.sh npm run typecheck && scripts/run-isolated.sh node --require ./tests/register-typescript.cjs --test tests/link-audit-guard-*.test.ts tests/link-audit-ledger-*.test.ts tests/link-audit-results-ledger*.test.ts && for id in PG-G01 PG-G02 PG-G04 PG-G05 PG-G06 PG-G07 PG-G09; do grep -lq "$id" tests/link-audit-guard-*.test.ts || exit 1; done && for s in S1 S2 S3 S4 S5 S6 S7 S8 S9; do grep -lqE "PG-G03.*\b$s\b" tests/link-audit-guard-*.test.ts || exit 1; done && git diff --quiet v1.0.1 -- src/lib/link-audit/scoring, stop after 10 tries`
 
 ### Onda G1.c — Papel administrativo (condicional à Q6)
+
+> **Com a D-G0-6 (Q6 = 3, 20/11/2026), a G1.c é só o aceite formal escrito** de manter o 403 (spec §10.2, condição 4),
+> sem código, e corre em paralelo com a G1.a e a G1.b. O escopo de código abaixo fica como registro, para o caso de a Q6
+> ser revista (opção 1 com segunda pessoa, ou opção 2 sob necessidade real).
 
 - **Objetivo**: conforme a Q6. Com a opção 1 ou 2, `ADOPT`, `RESTORE_ACK` e `QUARANTINE_ACK` passam a ser aceitos só sob
   a regra decidida. Com a opção 3, as ações continuam em 403, com o aceite formal registrado.
@@ -423,7 +451,7 @@ Motivos:
   - testes `tests/link-audit-ledger-admin*.test.ts`. O `tests/link-audit-ledger-q5.test.ts` é reescrito só onde a
     emenda mudar a regra.
 - **Depende de / paralela com**: G0 (Q6, Q7) e, com código (Q6 = 1 ou 2), a G1.b na `main`, porque as duas mexem no
-  livro. Paralela com G1.a. Com Q6 = 3 não há código e o aceite corre junto com a G1.b.
+  livro. Paralela com G1.a. Com Q6 = 3 (vigente, D-G0-6) não há código e o aceite corre junto com a G1.a e a G1.b.
 - **Critérios de aceite**:
   - PG-A01 a PG-A03 (e PG-A04, se a Q6 for 2) cobertos por testes com o identificador no nome;
   - uma identidade só nunca conclui uma ação;
