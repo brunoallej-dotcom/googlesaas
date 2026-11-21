@@ -47,6 +47,7 @@ const tiny = (ctx: BuildContext, who = 'ana@empresa.com', over: Partial<ScoreRun
   result: {},
   inputSha256: SHA,
   resultSha256: SHA,
+  evidenceProvenance: { headSeq: 1, headSealSha256: SHA, keyIds: ['ek-teste-0001'] }, // R2.1: toda escrita nova exige a proveniência
   ...over,
 });
 
