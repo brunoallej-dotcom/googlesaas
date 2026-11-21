@@ -381,7 +381,7 @@ test('PG-V01 stack: nenhum valor literal nas variáveis da Fase 6 nem material d
   ]);
   const lines = web.split('\n').map((line) => line.trim()).filter((line) => line.startsWith('GMN_LINK_AUDIT_'));
   assert.deepEqual([...lines].sort(), [...allowed].sort(), 'cada variável da Fase 6 é um alvo fixo, um arquivo de secret ou uma interpolação do arquivo de variáveis');
-  for (const file of ['stack.yml', 'docker-entrypoint.sh', 'Dockerfile', 'verify-local.sh']) {
+  for (const file of ['stack.yml', 'docker-entrypoint.sh', 'Dockerfile', 'verify-local.sh', 'verificar-pastas-fase6.sh']) {
     const text = read(file);
     assert.ok(!/[0-9a-f]{64}/i.test(text), `${file}: material hexadecimal de chave`);
     assert.ok(!/[a-z0-9][a-z0-9-]{3,31}:[A-Za-z0-9_-]{43}\b/.test(text), `${file}: chave pública/ID com material`);
@@ -434,4 +434,15 @@ test('PG-V01 verify-local: a renderização local da stack define os seis marcad
   for (const dir of PHASE6_DIRS.filter((item) => item.hostMarker !== null)) {
     assert.match(script, new RegExp(`${dir.hostMarker}=/tmp/gmn-verify/`), `${dir.hostMarker} fictício (sem caminho real)`);
   }
+});
+
+test('PG-V04 guia: a conferência executável das seis pastas é pré-requisito do deploy, com os seis marcadores na ordem do script', () => {
+  const guide = read('GUIA-DE-IMPLANTACAO.md');
+  assert.ok(fs.existsSync(path.join(DEPLOY, 'verificar-pastas-fase6.sh')), 'script de conferência versionado');
+  assert.match(guide, /cp deploy\/hostinger\/verificar-pastas-fase6\.sh \/opt\/gmn\/verificar-pastas-fase6\.sh/);
+  const call = guide.match(/bash \/opt\/gmn\/verificar-pastas-fase6\.sh ([^\n]+\\\n[^\n]+)/);
+  assert.ok(call, 'o guia chama o script');
+  const markers = [...(call[1] ?? '').matchAll(/\$(GMN_RAIZ_DADOS_[A-Z_]+)/g)].map((m) => m[1]);
+  assert.deepEqual(markers, ['GMN_RAIZ_DADOS_DECISOES', 'GMN_RAIZ_DADOS_RECIBOS_DECISOES', 'GMN_RAIZ_DADOS_RESULTADOS', 'GMN_RAIZ_DADOS_RECIBOS_RESULTADOS', 'GMN_RAIZ_DADOS_LIVRO', 'GMN_RAIZ_DADOS_MANIFESTOS']);
+  assert.match(guide, /NÃO implantar[\s\S]{0,80}EN-12/, 'saída diferente de 0 bloqueia a implantação e fica registrada no EN-12');
 });

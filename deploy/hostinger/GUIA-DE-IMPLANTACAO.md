@@ -68,6 +68,7 @@ A senha é hexadecimal (sem caracteres especiais na URL). O Redis lê a senha de
 ```bash
 install -m 0600 deploy/hostinger/.env.production.example /opt/gmn/.env.production   # preencher (sem segredos)
 cp deploy/hostinger/stack.yml /opt/gmn/stack.yml
+cp deploy/hostinger/verificar-pastas-fase6.sh /opt/gmn/verificar-pastas-fase6.sh   # conferência das pastas da Fase 6 (§3.3)
 ```
 
 ### 3.3 Pastas da Fase 6 no host (antes de implantar a versão da G1.a; ação do responsável)
@@ -86,7 +87,13 @@ for d in $P6; do sudo install -d -m 0700 -o 10001 -g 10001 "$d"; done
 sudo stat -c '%u:%g %a %n' $P6
 # recibos e livro em outro disco que os dados: o número do dispositivo (%d) dos recibos e do livro difere do das decisões e dos resultados
 sudo stat -c '%d %n' $P6
+# PRÉ-REQUISITO QUE FALHA: seis caminhos distintos (realpath), nenhum dentro de outro, modo 0700, recibos e livro em dispositivos
+# independentes. Saída diferente de 0 ⇒ NÃO implantar. Registrar a saída no EN-12 da G2 e na linha G-3 do portão.
+sudo bash /opt/gmn/verificar-pastas-fase6.sh "$GMN_RAIZ_DADOS_DECISOES" "$GMN_RAIZ_DADOS_RECIBOS_DECISOES" "$GMN_RAIZ_DADOS_RESULTADOS" \
+  "$GMN_RAIZ_DADOS_RECIBOS_RESULTADOS" "$GMN_RAIZ_DADOS_LIVRO" "$GMN_RAIZ_DADOS_MANIFESTOS"
 ```
+- `verificar-pastas-fase6.sh` vem de `deploy/hostinger/` (copiado para `/opt/gmn` junto com o `stack.yml`, §3.2) e só lê; é testado com
+  diretórios temporários em `tests/deploy-verificar-pastas.test.ts` (pastas coincidentes, link simbólico, aninhadas, modo e mesmo disco).
 - A pasta de manifestos é **só leitura** para o web (`read_only: true` no bind); a escrita é só pelo canal do CI (D15.5), fora da VPS.
 - O Worker **não** monta nenhuma delas: conferir depois do deploy com
   `docker service inspect gmn_gmn-worker --format '{{json .Spec.TaskTemplate.ContainerSpec.Mounts}}'` (só a pasta de PDFs).
