@@ -404,6 +404,8 @@ publicações de melhor esforço falham:
 | Um ponto de verificação | 1: `CHECKPOINT` | O automático (a cada 64 registros, `types.ts:26`; `model.ts:276-278`) é gravado **antes** da publicação obrigatória (`service.ts:767-774`) e fica no livro se ela falhar. O da rotação vem do `RECOVER` (`service.ts:731-746`), também com operação aberta. Depois de um, o próximo só é devido 64 registros adiante ou noutra rotação |
 | **Total** | **5** | Quando a janela começa no `runIntent`, o total é 4 (`RUN_INTENT` + fecho + reemissão + `CHECKPOINT`); quando começa no `ENROLL`, a janela começa vazia |
 
+**Nota da G1.b.1 (21/11/2026), sem mudar o número:** a publicação obrigatória do `prepare` passou para **antes** do `CHECKPOINT` automático, e o `RECOVER` da rotação publica a cabeça atual antes do `CHECKPOINT` dele (recusa se não conseguir). O `CHECKPOINT` continua sendo uma das cinco parcelas, logo depois de uma publicação aceita. Com a ordem de `3899a67`, uma segunda rotação dentro da janela somava 1 pelo caminho do `prepare` (`CHECKPOINT` gravado e a publicação recusada), que a recusa do `RECOVER` sozinha não cobria. O teste que enumera os fluxos (PG-G02) trava as duas coisas.
+
 **Condição de validade:** cada **rotação da chave do livro** concluída dentro da mesma janela soma 1 (um novo
 `CHECKPOINT` de rotação, `model.ts:262-266`). Por isso o runbook da guarda (GE-E7) exige `externalGuard` = `CONSISTENT`
 na auditoria antes do `RECOVER` da rotação; com essa regra, o total não passa de 5. Sem ela, um atraso de 6 vira
@@ -625,9 +627,9 @@ são mantidos abaixo só como registro, para o caso de a decisão ser revista (A
 
 **Guarda (G1.b):**
 
-- [ ] **PG-G01** Com a guarda configurada, `head: null` e livro com ≥ 2 registros ⇒ `HISTORY_UNRESOLVED` (`GUARD_HEAD_MISSING`); com 1 registro ⇒ aceito.
-- [ ] **PG-G02** Atraso > `L_max` ⇒ `HISTORY_UNRESOLVED` (`GUARD_LAGGING`); atraso ≤ `L_max` ⇒ `PROTECTED` com `externalGuard: BEHIND`. `L_max` é igual à contagem do protocolo, travada em teste: **5** (§5.1.7), com um teste que enumera os fluxos legítimos e mostra que nenhum passa de 5 com a regra da rotação.
-- [ ] **PG-G03** Para **cada um dos nove pontos S1–S9** (§5.1.2), um teste faz a publicação falhar logo depois do registro gravado e confere o desfecho da regra 4 da §5.1.4: (i) a resposta nunca diz que nada foi gravado; (ii) a vista mostra `BEHIND` (S1, S6, S7, S8, S9, e S3–S5 quando a sessão termina num `RECOVER`), ou a publicação obrigatória seguinte recusa com `LEDGER_GUARD_UNAVAILABLE` (S2–S5 quando a sessão segue para uma operação nova); (iii) o evento de alarme é emitido; (iv) a operação nova seguinte recusa até conseguir publicar. São nove testes, cada um com `PG-G03` e o ponto (`S1`…`S9`) no nome, incluindo o `CHECKPOINT` (S6) e o `RECEIPT_REISSUED` (S7).
+- [x] **PG-G01** Com a guarda configurada, `head: null` e livro com ≥ 2 registros ⇒ `HISTORY_UNRESOLVED` (`GUARD_HEAD_MISSING`); com 1 registro ⇒ aceito. *(G1.b.1, 21/11/2026: `tests/link-audit-guard-contract.test.ts`.)*
+- [x] **PG-G02** Atraso > `L_max` ⇒ `HISTORY_UNRESOLVED` (`GUARD_LAGGING`); atraso ≤ `L_max` ⇒ `PROTECTED` com `externalGuard: BEHIND`. `L_max` é igual à contagem do protocolo, travada em teste: **5** (§5.1.7), com um teste que enumera os fluxos legítimos e mostra que nenhum passa de 5 com a regra da rotação. *(G1.b.1, 21/11/2026: `tests/link-audit-guard-contract.test.ts`; o pior caso da tabela da §5.1.7 dá atraso 5 e um registro a mais dá `GUARD_LAGGING`.)*
+- [x] **PG-G03** Para **cada um dos nove pontos S1–S9** (§5.1.2), um teste faz a publicação falhar logo depois do registro gravado e confere o desfecho da regra 4 da §5.1.4: (i) a resposta nunca diz que nada foi gravado; (ii) a vista mostra `BEHIND` (S1, S6, S7, S8, S9, e S3–S5 quando a sessão termina num `RECOVER`), ou a publicação obrigatória seguinte recusa com `LEDGER_GUARD_UNAVAILABLE` (S2–S5 quando a sessão segue para uma operação nova); (iii) o evento de alarme é emitido; (iv) a operação nova seguinte recusa até conseguir publicar. São nove testes, cada um com `PG-G03` e o ponto (`S1`…`S9`) no nome, incluindo o `CHECKPOINT` (S6) e o `RECEIPT_REISSUED` (S7). *(G1.b.1, 21/11/2026: `tests/link-audit-guard-publish-failures.test.ts`.)*
 - [ ] **PG-G04** Rollback coordenado de decisões, recibos e livro (e de resultados) com a guarda real atrás da porta ⇒ `GUARD_MISMATCH`. O teste "LIMITE DECLARADO" continua valendo para a configuração **sem** guarda.
 - [ ] **PG-G05** Contrato da publicação (regra 7 da §5.1.4), no adaptador e no provedor simulado, sem rede:
   - o mesmo trio republicado ⇒ aceito sem registro novo, também numa posição abaixo do maior;
@@ -636,7 +638,8 @@ são mantidos abaixo só como registro, para o caso de a decisão ser revista (A
   - `ledgerSeq` maior que o maior ⇒ gravado.
   - Sequência falsa acima da real ⇒ a auditoria congela (`GUARD_MISMATCH`) e nunca esconde retrocesso.
   - `STALE` coberto por uma cabeça maior que está no livro ⇒ sem alarme; `CONFLICT` ⇒ alarme.
-- [ ] **PG-G06** `latest` com erro, resposta fora do esquema ou prazo esgotado ⇒ `GUARD_UNAVAILABLE` (nunca "nenhuma cabeça").
+  - *Parte do adaptador sintético e do serviço atendida na G1.b.1 (21/11/2026, `tests/link-audit-guard-contract.test.ts`); o provedor simulado do adaptador real fica para a G1.b.2.*
+- [x] **PG-G06** `latest` com erro, resposta fora do esquema ou prazo esgotado ⇒ `GUARD_UNAVAILABLE` (nunca "nenhuma cabeça"). *(G1.b.1, 21/11/2026: na porta, `boundGuard`, e no serviço; o adaptador real passa pela mesma porta.)*
 - [ ] **PG-G07** Sem credencial da guarda ⇒ `externalGuard: NOT_CONFIGURED`, e o verificador do portão (§10.1, G-1) acusa.
 - [ ] **PG-G08** (aplicável: Q1 = opção 1, Supabase, D-G0-1), com evidência registrada no laboratório e depois em produção:
   - **`PUBLIC` pelo ACL:** `PUBLIC` é pseudopapel, então a conferência é no ACL e não por `has_*_privilege`. `proacl` da função de publicação (e das funções dos gatilhos), `relacl` da tabela e `nspacl` do esquema são **não nulos** (nulo é o padrão, que nas funções dá `EXECUTE` a `PUBLIC`), e nenhum item de `aclexplode(...)` tem grantee `0` (`PUBLIC`);

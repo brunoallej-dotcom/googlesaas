@@ -389,7 +389,9 @@ interface (`audit-page/validators.ts`).
 |------|---------|------------|--------------|--------|
 | G0 | Decisões Q1–Q12 da spec; ADR-0003 (provedor da guarda); modelo de ameaças da guarda e do caminho administrativo; números do contrato da guarda (`L_max`, `T`, prazo de resposta) | spec | todas as ondas do P1 | ✅ 20/11/2026: D-G0-1 a D-G0-12 (spec §11; "tudo aprovado" pelo responsável, Q5 pelo manager); ADR-0003 Supabase; `link-audit-portoes-producao.md`; `L_max` = 5, `T` = 15 min, 3 s (spec §5.1.7) |
 | G1.a | Volumes, segredos e chave de log: `stack.yml`, lista do entrypoint, `stop-first`, plano de backup, exportação diária cifrada dos logs e `operatorRef` com `GMN_LINK_AUDIT_LOG_KEY` | G0 ✅ (D-G0-8, D-G0-9). Secrets da G1.a: chaves de origem, do livro e de log. Os da guarda (`GMN_LINK_AUDIT_GUARD_DB_URL`, `GMN_LINK_AUDIT_GUARD_KEY` e, só durante uma rotação, `GMN_LINK_AUDIT_GUARD_RETIRED_KEYS`) entram com a G1.b | G1.b, G1.c (aceite), R2 | ⬜ |
-| G1.b | Guarda no Supabase: adaptador real, contrato R6-10 com os números da spec §5.1.7 (inclui recusar no código o `RECOVER` de rotação com a guarda fora de `CONSISTENT`), secrets da guarda no `stack.yml` e no entrypoint, ligação nas rotas, migração proposta, reconciliação externa e runbook | G0 ✅ (D-G0-1 a D-G0-5); R1.6 na `main` ✅ (#52) | G1.a; G1.c (só o aceite, sem código) | ⬜ |
+| G1.b | Guarda no Supabase: adaptador real, contrato R6-10 com os números da spec §5.1.7 (inclui recusar no código o `RECOVER` de rotação com a guarda fora de `CONSISTENT`), secrets da guarda no `stack.yml` e no entrypoint, ligação nas rotas, migração proposta, reconciliação externa e runbook | G0 ✅ (D-G0-1 a D-G0-5); R1.6 na `main` ✅ (#52) | G1.a; G1.c (só o aceite, sem código) |🟨 G1.b.1 ✅ (21/11/2026); G1.b.2 ⬜ |
+| G1.b.1 | Contrato da guarda independente de provedor (GE-E3; parte do GE-E1 e do GE-E6): `publish` com o motivo da recusa (`CONFLICT`, `STALE`, `UNAVAILABLE`) e o adaptador sintético na regra 7 exata; prazo de 3 s por chamada e respostas validadas (`boundGuard`); regras 2 (`GUARD_HEAD_MISSING`), 3 (`L_max` = 5, `GUARD_LAGGING`), 4 (S1–S9) e 5; recusa do `RECOVER` de rotação fora de `CONSISTENT`; porta pura de alarmes (`GuardAlarmSink`) | G0 ✅; R1.6 ✅ (#52) | G1.a; G1.c (aceite) | ✅ 21/11/2026: PG-G01, PG-G02, PG-G03, PG-G05 (sintético) e PG-G06 em `tests/link-audit-guard-*.test.ts` |
+| G1.b.2 | Guarda no Supabase: adaptador real atrás da porta (com o pseudônimo `audit_ref` por HMAC, D-G0-5), migração proposta e rollback, ligação em `ledgerForRoutes`, secrets no `stack.yml` e no entrypoint, alarmes ligados ao logger, reconciliação externa (CLI) e runbook | G1.b.1 ✅; G1.a (logger e `stack.yml`) | G1.c (aceite) | ⬜ |
 | G1.c | Papel administrativo: com a D-G0-6 (Q6 = 3), **só o aceite formal** de manter o 403, sem código | G0 ✅ (D-G0-6; a Q7 não se aplica) | G1.a e G1.b (sem código, corre em paralelo) | ⬜ |
 | G2 | Integração e ensaio em homologação: os 16 ensaios e as 2 atestações da spec §10.4 | G1.a, G1.b, o aceite da G1.c, o ambiente de homologação (D-G0-12) e o **relatório da W5 aprovado** | nenhuma (com a W5, só em ambiente totalmente isolado, spec §10.4) | ⬜ |
 | G3 | Portão de produção (spec §10.1) ou piloto mínimo declarado (spec §10.2) | G2, os portões do P1 (R1, R2, W4.6, W5, W6) e as decisões e ações do responsável | — | ⬜ |
@@ -522,8 +524,17 @@ Motivos:
   - 100 % das mutações dos pontos novos do modelo mortas (equivalentes justificadas);
   - toda a suíte do livro e dos resultados verde;
   - motor intacto.
-- **Fatias (sugestão; o manager confirma no início da onda)**: G1.b.1 contrato R6-10 no modelo e no serviço, com o
-  adaptador sintético; G1.b.2 adaptador real e ligação; G1.b.3 migração proposta e reconciliação.
+- **Fatias (confirmadas pelo manager em 21/11/2026)**: **G1.b.1 ✅** contrato R6-10 no modelo e no serviço, com o
+  adaptador sintético (PG-G01, PG-G02, PG-G03, PG-G05 no sintético e PG-G06; `tests/link-audit-guard-contract.test.ts` e
+  `tests/link-audit-guard-publish-failures.test.ts`); **G1.b.2 ⬜** adaptador real e ligação, migração proposta,
+  reconciliação, runbook e a ligação dos alarmes ao logger (PG-G04, PG-G05 no provedor simulado do adaptador real,
+  PG-G07, PG-G08 e PG-G09).
+- **Registro da G1.b.1 (21/11/2026)**: a publicação obrigatória do `prepare` passou para **antes** do `CHECKPOINT`
+  automático (antes ele era gravado e ficava no livro quando a publicação falhava). Com a ordem antiga, cada rotação da
+  chave dentro da mesma janela somava 1 ao atraso por esse caminho, que a recusa do `RECOVER` não cobre, e a inscrição com
+  a publicação falha chegava a 2 registros sem cabeça (`GUARD_HEAD_MISSING`). A contagem de `L_max` continua **5**
+  (spec §5.1.7): o `CHECKPOINT` automático segue sendo uma das cinco parcelas, agora logo depois da publicação. O
+  `RECOVER` de rotação também publica a cabeça atual antes do `CHECKPOINT` e recusa quando não consegue.
 - **Goal command**: `/goal scripts/run-isolated.sh npm run typecheck && scripts/run-isolated.sh node --require ./tests/register-typescript.cjs --test tests/link-audit-guard-*.test.ts tests/link-audit-ledger-*.test.ts tests/link-audit-results-ledger*.test.ts && for id in PG-G01 PG-G02 PG-G04 PG-G05 PG-G06 PG-G07 PG-G09; do grep -lq "$id" tests/link-audit-guard-*.test.ts || exit 1; done && for s in S1 S2 S3 S4 S5 S6 S7 S8 S9; do grep -lqE "PG-G03.*\b$s\b" tests/link-audit-guard-*.test.ts || exit 1; done && git diff --quiet v1.0.1 -- src/lib/link-audit/scoring, stop after 10 tries`
 
 ### Onda G1.c — Papel administrativo (condicional à Q6)
