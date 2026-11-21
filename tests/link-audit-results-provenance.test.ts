@@ -19,6 +19,7 @@ import { createScoringBasisReader } from '../src/lib/link-audit-evidence/scoring
 import { writeCapture } from '../src/lib/link-audit-evidence/store';
 import { nodeFsOps } from '../src/lib/link-audit/snapshot-store';
 import { seal, serialize } from '../src/lib/link-audit-storage';
+import { headProofOf } from '../src/lib/link-audit-scoring-runs/preview';
 import { appendRun, readRunLog } from '../src/lib/link-audit-scoring-runs/results-store';
 import { evidenceProvenanceSchema, scoreRunSchema, type ScoreRun, type ScoreRunDraft } from '../src/lib/link-audit-scoring-runs/results-types';
 import { registerCleanup, tmpDir, world, type World } from './helpers/link-audit-decisions-fixtures';
@@ -149,12 +150,48 @@ test('R2.1 esquema: evidenceProvenance estrito — cabeça 1..256, hash hex min�
   for (const [label, value] of bad) assert.equal(evidenceProvenanceSchema.safeParse(value).success, false, label);
 });
 
-test('R2.1 esquema: o padrão de id de keyIds é o MESMO da lista de chaves do verificador (um id que a lista aceita é aceito; um que ela recusa é recusado)', () => {
-  const { publicRaw } = evidenceKeys('ek-padrao-0001');
-  for (const id of ['ek-a', 'abcd', 'a1-b2-c3', '0-0-0', 'ek-teste-0001', 'a'.repeat(32), 'a'.repeat(33), 'abc', 'Ek-teste', 'ek_teste', '-ekte', 'ek teste', 'ek-téste']) {
-    const listed = parseTrustKeyring(`${id}:${publicRaw}`) !== null;
-    assert.equal(evidenceProvenanceSchema.safeParse({ ...PROOF, keyIds: [id] }).success, listed, id);
+/**
+ * Corpus DETERMINÍSTICO de ids (revisão do PR #55): pontuação (`.`, `_`, `/`, `:`, `,`, espaço, `+`, `@`), maiúsculas, unicode (acento, `ß`, `ı` sem ponto, letra grega,
+ * dígito árabe-índico, espaço não separável, invisível), limites de tamanho (1..34, com e sem hífen inicial), posição do caractere (início, meio, fim) e 600 casos gerados por um
+ * gerador congruencial de semente fixa sobre um alfabeto misto. Nada aleatório: o mesmo corpus a cada execução.
+ */
+function keyIdCorpus(): string[] {
+  const specials = ['.', '_', '/', ':', ',', ' ', '+', '@', 'A', 'Z', 'é', 'ß', 'ı', 'α', '٣', '\u00a0', '\u200b', '-'];
+  const corpus = new Set<string>(['ek-a', 'abcd', 'a1-b2-c3', '0-0-0', 'ek-teste-0001', 'abc', 'Ek-teste', 'ek_teste', '-ekte', 'ek teste', 'ek-téste', 'ek.teste', 'ek-teste.0001', 'a...']);
+  for (let n = 1; n <= 34; n += 1) {
+    corpus.add('a'.repeat(n));
+    corpus.add('0'.repeat(n));
+    corpus.add(`-${'a'.repeat(Math.max(0, n - 1))}`);
+    corpus.add(`a${'-'.repeat(Math.max(0, n - 1))}`);
   }
+  for (const c of specials) for (const id of [`${c}ekte`, `ek${c}te`, `ekte${c}`, `${c}${'a'.repeat(31)}`, `${'a'.repeat(31)}${c}`, `ek-teste${c}0001`]) corpus.add(id);
+  const alphabet = ['a', 'k', 'z', '0', '9', '-', ...specials];
+  let state = 0x2b2b2b2b;
+  const next = (): number => {
+    state = (Math.imul(state, 1103515245) + 12345) >>> 0;
+    return state;
+  };
+  for (let i = 0; i < 600; i += 1) {
+    const length = 1 + (next() % 36);
+    let id = '';
+    for (let j = 0; j < length; j += 1) id += alphabet[next() % (i % 3 === 0 ? 6 : alphabet.length)];
+    corpus.add(id);
+  }
+  return [...corpus];
+}
+
+test('R2.1 esquema: o padrão de id de keyIds (registro E prévia) é o MESMO da lista de chaves do verificador, num corpus determinístico de ids', () => {
+  const { publicRaw } = evidenceKeys('ek-padrao-0001');
+  const corpus = keyIdCorpus();
+  let accepted = 0;
+  for (const id of corpus) {
+    const listed = parseTrustKeyring(`${id}:${publicRaw}`) !== null;
+    if (listed) accepted += 1;
+    assert.equal(evidenceProvenanceSchema.safeParse({ ...PROOF, keyIds: [id] }).success, listed, `registro: ${JSON.stringify(id)}`);
+    assert.equal(headProofOf({ status: 'AUTHENTICATED', ...PROOF, keyIds: [id] }) !== null, listed, `prévia: ${JSON.stringify(id)}`);
+  }
+  // o corpus exercita os dois lados (senão a comparação seria vazia)
+  assert.ok(corpus.length > 700 && accepted > 50 && corpus.length - accepted > 300, `corpus ${corpus.length}, aceitos ${accepted}`);
 });
 
 test('R2.1 esquema: o registro aceita o campo nas versões 1 e 2 (opcional, sem v3); presente e malformado ⇒ recusado', () => {
@@ -284,6 +321,25 @@ test('R2.1 escrita: cadeia de 2 manifestos com chave aposentada coberta por fech
   const done = await makeService(e, preview).finalize(OP_A, w.auditId, { expectedHead: ev.value.decisions.head, expectedInputSha256: ev.value.inputSha256 as string });
   assert.ok(done.ok, JSON.stringify(done).slice(0, 300));
   assert.deepEqual(onlyRunOf(e, w.auditId).run.evidenceProvenance, expected);
+});
+
+test('R2.1 escrita: a prova MUDA entre a avaliação e a releitura do passo 6 (fingerprintNow) ⇒ INPUT_CHANGED, nada gravado (a impressão digital inclui a resposta do verificador)', async () => {
+  const w = await world();
+  const proofA = { headSeq: 1, headSealSha256: 'a1'.repeat(32), keyIds: ['ek-prova-a'] };
+  const proofB = { headSeq: 2, headSealSha256: 'b2'.repeat(32), keyIds: ['ek-prova-a', 'ek-prova-b'] };
+  let calls = 0;
+  // as DUAS leituras da avaliação veem a cadeia A; a releitura do passo 6 vê B (outra cabeça e outras chaves): as duas respostas são AUTHENTICATED e bem formadas
+  const switching: EvidenceProvenancePolicy = { classify: async () => ({ status: 'AUTHENTICATED', ...(++calls <= 2 ? proofA : proofB) }) };
+  const preview = previewOver(w, { evidenceProvenance: switching });
+  const ev = await preview.evaluate(OP_A, w.auditId);
+  assert.ok(ev.ok && ev.value.payload.finalization.allowed, JSON.stringify(ev).slice(0, 200));
+  assert.deepEqual(ev.value.provenance, proofA);
+  calls = 0;
+  const e = resultsEnv();
+  const attempt = await makeService(e, preview).finalize(OP_A, w.auditId, { expectedHead: ev.value.decisions.head, expectedInputSha256: ev.value.inputSha256 as string });
+  assert.ok(!attempt.ok && attempt.code === 'INPUT_CHANGED', JSON.stringify(attempt).slice(0, 300));
+  assert.equal(calls, 3, 'duas leituras da avaliação e a releitura do passo 6');
+  nothingWritten(e, w.auditId);
 });
 
 test('R2.1 escrita: prova só v1 (modo [1,2]) ⇒ NOT_FINALIZABLE com o bloqueio, nada gravado', async () => {
