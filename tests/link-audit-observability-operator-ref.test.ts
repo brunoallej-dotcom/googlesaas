@@ -8,6 +8,7 @@ import {
   OPERATOR_REF_UNAVAILABLE,
   operatorRefSourceFromEnv,
 } from '../src/lib/link-audit-observability';
+import { phase6SecretKeyMaterials } from '../src/lib/link-audit-ledger';
 import { testKeyMaterial, testKeySpec } from './helpers/link-audit-origin-fixtures';
 
 /*
@@ -26,14 +27,16 @@ const REF_PATTERN = /^[a-z0-9][a-z0-9-]{3,31}:[0-9a-f]{12}$/;
 
 type Env = Record<string, string | undefined>;
 const withLogKey = (logKey: string | undefined, extra: Env = {}): Env => ({ [LOG_KEY_ENV]: logKey, GMN_LINK_AUDIT_ORIGIN_KEY: ORIGIN_KEY, GMN_LINK_AUDIT_LEDGER_KEY: LEDGER_KEY, ...extra });
-const refOf = (env: Env, email: unknown = EMAIL): string => operatorRefSourceFromEnv(env).operatorRef(email);
+/** Composição prevista (spec dos portões §5.3.4): o livro monta a lista das outras chaves; o módulo de observabilidade só compara. */
+const sourceOf = (env: Env) => operatorRefSourceFromEnv(phase6SecretKeyMaterials(env), env);
+const refOf = (env: Env, email: unknown = EMAIL): string => sourceOf(env).operatorRef(email);
 
 /** Material de 32 bytes montado por função (sem literal hexadecimal no arquivo). */
 const hexOf = (bytes: readonly number[]): string => Buffer.from(bytes).toString('hex');
 const repeatedBlock = (block: readonly number[]): string => hexOf(Array.from({ length: 32 }, (_, index) => block[index % block.length] as number));
 
 test('PG-L01 operatorRef determinístico com GMN_LINK_AUDIT_LOG_KEY: o mesmo e-mail (maiúsculas, espaços) dá o mesmo valor, prefixado pelo id da chave', () => {
-  const source = operatorRefSourceFromEnv(withLogKey(LOG_KEY_A));
+  const source = sourceOf(withLogKey(LOG_KEY_A));
   assert.equal(source.status, 'READY');
   assert.equal(source.keyId, 'lg-test-a');
   const ref = source.operatorRef(EMAIL);
@@ -41,7 +44,7 @@ test('PG-L01 operatorRef determinístico com GMN_LINK_AUDIT_LOG_KEY: o mesmo e-m
   assert.ok(ref.startsWith('lg-test-a:'));
   assert.equal(ref.length, 'lg-test-a:'.length + OPERATOR_REF_HEX_CHARS);
   assert.equal(source.operatorRef(`  ${EMAIL.toUpperCase()} \n`), ref, 'normalizado como a sessão (trim + minúsculas)');
-  assert.equal(operatorRefSourceFromEnv(withLogKey(LOG_KEY_A)).operatorRef(EMAIL), ref, 'estável entre leituras do ambiente (rotas e CLI)');
+  assert.equal(sourceOf(withLogKey(LOG_KEY_A)).operatorRef(EMAIL), ref, 'estável entre leituras do ambiente (rotas e CLI)');
 });
 
 test('PG-L01 operatorRef: HMAC-SHA-256 com a chave derivada por HKDF de finalidade própria (log), truncado em 12 hex (referência fixada)', () => {
@@ -62,7 +65,7 @@ test('PG-L01 operatorRef: e-mails diferentes e chaves diferentes dão valores di
 
 test('PG-L01 chave ausente ou vazia ⇒ UNAVAILABLE (falha fechada para PII: nunca hash sem chave nem o e-mail)', () => {
   for (const env of [withLogKey(undefined), withLogKey(''), {}]) {
-    const source = operatorRefSourceFromEnv(env);
+    const source = sourceOf(env);
     assert.equal(source.status, 'LOG_KEY_NOT_CONFIGURED');
     assert.equal(source.keyId, null);
     assert.equal(source.operatorRef(EMAIL), OPERATOR_REF_UNAVAILABLE);
@@ -90,7 +93,7 @@ test('PG-L01 chave fraca ou malformada ⇒ UNAVAILABLE (mesma política das chav
     'poucos bytes distintos': `lg-test-a:${hexOf(Array.from({ length: 32 }, (_, index) => (index * 5) % 15))}`,
   };
   for (const [label, spec] of Object.entries(weak)) {
-    const source = operatorRefSourceFromEnv(withLogKey(spec));
+    const source = sourceOf(withLogKey(spec));
     assert.equal(source.status, 'LOG_KEY_WEAK', label);
     assert.equal(source.keyId, null, label);
     assert.equal(source.operatorRef(EMAIL), OPERATOR_REF_UNAVAILABLE, label);
@@ -110,12 +113,12 @@ test('PG-L01 chave igual à de origem ou à do livro (id ou material, atual ou a
     'chave idêntica à do livro': withLogKey(LEDGER_KEY),
   };
   for (const [label, env] of Object.entries(reused)) {
-    const source = operatorRefSourceFromEnv(env);
+    const source = sourceOf(env);
     assert.equal(source.status, 'LOG_KEY_REUSED', label);
     assert.equal(source.keyId, null, label);
     assert.equal(source.operatorRef(EMAIL), OPERATOR_REF_UNAVAILABLE, label);
   }
-  assert.equal(operatorRefSourceFromEnv({ [LOG_KEY_ENV]: LOG_KEY_A }).status, 'READY', 'sem as outras chaves no ambiente não há o que comparar');
+  assert.equal(sourceOf({ [LOG_KEY_ENV]: LOG_KEY_A }).status, 'READY', 'sem as outras chaves no ambiente não há o que comparar');
 });
 
 test('PG-L01 e-mail nunca no log: o valor não contém parte do e-mail, o módulo não escreve nada e o objeto não expõe a chave', (t) => {
@@ -126,7 +129,7 @@ test('PG-L01 e-mail nunca no log: o valor não contém parte do e-mail, o módul
   t.mock.method(process.stderr, 'write', (chunk: unknown) => (written.push(String(chunk)), true));
 
   const material = testKeyMaterial('log-a');
-  const sources = [withLogKey(LOG_KEY_A), withLogKey(undefined), withLogKey(`lg-test-a:${material.toUpperCase()}`), withLogKey(ORIGIN_KEY)].map((env) => operatorRefSourceFromEnv(env));
+  const sources = [withLogKey(LOG_KEY_A), withLogKey(undefined), withLogKey(`lg-test-a:${material.toUpperCase()}`), withLogKey(ORIGIN_KEY)].map((env) => sourceOf(env));
   const refs = sources.flatMap((source) => [EMAIL, EMAIL.toUpperCase(), encodeURIComponent(EMAIL), 'dev@localhost'].map((email) => source.operatorRef(email)));
   t.mock.restoreAll();
 
@@ -142,8 +145,38 @@ test('PG-L01 dev@localhost (bypass de desenvolvimento) tem o mesmo tratamento: p
 });
 
 test('PG-L01 identidade inválida (não texto, vazia, gigante, sem @, com controle) ⇒ UNAVAILABLE, sem lançar', () => {
-  const source = operatorRefSourceFromEnv(withLogKey(LOG_KEY_A));
+  const source = sourceOf(withLogKey(LOG_KEY_A));
   for (const invalid of [undefined, null, 42, {}, ['a@b.co'], '', '   ', 'sem-arroba', 'a@b@c', `${'a'.repeat(320)}@exemplo.com`, 'a\u0000b@exemplo.com', 'a b@exemplo.com']) {
     assert.equal(source.operatorRef(invalid), OPERATOR_REF_UNAVAILABLE, `entrada: ${JSON.stringify(invalid)}`);
   }
+});
+
+test('PG-L01 sem a lista das outras chaves não há READY: ausente ou inválida ⇒ LOG_KEY_UNVERIFIED e UNAVAILABLE', () => {
+  const env = withLogKey(LOG_KEY_A);
+  const invalid: readonly unknown[] = [undefined, null, 'lista', {}, [{ id: '' , hex: 'aa' }], [{ id: 'ok-test-a' }], [{ id: 'ok-test-a', hex: 42 }]];
+  for (const list of invalid) {
+    const source = operatorRefSourceFromEnv(list as never, env);
+    assert.equal(source.status, 'LOG_KEY_UNVERIFIED', `lista: ${JSON.stringify(list)}`);
+    assert.equal(source.keyId, null);
+    assert.equal(source.operatorRef(EMAIL), OPERATOR_REF_UNAVAILABLE);
+  }
+  assert.equal(operatorRefSourceFromEnv([], env).status, 'READY', 'lista vazia EXPLÍCITA: nenhuma outra chave configurada');
+});
+
+test('PG-L01 reúso pela lista injetada: id igual, material igual, maiúsculas e espaços ⇒ recusada; a lista é de fato consultada', () => {
+  const env = { [LOG_KEY_ENV]: LOG_KEY_A };
+  const material = testKeyMaterial('log-a');
+  const reused: Readonly<Record<string, ReadonlyArray<{ id: string; hex: string }>>> = {
+    'mesmo id': [{ id: 'lg-test-a', hex: testKeyMaterial('outra') }],
+    'mesmo material': [{ id: 'ok-test-z', hex: material }],
+    'material em maiúsculas': [{ id: 'ok-test-z', hex: material.toUpperCase() }],
+    'id e material com espaços': [{ id: ' lg-test-a ', hex: testKeyMaterial('outra') }, { id: 'lk-test-z', hex: ` ${material}\n` }],
+    'aposentada no meio da lista': [{ id: 'ok-test-a', hex: testKeyMaterial('origin-a') }, { id: 'ok-old-c', hex: material }],
+  };
+  for (const [label, list] of Object.entries(reused)) {
+    const source = operatorRefSourceFromEnv(list, env);
+    assert.equal(source.status, 'LOG_KEY_REUSED', label);
+    assert.equal(source.operatorRef(EMAIL), OPERATOR_REF_UNAVAILABLE, label);
+  }
+  assert.equal(operatorRefSourceFromEnv([{ id: 'ok-test-a', hex: testKeyMaterial('origin-a') }], env).status, 'READY', 'outra chave distinta: aceita');
 });
