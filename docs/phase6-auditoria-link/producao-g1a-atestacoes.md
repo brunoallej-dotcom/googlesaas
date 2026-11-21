@@ -18,18 +18,18 @@ Cada linha aponta o `arquivo:linha` onde o item está cumprido (linhas conferida
 | AT-G1A-02 | SIM | deploy/hostinger/PLANO-DE-BACKUP-E-RESTAURACAO.md:81 (diretório novo por rodada, rsync --ignore-existing, sem --delete), :91 (cp -n), :97 (regras para qualquer destino), :106-107 (restauração em pasta nova e mv para _antigo, nunca apagar) |
 | AT-G1A-03 | SIM | deploy/hostinger/PLANO-DE-BACKUP-E-RESTAURACAO.md:75 (um rótulo para todas as pastas: pares do mesmo instante, com o web parado), :82 (sha256sum por arquivo em SHA256SUMS), :76 e :91 (cabeças registradas antes e guardadas junto de cada cópia, inclusive a do livro) |
 | AT-G1A-04 | SIM | deploy/hostinger/GUIA-DE-IMPLANTACAO.md:84 (install -d -m 0700 -o 10001 -g 10001), :86 (stat -c '%u:%g %a %n', esperado 10001:10001 700), :88 (stat -c '%d %n': recibos e livro em outro dispositivo) |
-| AT-G1A-05 | SIM | deploy/hostinger/PROVA-DE-ORIGEM-E-DE-COLETA.md:16, :19, :20 (chave do livro, chave de log e credencial da guarda como Swarm secrets, valores em marcador <id>:<64 hex>), :29 (criação com id em marcador); deploy/hostinger/docker-entrypoint.sh:16-19 (lista fixa); deploy/hostinger/stack.yml:48-54 e :317-325 (*_FILE e secrets externos) |
-| AT-G1A-06 | SIM | deploy/hostinger/PROVA-DE-ORIGEM-E-DE-COLETA.md:46 (volumes e chaves ⇒ guarda ⇒ primeiro ENROLL); docs/phase6-auditoria-link/onda6c-checklist-producao.md:5; deploy/hostinger/GUIA-DE-IMPLANTACAO.md:103 |
-| AT-G1A-07 | SIM | tests/deploy-config.test.ts:374 (variáveis da Fase 6 só como alvo fixo, arquivo de secret ou interpolação; sem material de chave nem IP real) e :337 (pastas novas só por marcador, sem caminho padrão); deploy/hostinger/stack.yml:91 (exemplo de origem por marcador); varredura das 711 linhas acrescentadas pela onda sem IP, e-mail, domínio, nome de cliente nem material de chave |
+| AT-G1A-05 | SIM | deploy/hostinger/PROVA-DE-ORIGEM-E-DE-COLETA.md:16 e :19 (chave do livro e chave de log como Swarm secrets, valores em marcador <id>:<64 hex>), :29 (criação com id em marcador); deploy/hostinger/docker-entrypoint.sh:16-19 (lista fixa); deploy/hostinger/stack.yml:49-51 e :312-317 (*_FILE e secrets externos); credencial e chave da guarda documentadas como Swarm secrets em PROVA-DE-ORIGEM-E-DE-COLETA.md:20-21 e :33, marcadas "entra na G1.b" (fora da stack e da lista do entrypoint por decisão do manager de 21/11/2026) |
+| AT-G1A-06 | SIM | deploy/hostinger/PROVA-DE-ORIGEM-E-DE-COLETA.md:49-52 (volumes e chaves da G1.a ⇒ guarda da G1.b ⇒ primeiro ENROLL); docs/phase6-auditoria-link/onda6c-checklist-producao.md:5; deploy/hostinger/GUIA-DE-IMPLANTACAO.md:102 |
+| AT-G1A-07 | SIM | tests/deploy-config.test.ts:375 (variáveis da Fase 6 só como alvo fixo, arquivo de secret ou interpolação; sem material de chave nem IP real) e :335 (pastas novas só por marcador, sem caminho padrão); deploy/hostinger/stack.yml:86 (exemplo de origem por marcador); varredura das 711 linhas acrescentadas pela onda sem IP, e-mail, domínio, nome de cliente nem material de chave |
 
 ## Decisões desta onda (para revisão)
 
-- **Nomes da guarda (reserva).** A spec não nomeia a credencial da guarda ("conforme o provedor"). Com a Q1 = Supabase, a G1.a reservou
-  `GMN_LINK_AUDIT_GUARD_DB_URL` (conexão do papel `gmn_guard_writer`) e `GMN_LINK_AUDIT_GUARD_ID_KEY` (HMAC do `auditId`), secrets
-  `gmn_link_audit_guard_db_url` e `gmn_link_audit_guard_id_key`. A G1.b pode renomear: a troca toca `stack.yml`, o entrypoint, os
-  documentos e as constantes de `tests/deploy-config.test.ts`. A chave de log ainda não compara com a da guarda (a G1.b acrescenta).
-- **Deploy acoplado.** Como a stack declara os cinco secrets como externos e as seis pastas por marcador obrigatório, **qualquer** deploy
-  desta versão exige todos eles, inclusive os dois da guarda (que só existem depois da migração da G1.b).
+- **Guarda fora da G1.a (decisão do manager, 21/11/2026).** A stack só declara o que o código lê: `GMN_LINK_AUDIT_GUARD_DB_URL`
+  (papel `gmn_guard_writer`) e `GMN_LINK_AUDIT_GUARD_KEY` (pseudônimo `audit_ref`), nomes fixados pela G0 (spec dos portões §5.1.7),
+  entram no `stack.yml` e na lista do entrypoint **com o código da G1.b**. Aqui ficam só documentados, como referência futura, e um
+  teste trava a ausência deles na stack e no entrypoint. A chave de log ainda não compara com a da guarda (a G1.b acrescenta).
+- **Deploy desta versão.** A stack declara os três secrets da G1.a como externos e as seis pastas por marcador obrigatório: um deploy exige
+  esses três secrets e as seis pastas, e **não** depende de nada da guarda.
 - **Aposentadas fora do stack.** `GMN_LINK_AUDIT_*_RETIRED_KEYS` estão na lista do entrypoint, mas não ficam declaradas no `stack.yml`
   (spec VC-E2): um secret vazio é recusado pelo entrypoint. Entram só durante uma rotação (PROVA-DE-ORIGEM §3, item 5).
 - **Listas públicas por interpolação.** Os ids revogados e as chaves públicas de atestação são listas públicas (spec VC-E3), não secrets:
@@ -48,11 +48,11 @@ Cada linha aponta o `arquivo:linha` onde o item está cumprido (linhas conferida
 
 ## Fica para o responsável (implantação)
 
-- Criar as seis pastas no host e registrar o `stat` (G2, EN-12; portão G-3); criar os cinco secrets (PROVA-DE-ORIGEM §2); acrescentar ao
+- Criar as seis pastas no host e registrar o `stat` (G2, EN-12; portão G-3); criar os três secrets da G1.a (PROVA-DE-ORIGEM §2; os da guarda vêm com a G1.b); acrescentar ao
   arquivo de variáveis da implantação os marcadores `GMN_RAIZ_DADOS_*` e as três listas públicas (o arquivo de exemplo do repositório
   não foi alterado nesta onda).
 - Definir os destinos reais `<DESTINO_BACKUP_*>` e `<DESTINO_LOGS>`, a chave pública dos logs e agendar as rotinas diárias.
-- Implantar só pelo CI, na ordem volumes e chaves ⇒ guarda ⇒ primeiro `ENROLL`.
+- Implantar só pelo CI, na ordem volumes e chaves (G1.a) ⇒ guarda (G1.b) ⇒ primeiro `ENROLL`.
 
 ## Fora do escopo, registrado
 

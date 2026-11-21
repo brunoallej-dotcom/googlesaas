@@ -94,13 +94,12 @@ sudo stat -c '%d %n' $P6
 
 ### 3.4 Segredos e variáveis da Fase 6
 - **Secrets** (criados sem expor o valor; comandos em `PROVA-DE-ORIGEM-E-DE-COLETA.md` §2): `gmn_link_audit_origin_key`,
-  `gmn_link_audit_ledger_key`, `gmn_link_audit_log_key`, `gmn_link_audit_guard_db_url` e `gmn_link_audit_guard_id_key`. Os dois da guarda
-  são nomes **reservados** para a G1.b e só existem depois da migração da guarda; como a stack os declara como externos, o deploy desta
-  versão exige que existam.
+  `gmn_link_audit_ledger_key` e `gmn_link_audit_log_key`. Os da guarda (`gmn_link_audit_guard_db_url` e `gmn_link_audit_guard_key`)
+  **entram na G1.b**, com o código que os lê, depois da migração da guarda: não fazem parte desta stack nem da ativação da G1.a.
 - **Variáveis** no arquivo de variáveis da implantação (sem segredo): os seis marcadores `GMN_RAIZ_DADOS_*` acima e as listas públicas
   `GMN_LINK_AUDIT_ORIGIN_REVOKED_KEY_IDS`, `GMN_LINK_AUDIT_LEDGER_REVOKED_KEY_IDS` e `GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS` (vazias por
   padrão: nenhum id revogado e atestação fechada).
-- **Ordem de ativação:** volumes e chaves ⇒ guarda ⇒ primeiro `ENROLL` (`PROVA-DE-ORIGEM-E-DE-COLETA.md` §3b). O web atualiza com
+- **Ordem de ativação:** volumes e chaves (G1.a) ⇒ guarda (G1.b) ⇒ primeiro `ENROLL` (`PROVA-DE-ORIGEM-E-DE-COLETA.md` §3b). O web atualiza com
   `stop-first` (R6-09): cada atualização tem uma breve indisponibilidade, e nunca há dois processos gravando nas pastas. Depois do primeiro
   `ENROLL`, não voltar a uma imagem anterior ao livro; o `failure_action: rollback` automático volta à especificação anterior do serviço,
   então a **primeira** implantação com o livro é validada (503/200 esperados) antes de qualquer `ENROLL`.
