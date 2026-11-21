@@ -247,7 +247,16 @@ interface (`audit-page/validators.ts`).
      fictícia; em `link-audit-evidence-provenance.test.ts`, os seis cenários em que a coleta legítima precisa ser
      finalizável atestam com manifesto v2; o rascunho mínimo de `link-audit-scoring-results-store.test.ts` ganhou o campo.
      Novos: `tests/link-audit-results-provenance.test.ts` e `tests/link-audit-results-provenance-ledger.test.ts`.
-  11. **Mutações:** MUTATIONS_PLACEHOLDER
+  11. **Mutações:** manuais, cada uma desfeita (`git checkout`), rodando os dois arquivos novos: **22 rodadas, 22 mortas, nenhuma
+     equivalente.** Omitir a prova numa escrita nova: no rascunho (M1a), no rascunho e na guarda do armazenamento juntos
+     (M1b), só a guarda de `appendRun` (M1c), só o passo 3b do serviço (M1d), a prévia sem tratar o caminho v1 (M1e) e a
+     conclusão aceitando pendente legada (M1f). Gravar cabeça ou chaves diferentes das devolvidas pelo v2: `headSeq + 1`
+     (M2a), só a primeira chave (M2b, morta pela cadeia com fecho), outro hash (M2c) e a prévia "consertando" `keyIds`
+     (reordenar e deduplicar, M2d). Aceitar campo malformado: `keyIds` fora de ordem (M3a), esquema não estrito (M3b),
+     `null` (M3c), qualquer valor (M3d), cabeça 0 (M3e), `keyIds` vazios na prévia (M3f), hash malformado na prévia (M3g) e
+     padrão de id mais largo que o da lista (M3h). Expor a proveniência: na prévia pública (M4a) e na projeção pública do
+     resultado (M4b). Quebrar o hash dos antigos: campo obrigatório (M5a) e valor padrão preenchido na leitura do legado
+     (M5b). Uma âncora (M3b) foi corrigida no roteiro antes da rodada válida.
   12. **Fica para a R2.2:** a reconferência na releitura (ids revogados de hoje ∩ `keyIds` gravados; `classify` sobre o
      `evidenceBasis` gravado; `UNAUTHENTICATED` ⇒ "a reconferir"), a porta injetada, o estado nos DTOs e na interface e o
      rótulo do legado. Também fica para lá decidir se a conclusão de uma pendente deve exigir que a cabeça gravada continue
