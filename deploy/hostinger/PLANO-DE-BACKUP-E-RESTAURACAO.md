@@ -70,58 +70,99 @@ restauração antes da produção (onda G2, ensaios EN-02a a EN-03) e a cada tri
 
 ### Rotina diária: pares do mesmo instante, `sha256sum` por arquivo, cabeças junto, nunca `--delete`
 O web é o **único** processo que grava as pastas; parar o web (com `stop-first`, réplica única) congela as seis no mesmo instante. A janela é
-curta (arquivos pequenos) e é combinada com quem opera (ninguém gravando).
+curta (arquivos pequenos) e é combinada com quem opera (ninguém gravando). Os destinos `<…>` são pastas **já existentes**, montadas de outro
+disco/provedor. Cada rodada cria, em cada destino, a pasta `<RODADA>/` (exclusiva: falha se já existir) com `dados/` (a cópia),
+`SHA256SUMS` (hashes da **origem**, calculados com o web parado) e `CABECAS.json` (as cabeças da rodada).
+
+**Antes da rodada (GE-R9):** com o web no ar e ninguém gravando, registrar para cada auditoria em uso o `head` (`seq` + `sha256`) que a API
+de decisões e a de resultados devolvem e a vista do livro, num arquivo local `<ARQUIVO_DAS_CABECAS>` (pela sessão autenticada de um
+operador, mesmo site; nunca pelo console do banco).
 ```bash
-DIA="$(date -u +%Y%m%d-%H%M%S)"                         # um rótulo por rodada: TODAS as pastas recebem o MESMO rótulo (pares do mesmo instante)
-# 1) Cabeças ANTES de parar (GE-R9): para cada auditoria em uso, o head (seq + sha256) que a API de decisões e a de resultados devolvem e a
-#    vista do livro, gravados em CABECAS-$DIA.json (pela sessão autenticada de um operador, mesmo site; nunca pelo console do banco).
-# 2) Congelar as gravações
-docker service scale gmn_gmn-web=0
-# 3) Copiar cada pasta para um diretório NOVO, com o rótulo da rodada, no seu destino (nada é sobrescrito nem apagado no destino)
-copia() { origem="$1"; destino="$2/$DIA"; mkdir -p -- "$destino" && rsync -a --checksum --ignore-existing -- "$origem"/ "$destino"/ \
-  && ( cd -- "$destino" && find . -type f ! -name SHA256SUMS -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum > SHA256SUMS ); }
+set -euo pipefail                                        # qualquer falha aborta a rodada
+RODADA="$(date -u +%Y%m%d-%H%M%S)"                       # o MESMO rótulo em todas as pastas (pares do mesmo instante)
+CABECAS="<ARQUIVO_DAS_CABECAS>"
+[ -s "$CABECAS" ] || { echo "cabeças da rodada ausentes: nada foi feito" >&2; exit 1; }
+religar() {                                              # roda SEMPRE na saída (sucesso ou falha): o web volta, e a falha fica registrada
+  status=$?
+  docker service scale gmn_gmn-web=1 >/dev/null
+  if [ "$status" -ne 0 ]; then echo "BACKUP DA FASE 6 FALHOU (rodada $RODADA, saída $status): rodada INVÁLIDA; web religado" >&2; fi
+}
+trap religar EXIT
+docker service scale gmn_gmn-web=0                       # congela as gravações
+copia() {
+  origem="$1"; rodada="$2/$RODADA"
+  mkdir -- "$rodada"                                     # exclusivo: nunca reaproveita nem sobrescreve uma rodada
+  ( cd -- "$origem" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum ) > "$rodada/SHA256SUMS"
+  rsync -a -- "$origem"/ "$rodada/dados"/                # pasta nova: nada a sobrescrever; nunca --delete
+  ( cd -- "$rodada/dados" && sha256sum --quiet --strict -c ../SHA256SUMS )    # a cópia confere, arquivo a arquivo, com a origem
+  [ "$(find "$origem" -type f | wc -l)" -eq "$(find "$rodada/dados" -type f | wc -l)" ]   # e não tem arquivo a mais nem a menos
+  cp -- "$CABECAS" "$rodada/CABECAS.json"                # as cabeças ficam DENTRO da rodada, em todas as cópias (inclusive a do livro)
+}
 copia "$GMN_RAIZ_DADOS_DECISOES"           "<DESTINO_BACKUP_DADOS_FASE6>/decisions"
 copia "$GMN_RAIZ_DADOS_RESULTADOS"         "<DESTINO_BACKUP_DADOS_FASE6>/results"
 copia "$GMN_RAIZ_DADOS_RECIBOS_DECISOES"   "<DESTINO_BACKUP_RECIBOS_DECISOES>"
 copia "$GMN_RAIZ_DADOS_RECIBOS_RESULTADOS" "<DESTINO_BACKUP_RECIBOS_RESULTADOS>"
 copia "$GMN_RAIZ_DADOS_LIVRO"              "<DESTINO_BACKUP_LIVRO>"
 copia "$GMN_RAIZ_DADOS_MANIFESTOS"         "<DESTINO_BACKUP_MANIFESTOS>"
-# 4) As cabeças vão JUNTO de cada cópia (mesmo rótulo), inclusive na do livro
-for d in "<DESTINO_BACKUP_DADOS_FASE6>" "<DESTINO_BACKUP_RECIBOS_DECISOES>" "<DESTINO_BACKUP_RECIBOS_RESULTADOS>" "<DESTINO_BACKUP_LIVRO>"; do
-  cp -n -- "CABECAS-$DIA.json" "$d/CABECAS-$DIA.json"
-done
-# 5) Voltar e conferir: as cabeças lidas agora pela API são IGUAIS às de CABECAS-$DIA.json (se mudaram, alguém gravou: refazer a rodada)
-docker service scale gmn_gmn-web=1
+echo "rodada $RODADA válida nos seis destinos"
 ```
-- Os destinos marcados como `<…>` podem ser pastas montadas de outro disco/provedor ou o primeiro passo de um envio (`rsync` para outra
-  máquina, `restic` com um repositório **por destino**). Valem as mesmas regras: diretório novo por rodada, `--ignore-existing`, **nunca
-  `--delete`**, nunca sobrescrever, nunca `restic forget` de uma rodada que seja a única referência.
-- Conferência no destino, a qualquer momento: `( cd <destino>/<rótulo> && sha256sum -c SHA256SUMS )`.
+- **Depois:** com o web de volta, as cabeças lidas pela API precisam ser **iguais** às de `<ARQUIVO_DAS_CABECAS>`. Se mudaram, alguém gravou
+  durante a janela: registrar a rodada como inválida e fazer outra (com outro rótulo; a inválida nunca é apagada nem reaproveitada).
+- Uma rodada só vale se o bloco terminou com "rodada … válida". Falha em qualquer cópia ⇒ o `trap` religa o web e registra a falha; as
+  pastas parciais dessa rodada ficam como estão, marcadas como inválidas no registro, e nunca são usadas numa restauração.
+- Envio remoto (`rsync` para outra máquina ou `restic` com um repositório **por destino**): as mesmas regras, ou seja, rodada nova e
+  exclusiva, hashes da origem conferidos na cópia, **nunca `--delete`**, nunca sobrescrever, nunca `restic forget` de uma rodada que seja a
+  única referência.
+- Conferência no destino, a qualquer momento: `( cd <destino>/<RODADA>/dados && sha256sum --strict -c ../SHA256SUMS )`.
 - Nada é copiado para **dentro** das pastas vivas fora do código (o leitor recusa arquivo criado à mão; checklist de produção §9).
 
-### Restauração da Fase 6 (sempre os pares do mesmo instante, em pasta nova)
+### Restauração da Fase 6 (sempre os pares do mesmo instante, em pasta nova irmã da viva)
 1. Consultar a guarda e a reconciliação externa **antes** (G1.b; spec dos portões Q2): restaurar backup mais velho que a guarda congela as
    auditorias afetadas (`GUARD_MISMATCH`), e sem papel administrativo elas não reabrem pela aplicação.
-2. Escolher **um** rótulo de rodada e restaurar, **desse mesmo rótulo**, decisões + recibos das decisões, resultados + recibos dos resultados
-   e o livro (e os manifestos, se preciso), cada um para uma pasta **nova** ao lado da viva; conferir `sha256sum -c SHA256SUMS` em cada uma.
-3. `docker service scale gmn_gmn-web=0`; para cada pasta, `mv` da viva para `<RAIZ_DA_PASTA>/_antigo-AAAAMMDD` (nunca apagar) e da
-   restaurada para o lugar; `chown -R 10001:10001` e `chmod 0700` no diretório; conferir com `stat -c '%u:%g %a %n'`.
-4. `docker service scale gmn_gmn-web=1` e ler pela API: histórico que não confere devolve 409 e nenhum dado; comparar as cabeças com o
-   `CABECAS-<rótulo>.json` da rodada. **Nunca** apagar arquivos para "destravar" uma auditoria.
-5. Registrar data, rótulo restaurado, resultado da conferência e o estado `externalGuard` da tela.
+2. Escolher **uma** rodada válida e restaurar, **dessa mesma rodada**, decisões + recibos das decisões, resultados + recibos dos resultados e
+   o livro (e os manifestos, se preciso). Para cada pasta viva `P` (o caminho de um marcador `GMN_RAIZ_DADOS_*`) e a cópia
+   `C=<destino>/<RODADA>`, a restaurada nasce como **irmã** de `P`, nunca dentro dela, e só com o conteúdo de `dados/`:
+   ```bash
+   set -euo pipefail
+   N="$P.restaurado-<RODADA>"
+   mkdir -m 0700 -- "$N"                                   # exclusivo: falha se já existir
+   rsync -a -- "$C/dados"/ "$N"/                            # só os dados: SHA256SUMS e CABECAS.json ficam no backup
+   ( cd -- "$N" && sha256sum --quiet --strict -c "$C/SHA256SUMS" )
+   ```
+3. Com **todas** as pastas da rodada restauradas e conferidas, parar o web e trocar cada uma, guardando a viva como irmã (nunca apagar):
+   ```bash
+   docker service scale gmn_gmn-web=0
+   mv -- "$P" "$P.antigo-$(date -u +%Y%m%d-%H%M%S)"        # a viva sai para um caminho IRMÃO (nunca para dentro de si mesma)
+   mv -- "$P.restaurado-<RODADA>" "$P"                     # a restaurada volta para a origem
+   chown -R 10001:10001 -- "$P" && chmod 0700 -- "$P"
+   stat -c '%u:%g %a %n' -- "$P"                           # esperado: 10001:10001 700
+   ( cd -- "$P" && sha256sum --quiet --strict -c "$C/SHA256SUMS" )   # confere de novo no lugar, ANTES de religar
+   ```
+   Repetir para cada pasta da rodada; se alguma conferência falhar, **não** religar: desfazer a troca daquela pasta com os dois `mv` ao
+   contrário e investigar.
+4. Conferir as seis pastas com `deploy/hostinger/verificar-pastas-fase6.sh` (distintas, nenhuma dentro de outra, recibos e livro em
+   dispositivos independentes), `docker service scale gmn_gmn-web=1` e ler pela API: histórico que não confere devolve 409 e nenhum dado;
+   comparar as cabeças com o `CABECAS.json` da rodada. **Nunca** apagar arquivos para "destravar" uma auditoria.
+5. Registrar data, rodada restaurada, resultado das conferências e o estado `externalGuard` da tela.
 
 ### Logs do contêiner (Q8, G0 de 20/11/2026): exportação diária e cifrada, expurgo aos 90 dias
 Sem ferramenta paga. O driver `json-file` da stack guarda só 3 × 10 MB por serviço e roda sozinho: a exportação é **diária**, antes que a
 rotação descarte linhas. O destino `<DESTINO_LOGS>` fica no **mesmo destino independente dos backups** (fora da VPS), numa pasta própria.
 ```bash
+set -euo pipefail                                        # falha no docker, no gzip ou no gpg aborta (nada de arquivo cifrado incompleto)
 DIA="$(date -u +%Y%m%d)"
 for svc in gmn_gmn-web gmn_gmn-worker; do
+  final="<DESTINO_LOGS>/$svc-$DIA.log.gz.gpg"
+  [ ! -e "$final" ] || { echo "já exportado: $final (não sobrescreve)" >&2; exit 1; }
+  parcial="$final.parcial"
   docker service logs --no-trunc --timestamps --since 24h "$svc" 2>&1 \
-    | gzip -9 | gpg --batch --encrypt --recipient "<ID_DA_CHAVE_PUBLICA_DOS_LOGS>" > "<DESTINO_LOGS>/$svc-$DIA.log.gz.gpg"
+    | gzip -9 | gpg --batch --encrypt --recipient "<ID_DA_CHAVE_PUBLICA_DOS_LOGS>" > "$parcial"
+  mv -- "$parcial" "$final"                              # só depois do sucesso de toda a cadeia o arquivo ganha o nome final
 done
 # expurgo SÓ dos arquivos de LOG exportados com mais de 90 dias (nunca de dados da Fase 6 nem de backups)
 find "<DESTINO_LOGS>" -maxdepth 1 -type f -name 'gmn_gmn-*.log.gz.gpg' -mtime +90 -exec rm -- {} +
 ```
+- Um `*.parcial` que sobrar indica exportação que falhou: registrar a falha e exportar de novo (o arquivo parcial não vale como log).
 - Cifra com a chave **pública** de um par cuja privada fica **fora da VPS**, só com o responsável e quem opera o servidor (acesso decidido
   em 16/11/2026). O `operatorRef` dos eventos é pseudônimo (HMAC com `GMN_LINK_AUDIT_LOG_KEY`), não anônimo: o log continua dado pessoal.
 - Hoje a Fase 6 ainda não emite eventos (fatias 2 a 7 da spec de observabilidade); a exportação já cobre o que o contêiner registra.
