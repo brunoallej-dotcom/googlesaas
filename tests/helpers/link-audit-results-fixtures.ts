@@ -152,6 +152,8 @@ export function buildEvaluation(spec: Spec = {}): Evaluation {
     applied: records.map((record, index) => ({ decisionId: record.id, kind: record.kind, seq: index + 1, stampCapture: 1, stampCollectedAt: REFERENCE_AT })),
     held: [],
     fingerprint: sha256Hex(`fp:${result.inputSha256}:${head?.sha256 ?? 'sem-head'}`),
+    // R2.1: a prova v2 que a avaliação carrega (fictícia; a finalização a grava como `evidenceProvenance`)
+    provenance: { headSeq: 1, headSealSha256: SHA('cabeca-da-cadeia'), keyIds: ['ek-teste-0001'] },
   } as unknown as Evaluation;
 }
 
