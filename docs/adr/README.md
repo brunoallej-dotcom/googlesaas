@@ -10,6 +10,7 @@ described by Michael Nygard. The ADR process itself is established in
 |------|----------------------------------------------------------------------|----------|
 | 0001 | [Record architecture decisions](0001-record-architecture-decisions.md) | Accepted |
 | 0002 | [Autenticar a confirmação dos resultados pelo livro de cabeças](0002-authenticate-result-receipts.md) | Accepted |
+| 0003 | [Guarda externa do livro de cabeças: tabela append-only no Supabase](0003-supabase-external-ledger-guard.md) | Accepted |
 
 ## Adding a new ADR
 

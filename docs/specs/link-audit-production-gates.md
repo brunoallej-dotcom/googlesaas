@@ -1,9 +1,15 @@
 # Spec: Portões de produção da Auditoria por Link (Fase 6) fora do Produtor P1
 
-> **Status: PROPOSTA (20/11/2026). Nada disto está implementado.** Redigida pelo manager a partir dos "Bloqueadores de
-> produção" e dos "Riscos residuais" do encerramento da Onda 6C (`NOTES.md`, rodada de 16/11/2026). As decisões são do
-> responsável (§11); o plano de ondas está em `docs/plan/implementation-waves.md`, seção "Portões de produção da Fase 6
-> (fora do P1)".
+> **Status: APROVADA na onda G0 (20/11/2026). Nada disto está implementado.** Proposta pelo manager em 20/11/2026 a
+> partir dos "Bloqueadores de produção" e dos "Riscos residuais" do encerramento da Onda 6C (`NOTES.md`, rodada de
+> 16/11/2026). As doze questões foram decididas na G0 (registro D-G0-1 a D-G0-12 na §11); o provedor da guarda está no
+> ADR-0003 (`docs/adr/0003-supabase-external-ledger-guard.md`) e as ameaças novas em
+> `docs/security/threats/link-audit-portoes-producao.md`. O plano de ondas está em `docs/plan/implementation-waves.md`,
+> seção "Portões de produção da Fase 6 (fora do P1)".
+>
+> **Números de linha.** As citações `arquivo:linha` das §5.1 e §10.4 foram conferidas em `a506ffd` (PR #51). A R1.6
+> (`3899a67`) deslocou as de `src/lib/link-audit-ledger/service.ts` e `model.ts`; a tabela de correspondência está na
+> §5.1.7. O texto da G0 (§5.1.7 e §11) cita `3899a67`.
 >
 > **Repositório público.** Nenhum nome de pessoa, e-mail, host, IP, caminho real de produção ou valor de chave entra aqui.
 > Onde for preciso, valem marcadores como `<RAIZ_DADOS_RECIBOS>` ou `<NOME_DO_SECRET>`.
@@ -52,7 +58,7 @@ resultado de produção**, separando o que é código, que o manager faz sozinho
 | **Manager** | Escreve e mantém esta spec e o plano; implementa e revisa o código das ondas G1 e G2 (autonomia de 19/11/2026) |
 | **Operador** | Usuário autenticado (sessão HMAC + `GMN_OPERATOR_EMAILS`); grava decisões e resultados |
 | **Servidor web** | Único processo que lê e escreve as pastas da Fase 6 e publica na guarda |
-| **Provedor da guarda** | Testemunha imutável fora da VPS (a escolher, §5.1.6) |
+| **Provedor da guarda** | Testemunha imutável fora da VPS: **Supabase**, tabela append-only (D-G0-1, §5.1.6, ADR-0003) |
 | **Reconciliador externo** | Pessoa ou rotina **fora da VPS** que compara a guarda com os backups (§5.1.3, GE-E5) |
 | **Administrador da VPS** | Opera o host. Continua fora da garantia "web comprometido não falsifica" (P1, D15.5) |
 | **Pipeline de CI** | Única via de deploy e de entrega de manifestos (D7, D15.5) |
@@ -135,11 +141,11 @@ resultado de produção**, separando o que é código, que o manager faz sozinho
 
 | ID | Entrega | Tipo |
 |---|---|---|
-| GE-E1 | Adaptador real atrás de `ExternalGuardPort`, para o provedor escolhido (Q1): prazo de resposta, respostas validadas com zod, erro ⇒ indisponível (nunca "nenhuma cabeça"), e `publish` com o motivo da recusa (`CONFLICT`, `STALE`, indisponível) conforme a regra 7 da §5.1.4. A porta muda junto, com o adaptador sintético ajustado | código |
+| GE-E1 | Adaptador real atrás de `ExternalGuardPort`, para o provedor escolhido (Supabase, D-G0-1): prazo de resposta de 3 s (D-G0-3, §5.1.7), respostas validadas com zod, erro ⇒ indisponível (nunca "nenhuma cabeça"), e `publish` com o motivo da recusa (`CONFLICT`, `STALE`, indisponível) conforme a regra 7 da §5.1.4. A porta muda junto, com o adaptador sintético ajustado | código |
 | GE-E2 | Ligação em `ledgerForRoutes()`. A credencial da guarda é lida só pelo módulo do livro, como as chaves (`ledger/config.ts:26-27`). Sem credencial, o estado continua `NOT_CONFIGURED`, que **não passa no portão** (§10.1, G-1) | código |
 | GE-E3 | Contrato R6-10 no modelo e no serviço: regras 1 a 4 da §5.1.4 | código |
-| GE-E4 | Se Q1 = opção 1: migração versionada em `supabase/proposed/`, com conferência de privilégios no próprio SQL, como a `003` faz (`supabase/proposed/003_rls_hardening.sql:34-43`), e o rollback correspondente. O responsável a aplica em produção | código + ação do responsável |
-| GE-E5 | Reconciliação externa: um CLI somente leitura (nome proposto `scripts/link-audit-guard-reconcile.ts`) que compara as cabeças da guarda com uma cópia de backup do livro e com o registro anterior da própria reconciliação. Usa uma **credencial só de leitura que não fica na VPS**. Saída `--json` estável, com divergência ⇒ código de saída ≠ 0 | código + rotina do responsável (Q2) |
+| GE-E4 | Com a Q1 = opção 1 (D-G0-1): migração versionada em `supabase/proposed/`, com conferência de privilégios no próprio SQL, como a `003` faz (`supabase/proposed/003_rls_hardening.sql:34-43`), e o rollback correspondente. O responsável a aplica em produção | código + ação do responsável |
+| GE-E5 | Reconciliação externa: um CLI somente leitura (nome proposto `scripts/link-audit-guard-reconcile.ts`) que compara as cabeças da guarda com uma cópia de backup do livro e com o registro anterior da própria reconciliação. Usa uma **credencial só de leitura que não fica na VPS**. Saída `--json` estável, com divergência ⇒ código de saída ≠ 0. Rotina: D-G0-2 (semanal, depois de cada backup do livro e antes de qualquer restauração) | código + rotina do responsável (D-G0-2) |
 | GE-E6 | Eventos de alarme: guarda indisponível, `MISMATCH`, atraso acima do limite e falha de publicação depois do fecho. Usam o envelope da spec de observabilidade (§9) | código |
 | GE-E7 | Runbook da guarda: ativação, rotação da credencial, indisponibilidade, restauração com conferência da guarda e reconciliação | documentação |
 | GE-E8 | Ensaio em homologação, depois da W5: o roteiro EN-01 a EN-12 da §10.4, com o EN-02 dividido em a, b, c, d e e (rollback coordenado, restaurações, rollback de imagem, queda do provedor, falha de publicação depois do fecho, sequência falsa, reconciliação) | onda G2 |
@@ -155,10 +161,13 @@ resultado de produção**, separando o que é código, que o manager faz sozinho
    razão nova (nome proposto `GUARD_HEAD_MISSING`).
 3. **Atraso máximo.**
    - `L_max` é o maior número de registros que o protocolo grava entre duas publicações obrigatórias, contando as famílias
-     de decisão e de resultado (`RUN_*`) e as receitas do `RECOVER`. É contado na G1 e travado em teste.
-   - Atraso ≤ `L_max` ⇒ a vista mostra `BEHIND`, e o alarme dispara se o atraso durar mais que `T` (Q4).
+     de decisão e de resultado (`RUN_*`) e as receitas do `RECOVER`. **Contado na G0: `L_max` = 5** (D-G0-4; contagem e
+     condição de validade na §5.1.7). A G1.b o trava em teste (PG-G02).
+   - Atraso ≤ `L_max` ⇒ a vista mostra `BEHIND`, e o alarme dispara se o atraso durar mais que **`T` = 15 min** (D-G0-4).
    - Atraso > `L_max` ⇒ `HISTORY_UNRESOLVED` (nome proposto `GUARD_LAGGING`). Um fluxo legítimo não chega lá, porque
-     toda operação nova publica antes de começar.
+     toda operação nova de decisão ou de resultado publica antes de começar. A exceção é o `RECOVER` da rotação, que grava
+     o `CHECKPOINT` sem publicação obrigatória antes (`service.ts:731-746`); por isso a G1.b recusa no código a rotação
+     com `externalGuard` = `BEHIND` (§5.1.7).
    - **Janela residual declarada:** a guarda detecta o retrocesso a qualquer ponto **anterior à última cabeça
      publicada**. Um retrocesso dentro da última operação ainda não publicada passa (no máximo `L_max` registros).
 4. **Falha de publicação depois de um registro gravado** (os nove pontos S1–S9 da §5.1.2). O registro já está durável no
@@ -174,7 +183,8 @@ resultado de produção**, separando o que é código, que o manager faz sozinho
    Em todos os casos, a próxima operação continua recusando enquanto não conseguir publicar (`:763`, `:893`).
 5. **Indisponibilidade.** Erro ou prazo esgotado no `latest` ⇒ `GUARD_UNAVAILABLE` ⇒ `HISTORY_UNRESOLVED`
    (`model.ts:489`). A falha é fechada **também nas leituras**: com o provedor fora do ar, nenhuma decisão aparece como
-   vigente e nada é finalizável. O prazo de resposta e a política ficam para a Q3.
+   vigente e nada é finalizável. **Decidido (D-G0-3):** essa é a política, sem modo degradado, com prazo de resposta de
+   **3 s** por chamada à guarda (`latest` e `publish`), a confirmar na G1 pela latência medida (§5.1.7).
 6. **"Esqueceu".** O servidor não guarda estado entre requisições, então não percebe sozinho uma guarda que regrediu. Ser
    append-only e monotônica torna essa regressão impossível sem comprometer o provedor. Quem detecta é a reconciliação
    externa (GE-E5), que compara com o próprio registro anterior.
@@ -197,7 +207,11 @@ resultado de produção**, separando o que é código, que o manager faz sozinho
    se a cabeça maior da guarda está no livro (é prefixo), a publicação está coberta e não há alarme. `CONFLICT` sempre
    gera alarme.
 8. **Formato do registro:** `{auditId, ledgerSeq, sha256}` mais a hora do provedor, que é só informativa (a ordem vale
-   pelo `ledgerSeq`). O `auditId` vai em claro ou como HMAC com chave própria (Q5).
+   pelo `ledgerSeq`). **Decidido (D-G0-5):** o `auditId` **não** vai em claro. O provedor guarda o pseudônimo
+   `audit_ref` = HMAC-SHA-256 do `auditId` com a chave própria da guarda (`GMN_LINK_AUDIT_GUARD_KEY`), mais o id dessa
+   chave. Onde esta spec escreve `auditId` ou `audit_id` do lado do provedor (regra 7, §5.1.5, §5.1.6), vale o
+   `audit_ref`: a restrição única e a trava por auditoria usam o pseudônimo. A porta continua recebendo o `auditId`; o
+   adaptador calcula o pseudônimo. Rotação da chave: §5.1.7.
 
 #### 5.1.5 Casos de borda
 
@@ -212,7 +226,8 @@ resultado de produção**, separando o que é código, que o manager faz sozinho
 - **Restauração de backup mais velho que a guarda:** a guarda fica à frente do livro restaurado ⇒ `GUARD_MISMATCH` e a
   auditoria congela. É o comportamento correto. Só que, sem o papel administrativo (§5.2), não existe `RESTORE_ACK`, e
   toda auditoria com atividade depois do backup fica congelada pela aplicação. **Consequência prática:** a frequência do
-  backup do livro e dos recibos define quanto se perde (Q9).
+  backup do livro e dos recibos define quanto se perde. Decidido (D-G0-9): cópia **diária**, destino independente por
+  volume.
 - **Rollback de imagem:** depois do primeiro `ENROLL`, nunca se volta a uma imagem anterior ao livro (R6-09) e o web
   atualiza com `stop-first` (§5.3.3).
 - **Queda longa do provedor:** a Fase 6 inteira fica sem decisão vigente (falha fechada). É um acoplamento de
@@ -294,7 +309,8 @@ VPS. Contra restauração errada de backup e contra quem só escreve nos volumes
   - publica uma **sequência falsa** acima da real para uma auditoria: a cabeça da guarda deixa de estar no livro
     (`GUARD_MISMATCH`) e as publicações legítimas passam a ser `STALE`. É **DoS**: a auditoria congela e, sem o papel
     administrativo, não reabre pela aplicação (§5.2);
-  - lê as cabeças (`auditId` e frequência de atividade, ver Q5);
+  - lê as cabeças: pseudônimo e frequência de atividade (D-G0-5). Com a `GMN_LINK_AUDIT_GUARD_KEY`, que também está na
+    VPS, reverte o pseudônimo por dicionário de `auditId`;
   - **não** consegue alterar nem apagar registros, desligar gatilhos ou mudar privilégios: isso exige ser dono da tabela.
 - **Com controle do processo web:** a ameaça comum acima. O web comprometido pode **mentir sobre o `latest`** para a
   própria aplicação e esconder um retrocesso das telas; só a reconciliação externa detecta, e só **depois**.
@@ -355,6 +371,74 @@ Mais a ameaça comum.
 > resposta é a opção **(3)**, com custo autorizado. A opção **(3)** também é o reforço natural quando houver uso com
 > clientes ou mais de um operador. A opção **(2)** não é recomendada: depende de plano pago ou de repositório público e
 > concentra poder na conta que já controla código, CI e deploy.
+>
+> **Decidido pelo responsável em 20/11/2026 (D-G0-1, §11): opção (1) Supabase**, com este desenho e para o risco "VPS
+> comprometida". O limite contra o dono ou administrador do projeto Supabase fica declarado. A opção (3) só entra com
+> custo autorizado e é a revisão futura registrada no ADR-0003. O critério do provedor é o **PG-G08**; o PG-G10 e o
+> PG-G11 não se aplicam.
+
+#### 5.1.7 Números do contrato da guarda (G0, 20/11/2026)
+
+Conferidos no código em `3899a67`. São os números que a G1.b implementa e trava em teste; a regra de cada um é a decisão
+da §11, e o valor só muda com registro aqui (número novo e motivo).
+
+| Número | Valor | Decisão | Quem confirma |
+|---|---|---|---|
+| `L_max` (atraso máximo aceito como `BEHIND`) | **5 registros** | D-G0-4 (regra); contagem abaixo | G1.b, por teste que enumera os fluxos do protocolo (PG-G02) |
+| `T` (alarme de `BEHIND` prolongado) | **15 min** | D-G0-4 | G1.b (evento GE-E6) |
+| Prazo de resposta da guarda | **3 s** por chamada (`latest` e `publish`); esgotado ⇒ indisponível | D-G0-3 | G1.b, pela latência medida no laboratório (PG-G08) |
+| Chave do pseudônimo `audit_ref` | `GMN_LINK_AUDIT_GUARD_KEY`, formato `<id>:<64 hex>` | D-G0-5 | G1.b (secret e uso) |
+| Credencial de escrita da guarda | `GMN_LINK_AUDIT_GUARD_DB_URL` (papel `gmn_guard_writer`) | D-G0-1 | G1.b (secret e uso) |
+
+**Contagem de `L_max`.** Publicações **obrigatórias** (falha ⇒ recusa, nada novo começa): a do `prepare`, antes da
+`INTENT` (`src/lib/link-audit-ledger/service.ts:774`); a do `runIntent`, antes do `RUN_INTENT` (`:904`); e a do `ENROLL`,
+depois do `GENESIS` (`:1022`). As outras nove são de melhor esforço (S1–S9, §5.1.2). `L_max` é o maior número de
+registros que entram no livro depois da última publicação aceita pela guarda, num fluxo legítimo em que **todas** as
+publicações de melhor esforço falham:
+
+| Parcela | Registros | Por que no máximo isso (código em `3899a67`) |
+|---|---|---|
+| Uma operação de decisão iniciada logo depois da publicação obrigatória | 2: `INTENT` + o fecho dela (`CONFIRMED`; `ABORTED` da receita; ou `CONFIRMED` da fase C) | Outra operação nova exige outra publicação obrigatória: aceita, recomeça a conta; recusada, nada novo entra (`service.ts:774`, `:904`) |
+| O fecho do resultado que já estava aberto antes da publicação | 1: `RUN_CONFIRMED` ou `RUN_ABORTED` | Cai entre a `INTENT` e o fecho da decisão pela regra dos fechos intercalados (`service.ts:453-461`). Um `RUN_INTENT` novo não entra com decisão aberta (`:892`) nem sem publicação obrigatória (`:904`) |
+| Uma reemissão de recibo de decisão | 1: `RECEIPT_REISSUED` | Só do último confirmado e sem decisão aberta (`model.ts:556`); no máximo uma por entrada confirmada (`service.ts:805`). A reemissão do recibo de **resultado** não grava no livro (`service.ts:968-1002`) |
+| Um ponto de verificação | 1: `CHECKPOINT` | O automático (a cada 64 registros, `types.ts:26`; `model.ts:276-278`) é gravado **antes** da publicação obrigatória (`service.ts:767-774`) e fica no livro se ela falhar. O da rotação vem do `RECOVER` (`service.ts:731-746`), também com operação aberta. Depois de um, o próximo só é devido 64 registros adiante ou noutra rotação |
+| **Total** | **5** | Quando a janela começa no `runIntent`, o total é 4 (`RUN_INTENT` + fecho + reemissão + `CHECKPOINT`); quando começa no `ENROLL`, a janela começa vazia |
+
+**Condição de validade:** cada **rotação da chave do livro** concluída dentro da mesma janela soma 1 (um novo
+`CHECKPOINT` de rotação, `model.ts:262-266`). Por isso o runbook da guarda (GE-E7) exige `externalGuard` = `CONSISTENT`
+na auditoria antes do `RECOVER` da rotação; com essa regra, o total não passa de 5. Sem ela, um atraso de 6 vira
+`GUARD_LAGGING` e congela a auditoria sem reabertura pela aplicação (D-G0-6). Como o serviço em `3899a67` aceita o
+`RECOVER` sem conferir a guarda (`service.ts:731-744`), a regra do runbook sozinha não basta: **a G1.b é obrigada a
+impô-la no código**, recusando o `RECOVER` de rotação (e o `CHECKPOINT` dele) quando `externalGuard` ≠ `CONSISTENT`, com
+teste da recusa e mutação que a remove (revisão do PR #53).
+
+**Idade do atraso (`T`).** O servidor não guarda estado entre requisições (regra 6). Proposta para a G1.b: a idade do
+`BEHIND` é a distância entre o relógio do servidor e o `recordedAt` do primeiro registro do livro ainda não publicado.
+
+**Rotação da `GMN_LINK_AUDIT_GUARD_KEY` (D-G0-5).** O pseudônimo é a chave de busca na guarda: trocar a chave troca o
+pseudônimo, e uma auditoria com dois ou mais registros sem cabeça sob o pseudônimo novo cairia em `GUARD_HEAD_MISSING`
+(regra 2). Por isso:
+
+- **sem rotação periódica.** A chave protege só a confidencialidade do `auditId` (quem lê a tabela não liga cabeça a
+  auditoria). A integridade é da imutabilidade e da regra 7;
+- **rotação por comprometimento** (ou por decisão do responsável), no padrão das outras chaves da Fase 6: chave nova
+  como atual e a antiga em `GMN_LINK_AUDIT_GUARD_RETIRED_KEYS`. O `latest` consulta o pseudônimo de cada chave (atual e
+  aposentadas) e fica com o maior `ledgerSeq`; a publicação usa só a atual; a primeira publicação com a chave nova é a
+  cabeça do livro naquele instante. A aposentada só sai da lista quando toda auditoria protegida tiver cabeça publicada
+  com a atual, conferido pela reconciliação;
+- cada registro guarda o **id** da chave que gerou o pseudônimo;
+- a chave fica no web e com o responsável, que a usa na reconciliação fora da VPS (GE-E5);
+- o procedimento detalhado vai no runbook GE-E7, e a G1.b trava em teste que a rotação não produz
+  `GUARD_HEAD_MISSING` nem esconde retrocesso.
+
+**Correspondência de linhas `a506ffd` → `3899a67`** (a R1.6 deslocou as citações das §5.1.2, §5.1.4, §5.1.5 e §10.4):
+
+| Arquivo | Em `a506ffd` (texto da spec) | Em `3899a67` |
+|---|---|---|
+| `src/lib/link-audit-ledger/service.ts` | `:239`, `:244-248`, `:342-347`, `:404-408` | `:250`, `:255-259`, `:353-358`, `:415-419` |
+| idem, S1–S9 | `:555`, `:590`, `:671`, `:690`, `:710`, `:732`, `:806`, `:829`, `:923` | `:566`, `:601`, `:682`, `:701`, `:721`, `:743`, `:817`, `:840`, `:934` |
+| idem, publicações obrigatórias e `ENROLL` | `:763`, `:893`, `:969-972` | `:774`, `:904`, `:1019-1022` |
+| `src/lib/link-audit-ledger/model.ts` | `:454`, `:489`, `:493-494`, `:517-519`, `:577-582` | `:460`, `:495`, `:499-500`, `:523-525`, `:583-588` |
 
 ### 5.2 (b) Papel administrativo com dupla aprovação
 
@@ -405,8 +489,11 @@ mudança formal de política, decisão do responsável.
 > escrito. **(1)** assim que houver uma segunda pessoa, com a emenda formal para "quatro olhos" decidida junto. **(2)** só
 > se for preciso recuperar uma auditoria antes de existir outra pessoa, e então com mudança de política assinada, chave
 > administrativa própria (não a K1) e o canal de aviso fora da VPS já funcionando.
+>
+> **Decidido pelo responsável em 20/11/2026 (D-G0-6, §11): opção (3) no piloto**, com o aceite formal escrito da §10.2
+> (condição 4). As opções (1) e (2) ficam nas condições acima, para o futuro. A Q7 não se aplica (D-G0-7).
 
-#### 5.2.5 Entregas (só se Q6 = 1 ou 2)
+#### 5.2.5 Entregas (só se Q6 = 1 ou 2; com a D-G0-6, nenhuma de código)
 
 A opção escolhida ganha antes uma **emenda à spec do livro (§16.8)**, porque muda o formato do livro (registros `*_ACK` e
 de pedido) e o contrato da API. As entregas, todas de código e testadas sem rede:
@@ -419,7 +506,8 @@ de pedido) e o contrato da API. As entregas, todas de código e testadas sem red
 - área de custódia para os arquivos afastados;
 - interface.
 
-Com Q6 = 3, a única entrega é documental: o aceite formal e o texto da tela, que já diz que a ação não existe.
+Com Q6 = 3, que é a decisão vigente (D-G0-6), a única entrega é documental: o aceite formal e o texto da tela, que já
+diz que a ação não existe (`src/lib/link-audit-decisions/service.ts:162`).
 
 ### 5.3 (c) Volumes e chaves no `stack.yml`
 
@@ -443,7 +531,9 @@ Com Q6 = 3, a única entrega é documental: o aceite formal e o texto da tela, q
 | `GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS` | lista **pública** de chaves com estado | `scoring/shared.ts:101` | variável comum (formato no runbook de chaves §4) |
 | `GMN_OPERATOR_EMAILS` | lista | `auth/guard.ts:25` | já existe (`stack.yml:24`) |
 | `GMN_LINK_AUDIT_LOG_KEY` | segredo | **não é lida pelo código** (busca vazia) | Swarm secret, depois da entrega de código (§5.3.4) |
-| credencial da guarda | segredo | não existe (GE-E2) | Swarm secret; nome conforme o provedor (Q1) |
+| `GMN_LINK_AUDIT_GUARD_DB_URL` | segredo: credencial de conexão do papel `gmn_guard_writer` (D-G0-1) | não existe (GE-E2) | Swarm secret, só no web |
+| `GMN_LINK_AUDIT_GUARD_KEY` | segredo: chave do pseudônimo `audit_ref` (D-G0-5), formato `<id>:<64 hex>` | não existe (GE-E1) | Swarm secret, só no web |
+| `GMN_LINK_AUDIT_GUARD_RETIRED_KEYS` | segredo (só na rotação da chave do pseudônimo, §5.1.7) | não existe | Swarm secret |
 
 Ficam fora do serviço web as variáveis do coletor (`GMN_LINK_AUDIT_LIVE`, `GMN_LINK_AUDIT_AUTH_ID`,
 `GMN_LINK_AUDIT_MAX_MAPS_CALLS`, lidas em `src/lib/link-audit-runtime/config.ts:16-36` e em `scripts/link-audit-collect.ts`).
@@ -494,8 +584,10 @@ São do CLI de coleta; onde ele roda em produção é **a confirmar**.
 - **Entrega de código (G1):** a fatia 1 da spec de observabilidade, no mínimo `operatorRef` com a chave e a recusa de
   chave igual às outras, mais o secret no `stack.yml` (VC-E2). As fatias 2 a 7 continuam com a spec de observabilidade e
   entram no portão como itens próprios (§10.1).
-- **Em aberto:** o destino dos logs fora da VPS (Q8). Até lá, os logs ficam no `json-file` rotativo da VPS, sem retenção
-  de 90 dias e sem cópia externa.
+- **Destino dos logs fora da VPS, decidido (D-G0-8):** sem ferramenta paga; exportação **diária e cifrada** do log do
+  contêiner para o **mesmo destino independente dos backups** (D-G0-9), com expurgo aos 90 dias. Isso fecha o "onde" da
+  Q3 da spec de observabilidade. A exportação é entrega da G1.a. Até ela existir, os logs ficam no `json-file` rotativo
+  da VPS, sem retenção de 90 dias e sem cópia externa.
 
 ### 5.4 (d) D5: coleta ampliada (consequência; não especificada aqui)
 
@@ -517,8 +609,9 @@ São do CLI de coleta; onde ele roda em produção é **a confirmar**.
 - **Mesmo com a D5:** sem custo de API (D5-0, parsers e site), o teto sobe a 27 %. Os 40 % exigem `/reviews`, de custo
   desconhecido e com decisão de LGPD pendente, ou o painel anexado pelo operador, que é upload de arquivos e nova
   superfície de segurança (`onda6c-integracao-orquestracao.md` §21.3, §21.6).
-- **Decisão do responsável (Q10):** autorizar o planejamento da D5, no documento próprio, ou registrar o aceite formal de
-  que a produção começa só com resultados INCONCLUSIVOS. A D5 continua **não autorizada**.
+- **Decisão do responsável (D-G0-10, 20/11/2026):** **aceite formal de que a produção começa só com resultados
+  INCONCLUSIVOS.** A D5 continua **não autorizada para implementação**. A D5-0 (sem custo de API) será avaliada à parte,
+  no documento próprio; a D5-1 (`/reviews`) só com custo e LGPD decididos.
 
 ## 6. Critérios de aceite (cada um vira ao menos um teste com o identificador no nome)
 
@@ -526,10 +619,14 @@ Os critérios de provedor (PG-G08, PG-G10, PG-G11) e os de implantação (PG-V02
 testes automatizados: chamar o Supabase, o GitHub ou um fornecedor de armazenamento é chamada externa real, que só
 acontece num laboratório autorizado pelo responsável ou pelo próprio responsável (`CLAUDE.md`, "Anti-patterns").
 
+**Depois da G0:** com a D-G0-1 (Supabase), só o **PG-G08** vale; o **PG-G10** e o **PG-G11** ficam **NÃO APLICÁVEIS** e
+são mantidos abaixo só como registro, para o caso de a decisão ser revista (ADR-0003). Com a D-G0-6 (opção 3), os
+**PG-A01 a PG-A04** também ficam **NÃO APLICÁVEIS**; a G1.c é só o aceite formal.
+
 **Guarda (G1.b):**
 
 - [ ] **PG-G01** Com a guarda configurada, `head: null` e livro com ≥ 2 registros ⇒ `HISTORY_UNRESOLVED` (`GUARD_HEAD_MISSING`); com 1 registro ⇒ aceito.
-- [ ] **PG-G02** Atraso > `L_max` ⇒ `HISTORY_UNRESOLVED` (`GUARD_LAGGING`); atraso ≤ `L_max` ⇒ `PROTECTED` com `externalGuard: BEHIND`. `L_max` é igual à contagem do protocolo, travada em teste.
+- [ ] **PG-G02** Atraso > `L_max` ⇒ `HISTORY_UNRESOLVED` (`GUARD_LAGGING`); atraso ≤ `L_max` ⇒ `PROTECTED` com `externalGuard: BEHIND`. `L_max` é igual à contagem do protocolo, travada em teste: **5** (§5.1.7), com um teste que enumera os fluxos legítimos e mostra que nenhum passa de 5 com a regra da rotação.
 - [ ] **PG-G03** Para **cada um dos nove pontos S1–S9** (§5.1.2), um teste faz a publicação falhar logo depois do registro gravado e confere o desfecho da regra 4 da §5.1.4: (i) a resposta nunca diz que nada foi gravado; (ii) a vista mostra `BEHIND` (S1, S6, S7, S8, S9, e S3–S5 quando a sessão termina num `RECOVER`), ou a publicação obrigatória seguinte recusa com `LEDGER_GUARD_UNAVAILABLE` (S2–S5 quando a sessão segue para uma operação nova); (iii) o evento de alarme é emitido; (iv) a operação nova seguinte recusa até conseguir publicar. São nove testes, cada um com `PG-G03` e o ponto (`S1`…`S9`) no nome, incluindo o `CHECKPOINT` (S6) e o `RECEIPT_REISSUED` (S7).
 - [ ] **PG-G04** Rollback coordenado de decisões, recibos e livro (e de resultados) com a guarda real atrás da porta ⇒ `GUARD_MISMATCH`. O teste "LIMITE DECLARADO" continua valendo para a configuração **sem** guarda.
 - [ ] **PG-G05** Contrato da publicação (regra 7 da §5.1.4), no adaptador e no provedor simulado, sem rede:
@@ -541,7 +638,7 @@ acontece num laboratório autorizado pelo responsável ou pelo próprio respons�
   - `STALE` coberto por uma cabeça maior que está no livro ⇒ sem alarme; `CONFLICT` ⇒ alarme.
 - [ ] **PG-G06** `latest` com erro, resposta fora do esquema ou prazo esgotado ⇒ `GUARD_UNAVAILABLE` (nunca "nenhuma cabeça").
 - [ ] **PG-G07** Sem credencial da guarda ⇒ `externalGuard: NOT_CONFIGURED`, e o verificador do portão (§10.1, G-1) acusa.
-- [ ] **PG-G08** (só se Q1 = opção 1, Supabase), com evidência registrada no laboratório e depois em produção:
+- [ ] **PG-G08** (aplicável: Q1 = opção 1, Supabase, D-G0-1), com evidência registrada no laboratório e depois em produção:
   - **`PUBLIC` pelo ACL:** `PUBLIC` é pseudopapel, então a conferência é no ACL e não por `has_*_privilege`. `proacl` da função de publicação (e das funções dos gatilhos), `relacl` da tabela e `nspacl` do esquema são **não nulos** (nulo é o padrão, que nas funções dá `EXECUTE` a `PUBLIC`), e nenhum item de `aclexplode(...)` tem grantee `0` (`PUBLIC`);
   - **papéis reais:** `has_table_privilege`, `has_schema_privilege` e `has_function_privilege` dão falso para `anon`, `authenticated` e `service_role` na tabela, no esquema e na função; o `gmn_guard_writer` só tem `USAGE` no esquema, `EXECUTE` na função e `SELECT` na tabela (`has_table_privilege` falso para `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`); a migração aborta se divergir;
   - **função `SECURITY DEFINER`:** em `pg_proc`, `proowner` = o dono dedicado (`gmn_guard_owner`), `prosecdef` = verdadeiro e `proconfig` contém `search_path=""`;
@@ -550,20 +647,20 @@ acontece num laboratório autorizado pelo responsável ou pelo próprio respons�
   - **Data API (REST):** requisições de leitura e de escrita à tabela e à função, com as chaves `anon`, `authenticated` (sessão de teste) e `service_role`, falham sem expor dados; e *Exposed schemas* não inclui o esquema da guarda, registrado com data. Hoje o estado de *Exposed schemas* não está verificado (`docs/phase5/g5-s0-relatorio-2026-11-07.md:82`);
   - no laboratório, com autorização; em produção, pelo responsável, só leitura, depois de aplicar a migração.
 - [ ] **PG-G09** A reconciliação acusa: cabeça da guarda ausente do backup; guarda que regrediu em relação ao registro anterior; backup à frente da guarda além de `L_max`. Saída `--json` estável; não escreve na guarda.
-- [ ] **PG-G10** (só se Q1 = opção 2, GitHub), com evidência registrada:
+- [ ] **PG-G10** — **NÃO APLICÁVEL (D-G0-1: a opção 2 não foi escolhida).** Texto mantido como registro. (Só se Q1 = opção 2, GitHub), com evidência registrada:
   - regra de proteção ativa na branch do repositório da guarda, sem push forçado e sem exclusão, com a lista de exceções vazia ou só com o dono, declarado;
   - token fine-grained restrito a esse repositório, só com `contents: write` (mais o `metadata: read` obrigatório), sem `administration`, com a expiração anotada;
   - com o token, um push forçado e a exclusão da branch são recusados;
   - a leitura reconstrói as cabeças pelo histórico de commits;
   - o plano pago (repositório privado) está autorizado, ou o repositório é público com `auditId` pseudonimizado (Q5).
-- [ ] **PG-G11** (só se Q1 = opção 3, Object Lock), com evidência registrada:
+- [ ] **PG-G11** — **NÃO APLICÁVEL (D-G0-1: a opção 3 só com custo autorizado; revisão futura no ADR-0003).** Texto mantido como registro. (Só se Q1 = opção 3, Object Lock), com evidência registrada:
   - bucket com versionamento e Object Lock em modo *compliance*, com retenção padrão decidida na G0;
   - a credencial da VPS só tem `PutObject` (nada de apagar objeto ou versão, contornar ou alterar retenção, nem mudar a política ou a configuração de Object Lock do bucket);
   - com essa credencial, apagar uma versão e encurtar a retenção falham;
   - a gravação não sobrescreve chave existente (escrita condicional) ou o leitor considera todas as versões;
   - o custo está autorizado.
 
-**Papel administrativo (G1.c, só se Q6 = 1 ou 2):**
+**Papel administrativo (G1.c, só se Q6 = 1 ou 2; NÃO APLICÁVEIS com a D-G0-6, mantidos como registro):**
 
 - [ ] **PG-A01** Uma identidade só, ou o solicitante como aprovador, ⇒ recusado e nada gravado.
 - [ ] **PG-A02** Sem fonte independente conferida ⇒ recusado.
@@ -601,21 +698,24 @@ normativo `docs/phase6-auditoria-link/onda6c-modelo-de-ameacas-recuperacao.md`),
 | Guarda (GE-E1–E8) | **T-L01 / L-T2** (rollback coordenado sem guarda; INDEX, risco nº 1; ação A-L1); recuperação §6.3 e §8b (linha "livro + decisões + recibos, com guarda externa"); spec do livro §13 **L1/L2** e R6-08/R6-10; checklist MINOR-2 (distinguir recibo removido de gravação interrompida, com o `head` fora) |
 | Papel administrativo (opção 1 ou 2) | **T-L02 / L-D2** (congelamento sem reabertura; INDEX, risco nº 2; ação A-L2); R6-13; L6 da spec do livro. Com a opção 3: **nada é fechado**, o risco é aceito formalmente |
 | Volumes e chaves (VC-E1–E8) | Falha fechada por configuração ausente (checklist §1–§2); R6-09 (`stop-first`); colocalização de dados e recibos (checklist l.55); hipótese de confiança "chaves só no ambiente" (recuperação §9) |
-| Chave de log (PG-L01) | **T-A01 / A-R1** e **D-R1** (rotas sem log; INDEX, risco nº 3) na parte de identificar o operador sem PII; T-D01 (revogação cruzada sem trilha fora das pastas) só quando o destino externo dos logs existir (Q8) |
+| Chave de log (PG-L01) | **T-A01 / A-R1** e **D-R1** (rotas sem log; INDEX, risco nº 3) na parte de identificar o operador sem PII; T-D01 (revogação cruzada sem trilha fora das pastas) só quando a exportação externa dos logs existir (D-G0-8) |
 
-**Ameaças novas trazidas por esta spec** (a superfície muda com a integração de um terceiro; o modelo STRIDE próprio é
-entrega da G0, em `docs/security/threats/link-audit-portoes-producao.md`):
+**Ameaças novas trazidas por esta spec** (a superfície muda com a integração de um terceiro). O modelo STRIDE próprio,
+entregue na G0, é `docs/security/threats/link-audit-portoes-producao.md`: ele lista cada item abaixo com status, mais as
+ameaças das decisões D-G0-x (configuração do Supabase, pseudônimo, falso `GUARD_LAGGING`, reconciliação, exportação de
+logs, backups e homologação).
 
 - **Credencial da guarda na VPS:** permite congelar auditorias publicando uma sequência falsa acima da real (DoS) e ler
-  cabeças. Mitigação: regra 7 da §5.1.4 (nunca esconde retrocesso), alarme de `CONFLICT` e Q5. Sem papel
-  administrativo, a auditoria congelada não reabre.
+  cabeças. Mitigação: regra 7 da §5.1.4 (nunca esconde retrocesso), alarme de `CONFLICT` e o pseudônimo da D-G0-5. Sem
+  papel administrativo (D-G0-6), a auditoria congelada não reabre.
 - **Web comprometido mente sobre o `latest`:** esconde um retrocesso das telas. Só a reconciliação externa detecta, e
   depois do fato (GE-E5).
 - **Dono ou administrador do provedor** (opções 1 e 2): altera ou remove a guarda. Risco declarado; só a opção 3
   oferece independência contra o dono da conta.
-- **Disponibilidade acoplada ao provedor da guarda** em toda leitura. Mitigação: prazo de resposta curto e falha fechada
-  declarada (Q3).
-- **Caminho administrativo:** é uma elevação de privilégio nova, se a opção for 1 ou 2. Mitigação: §5.2.4 e PG-A01–A04.
+- **Disponibilidade acoplada ao provedor da guarda** em toda leitura. Mitigação: prazo de resposta de 3 s e falha fechada
+  declarada (D-G0-3).
+- **Caminho administrativo:** seria uma elevação de privilégio nova com a opção 1 ou 2. Com a D-G0-6 (opção 3) não há
+  superfície nova; fica o congelamento sem reabertura, aceito para o piloto. Para o futuro: §5.2.4 e PG-A01–A04.
 - **Chave de log vazada:** com poucos e-mails, o pseudônimo é revertido por dicionário. Mitigação: chave exclusiva, acesso
   aos logs só do responsável e de quem opera o servidor (decisão de 16/11/2026).
 
@@ -630,8 +730,10 @@ Os eventos novos seguem o envelope e a proibição de PII da spec de observabili
 - atraso `BEHIND` acima de `T`;
 - tentativa de ação administrativa (com `operatorRef`, nunca o e-mail).
 
-Os alertas dependem do destino dos logs (Q8). Até ele existir, valem a vista do livro na tela, que já mostra
-`externalGuard`, e a reconciliação externa (GE-E5).
+Os alertas dependem do destino dos logs, decidido na D-G0-8 (exportação diária e cifrada para o destino dos backups).
+Até a exportação existir (G1.a), valem a vista do livro na tela, que já mostra `externalGuard`, e a reconciliação
+externa (GE-E5). A exportação diária não é canal de alerta em tempo real: o alarme de `T` = 15 min (D-G0-4) só chega a
+alguém de fora da VPS quando existir um canal de alertas (Q8 da spec de observabilidade, ainda aberta).
 
 ## 10. Portão de produção, piloto e rollout
 
@@ -650,11 +752,11 @@ consultas pagas, custo, aplicação de migração em produção, secrets reais).
 | P-5 | **Aceite formal de risco assinado** (D15.1) e **cerimônia da chave real** (D15.7) | P1 §13.4 | responsável |
 | P-6 | **W6**: uma coleta LIVE nova, atestada com a chave real. Autorizada (D16) para depois do ensaio da W5; o responsável executa a consulta paga | plano, onda W6; P1 D16 | responsável |
 | P-7 | Chave pública ativa na lista `GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS` e verificador `v2` implantado com `acceptedVersions: [2]` (`scoring/shared.ts:99-104`) | P1 §12; runbook de chaves §4 | responsável (configuração e deploy) |
-| G-1 | **Guarda operante**: provedor decidido (Q1); GE-E1–E7 na `main`; critério do provedor escolhido atendido com evidência (PG-G08, PG-G10 ou PG-G11); migração aplicada (opção 1); `externalGuard` = `CONSISTENT` em homologação; reconciliação rodando (Q2) | §5.1 | código + responsável (Q1, migração, credenciais) |
-| G-2 | **Papel administrativo**: implementado (Q6 = 1 ou 2, PG-A01–A04) **ou** aceite formal de manter o 403 (Q6 = 3) | §5.2 | responsável (decisão) + código, se 1 ou 2 |
-| G-3 | **Volumes e chaves**: VC-E1–E7 na `main` (PG-V01 a PG-V03); secrets criados; pastas no host com dono e modo conferidos e registrados (VC-E8, PG-V04); backups independentes configurados (Q9) | §5.3 | código + responsável (secrets, host, destinos) |
-| G-4 | **Chave de log** usada pelo código (PG-L01) e provisionada; destino dos logs decidido (Q8) ou aceite de que, por ora, ficam só na VPS | §5.3.4 | código + responsável |
-| G-5 | **D5**: autorizada no documento próprio **ou** aceite formal de que todo resultado sai INCONCLUSIVO, comunicado à equipe (checklist §0 e §9) | §5.4 | responsável |
+| G-1 | **Guarda operante**: provedor decidido (Supabase, D-G0-1); GE-E1–E7 na `main`; PG-G08 atendido com evidência; migração aplicada; `externalGuard` = `CONSISTENT` em homologação; reconciliação rodando (D-G0-2) | §5.1 | código + responsável (migração, credenciais) |
+| G-2 | **Papel administrativo**: decidido manter o 403 (D-G0-6, opção 3); falta o **aceite formal escrito** do risco. (Com a opção 1 ou 2 no futuro: implementado, PG-A01–A04) | §5.2 | responsável (aceite) |
+| G-3 | **Volumes e chaves**: VC-E1–E7 na `main` (PG-V01 a PG-V03); secrets criados; pastas no host com dono e modo conferidos e registrados (VC-E8, PG-V04); backups independentes configurados (D-G0-9: um destino por volume de recibos e um para o livro, cópia diária) | §5.3 | código + responsável (secrets, host, destinos) |
+| G-4 | **Chave de log** usada pelo código (PG-L01) e provisionada; destino dos logs decidido (D-G0-8) e exportação diária cifrada funcionando, ou aceite de que, por ora, ficam só na VPS | §5.3.4 | código + responsável |
+| G-5 | **D5**: aceite formal de que todo resultado sai INCONCLUSIVO (D-G0-10, 20/11/2026), **comunicado à equipe** (checklist §0 e §9). A D5 segue não autorizada | §5.4 | responsável (comunicação) |
 | G-6 | **Ensaio da G2 aprovado**: os 16 ensaios da §10.4 (EN-01, EN-02a a EN-02e, EN-03 a EN-12) e as atestações AT-G2-01 e AT-G2-02 com resultado e evidência no relatório, executados **depois** do ensaio da W5 (ou em ambiente totalmente isolado, §10.4) | §5.1.3 GE-E8; §10.4; checklist §10 itens 4–5 | código + responsável (homologação) |
 | P-8 | **Demais itens do checklist de produção**: autorização escrita da implantação (§0); os riscos P-1 a P-4 **do checklist** decididos (§12; não confundir com as linhas P-1 a P-4 desta tabela); ensaio de queda de energia (R6-07; risco P-4 do checklist); fatias de log da spec de observabilidade que o responsável exigir; revisão independente sem BLOCKER; plano de teste do §10 | `onda6c-checklist-producao.md` | código + responsável |
 | P-9 | **Deploy pelo CI**, por decisão do responsável, com verificação pós-deploy e o primeiro teste de escrita só numa auditoria sintética combinada (checklist §10 item 6) | `CLAUDE.md` (deploy só por CI) | responsável |
@@ -663,6 +765,10 @@ Numeração: **P-1 a P-9** são os portões do P1 e da implantação; **G-1 a G-
 O portão só abre com **todas** atendidas. A única exceção prevista é o piloto da §10.2, que é declarada e tem prazo.
 
 ### 10.2 (f) Piloto mínimo: exceção declarada, não encerramento
+
+> **Decidido (D-G0-11, 20/11/2026):** piloto aceito **em princípio**, depois da G2, limitado a **uma auditoria nova**,
+> com prazo de **30 dias**. O aceite escrito específico da condição 4 abaixo é dado pelo responsável **na hora, antes do
+> deploy**; sem ele o piloto não começa.
 
 Um piloto pode rodar **antes** de G-2 e G-5 estarem resolvidos no sentido forte (papel administrativo implementado e D5).
 São as **duas únicas dispensas**, e as duas são declaradas: as ações administrativas ficam em 403, com o congelamento
@@ -674,11 +780,11 @@ aceito, e todo resultado sai INCONCLUSIVO, sem nota. Todo o resto do portão con
 | P-8 (demais itens do checklist de produção) | **Obrigatória** |
 | P-9 (deploy pelo CI, por decisão do responsável) | **Obrigatória** |
 | G-1 (guarda operante) | **Obrigatória** |
-| G-2 (papel administrativo) | **Dispensável**, com o aceite formal de manter o 403 (Q6 = 3) e o congelamento sem recuperação pela aplicação |
+| G-2 (papel administrativo) | **Dispensável**, com o aceite formal de manter o 403 (Q6 = 3, D-G0-6) e o congelamento sem recuperação pela aplicação |
 | G-3 (volumes e chaves) | **Obrigatória** |
 | G-4 (chave de log) | **Obrigatória**: a própria linha já admite o aceite de logs só na VPS |
 | G-5 (D5) | **Dispensável**, com o aceite formal de que todo resultado sai INCONCLUSIVO |
-| G-6 (ensaio integrado da G2) | **Obrigatória**: o piloto só começa depois da G2 aprovada (Q11) |
+| G-6 (ensaio integrado da G2) | **Obrigatória**: o piloto só começa depois da G2 aprovada (D-G0-11) |
 
 Além da tabela, **todas** as condições abaixo valem e ficam escritas:
 
@@ -686,7 +792,7 @@ Além da tabela, **todas** as condições abaixo valem e ficam escritas:
    auditoria-alvo da W6. A coleta da W6 entra numa auditoria nova.
 2. **Guarda, volumes e chaves operantes e ensaiados:** G-1, G-3, G-4 e G-6 atendidos, e `externalGuard` = `CONSISTENT`
    na tela antes da primeira decisão.
-3. **Ações administrativas continuam em 403** (Q6 = 3 durante o piloto).
+3. **Ações administrativas continuam em 403** (Q6 = 3 durante o piloto, D-G0-6).
 4. **Aceite formal e escrito do responsável** cobrindo:
    - o congelamento sem recuperação pela aplicação: auditoria congelada é abandonada, a evidência é preservada e se abre
      uma nova;
@@ -754,12 +860,48 @@ vazia.
 | EN-08 | Reconciliação contra um backup atrasado e contra uma guarda à frente do backup | Divergência acusada nos dois casos, com código de saída ≠ 0 |
 | EN-09 | Volume de recibos só leitura (força `ANCHOR_PENDING`) e depois a recuperação | Pendência visível; o autor conclui; nada é perdido |
 | EN-10 | Disco cheio (`ENOSPC`) num volume gravável | Escrita recusada, sem sucesso falso; alarme |
-| EN-11 | `ADOPT`, `RESTORE_ACK` e `QUARANTINE_ACK` | Conforme a Q6: opção 3 ⇒ 403 `ADMIN_APPROVAL_UNAVAILABLE`; opção 1 ⇒ o fluxo decidido, com PG-A01 a PG-A03; opção 2 ⇒ o fluxo decidido, com PG-A01 a PG-A04 |
+| EN-11 | `ADOPT`, `RESTORE_ACK` e `QUARANTINE_ACK` | Com a D-G0-6 (opção 3): 403 `ADMIN_APPROVAL_UNAVAILABLE`, nada gravado. (Se a Q6 for revista: opção 1 ⇒ o fluxo decidido, com PG-A01 a PG-A03; opção 2 ⇒ com PG-A01 a PG-A04) |
 | EN-12 | Conferência das pastas no host (dono `10001:10001`, modo `0700`, por `stat`) e do Worker sem montagem nova | Saída do `stat` e de `docker service inspect` anexadas (VC-E8, PG-V04) |
 
-## 11. Questões abertas para o responsável
+## 11. Decisões da onda G0 (20/11/2026)
 
-Cada questão traz a recomendação do manager. Nenhuma está decidida.
+**Registro.** Em 20/11/2026 o manager propôs ao responsável seguir as doze recomendações desta seção (texto original na
+§11.2). Resposta do responsável: **"tudo aprovado"**. A recomendação da Q5 deixava dois caminhos (em claro, se a Q4 da
+spec de observabilidade confirmasse que o `auditId` não deriva do nome da empresa nem do link, ou HMAC com chave
+própria). Como aquela Q4 continua aberta, a escolha entre os dois foi do **manager**, pelo lado fechado: HMAC. A coluna
+"Quem" diz quem decidiu cada item.
+
+| ID | Questão | Decisão | Quem | Onde vale |
+|---|---|---|---|---|
+| D-G0-1 | Q1 Provedor da guarda | Opção **(1) Supabase**, com o desenho da §5.1.6, para o risco "VPS comprometida" (e restauração errada de backup). **Limite declarado:** não protege contra o dono ou administrador do projeto Supabase. Object Lock (opção 3) só com custo autorizado pelo responsável: é a revisão futura do ADR-0003. Critério do provedor: PG-G08; PG-G10 e PG-G11 não se aplicam | Responsável | §5.1.6; ADR-0003; G1.b |
+| D-G0-2 | Q2 Reconciliação | O **responsável** reconcilia, com credencial **só de leitura fora da VPS** (`gmn_guard_reader`): **toda semana**, **depois de cada backup do livro** e **obrigatoriamente antes de qualquer restauração** | Responsável | GE-E5; GE-E7 |
+| D-G0-3 | Q3 Indisponibilidade | **Falha fechada também na leitura** (o comportamento de hoje, `src/lib/link-audit-ledger/model.ts:495` em `3899a67`). Prazo de resposta de **3 s** por chamada à guarda, a confirmar na G1 pela latência medida. **Nada de modo degradado** | Responsável | §5.1.4 regra 5; §5.1.7 |
+| D-G0-4 | Q4 Atraso máximo | `L_max` = a contagem do protocolo, travada em teste. Alarme se `BEHIND` durar mais de **`T` = 15 min**. A contagem do manager dá **`L_max` = 5** (§5.1.7), a travar na G1.b (PG-G02) | Responsável (regra); manager (contagem) | §5.1.4 regra 3; §5.1.7 |
+| D-G0-5 | Q5 `auditId` na guarda | **Pseudonimizado por HMAC-SHA-256** com chave própria da guarda, **`GMN_LINK_AUDIT_GUARD_KEY`** (formato `<id>:<64 hex>`, distinta das chaves de origem, do livro e de log). Motivo: o "em claro" ficaria condicionado à Q4 da observabilidade, ainda aberta; o `auditId` nasce do id da autorização escrito pelo responsável (`src/lib/link-audit-runtime/run.ts:181`) e, no único caso real registrado no `NOTES.md`, começa pelo nome da empresa. Rotação: §5.1.7 | Manager (lado fechado), dentro da recomendação aprovada | §5.1.4 regra 8; §5.1.7; §5.3.1 |
+| D-G0-6 | Q6 Papel administrativo | Opção **(3), manter o 403 no piloto**, com o aceite formal escrito (§10.2, condição 4). Opção (1) quando houver segunda pessoa, com a emenda "quatro olhos" decidida junto. Opção (2) só sob necessidade real, com chave administrativa própria (não a K1) e canal de aviso fora da VPS | Responsável | §5.2; G1.c (só o aceite); G-2 |
+| D-G0-7 | Q7 Espera e canal da opção (2) | **Não se aplica**, porque a D-G0-6 é a opção (3). Recomendação registrada para o futuro: espera de 72 h e aviso pelo destino externo dos logs e alertas (D-G0-8 e um canal de alerta); sem esse canal funcionando, a opção (2) não é adotada | Responsável | §5.2.4 |
+| D-G0-8 | Q8 Logs fora da VPS | **Sem ferramenta paga.** Exportação **diária e cifrada** do log do contêiner para o **mesmo destino independente dos backups**, com **expurgo aos 90 dias**. Fecha o "onde" da Q3 da spec de observabilidade | Responsável | §5.3.4; G1.a; G-4 |
+| D-G0-9 | Q9 Backups dos recibos e do livro | **Um destino independente para cada volume de recibos e para o livro**, fora do disco dos dados; **cópia diária**; **ensaio de restauração na G2 e a cada trimestre** | Responsável | VC-E6; G1.a; G2; G-3 |
+| D-G0-10 | Q10 D5 | **Aceite formal de que a produção começa só com resultados INCONCLUSIVOS.** A D5 **não** fica autorizada para implementação: a D5-0 (sem custo de API) será avaliada à parte, no documento próprio, e a D5-1 (`/reviews`) só com custo e LGPD decididos | Responsável | §5.4; G-5 |
+| D-G0-11 | Q11 Piloto mínimo | Aceito **em princípio**, depois da G2, limitado a **uma auditoria nova**, com prazo de **30 dias**. O aceite escrito específico do responsável é dado **na hora, antes do deploy** | Responsável | §10.2; G3 |
+| D-G0-12 | Q12 Homologação | **Uma pilha isolada**, sem dados reais e sem Serper, com **laboratório Supabase descartável**, usada **em sequência**: primeiro a W5, depois a G2, com auditorias novas (§10.4). Criar a pilha e o laboratório continua ação do responsável. O custo (plano do Supabase, recursos da pilha) **não foi confirmado**: se houver qualquer custo novo, ele depende de aprovação própria do responsável antes da criação | Responsável | §10.4; W5; G2 |
+
+### 11.1 O que continua aberto depois da G0
+
+- **Números a confirmar na G1.b:** o prazo de 3 s (pela latência medida no laboratório) e `L_max` = 5 (travado em teste
+  que enumera os fluxos do protocolo). Se a medida ou o teste pedirem outro valor, a G1.b registra o número novo e o
+  motivo na §5.1.7, sem mudar a regra decidida.
+- **A confirmar no laboratório (G1.b, PG-G08):** *Exposed schemas* do projeto (`docs/phase5/g5-s0-relatorio-2026-11-07.md:82`),
+  privilégios padrão num esquema novo, pausa por inatividade do plano e se a conexão direta exige IPv4 pago (§5.1.6).
+- **Aceites escritos do responsável:** o do piloto (D-G0-11, condição 4 da §10.2), que cobre também o 403 (D-G0-6) e o
+  INCONCLUSIVO (D-G0-10); e a comunicação à equipe de que todo resultado sai INCONCLUSIVO (G-5).
+- **Spec de observabilidade:** a Q4 (`auditId` derivado do nome da empresa) segue aberta, mas não bloqueia a guarda (D-G0-5);
+  a Q8 (quem recebe os alertas e por qual canal) segue aberta e limita o alarme de `T` (§9).
+- **D5-0:** avaliação à parte, no documento próprio (`onda6c-integracao-orquestracao.md` §21). Nada autorizado.
+
+### 11.2 Texto original das questões (proposta de 20/11/2026, antes da G0)
+
+Cada questão trazia a recomendação do manager. O texto abaixo é o que foi aprovado; as decisões valem pela tabela acima.
 
 1. **Provedor da guarda.** Recomendação: **opção (1) Supabase**, com o desenho da §5.1.6, para o risco "VPS
    comprometida". Ela não protege contra o dono ou administrador do projeto Supabase. Se essa independência também for
@@ -805,6 +947,7 @@ Cada questão traz a recomendação do manager. Nenhuma está decidida.
 - Runbook de chaves: `docs/phase6-auditoria-link/onda6c-runbook-chaves.md` (§1, §4, §7).
 - Implantação: `deploy/hostinger/stack.yml`, `docker-entrypoint.sh`, `Dockerfile`, `PROVA-DE-ORIGEM-E-DE-COLETA.md`,
   `PLANO-DE-BACKUP-E-RESTAURACAO.md`.
-- Ameaças: `docs/security/threats/INDEX.md`, `link-audit-ledger-e-resultados.md`, `link-audit-decisoes-e-recibos.md`,
-  `link-audit-api-e-interface.md`; `docs/phase6-auditoria-link/onda6c-modelo-de-ameacas-recuperacao.md`.
-- ADR a escrever na G0: escolha do provedor da guarda (`docs/adr/0003-…`).
+- Ameaças: `docs/security/threats/INDEX.md`, `link-audit-portoes-producao.md` (G0), `link-audit-ledger-e-resultados.md`,
+  `link-audit-decisoes-e-recibos.md`, `link-audit-api-e-interface.md`;
+  `docs/phase6-auditoria-link/onda6c-modelo-de-ameacas-recuperacao.md`.
+- ADR-0003, provedor da guarda (G0): `docs/adr/0003-supabase-external-ledger-guard.md`.
