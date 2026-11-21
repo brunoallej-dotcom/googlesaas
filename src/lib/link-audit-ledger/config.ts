@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { keyMaterialOf, keyringConfigFromEnv, ORIGIN_KEY_ENV, ORIGIN_RETIRED_KEYS_ENV, type OriginAuthenticator } from '../link-audit-origin';
 
@@ -15,8 +16,8 @@ export type LedgerConfig =
   | { readonly ok: true; readonly dir: string; readonly authenticator: OriginAuthenticator }
   | { readonly ok: false; readonly code: 'LEDGER_DIR_NOT_CONFIGURED' | 'LEDGER_KEY_NOT_CONFIGURED' | 'LEDGER_KEY_WEAK' | 'LEDGER_CONFIG_INVALID' };
 
-/** Par id/material de uma chave HMAC da Fase 6 (só para conferir que famílias de chave NÃO se repetem; nunca vai para log, resposta ou arquivo). */
-export interface KeyMaterial {
+/** Par id/material de uma chave HMAC da Fase 6, só INTERNO a este arquivo (conferir que famílias de chave não se repetem); nunca sai daqui. */
+interface KeyMaterial {
   readonly id: string;
   readonly hex: string;
 }
@@ -33,12 +34,31 @@ const originMaterials = (env: Readonly<Record<string, string | undefined>>): Key
 const ledgerMaterials = (env: Readonly<Record<string, string | undefined>>): KeyMaterial[] => [...specs(env[LEDGER_KEY_ENV], false), ...specs(env[LEDGER_RETIRED_KEYS_ENV], true)];
 
 /**
- * Pares id/material das chaves SECRETAS de origem e do livro (atuais e aposentadas) presentes no ambiente informado: a lista que a chave de LOG
- * (observabilidade, PG-L01) recebe para recusar reúso de id ou material, sem que o módulo de observabilidade cite os nomes destas variáveis nem
- * importe o de origem. Pura (o ambiente vem por parâmetro, sem padrão); entradas malformadas ficam de fora (o módulo dono já as recusa).
- * Ponto de composição futuro: `operatorRefSourceFromEnv(phase6SecretKeyMaterials(env), env)`.
+ * Rótulo de separação de domínio das impressões digitais de chave (G1.a, PG-L01). DUPLICADO de propósito em
+ * `link-audit-observability/operator-ref.ts` (nenhum dos dois módulos importa o outro); `tests/link-audit-ledger-key-fingerprints.test.ts`
+ * trava a igualdade. Mudar aqui exige mudar lá.
  */
-export const phase6SecretKeyMaterials = (env: Readonly<Record<string, string | undefined>>): readonly KeyMaterial[] => [...originMaterials(env), ...ledgerMaterials(env)];
+export const KEY_FINGERPRINT_LABEL = 'gmn.link-audit.key-fingerprint.v1';
+
+/** Impressões digitais de mão única: ids PÚBLICOS e SHA-256 (com o rótulo acima) do material. Nunca o material. */
+export interface KeyFingerprints {
+  readonly ids: readonly string[];
+  readonly materialDigests: readonly string[];
+}
+
+const fingerprintOf = (hex: string): string => createHash('sha256').update(`${KEY_FINGERPRINT_LABEL}\n`).update(Buffer.from(hex, 'hex')).digest('hex');
+
+/**
+ * Impressões digitais das chaves SECRETAS de origem e do livro (atuais e aposentadas) presentes no ambiente informado: o que a chave de LOG
+ * (observabilidade, PG-L01) recebe para recusar reúso de id ou de material, sem que o módulo de observabilidade cite os nomes destas variáveis,
+ * importe o de origem ou veja material de outra chave. Pura (o ambiente vem por parâmetro, sem padrão); entradas malformadas ficam de fora (o
+ * módulo dono já as recusa). Fora do barrel público do livro: o ponto de composição futuro importa direto deste arquivo e chama
+ * `operatorRefSourceFromEnv(phase6KeyFingerprints(env), env)`.
+ */
+export const phase6KeyFingerprints = (env: Readonly<Record<string, string | undefined>>): KeyFingerprints => {
+  const keys = [...originMaterials(env), ...ledgerMaterials(env)];
+  return { ids: keys.map((key) => key.id), materialDigests: keys.map((key) => fingerprintOf(key.hex)) };
+};
 
 /** Lê do AMBIENTE DO PROCESSO (as rotas não recebem nem repassam o ambiente inteiro: só este módulo o lê, como o de origem). */
 export const ledgerConfigFromProcess = (now?: () => Date): LedgerConfig => ledgerConfigFromEnv(process.env, now);

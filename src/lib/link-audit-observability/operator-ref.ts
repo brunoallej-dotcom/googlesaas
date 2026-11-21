@@ -1,4 +1,4 @@
-import { createHmac, hkdfSync } from 'node:crypto';
+import { createHash, createHmac, hkdfSync } from 'node:crypto';
 import { z } from 'zod';
 
 /*
@@ -11,11 +11,12 @@ import { z } from 'zod';
  * próprios (`gmn.link-audit.log.*`): o material nunca é usado direto. Entregue por Swarm secret (`*_FILE`, lista fixa do entrypoint).
  *
  * FALHA FECHADA PARA PII (aberta para o log): sem chave, com chave fraca ou malformada, ou com chave que repete o id ou o material de uma
- * chave de origem ou do livro (atual ou aposentada), o valor é `UNAVAILABLE`. A lista dessas outras chaves chega por PARÂMETRO OBRIGATÓRIO,
- * sem padrão (este módulo não cita os nomes das variáveis delas nem importa outro módulo da Fase 6): quem compõe é o livro, com
- * `phase6SecretKeyMaterials(env)` de `link-audit-ledger/config.ts`. Lista ausente ou inválida ⇒ `LOG_KEY_UNVERIFIED` (nunca `READY`).
- * Ponto de composição futuro (com o `emit` das próximas fatias; nada liga isto a rota ou logger nesta fatia):
- * `operatorRefSourceFromEnv(phase6SecretKeyMaterials(env), env)`. Nunca se cai para hash sem chave (poucos e-mails: um
+ * chave de origem ou do livro (atual ou aposentada), o valor é `UNAVAILABLE`. Essas outras chaves chegam por PARÂMETRO OBRIGATÓRIO, sem
+ * padrão, e só como IMPRESSÕES DIGITAIS de mão única (ids públicos e SHA-256 do material com o rótulo `KEY_FINGERPRINT_LABEL`), nunca o
+ * material: este módulo não cita os nomes das variáveis delas nem importa outro módulo da Fase 6. Quem compõe é o livro, com
+ * `phase6KeyFingerprints(env)` de `link-audit-ledger/config.ts` (import direto, fora do barrel). Lista ausente ou inválida ⇒
+ * `LOG_KEY_UNVERIFIED` (nunca `READY`). Ponto de composição futuro (com o `emit` das próximas fatias; nada liga isto a rota ou logger
+ * nesta fatia): `operatorRefSourceFromEnv(phase6KeyFingerprints(env), env)`. Nunca se cai para hash sem chave (poucos e-mails: um
  * dicionário o reverteria) nem para o e-mail. Uma identidade que não parece e-mail também vira `UNAVAILABLE`.
  *
  * LIMITE DECLARADO: HMAC é pseudonimização, não anonimização (LGPD): quem tem a chave e a lista de operadores recalcula o pseudônimo.
@@ -23,6 +24,11 @@ import { z } from 'zod';
  * (só como padrão do parâmetro), não escreve nada e nunca expõe o material da chave.
  */
 export const LOG_KEY_ENV = 'GMN_LINK_AUDIT_LOG_KEY';
+/**
+ * Rótulo de separação de domínio das impressões digitais de chave. DUPLICADO de propósito em `link-audit-ledger/config.ts` (nenhum módulo
+ * importa o outro); `tests/link-audit-ledger-key-fingerprints.test.ts` trava a igualdade. Mudar aqui exige mudar lá.
+ */
+export const KEY_FINGERPRINT_LABEL = 'gmn.link-audit.key-fingerprint.v1';
 export const OPERATOR_REF_UNAVAILABLE = 'UNAVAILABLE';
 /** Tamanho do pseudônimo: 12 hex (48 bits) bastam para poucos operadores e não carregam o HMAC inteiro para o log. */
 export const OPERATOR_REF_HEX_CHARS = 12;
@@ -39,10 +45,10 @@ const LOG_KEY_PATTERN = /^([a-z0-9][a-z0-9-]{3,31}):([0-9a-f]{64})$/;
 
 export type LogKeyStatus = 'READY' | 'LOG_KEY_NOT_CONFIGURED' | 'LOG_KEY_WEAK' | 'LOG_KEY_REUSED' | 'LOG_KEY_UNVERIFIED';
 
-/** Id e material de uma chave de OUTRA finalidade (origem, livro), que a de log não pode repetir. */
-export interface OtherKeyMaterial {
-  readonly id: string;
-  readonly hex: string;
+/** Impressões digitais das chaves de OUTRA finalidade (origem, livro), que a de log não pode repetir: ids públicos e digests, nunca material. */
+export interface OtherKeyFingerprints {
+  readonly ids: readonly string[];
+  readonly materialDigests: readonly string[];
 }
 export type OperatorRef = typeof OPERATOR_REF_UNAVAILABLE | `${string}:${string}`;
 
@@ -87,8 +93,13 @@ const emailSchema = z
   .toLowerCase()
   .regex(/^[^\s@\p{Cc}]+@[^\s@\p{Cc}]+$/u);
 
-/** Lista das outras chaves, normalizada só para comparar (id sem espaço; material sem espaço e em minúsculas). */
-const otherKeysSchema = z.array(z.object({ id: z.string().trim().min(1), hex: z.string().trim().toLowerCase().min(1) }));
+/** Formato estrito da lista recebida: ids no padrão das chaves, digests de 64 hex minúsculos, nenhum campo a mais (material, por exemplo). */
+const otherKeysSchema = z.strictObject({
+  ids: z.array(z.string().regex(/^[a-z0-9][a-z0-9-]{3,31}$/)),
+  materialDigests: z.array(z.string().regex(/^[0-9a-f]{64}$/)),
+});
+
+const fingerprintOf = (hex: string): string => createHash('sha256').update(`${KEY_FINGERPRINT_LABEL}\n`).update(Buffer.from(hex, 'hex')).digest('hex');
 
 const unavailable = (status: Exclude<LogKeyStatus, 'READY'>): OperatorRefSource => ({ status, keyId: null, operatorRef: () => OPERATOR_REF_UNAVAILABLE });
 
@@ -96,7 +107,7 @@ const unavailable = (status: Exclude<LogKeyStatus, 'READY'>): OperatorRefSource 
  * Lê a chave de log do ambiente do SERVIDOR (injetável nos testes) e a compara com `otherKeys` (obrigatório, sem padrão: uma lista vazia
  * explícita é aceita; ausente ou inválida falha fechada). O material fica só no fecho da função, nunca no objeto devolvido.
  */
-export function operatorRefSourceFromEnv(otherKeys: ReadonlyArray<OtherKeyMaterial>, env: Readonly<Record<string, string | undefined>> = process.env): OperatorRefSource {
+export function operatorRefSourceFromEnv(otherKeys: OtherKeyFingerprints, env: Readonly<Record<string, string | undefined>> = process.env): OperatorRefSource {
   const others = otherKeysSchema.safeParse(otherKeys);
   if (!others.success) return unavailable('LOG_KEY_UNVERIFIED');
   const raw = env[LOG_KEY_ENV];
@@ -104,7 +115,7 @@ export function operatorRefSourceFromEnv(otherKeys: ReadonlyArray<OtherKeyMateri
   const parsed = logKeySchema.safeParse(raw);
   if (!parsed.success) return unavailable('LOG_KEY_WEAK');
   const { keyId, hex } = parsed.data;
-  if (others.data.some((other) => other.id === keyId || other.hex === hex)) return unavailable('LOG_KEY_REUSED');
+  if (others.data.ids.includes(keyId) || others.data.materialDigests.includes(fingerprintOf(hex))) return unavailable('LOG_KEY_REUSED');
   const derived = Buffer.from(hkdfSync('sha256', Buffer.from(hex, 'hex'), HKDF_SALT, HKDF_INFO, KEY_BYTES));
   return {
     status: 'READY',

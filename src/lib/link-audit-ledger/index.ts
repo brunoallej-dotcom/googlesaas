@@ -1,6 +1,6 @@
 export { createLedgerService, createUnconfiguredLedger, type LedgerServiceOptions } from './service';
 export { createSyntheticGuard, type ExternalGuardPort } from './guard';
-export { ledgerConfigFromEnv, ledgerConfigFromProcess, phase6SecretKeyMaterials, LEDGER_DIR_ENV, LEDGER_KEY_ENV, LEDGER_RETIRED_KEYS_ENV, LEDGER_REVOKED_IDS_ENV, type KeyMaterial, type LedgerConfig } from './config';
+export { ledgerConfigFromEnv, ledgerConfigFromProcess, LEDGER_DIR_ENV, LEDGER_KEY_ENV, LEDGER_RETIRED_KEYS_ENV, LEDGER_REVOKED_IDS_ENV, type LedgerConfig } from './config';
 export { evaluateProtection, keyCoverageOf, keyEpochViolation, ledgerCapacity, needsCheckpoint, operationCost, pendingClosings, replayLedger, resultsGrew, rotationCheckpointDue, runIntentFits, runsAvailableOf, simulateOperations, verifyTags } from './model';
 export type { AbortedRun, ConfirmedRun, Evaluation, GuardEvidence, LedgerReadState, LedgerReplay, ProtectionInput, RecoveryPlan, RunPlan, TagFailure } from './model';
 export { createOpenObservations, MAX_OBSERVATIONS, monotonicNow, PROCESS_OBSERVATIONS, type OpenObservations } from './observed';
