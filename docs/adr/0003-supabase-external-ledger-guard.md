@@ -94,7 +94,8 @@ decisão **não** protege contra eles.
 ### Neutral / follow-ups
 
 - **Implementação:** onda G1.b (adaptador, contrato R6-10, ligação nas rotas, migração proposta, reconciliação e runbook),
-  com os números da spec §5.1.7 (`L_max` = 5, `T` = 15 min, 3 s). Segredos no `stack.yml`: onda G1.a.
+  com os números da spec §5.1.7 (`L_max` = 5, `T` = 15 min, 3 s). Os segredos da guarda no `stack.yml` e no entrypoint
+  também entram na G1.b (a G1.a declara só o que o código já lê).
 - **Ensaio:** onda G2, em homologação isolada com laboratório Supabase descartável (D-G0-12).
 - **Revisão futura: Object Lock (opção 3).** Reabrir esta decisão, com custo autorizado pelo responsável, quando
   qualquer um destes ocorrer:

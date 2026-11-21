@@ -427,6 +427,8 @@ Motivos:
   - o critério do provedor escolhido, com evidência anexada ao PR: **PG-G08** (opção 1, laboratório Supabase descartável,
     incluindo a prova de que a tabela não responde pela Data API com `anon`, `authenticated` e `service_role`),
     PG-G10 e PG-G11 não se aplicam (D-G0-1). Nada disso roda em produção pela onda;
+  - recusa no código do `RECOVER` de rotação com `externalGuard` ≠ `CONSISTENT`, com teste explícito do caso `BEHIND` e a
+    mutação que remove a recusa morta (spec §5.1.7, revisão do PR #53);
   - `L_max` = 5 travado por um teste que enumera os fluxos legítimos (PG-G02, spec §5.1.7); prazo de 3 s confirmado pela
     latência medida no laboratório, ou o número novo registrado na spec §5.1.7 com o motivo;
   - 100 % das mutações dos pontos novos do modelo mortas (equivalentes justificadas);
