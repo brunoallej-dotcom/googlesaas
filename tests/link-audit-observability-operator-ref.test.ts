@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHmac, hkdfSync } from 'node:crypto';
+import { createHash, createHmac, hkdfSync } from 'node:crypto';
 import test from 'node:test';
 import { inspect } from 'node:util';
 import {
@@ -8,7 +8,7 @@ import {
   OPERATOR_REF_UNAVAILABLE,
   operatorRefSourceFromEnv,
 } from '../src/lib/link-audit-observability';
-import { phase6SecretKeyMaterials } from '../src/lib/link-audit-ledger';
+import { phase6KeyFingerprints } from '../src/lib/link-audit-ledger/config';
 import { testKeyMaterial, testKeySpec } from './helpers/link-audit-origin-fixtures';
 
 /*
@@ -27,8 +27,10 @@ const REF_PATTERN = /^[a-z0-9][a-z0-9-]{3,31}:[0-9a-f]{12}$/;
 
 type Env = Record<string, string | undefined>;
 const withLogKey = (logKey: string | undefined, extra: Env = {}): Env => ({ [LOG_KEY_ENV]: logKey, GMN_LINK_AUDIT_ORIGIN_KEY: ORIGIN_KEY, GMN_LINK_AUDIT_LEDGER_KEY: LEDGER_KEY, ...extra });
-/** Composição prevista (spec dos portões §5.3.4): o livro monta a lista das outras chaves; o módulo de observabilidade só compara. */
-const sourceOf = (env: Env) => operatorRefSourceFromEnv(phase6SecretKeyMaterials(env), env);
+/** Composição prevista (spec dos portões §5.3.4): o livro entrega as impressões digitais das outras chaves; a observabilidade só compara. */
+const sourceOf = (env: Env) => operatorRefSourceFromEnv(phase6KeyFingerprints(env), env);
+/** Impressão digital de mão única do material (mesma regra dos dois módulos), calculada aqui de forma independente. */
+const digestOf = (label: string): string => createHash('sha256').update('gmn.link-audit.key-fingerprint.v1\n').update(Buffer.from(testKeyMaterial(label), 'hex')).digest('hex');
 const refOf = (env: Env, email: unknown = EMAIL): string => sourceOf(env).operatorRef(email);
 
 /** Material de 32 bytes montado por função (sem literal hexadecimal no arquivo). */
@@ -153,30 +155,40 @@ test('PG-L01 identidade inválida (não texto, vazia, gigante, sem @, com contro
 
 test('PG-L01 sem a lista das outras chaves não há READY: ausente ou inválida ⇒ LOG_KEY_UNVERIFIED e UNAVAILABLE', () => {
   const env = withLogKey(LOG_KEY_A);
-  const invalid: readonly unknown[] = [undefined, null, 'lista', {}, [{ id: '' , hex: 'aa' }], [{ id: 'ok-test-a' }], [{ id: 'ok-test-a', hex: 42 }]];
-  for (const list of invalid) {
+  const digest = digestOf('origin-a');
+  const invalid: Readonly<Record<string, unknown>> = {
+    ausente: undefined,
+    nula: null,
+    texto: 'lista',
+    'array (formato antigo)': [{ id: 'ok-test-a', hex: testKeyMaterial('origin-a') }],
+    'sem digests': { ids: ['ok-test-a'] },
+    'sem ids': { materialDigests: [digest] },
+    'id fora do padrão': { ids: ['OK test'], materialDigests: [] },
+    'digest em maiúsculas': { ids: [], materialDigests: [digest.toUpperCase()] },
+    'digest curto': { ids: [], materialDigests: [digest.slice(1)] },
+    'digest com espaço': { ids: [], materialDigests: [` ${digest}`] },
+    'campo extra com material': { ids: [], materialDigests: [], hex: [testKeyMaterial('origin-a')] },
+  };
+  for (const [label, list] of Object.entries(invalid)) {
     const source = operatorRefSourceFromEnv(list as never, env);
-    assert.equal(source.status, 'LOG_KEY_UNVERIFIED', `lista: ${JSON.stringify(list)}`);
-    assert.equal(source.keyId, null);
-    assert.equal(source.operatorRef(EMAIL), OPERATOR_REF_UNAVAILABLE);
+    assert.equal(source.status, 'LOG_KEY_UNVERIFIED', label);
+    assert.equal(source.keyId, null, label);
+    assert.equal(source.operatorRef(EMAIL), OPERATOR_REF_UNAVAILABLE, label);
   }
-  assert.equal(operatorRefSourceFromEnv([], env).status, 'READY', 'lista vazia EXPLÍCITA: nenhuma outra chave configurada');
+  assert.equal(operatorRefSourceFromEnv({ ids: [], materialDigests: [] }, env).status, 'READY', 'listas vazias EXPLÍCITAS: nenhuma outra chave configurada');
 });
 
-test('PG-L01 reúso pela lista injetada: id igual, material igual, maiúsculas e espaços ⇒ recusada; a lista é de fato consultada', () => {
+test('PG-L01 reúso pelas impressões digitais injetadas: id igual OU digest igual ⇒ recusada; as duas listas são consultadas', () => {
   const env = { [LOG_KEY_ENV]: LOG_KEY_A };
-  const material = testKeyMaterial('log-a');
-  const reused: Readonly<Record<string, ReadonlyArray<{ id: string; hex: string }>>> = {
-    'mesmo id': [{ id: 'lg-test-a', hex: testKeyMaterial('outra') }],
-    'mesmo material': [{ id: 'ok-test-z', hex: material }],
-    'material em maiúsculas': [{ id: 'ok-test-z', hex: material.toUpperCase() }],
-    'id e material com espaços': [{ id: ' lg-test-a ', hex: testKeyMaterial('outra') }, { id: 'lk-test-z', hex: ` ${material}\n` }],
-    'aposentada no meio da lista': [{ id: 'ok-test-a', hex: testKeyMaterial('origin-a') }, { id: 'ok-old-c', hex: material }],
+  const reused: Readonly<Record<string, { ids: string[]; materialDigests: string[] }>> = {
+    'mesmo id': { ids: ['lg-test-a'], materialDigests: [digestOf('outra')] },
+    'mesmo material (digest)': { ids: ['ok-test-z'], materialDigests: [digestOf('log-a')] },
+    'digest no meio da lista (aposentada)': { ids: ['ok-test-a', 'ok-old-c'], materialDigests: [digestOf('origin-a'), digestOf('log-a')] },
   };
   for (const [label, list] of Object.entries(reused)) {
     const source = operatorRefSourceFromEnv(list, env);
     assert.equal(source.status, 'LOG_KEY_REUSED', label);
     assert.equal(source.operatorRef(EMAIL), OPERATOR_REF_UNAVAILABLE, label);
   }
-  assert.equal(operatorRefSourceFromEnv([{ id: 'ok-test-a', hex: testKeyMaterial('origin-a') }], env).status, 'READY', 'outra chave distinta: aceita');
+  assert.equal(operatorRefSourceFromEnv({ ids: ['ok-test-a'], materialDigests: [digestOf('origin-a')] }, env).status, 'READY', 'outras chaves distintas: aceita');
 });

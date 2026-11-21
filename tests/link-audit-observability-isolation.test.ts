@@ -31,6 +31,6 @@ test('PG-L01 isolamento: sem disco, rede, log, relógio, aleatoriedade nem chave
     [/[0-9a-f]{64}/i, 'material de chave embutido'],
   ] as const) assert.ok(!pattern.test(text), `o módulo usa ${label}`);
   assert.equal((text.match(/process\.env/g) ?? []).length, 1, 'process.env só como valor padrão do parâmetro');
-  assert.match(text, /operatorRefSourceFromEnv\(otherKeys: ReadonlyArray<OtherKeyMaterial>, env: Readonly<Record<string, string \| undefined>> = process\.env\)/, 'a lista das outras chaves é obrigatória, sem padrão');
+  assert.match(text, /operatorRefSourceFromEnv\(otherKeys: OtherKeyFingerprints, env: Readonly<Record<string, string \| undefined>> = process\.env\)/, 'a lista das outras chaves é obrigatória, sem padrão');
   assert.ok(!/GMN_LINK_AUDIT_(?!LOG_KEY\b)[A-Z_]+/.test(text), 'o módulo não cita variáveis de outras chaves da Fase 6 (isolamento da chave de origem)');
 });
