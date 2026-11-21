@@ -165,7 +165,9 @@ resultado de produção**, separando o que é código, que o manager faz sozinho
      condição de validade na §5.1.7). A G1.b o trava em teste (PG-G02).
    - Atraso ≤ `L_max` ⇒ a vista mostra `BEHIND`, e o alarme dispara se o atraso durar mais que **`T` = 15 min** (D-G0-4).
    - Atraso > `L_max` ⇒ `HISTORY_UNRESOLVED` (nome proposto `GUARD_LAGGING`). Um fluxo legítimo não chega lá, porque
-     toda operação nova publica antes de começar.
+     toda operação nova de decisão ou de resultado publica antes de começar. A exceção é o `RECOVER` da rotação, que grava
+     o `CHECKPOINT` sem publicação obrigatória antes (`service.ts:731-746`); por isso a G1.b recusa no código a rotação
+     com `externalGuard` = `BEHIND` (§5.1.7).
    - **Janela residual declarada:** a guarda detecta o retrocesso a qualquer ponto **anterior à última cabeça
      publicada**. Um retrocesso dentro da última operação ainda não publicada passa (no máximo `L_max` registros).
 4. **Falha de publicação depois de um registro gravado** (os nove pontos S1–S9 da §5.1.2). O registro já está durável no
@@ -385,8 +387,8 @@ da §11, e o valor só muda com registro aqui (número novo e motivo).
 | `L_max` (atraso máximo aceito como `BEHIND`) | **5 registros** | D-G0-4 (regra); contagem abaixo | G1.b, por teste que enumera os fluxos do protocolo (PG-G02) |
 | `T` (alarme de `BEHIND` prolongado) | **15 min** | D-G0-4 | G1.b (evento GE-E6) |
 | Prazo de resposta da guarda | **3 s** por chamada (`latest` e `publish`); esgotado ⇒ indisponível | D-G0-3 | G1.b, pela latência medida no laboratório (PG-G08) |
-| Chave do pseudônimo `audit_ref` | `GMN_LINK_AUDIT_GUARD_KEY`, formato `<id>:<64 hex>` | D-G0-5 | G1.a (secret), G1.b (uso) |
-| Credencial de escrita da guarda | `GMN_LINK_AUDIT_GUARD_DB_URL` (papel `gmn_guard_writer`) | D-G0-1 | G1.a (secret), G1.b (uso) |
+| Chave do pseudônimo `audit_ref` | `GMN_LINK_AUDIT_GUARD_KEY`, formato `<id>:<64 hex>` | D-G0-5 | G1.b (secret e uso) |
+| Credencial de escrita da guarda | `GMN_LINK_AUDIT_GUARD_DB_URL` (papel `gmn_guard_writer`) | D-G0-1 | G1.b (secret e uso) |
 
 **Contagem de `L_max`.** Publicações **obrigatórias** (falha ⇒ recusa, nada novo começa): a do `prepare`, antes da
 `INTENT` (`src/lib/link-audit-ledger/service.ts:774`); a do `runIntent`, antes do `RUN_INTENT` (`:904`); e a do `ENROLL`,
@@ -405,8 +407,10 @@ publicações de melhor esforço falham:
 **Condição de validade:** cada **rotação da chave do livro** concluída dentro da mesma janela soma 1 (um novo
 `CHECKPOINT` de rotação, `model.ts:262-266`). Por isso o runbook da guarda (GE-E7) exige `externalGuard` = `CONSISTENT`
 na auditoria antes do `RECOVER` da rotação; com essa regra, o total não passa de 5. Sem ela, um atraso de 6 vira
-`GUARD_LAGGING` e congela a auditoria sem reabertura pela aplicação (D-G0-6). A G1.b pode também impor a regra no
-código (recusar o `CHECKPOINT` de rotação com `externalGuard` = `BEHIND`); se impuser, a recusa vira teste.
+`GUARD_LAGGING` e congela a auditoria sem reabertura pela aplicação (D-G0-6). Como o serviço em `3899a67` aceita o
+`RECOVER` sem conferir a guarda (`service.ts:731-744`), a regra do runbook sozinha não basta: **a G1.b é obrigada a
+impô-la no código**, recusando o `RECOVER` de rotação (e o `CHECKPOINT` dele) quando `externalGuard` ≠ `CONSISTENT`, com
+teste da recusa e mutação que a remove (revisão do PR #53).
 
 **Idade do atraso (`T`).** O servidor não guarda estado entre requisições (regra 6). Proposta para a G1.b: a idade do
 `BEHIND` é a distância entre o relógio do servidor e o `recordedAt` do primeiro registro do livro ainda não publicado.
@@ -880,7 +884,7 @@ própria). Como aquela Q4 continua aberta, a escolha entre os dois foi do **mana
 | D-G0-9 | Q9 Backups dos recibos e do livro | **Um destino independente para cada volume de recibos e para o livro**, fora do disco dos dados; **cópia diária**; **ensaio de restauração na G2 e a cada trimestre** | Responsável | VC-E6; G1.a; G2; G-3 |
 | D-G0-10 | Q10 D5 | **Aceite formal de que a produção começa só com resultados INCONCLUSIVOS.** A D5 **não** fica autorizada para implementação: a D5-0 (sem custo de API) será avaliada à parte, no documento próprio, e a D5-1 (`/reviews`) só com custo e LGPD decididos | Responsável | §5.4; G-5 |
 | D-G0-11 | Q11 Piloto mínimo | Aceito **em princípio**, depois da G2, limitado a **uma auditoria nova**, com prazo de **30 dias**. O aceite escrito específico do responsável é dado **na hora, antes do deploy** | Responsável | §10.2; G3 |
-| D-G0-12 | Q12 Homologação | **Uma pilha isolada**, sem dados reais e sem Serper, com **laboratório Supabase descartável**, usada **em sequência**: primeiro a W5, depois a G2, com auditorias novas (§10.4). Criar a pilha e o laboratório continua ação do responsável, sem custo novo | Responsável | §10.4; W5; G2 |
+| D-G0-12 | Q12 Homologação | **Uma pilha isolada**, sem dados reais e sem Serper, com **laboratório Supabase descartável**, usada **em sequência**: primeiro a W5, depois a G2, com auditorias novas (§10.4). Criar a pilha e o laboratório continua ação do responsável. O custo (plano do Supabase, recursos da pilha) **não foi confirmado**: se houver qualquer custo novo, ele depende de aprovação própria do responsável antes da criação | Responsável | §10.4; W5; G2 |
 
 ### 11.1 O que continua aberto depois da G0
 

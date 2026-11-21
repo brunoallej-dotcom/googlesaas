@@ -44,7 +44,7 @@ chave novas, e a decisão de manter o 403 vira risco aceito.
 | Atacante com root na VPS | hostil | Lê todos os segredos do web (inclusive `service_role`, credencial e chave da guarda) e escreve nos volumes |
 | Dono ou administrador do projeto Supabase / conta tomada | hostil, quando comprometido | Altera gatilhos, privilégios e linhas; restaura o banco. **Fora da garantia** (ADR-0003) |
 | Supabase (provedor) | média | Disponibilidade e execução correta do Postgres |
-| Leitor do repositório público | não confiável | Não pode encontrar host, chave, nome real nem caminho de produção |
+| Leitor do repositório público | não confiável | Não pode encontrar host, chave nem caminho de produção nos artefatos desta onda. **Limite conhecido:** o `NOTES.md` e documentos antigos da Fase 6 (ondas 4 e 5) ainda citam a primeira empresa real auditada, e o histórico público do git os guarda; a correção (saneamento, reescrita do histórico ou repositório privado) é decisão do responsável |
 
 ## 4. Diagrama de fluxo
 
