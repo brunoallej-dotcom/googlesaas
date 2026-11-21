@@ -23,8 +23,9 @@
 
 ## 2. Como criar o segredo SEM expor o valor
 - Gere o material **direto para o destino**, sem imprimir e sem gravar em arquivo comum nem em histórico do shell: por exemplo, canalize `openssl rand -hex 32` para o comando que cria o `docker secret` (o conteúdo do secret é `<id>:<hex>`; o `<id>` é um rótulo público como `ok-AAAA-MM-a`, **independente** do segredo).
-- As três chaves HMAC do web na G1.a (origem, livro, log) são **três materiais diferentes, com três ids diferentes** (o servidor recusa repetição); a chave da guarda, na G1.b, será um quarto. Um material por comando, nunca reaproveitado:
+- As três chaves HMAC do web na G1.a (origem, livro, log) são **três materiais diferentes, com três ids diferentes** (o servidor recusa repetição); a chave da guarda, na G1.b, será um quarto. Um material por comando, nunca reaproveitado. Todo bloco que gera ou lê segredo começa com `set +x`: com o rastreamento do shell ligado (`set -x`, comum em sessões de diagnóstico), o bash imprimiria cada comando já expandido, inclusive o valor de `K` ou `V`, no terminal e em logs de sessão.
   ```bash
+  set +x                                                  # nunca rastrear comandos que carregam segredo
   K="$(openssl rand -hex 32)"; printf '%s:%s' '<ID_CHAVE_ORIGEM>' "$K" | docker secret create gmn_link_audit_origin_key -; unset K
   K="$(openssl rand -hex 32)"; printf '%s:%s' '<ID_CHAVE_LIVRO>'  "$K" | docker secret create gmn_link_audit_ledger_key -; unset K
   K="$(openssl rand -hex 32)"; printf '%s:%s' '<ID_CHAVE_LOG>'    "$K" | docker secret create gmn_link_audit_log_key -; unset K
@@ -32,6 +33,7 @@
   Antes do `unset`, guarde cada `<id>:<material>` no cofre pelo próprio cofre (nada de colar em chat, ticket ou documento).
 - **Referência futura (G1.b, NÃO faz parte da ativação da G1.a):** os secrets da guarda entram na stack junto com o código que os lê, depois que o responsável aplicar a migração da guarda. Mesma regra, quando chegar a hora:
   ```bash
+  set +x                                                  # nunca rastrear comandos que carregam segredo
   K="$(openssl rand -hex 32)"; printf '%s:%s' '<ID_CHAVE_GUARDA>' "$K" | docker secret create gmn_link_audit_guard_key -; unset K
   read -rsp 'conexão do papel de escrita da guarda: ' V; printf %s "$V" | docker secret create gmn_link_audit_guard_db_url -; unset V
   ```
