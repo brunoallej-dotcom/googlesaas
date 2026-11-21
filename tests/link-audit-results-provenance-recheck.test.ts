@@ -425,7 +425,7 @@ test('R2.2 composição: shared.ts monta a porta com a MESMA política e a MESMA
   const root = path.join(__dirname, '..');
   const strip = (source: string): string => source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/.*$/gm, '$1');
   const shared = strip(fs.readFileSync(path.join(root, 'src', 'app', 'api', 'link-audit', 'scoring', 'shared.ts'), 'utf8'));
-  assert.match(shared, /createProvenanceRecheck\(\{\s*policy:\s*[\w.]*evidenceProvenance,\s*trustKeys:\s*[\w.]*trustKeys\s*\}\)/, 'a porta usa a política da prévia e a lista lida nesta requisição');
+  assert.match(shared, /createProvenanceRecheck\(\{\s*policy:\s*[\w.]*evidenceProvenance,\s*trustKeys(?:\s*:\s*[\w.]*trustKeys)?\s*\}\)/, 'a porta usa a política da prévia e a lista lida nesta requisição');
   assert.match(shared, /provenanceRecheck:/, 'o serviço de resultados recebe a porta');
   const results = strip(fs.readFileSync(path.join(root, 'src', 'lib', 'link-audit-scoring-runs', 'results.ts'), 'utf8'));
   assert.ok(!/process\.env|link-audit-evidence\/provenance|link-audit-ledger|link-audit-decisions/.test(results), 'results.ts não lê ambiente nem importa o verificador ou o livro');
