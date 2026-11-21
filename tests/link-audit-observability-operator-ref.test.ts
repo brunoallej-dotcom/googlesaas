@@ -153,21 +153,23 @@ test('PG-L01 identidade inválida (não texto, vazia, gigante, sem @, com contro
   }
 });
 
-test('PG-L01 sem a lista das outras chaves não há READY: ausente ou inválida ⇒ LOG_KEY_UNVERIFIED e UNAVAILABLE', () => {
+test('PG-L01 sem a lista das outras chaves não há READY: ausente, inválida, truncada ou sem par ⇒ LOG_KEY_UNVERIFIED e UNAVAILABLE', () => {
   const env = withLogKey(LOG_KEY_A);
   const digest = digestOf('origin-a');
   const invalid: Readonly<Record<string, unknown>> = {
     ausente: undefined,
     nula: null,
     texto: 'lista',
-    'array (formato antigo)': [{ id: 'ok-test-a', hex: testKeyMaterial('origin-a') }],
-    'sem digests': { ids: ['ok-test-a'] },
-    'sem ids': { materialDigests: [digest] },
-    'id fora do padrão': { ids: ['OK test'], materialDigests: [] },
-    'digest em maiúsculas': { ids: [], materialDigests: [digest.toUpperCase()] },
-    'digest curto': { ids: [], materialDigests: [digest.slice(1)] },
-    'digest com espaço': { ids: [], materialDigests: [` ${digest}`] },
-    'campo extra com material': { ids: [], materialDigests: [], hex: [testKeyMaterial('origin-a')] },
+    'objeto de listas paralelas (forma antiga)': { ids: ['ok-test-a'], materialDigests: [digest] },
+    'par sem digest (lista truncada)': [{ id: 'ok-test-a', materialDigest: digest }, { id: 'ok-old-c' }],
+    'par sem id': [{ materialDigest: digest }],
+    'par com material em vez de digest': [{ id: 'ok-test-a', hex: testKeyMaterial('origin-a') }],
+    'campo extra no par': [{ id: 'ok-test-a', materialDigest: digest, hex: testKeyMaterial('origin-a') }],
+    'id fora do padrão': [{ id: 'OK test', materialDigest: digest }],
+    'digest em maiúsculas': [{ id: 'ok-test-a', materialDigest: digest.toUpperCase() }],
+    'digest curto': [{ id: 'ok-test-a', materialDigest: digest.slice(1) }],
+    'digest com espaço': [{ id: 'ok-test-a', materialDigest: ` ${digest}` }],
+    'item nulo': [null],
   };
   for (const [label, list] of Object.entries(invalid)) {
     const source = operatorRefSourceFromEnv(list as never, env);
@@ -175,20 +177,20 @@ test('PG-L01 sem a lista das outras chaves não há READY: ausente ou inválida 
     assert.equal(source.keyId, null, label);
     assert.equal(source.operatorRef(EMAIL), OPERATOR_REF_UNAVAILABLE, label);
   }
-  assert.equal(operatorRefSourceFromEnv({ ids: [], materialDigests: [] }, env).status, 'READY', 'listas vazias EXPLÍCITAS: nenhuma outra chave configurada');
+  assert.equal(operatorRefSourceFromEnv([], env).status, 'READY', 'lista vazia EXPLÍCITA: nenhuma outra chave configurada');
 });
 
-test('PG-L01 reúso pelas impressões digitais injetadas: id igual OU digest igual ⇒ recusada; as duas listas são consultadas', () => {
+test('PG-L01 reúso pelas impressões digitais injetadas (pares): id igual OU digest igual ⇒ recusada; id e digest são consultados', () => {
   const env = { [LOG_KEY_ENV]: LOG_KEY_A };
-  const reused: Readonly<Record<string, { ids: string[]; materialDigests: string[] }>> = {
-    'mesmo id': { ids: ['lg-test-a'], materialDigests: [digestOf('outra')] },
-    'mesmo material (digest)': { ids: ['ok-test-z'], materialDigests: [digestOf('log-a')] },
-    'digest no meio da lista (aposentada)': { ids: ['ok-test-a', 'ok-old-c'], materialDigests: [digestOf('origin-a'), digestOf('log-a')] },
+  const reused: Readonly<Record<string, ReadonlyArray<{ id: string; materialDigest: string }>>> = {
+    'mesmo id': [{ id: 'lg-test-a', materialDigest: digestOf('outra') }],
+    'mesmo material (digest)': [{ id: 'ok-test-z', materialDigest: digestOf('log-a') }],
+    'digest no meio da lista (aposentada)': [{ id: 'ok-test-a', materialDigest: digestOf('origin-a') }, { id: 'ok-old-c', materialDigest: digestOf('log-a') }],
   };
   for (const [label, list] of Object.entries(reused)) {
     const source = operatorRefSourceFromEnv(list, env);
     assert.equal(source.status, 'LOG_KEY_REUSED', label);
     assert.equal(source.operatorRef(EMAIL), OPERATOR_REF_UNAVAILABLE, label);
   }
-  assert.equal(operatorRefSourceFromEnv({ ids: ['ok-test-a'], materialDigests: [digestOf('origin-a')] }, env).status, 'READY', 'outras chaves distintas: aceita');
+  assert.equal(operatorRefSourceFromEnv([{ id: 'ok-test-a', materialDigest: digestOf('origin-a') }], env).status, 'READY', 'outras chaves distintas: aceita');
 });
