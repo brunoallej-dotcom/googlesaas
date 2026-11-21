@@ -212,6 +212,21 @@ test('PG-G02 (modelo, leitura concorrente): atraso medido acima de L_max só por
   assert.deepEqual([forged.reason, forged.externalGuard], ['GUARD_MISMATCH', 'MISMATCH']);
 });
 
+test('PG-G02 (serviço, leitura concorrente): a guarda lida ANTES do livro está 6 atrás porque outro processo escreveu e publicou no meio ⇒ o serviço relê a guarda depois do livro e a vista fica PROTECTED (nunca GUARD_LAGGING espúrio); sem a releitura ajudar, congela', async () => {
+  const w = await ledgerWorld({ withGuard: true });
+  for (const record of [rec.c2(), rec.c3(), rec.naModel()]) await must(w.protectedService.create(ANA, w.auditId, { record }, clock()));
+  const records = await ledgerRecords(w);
+  assert.equal(records.length, 7);
+  const stale = { ledgerSeq: 1, sha256: (records[0] as LedgerRecord).contentSha256 };
+  let calls = 0;
+  const racing: ExternalGuardPort = { publish: (r) => w.guard.publish(r), latest: async (auditId) => (++calls === 1 ? { ok: true, head: stale } : w.guard.latest(auditId)) };
+  const view = (await must(serviceOver(w, { guard: racing }).list(BIA, w.auditId, clock()))).ledger;
+  assert.deepEqual([view.state, view.reason, view.externalGuard, calls], ['PROTECTED', null, 'CONSISTENT', 2], 'releu a guarda uma vez, depois do livro');
+  const stuck: ExternalGuardPort = { publish: (r) => w.guard.publish(r), latest: async () => ({ ok: true, head: stale }) };
+  const frozen = (await must(serviceOver(w, { guard: stuck }).list(BIA, w.auditId, clock()))).ledger;
+  assert.deepEqual([frozen.state, frozen.reason], ['HISTORY_UNRESOLVED', 'GUARD_LAGGING']);
+});
+
 /**
  * ENUMERAÇÃO dos fluxos do protocolo (PG-G02). Publicações OBRIGATÓRIAS: `prepare` (antes da INTENT e do CHECKPOINT automático), `runIntent` (antes do RUN_INTENT), `ENROLL`
  * (depois do GENESIS) e — G1.b.1 — o `RECOVER` da rotação (antes do CHECKPOINT dele). Com TODAS as de melhor esforço falhando, o pior caso da tabela da §5.1.7 grava exatamente
