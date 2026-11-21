@@ -113,3 +113,33 @@ test('PG-V04 verificar-pastas: dados, recibos e livro em três dispositivos ⇒ 
   assert.equal(ledgerWithReceipts.status, 1);
   assert.match(ledgerWithReceipts.stderr, /livro no mesmo dispositivo que recibos-decisoes/);
 });
+
+test('PG-V04 verificar-pastas: matriz completa — recibo de decisões no disco dos RESULTADOS, ou recibo de resultados no das DECISÕES ⇒ recusa', (t) => {
+  const roots = distinctDeviceRoots();
+  if (roots.length < 3) {
+    t.skip(`só ${roots.length} sistema(s) de arquivos gravável(is) distinto(s) neste ambiente`);
+    return;
+  }
+  const [a, b, c] = roots.slice(0, 3).map((base) => sandbox(t, base)) as [string, string, string];
+  // decisões no dispositivo A e resultados no B: cada recibo fica longe dos PRÓPRIOS dados, mas no disco dos OUTROS dados
+  const receiptsOfDecisionsOnResultsDisk = run(argsOf({
+    decisoes: mkdir700(path.join(a, 'decisoes')),
+    manifestos: mkdir700(path.join(a, 'manifestos')),
+    resultados: mkdir700(path.join(b, 'resultados')),
+    'recibos-decisoes': mkdir700(path.join(b, 'recibos-decisoes')),
+    'recibos-resultados': mkdir700(path.join(c, 'recibos-resultados')),
+    livro: mkdir700(path.join(c, 'livro')),
+  }));
+  assert.equal(receiptsOfDecisionsOnResultsDisk.status, 1);
+  assert.match(receiptsOfDecisionsOnResultsDisk.stderr, /recibos-decisoes no mesmo dispositivo que resultados/);
+  const receiptsOfResultsOnDecisionsDisk = run(argsOf({
+    decisoes: mkdir700(path.join(a, 'decisoes-2')),
+    manifestos: mkdir700(path.join(a, 'manifestos-2')),
+    resultados: mkdir700(path.join(b, 'resultados-2')),
+    'recibos-decisoes': mkdir700(path.join(c, 'recibos-decisoes-2')),
+    'recibos-resultados': mkdir700(path.join(a, 'recibos-resultados-2')),
+    livro: mkdir700(path.join(c, 'livro-2')),
+  }));
+  assert.equal(receiptsOfResultsOnDecisionsDisk.status, 1);
+  assert.match(receiptsOfResultsOnDecisionsDisk.stderr, /recibos-resultados no mesmo dispositivo que decisoes/);
+});
