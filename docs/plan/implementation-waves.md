@@ -209,9 +209,13 @@ interface (`audit-page/validators.ts`).
   2. **Mais de uma cadeia.** O contrato (§3) e o código definem **uma** cadeia por auditoria (`<sealsDir>/<auditId>/`),
      classificada pelo `auditId` da rota (o alias do motor nunca localiza dados). O fecho de aposentadoria não é outra
      cadeia: o signatário entra em `keyIds`, como o verificador devolve. A prova gravada é a da leitura dupla que concordou
-     (a impressão digital inclui a resposta CRUA do verificador), e a releitura do passo 6 (`fingerprintNow`) reclassifica
-     antes de publicar: cadeia estendida, trocada ou com outras chaves entre a avaliação e a publicação ⇒ `INPUT_CHANGED`,
-     nada gravado. Não há união nem escolha entre cadeias.
+     (a impressão digital inclui a resposta CRUA do verificador). A releitura do passo 6 (`fingerprintNow`) reclassifica e é
+     o **ponto de corte**: cadeia estendida, trocada ou com outras chaves entre a avaliação e essa releitura ⇒
+     `INPUT_CHANGED`, nada gravado (teste com uma política que muda a prova só na releitura). Depois dela resta uma janela
+     até a publicação: a barreira de durabilidade (aguardada depois da releitura quando o resultado cita o livro), o
+     `RUN_INTENT` e o `link()`. O resultado grava a prova que era verdadeira no ponto de corte; uma mudança posterior
+     (chave revogada, cadeia trocada) não é vista pela finalização e fica coberta pela reconferência na releitura da R2.2
+     (revisão do PR #55). Não há união nem escolha entre cadeias.
   3. **Resposta do caminho v1 (modo `[1,2]` com `v1` por último).** Ela é só `{status: 'AUTHENTICATED'}`, sem cabeça: não há
      o que gravar. Para a prévia não dizer "finalizável" a algo que a finalização recusa, `AUTHENTICATED` sem a prova v2
      completa vira `SEAL_VERSION_NOT_ALLOWED` na projeção pública e no bloqueio `EVIDENCE_PROVENANCE_UNPROVEN` (código e
@@ -231,8 +235,18 @@ interface (`audit-page/validators.ts`).
   6. **Pendente legada (além da letra).** A conclusão de uma pendente SEM o campo é recusada: `NOT_FINALIZABLE` com o
      bloqueio `EVIDENCE_PROVENANCE_UNPROVEN`, motivo `PROVENANCE_NOT_RECORDED`, a pendente continua dita e nenhum recibo é
      gravado. É o mesmo tratamento da pendente anterior à prova de origem: concluí-la daria um resultado confirmado sem a
-     proveniência que o atestou, contra o objetivo da R2. Custo declarado: uma pendente de desenvolvimento gravada antes da
-     R2.1 bloqueia a auditoria até a quarentena. Nada foi implantado.
+     proveniência que o atestou, contra o objetivo da R2. Custo declarado (revisão do PR #55): a recusa deixa o `RUN_INTENT`
+     aberto, e o prazo do dono e o `RUN_ABORTED` só cobrem a fase A; em B ou C a auditoria fica com as novas finalizações
+     recusadas (`RESULT_PENDING_UNCONFIRMED`) até a quarentena. Teste com o livro real nas fases B e C: nenhum recibo, livro
+     sem registro novo, `RUN_INTENT` aberto, novas finalizações recusadas como hoje. **Decisão do manager:** o comportamento
+     fica, porque nada foi implantado e a W5 e a produção começam com auditorias novas. Daí duas regras:
+     - **condição de entrada da W5 e da produção:** só auditorias criadas depois da R2.1, e uma verificação antes de
+       começar de que não há `RUN_INTENT` aberto cujo resultado pendente não tenha `evidenceProvenance` (o ensaio da W5
+       registra a verificação no relatório);
+     - **destino de uma pendente legada em desenvolvimento:** descartar os dados de desenvolvimento daquela auditoria
+       (pastas de resultados, recibos e livro, só em desenvolvimento e com registro) ou, quando houver, a quarentena pelo
+       caminho administrativo, que hoje responde 403 (spec dos portões de produção, G1.c). Em nenhum caso um resultado
+       selado é alterado, re-selado ou "completado" com o campo.
   7. **Leitura.** Ausente = legado sem proveniência: legível, com os mesmos bytes e o mesmo hash (fixtures douradas v1 e
      v2 geradas pelo código da base `3899a67`, com SHA fixado em `tests/link-audit-results-provenance.test.ts`). Presente e
      malformado (inclusive `null`) ⇒ esquema ⇒ `RESULT_INTEGRITY` (409), nenhum dado; a testemunha dos resultados o trata
@@ -256,7 +270,12 @@ interface (`audit-page/validators.ts`).
      `null` (M3c), qualquer valor (M3d), cabeça 0 (M3e), `keyIds` vazios na prévia (M3f), hash malformado na prévia (M3g) e
      padrão de id mais largo que o da lista (M3h). Expor a proveniência: na prévia pública (M4a) e na projeção pública do
      resultado (M4b). Quebrar o hash dos antigos: campo obrigatório (M5a) e valor padrão preenchido na leitura do legado
-     (M5b). Uma âncora (M3b) foi corrigida no roteiro antes da rodada válida.
+     (M5b). Uma âncora (M3b) foi corrigida no roteiro antes da rodada válida. **Revisão do PR #55 (`junin-02`, aprovar com
+     ajustes):** mais 3 mutações, 3 mortas: aceitar `.` no padrão de id do registro (M6a) e no da prévia (M6b), mortas pelo
+     corpus determinístico de ids comparado com `parseTrustKeyring` (pontuação, maiúsculas, unicode, tamanhos de 1 a 34,
+     hífen inicial e 600 casos gerados com semente fixa); e tirar a resposta do verificador da impressão digital (M7), morta
+     pelo teste da prova que muda na releitura do passo 6. A M1f (conclusão aceitando a pendente legada) foi rodada de novo
+     e também morre nos testes novos das fases B e C com o livro. Total: 25 rodadas, 25 mortas.
   12. **Fica para a R2.2:** a reconferência na releitura (ids revogados de hoje ∩ `keyIds` gravados; `classify` sobre o
      `evidenceBasis` gravado; `UNAUTHENTICATED` ⇒ "a reconferir"), a porta injetada, o estado nos DTOs e na interface e o
      rótulo do legado. Também fica para lá decidir se a conclusão de uma pendente deve exigir que a cabeça gravada continue
