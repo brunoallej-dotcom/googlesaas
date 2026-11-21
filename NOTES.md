@@ -1,6 +1,6 @@
 # GMN Intelligence Platform: notas do projeto
 
-Uso **interno** (não é SaaS). Documentação detalhada por fase em `docs/`. Última atualização: 20/11/2026 (**Onda 6C ENCERRADA** em 16/11/2026; **P1 em andamento**: W0–W3 concluídas; **R1 e W4 em fatias** (R1 e W4 completas: R1.1–R1.6 e W4.1–W4.6 na `main`; spec dos portões de produção fora do P1 na `main`, #51); correção antecipada do defeito RL-32 do livro; repositório **público** desde 17/11/2026, com proteções; plano em `docs/plan/implementation-waves.md`; ver o fim do arquivo).
+Uso **interno** (não é SaaS). Documentação detalhada por fase em `docs/`. Última atualização: 20/11/2026 (**Onda 6C ENCERRADA** em 16/11/2026; **P1 em andamento**: W0–W3 concluídas; **R1 e W4 em fatias** (R1 e W4 completas: R1.1–R1.6 e W4.1–W4.6 na `main`; spec dos portões de produção fora do P1 na `main`, #51; **G0 concluída**: decisões D-G0-1 a D-G0-12, ADR-0003, D5 não autorizada); correção antecipada do defeito RL-32 do livro; repositório **público** desde 17/11/2026, com proteções; plano em `docs/plan/implementation-waves.md`; ver o fim do arquivo).
 
 ## Baseline Git local e versão (28/10/2026)
 - **Atualização 07/11/2026:** o repositório agora tem o remoto `origin` (`https://github.com/brunoallej-dotcom/googlesaas.git`); os PRs #1 (`765a93a`, Onda 6B), #2 (`24c19e9`, Onda 6C) e #3 (`7013b2a`, bootstrap/CI/Node 22) estão mergeados na `main`; tag `v1.0.1` mantida. O texto abaixo ("sem remote") é o registro histórico de 28/10/2026.
@@ -171,12 +171,12 @@ Endurecimento de código (antes de expor): bypass `GMN_AUTH_DISABLED` desligado 
   7. **Durabilidade:** o risco P-4 continua nos resultados sem livro (R6-07).
   8. **Verificação:** suíte completa local não executada (falta de memória; a verificação ficou com o CI); regras `p/*` do Semgrep não fixadas; validação visual sem repetição (critério 8).
 - **Bloqueadores de produção, inalterados pelo encerramento:**
-  - guarda externa imutável;
-  - papel administrativo com dupla aprovação;
+  - guarda externa imutável (**Atualização 20/11/2026:** provedor decidido na G0, Supabase, ADR-0003; implementação na G1.b);
+  - papel administrativo com dupla aprovação (**Atualização 20/11/2026:** 403 mantido no piloto, D-G0-6; risco aceito, sem código);
   - implementação do P1 (a finalização segue `NOT_FINALIZABLE`);
   - ADR-0002 implementado antes do primeiro resultado de produção;
   - volumes e chaves no `stack.yml`;
-  - D5 (sem ela, toda auditoria real é INCONCLUSIVA).
+  - D5 (sem ela, toda auditoria real é INCONCLUSIVA). **Atualização 20/11/2026 (D-G0-10): D5 NÃO AUTORIZADA**; aceite formal de que a produção começa só com resultados INCONCLUSIVOS (falta comunicar à equipe, G-5). A D5-0 (sem custo de API) será avaliada à parte, no documento próprio; a D5-1 (`/reviews`) só com custo e LGPD decididos.
 - **Decisões do responsável (16/11/2026, 2ª rodada, seguindo a recomendação AISAC):**
   - **D7:** canal do manifesto até a VPS pelo CI, com a assinatura conferida no servidor; detalhes na W5.
   - **D8:** forma da política de rotação da chave de atestação: troca por comprometimento e troca periódica com convivência das chaves, com limite de chaves simultâneas. Os números ficam abertos.
@@ -276,7 +276,20 @@ Endurecimento de código (antes de expor): bypass `GMN_AUTH_DISABLED` desligado 
   - **R1.6** (este PR; a R1.5 entrou no #49, `f7d344f`): reemissão do recibo de resultado por qualquer operador (`POST …/results`, modo `reissue`, sem chave de origem nem evidências, RL-33), sync estrito do reenvio confirmado (11b), botão no painel do livro e texto de remédio de `RESULT_RECEIPT_REMOVED`. Com a R1.6, **o portão da R1 fica satisfeito do lado do código**; R2, W5 e os portões fora do P1 (spec `docs/specs/link-audit-production-gates.md`) continuam antes do primeiro resultado de produção.
   - **W4.6** (#50, `b42d946`): artefato único do `sign`/`close-key`: núcleo do verificador sem disco, bundle esbuild reproduzível (hash versionado conferido pelo CI), guarda sobre a saída (lista literal de imports, nenhuma geração de código; zod sem JIT), custódia e hash do próprio artefato pelo descritor, barreira do runtime com `/proc/self/cmdline` e `environ`, grants limitados ao caminho real, sondagem antecipada do `fsync` (o Node 24.22 o bloqueia sob `--permission`; a estação usa a linha 22) e job `sign-artifact` no CI com upload. Três rodadas de revisão independente.
   - **Spec dos portões de produção fora do P1** (#51, `a506ffd`): `docs/specs/link-audit-production-gates.md` e ondas G0–G3 (guarda externa, papel administrativo, volumes e chaves no `stack.yml`, D5 → resultados INCONCLUSIVOS sem ela). Quatro rodadas de revisão. **Doze questões ao responsável** (§11 da spec), quatro delas centrais: provedor da guarda (recomendação: Supabase append-only), aprovação administrativa (recomendação: 403 no piloto; emenda "quatro olhos" quando houver segunda pessoa), D5 e piloto.
-- **Em andamento:** R1.6 (este PR). Depois: R2 (proveniência no resultado), W5 (ensaio; decisões D15), G0 (decisões do responsável) e G1–G3; W6 autorizada (D16), roda depois da W5.
+- **Decisões G0 (20/11/2026).** O manager propôs ao responsável seguir as doze recomendações da §11 da spec dos portões de produção, e a resposta foi **"tudo aprovado"**. Na Q5, que deixava dois caminhos, o manager escolheu o lado fechado. Registro completo em `docs/specs/link-audit-production-gates.md` §11 (D-G0-1 a D-G0-12), agora **APROVADA na onda G0**:
+  - **guarda:** Supabase, tabela append-only (ADR-0003 `docs/adr/0003-supabase-external-ledger-guard.md`), para o risco "VPS comprometida". Não protege contra o dono ou administrador do projeto Supabase; Object Lock só com custo autorizado;
+  - **reconciliação:** pelo responsável, fora da VPS, só leitura, toda semana, depois de cada backup do livro e antes de qualquer restauração;
+  - **indisponibilidade:** falha fechada também na leitura, prazo de 3 s (a confirmar na G1), sem modo degradado;
+  - **números (spec §5.1.7):** `L_max` = 5 (contado no código em `3899a67`; vale com a regra de só rotacionar a chave do livro com `externalGuard` = `CONSISTENT`) e alarme se `BEHIND` passar de 15 min;
+  - **`auditId` na guarda:** pseudônimo HMAC com a chave própria `GMN_LINK_AUDIT_GUARD_KEY`, sem rotação periódica (decisão do manager);
+  - **papel administrativo:** 403 mantido no piloto (Q6 = 3), então a G1.c é só o aceite e corre em paralelo; Q7 não se aplica;
+  - **logs:** exportação diária e cifrada para o destino independente dos backups, expurgo aos 90 dias;
+  - **backups:** um destino por volume de recibos e um para o livro, cópia diária, ensaio na G2 e a cada trimestre;
+  - **D5:** aceite formal de que a produção começa **só com INCONCLUSIVO**, e a D5 continua **não autorizada**. A D5-0 será avaliada à parte; a D5-1 só com custo e LGPD;
+  - **piloto:** aceito em princípio depois da G2, uma auditoria nova, 30 dias. O aceite escrito específico vem antes do deploy;
+  - **homologação:** pilha isolada sem dados reais nem Serper, laboratório Supabase descartável, W5 antes da G2.
+  Ameaças novas em `docs/security/threats/link-audit-portoes-producao.md`. Continuam com o responsável: aplicar a migração, criar secrets e destinos, a pilha de homologação e os aceites escritos.
+- **Em andamento:** R1.6 mergeada (#52, `3899a67`) e G0 concluída (branch `docs/link-audit-production-g0-decisions`). Depois: R2 (proveniência no resultado), W5 (ensaio; decisões D15) e, em paralelo, G1.a, G1.b e G1.c (só o aceite); G2 depois do relatório da W5; G3 por último. W6 autorizada (D16), roda depois da W5.
 - **Pergunta nova para o responsável (junto da §13.3):** operador = custodiante não marca `requiresLaterReview`; a spec não trata o caso.
 
 ## Roadmap P1 (espelho de `docs/plan/implementation-waves.md`, que é a fonte da verdade)
@@ -292,3 +305,14 @@ Endurecimento de código (antes de expor): bypass `GMN_AUTH_DISABLED` desligado 
 | W4 | CLI `sign` (manifesto `v2`) | ✅ W4.1–W4.6 mergeadas (#38, #40, #42, #44, #48, #50); artefato único reproduzível, conferido no CI sob `--permission` |
 | W5 | Procedimento, dossiê e ensaio em homologação | ⬜ |
 | W6 | Coleta LIVE nova da TUVAPLAST (autorização escrita específica) | ⬜ |
+
+## Roadmap dos portões de produção fora do P1 (espelho da mesma fonte)
+
+| Onda | Entrega | Status |
+|---|---|---|
+| G0 | Decisões Q1–Q12, ADR-0003, modelo de ameaças, números do contrato da guarda | ✅ 20/11/2026 (D-G0-1 a D-G0-12) |
+| G1.a | Volumes, segredos, chave de log, exportação dos logs e backups | ⬜ |
+| G1.b | Guarda no Supabase (adaptador, contrato R6-10, migração proposta, reconciliação, runbook) | ⬜ |
+| G1.c | Papel administrativo: só o aceite formal do 403 (Q6 = 3) | ⬜ |
+| G2 | Ensaio em homologação (16 ensaios, 2 atestações), depois do relatório da W5 | ⬜ |
+| G3 | Portão de produção ou piloto mínimo declarado | ⬜ |
