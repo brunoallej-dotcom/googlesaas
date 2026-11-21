@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "kind": "LINK_AUDIT_SCORE_RUN_ANCHOR",
+  "auditId": "auditoria-legado-v1",
+  "seq": 1,
+  "headSha256": "22a81ecc2e6d47935b48c84917606b81eea18d16b9cccdb42748113ba78eaf42",
+  "anchoredAt": "2026-10-30T12:00:01.000Z",
+  "prevAnchorSha256": null,
+  "contentSha256": "748bc8cd555f82c87b5ded844645aa188781c69a0ac023376f3afff13a78ef1d"
+}

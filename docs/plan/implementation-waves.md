@@ -18,7 +18,7 @@
 | W2 | CLI `export` (somente leitura) | W1 | W3, R1 | ✅ mergeada (PR #29) |
 | W3 | Verificador `v2` (aditivo em `provenance.ts`) + contrato próprio | W0 + contrato aprovado | W1, W2 | ✅ concluída em 19/11/2026 (W3.1–W3.5: PRs #30, #32, #33, #34, #35) |
 | R1 | ADR-0002: confirmação de resultados pelo livro de cabeças (fase C do resultado só pelo autor) | W0 (§16.17 revisada), W1, W3 | W2 | ✅ R1.1–R1.6 mergeadas (#39, #41, #45, #46, #49 e o PR da R1.6); portão da R1 satisfeito no código, nada implantado |
-| R2 | Resultado confirmado registra a proveniência que o atestou (`headSeq`, `headSealSha256`, `keyIds`); `UNAUTHENTICATED` na releitura ⇒ revisão humana | W3, R1 | W4 | ⬜ |
+| R2 | Resultado confirmado registra a proveniência que o atestou (`headSeq`, `headSealSha256`, `keyIds`); `UNAUTHENTICATED` na releitura ⇒ revisão humana | W3, R1 | W4 | 🟡 R2.1 (prova na avaliação, campo gravado e validado) neste PR; R2.2 (reconferência, porta, interface) a seguir |
 | W4 | CLI `sign` (manifesto `v2`) | W1, W3, decisões §13.2 itens 1, 2 e 4 (tomadas: D10, D11, D12/D14) | — | 🟡 W4.1 (#38), W4.2 (#40), W4.3 (#42), W4.4 (#44) e W4.5 (#48) mergeadas; W4.6 em revisão |
 | W5 | Procedimento, dossiê e ensaio ponta a ponta em homologação com chave descartável | W4, R1, R2 | — | ⬜ decisões tomadas (D15, spec §13.4) |
 | W6 | Coleta LIVE nova da TUVAPLAST (fora do código) | W5 + autorização escrita específica (**dada em 20/11/2026, D16**) | — | ⬜ autorizada; roda depois do ensaio da W5 |
@@ -183,7 +183,7 @@ interface (`audit-page/validators.ts`).
   - **a decidir no início da R2 (levantado em 19/11/2026):** o DTO da prévia (`preview.ts:149`, montado em `:395`) só
     expõe status, motivo e `missingRefs`; a finalização precisa consumir os metadados `{headSeq, headSealSha256, keyIds}`
     do `EvidenceTrust` internamente (preferível: não vazam para a interface) ou ampliar o DTO, com nova versão do contrato
-    da API.
+    da API. **Decidido na R2.1 (20/11/2026): internamente** (nota 1 abaixo).
 - **Depende de / paralela com**: W3 (o verificador devolve os campos) e R1 (as duas mexem nos resultados). Paralela com
   W4: arquivos disjuntos.
 - **Critérios de aceite**:
@@ -192,6 +192,94 @@ interface (`audit-page/validators.ts`).
   - um resultado confirmado cuja releitura dá `UNAUTHENTICATED` aparece "a reconferir";
   - resultados antigos (sem os campos) continuam legíveis e são rotulados "proveniência não registrada";
   - motor intacto.
+- **Fatias (20/11/2026, manager; um PR por fatia, testes antes do código):**
+
+  | Fatia | Entrega | Risco |
+  |---|---|---|
+  | R2.1 | A prova autenticada vai da prévia até o resultado gravado: `Evaluation.provenance` interna; campo opcional `evidenceProvenance` nas versões 1 e 2 do resultado (sem v3); escrita nova exige o campo e recusa sem prova v2 completa; campo malformado = integridade; R1.6 e 11b preservam bytes e hash | médio |
+  | R2.2 | Reconferência na releitura (revogação ∩ `keyIds` gravados; `UNAUTHENTICATED` ⇒ "a reconferir"), porta de proveniência injetada a partir de `shared.ts` (RL-29), estado calculado nos DTOs e rótulos da interface ("A reconferir", "Proveniência não registrada") | alto |
+
+- **Notas da R2.1 (20/11/2026; decisões onde a spec era ambígua, sempre pelo lado que falha fechado):**
+  1. **DTO da prévia (o ponto "a decidir").** A prova fica **interna**: `Evaluation.provenance` (`{headSeq, headSealSha256,
+     keyIds}` ou `null`), que nunca sai por rota. O DTO público continua `{status, reason, missingRefs}`, sem nova versão do
+     contrato da API nem dos validadores do cliente (a W3.2 já registrava que os metadados ficam no servidor). Motivo: a
+     finalização roda no servidor e não precisa do DTO; ampliar a superfície pública não acrescenta garantia. A projeção
+     pública dos resultados (`toPublicRun`, lista, detalhe, resposta da finalização) também não expõe o campo; o estado
+     calculado e os rótulos são da R2.2, sem `keyIds` nem hashes.
+  2. **Mais de uma cadeia.** O contrato (§3) e o código definem **uma** cadeia por auditoria (`<sealsDir>/<auditId>/`),
+     classificada pelo `auditId` da rota (o alias do motor nunca localiza dados). O fecho de aposentadoria não é outra
+     cadeia: o signatário entra em `keyIds`, como o verificador devolve. A prova gravada é a da leitura dupla que concordou
+     (a impressão digital inclui a resposta CRUA do verificador). A releitura do passo 6 (`fingerprintNow`) reclassifica e é
+     o **ponto de corte**: cadeia estendida, trocada ou com outras chaves entre a avaliação e essa releitura ⇒
+     `INPUT_CHANGED`, nada gravado (teste com uma política que muda a prova só na releitura). Depois dela resta uma janela
+     até a publicação: a barreira de durabilidade (aguardada depois da releitura quando o resultado cita o livro), o
+     `RUN_INTENT` e o `link()`. O resultado grava a prova que era verdadeira no ponto de corte; uma mudança posterior
+     (chave revogada, cadeia trocada) não é vista pela finalização e fica coberta pela reconferência na releitura da R2.2
+     (revisão do PR #55). Não há união nem escolha entre cadeias.
+  3. **Resposta do caminho v1 (modo `[1,2]` com `v1` por último).** Ela é só `{status: 'AUTHENTICATED'}`, sem cabeça: não há
+     o que gravar. Para a prévia não dizer "finalizável" a algo que a finalização recusa, `AUTHENTICATED` sem a prova v2
+     completa vira `SEAL_VERSION_NOT_ALLOWED` na projeção pública e no bloqueio `EVIDENCE_PROVENANCE_UNPROVEN` (código e
+     rótulo já existentes: "este servidor só aceita manifestos no formato novo"). A impressão digital continua sobre a
+     resposta crua. Produção usa `[2]` (contrato §4.2) e não muda.
+  4. **Validação da prova na prévia (`headProofOf`).** Cópia estrita da resposta: cabeça inteira em 1..256, hash hex
+     minúsculo de 64, `keyIds` de 1 a 16 ids distintos, em ordem estrita e no padrão da lista de chaves. Forma inesperada
+     vinda da política ⇒ sem prova (falha fechada), nunca uma prova "consertada" (nada é reordenado nem deduplicado). O
+     esquema do registro (`evidenceProvenanceSchema` em `results-types.ts`) aplica os mesmos limites; o padrão do id foi
+     copiado para lá, para não abrir a lista fechada de imports, e um teste o confere contra `parseTrustKeyring`.
+  5. **Escrita nova: três barreiras.** (a) O bloqueio da prévia. (b) O serviço (passo 3b): avaliação sem `provenance` ⇒
+     `NOT_FINALIZABLE` com o mesmo bloqueio, mesmo que a prévia diga "finalizável"; `draftFrom` também devolve `null`. (c) O
+     armazenamento: `appendRun` recusa rascunho sem o campo (`INTERNAL`), e o esquema estrito recusa o malformado antes de
+     publicar. O tipo `ScoreRunDraft` exige o campo. O campo é coberto pelo selo (`contentSha256`), pela etiqueta de origem
+     (HMAC sobre o corpo inteiro) e pelo `runSha256` do `RUN_INTENT`/`RUN_CONFIRMED`. O rascunho grava a prova da avaliação
+     tal como veio (só os três campos).
+  6. **Pendente legada (além da letra).** A conclusão de uma pendente SEM o campo é recusada: `NOT_FINALIZABLE` com o
+     bloqueio `EVIDENCE_PROVENANCE_UNPROVEN`, motivo `PROVENANCE_NOT_RECORDED`, a pendente continua dita e nenhum recibo é
+     gravado. É o mesmo tratamento da pendente anterior à prova de origem: concluí-la daria um resultado confirmado sem a
+     proveniência que o atestou, contra o objetivo da R2. Custo declarado (revisão do PR #55): a recusa deixa o `RUN_INTENT`
+     aberto, e o prazo do dono e o `RUN_ABORTED` só cobrem a fase A; em B ou C a auditoria fica com as novas finalizações
+     recusadas (`RESULT_PENDING_UNCONFIRMED`) até a quarentena. Teste com o livro real nas fases B e C: nenhum recibo, livro
+     sem registro novo, `RUN_INTENT` aberto, novas finalizações recusadas como hoje. **Decisão do manager:** o comportamento
+     fica, porque nada foi implantado e a W5 e a produção começam com auditorias novas. Daí duas regras:
+     - **condição de entrada da W5 e da produção:** só auditorias criadas depois da R2.1, e uma verificação antes de
+       começar de que não há `RUN_INTENT` aberto cujo resultado pendente não tenha `evidenceProvenance` (o ensaio da W5
+       registra a verificação no relatório);
+     - **destino de uma pendente legada em desenvolvimento:** descartar os dados de desenvolvimento daquela auditoria
+       (pastas de resultados, recibos e livro, só em desenvolvimento e com registro) ou, quando houver, a quarentena pelo
+       caminho administrativo, que hoje responde 403 (spec dos portões de produção, G1.c). Em nenhum caso um resultado
+       selado é alterado, re-selado ou "completado" com o campo.
+  7. **Leitura.** Ausente = legado sem proveniência: legível, com os mesmos bytes e o mesmo hash (fixtures douradas v1 e
+     v2 geradas pelo código da base `3899a67`, com SHA fixado em `tests/link-audit-results-provenance.test.ts`). Presente e
+     malformado (inclusive `null`) ⇒ esquema ⇒ `RESULT_INTEGRITY` (409), nenhum dado; a testemunha dos resultados o trata
+     como `UNTRUSTED`. A releitura não ganha semântica nova nesta fatia.
+  8. **Formato.** Sem v3: a D-5 da spec do livro (§16.17.12) continua valendo; o campo é opcional nas versões 1 e 2. A
+     reemissão do recibo (R1.6) e o reenvio confirmado (11b) não reescrevem o resultado, e os testes provam bytes e hash
+     iguais com o campo. A referência `protocol-conformance-v2.json` não mudou.
+  9. **Isolamento (RL-29).** As listas fechadas de imports não mudaram: `results.ts` passou a usar o valor `previewBlocker`
+     de `./blockers` (já na lista; antes só o tipo) e `preview.ts` passou a importar `MAX_CHAIN_SEALS`, `MAX_TRUST_KEYS` e
+     `EvidenceHeadProof` do mesmo `../link-audit-evidence/provenance`. `scoring-runs` continua sem importar o livro.
+  10. **Testes ajustados.** Os helpers (a política "confia em tudo" e a avaliação fictícia) passam a trazer uma prova v2
+     fictícia; em `link-audit-evidence-provenance.test.ts`, os seis cenários em que a coleta legítima precisa ser
+     finalizável atestam com manifesto v2; o rascunho mínimo de `link-audit-scoring-results-store.test.ts` ganhou o campo.
+     Novos: `tests/link-audit-results-provenance.test.ts` e `tests/link-audit-results-provenance-ledger.test.ts`.
+  11. **Mutações:** manuais, cada uma desfeita (`git checkout`), rodando os dois arquivos novos: **22 rodadas, 22 mortas, nenhuma
+     equivalente.** Omitir a prova numa escrita nova: no rascunho (M1a), no rascunho e na guarda do armazenamento juntos
+     (M1b), só a guarda de `appendRun` (M1c), só o passo 3b do serviço (M1d), a prévia sem tratar o caminho v1 (M1e) e a
+     conclusão aceitando pendente legada (M1f). Gravar cabeça ou chaves diferentes das devolvidas pelo v2: `headSeq + 1`
+     (M2a), só a primeira chave (M2b, morta pela cadeia com fecho), outro hash (M2c) e a prévia "consertando" `keyIds`
+     (reordenar e deduplicar, M2d). Aceitar campo malformado: `keyIds` fora de ordem (M3a), esquema não estrito (M3b),
+     `null` (M3c), qualquer valor (M3d), cabeça 0 (M3e), `keyIds` vazios na prévia (M3f), hash malformado na prévia (M3g) e
+     padrão de id mais largo que o da lista (M3h). Expor a proveniência: na prévia pública (M4a) e na projeção pública do
+     resultado (M4b). Quebrar o hash dos antigos: campo obrigatório (M5a) e valor padrão preenchido na leitura do legado
+     (M5b). Uma âncora (M3b) foi corrigida no roteiro antes da rodada válida. **Revisão do PR #55 (`junin-02`, aprovar com
+     ajustes):** mais 3 mutações, 3 mortas: aceitar `.` no padrão de id do registro (M6a) e no da prévia (M6b), mortas pelo
+     corpus determinístico de ids comparado com `parseTrustKeyring` (pontuação, maiúsculas, unicode, tamanhos de 1 a 34,
+     hífen inicial e 600 casos gerados com semente fixa); e tirar a resposta do verificador da impressão digital (M7), morta
+     pelo teste da prova que muda na releitura do passo 6. A M1f (conclusão aceitando a pendente legada) foi rodada de novo
+     e também morre nos testes novos das fases B e C com o livro. Total: 25 rodadas, 25 mortas.
+  12. **Fica para a R2.2:** a reconferência na releitura (ids revogados de hoje ∩ `keyIds` gravados; `classify` sobre o
+     `evidenceBasis` gravado; `UNAUTHENTICATED` ⇒ "a reconferir"), a porta injetada, o estado nos DTOs e na interface e o
+     rótulo do legado. Também fica para lá decidir se a conclusão de uma pendente deve exigir que a cabeça gravada continue
+     na cadeia de hoje; nesta fatia ela exige só a prova v2 atual, além das conferências que já existiam.
 - **Goal command**: `/goal scripts/run-isolated.sh npm run typecheck && scripts/run-isolated.sh node --require ./tests/register-typescript.cjs --test tests/link-audit-results-provenance*.test.ts tests/link-audit-scoring-results-*.test.ts && git diff --quiet v1.0.1 -- src/lib/link-audit/scoring, stop after 8 tries`
 
 ## Onda W4 — Assinatura

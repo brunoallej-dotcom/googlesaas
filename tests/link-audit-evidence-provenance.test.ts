@@ -27,7 +27,7 @@ import { legacyReplica } from './helpers/link-audit-mapper-real-basis';
 import { fakeList } from './helpers/link-audit-preview-fixtures';
 import { ANA, clock, must, registerCleanup, rec, tmpDir, world, type World } from './helpers/link-audit-decisions-fixtures';
 import { bodyText, captureInput, errno, faulty } from './helpers/link-audit-evidence-fixtures';
-import { evidenceKeys, sealAuditForTests, TRUSTING_EVIDENCE_POLICY, writeSealFile } from './helpers/link-audit-evidence-provenance-fixtures';
+import { evidenceKeys, sealAuditForTests, sealAuditV2ForTests, TRUSTING_EVIDENCE_POLICY, writeSealFile } from './helpers/link-audit-evidence-provenance-fixtures';
 import { previewOver } from './helpers/link-audit-preview-fixtures';
 import { makeService, OP_A, OP_B, resultsEnv } from './helpers/link-audit-results-fixtures';
 
@@ -35,6 +35,8 @@ import { makeService, OP_A, OP_B, resultsEnv } from './helpers/link-audit-result
  * PROVENIÊNCIA DAS EVIDÊNCIAS (2ª revisão independente, R2-MINOR-1; decisão do responsável): quem escreve SÓ na pasta de evidências, com o próprio
  * pipeline de gravação (selo SHA-256 refeito, integridade "OK"), NÃO pode fabricar fatos que o sistema trate como autênticos. Integridade do
  * arquivo ≠ autenticidade da evidência: só um manifesto assinado por chave de confiança, guardado FORA da pasta de evidências, autentica.
+ * R2.1: os cenários em que a coleta legítima precisa ser FINALIZÁVEL atestam com manifesto v2 (`sealAuditV2ForTests`); a resposta do caminho v1 (só `{status}`, sem a cabeça
+ * que o resultado grava) deixou de ser finalizável (`SEAL_VERSION_NOT_ALLOWED`, ver `link-audit-results-provenance.test.ts`). Os testes do caminho v1 do verificador não mudaram.
  */
 registerCleanup();
 
@@ -188,7 +190,7 @@ test('RV2-F1 (permanente): captura FORJADA só na pasta de evidências (integrid
   const w = await world();
   const sealsDir = tmpDir('lep-');
   const keys = evidenceKeys();
-  await sealAuditForTests({ evidenceDir: w.evidenceDir, auditId: w.auditId, sealsDir, keys }); // a coleta legítima foi atestada por quem tem a chave
+  await sealAuditV2ForTests({ evidenceDir: w.evidenceDir, auditId: w.auditId, sealsDir, keys }); // a coleta legítima foi atestada por quem tem a chave
   const { policy } = policyFor(sealsDir, keys);
   const preview = previewOver(w, { evidenceProvenance: policy });
   const before = await preview.evaluate(OP_B, w.auditId);
@@ -255,7 +257,7 @@ test('CONCLUIR uma pendente também depende das evidências: sem prova de coleta
   const w = await world();
   const sealsDir = tmpDir('lep-');
   const keys = evidenceKeys();
-  await sealAuditForTests({ evidenceDir: w.evidenceDir, auditId: w.auditId, sealsDir, keys });
+  await sealAuditV2ForTests({ evidenceDir: w.evidenceDir, auditId: w.auditId, sealsDir, keys });
   const trusted = previewOver(w, { evidenceProvenance: policyFor(sealsDir, keys).policy });
   const ev = await trusted.evaluate(OP_A, w.auditId);
   assert.ok(ev.ok);
@@ -271,7 +273,7 @@ test('CONCLUIR uma pendente também depende das evidências: sem prova de coleta
   assert.ok(!refused.ok && refused.code === 'NOT_FINALIZABLE' && refused.blockers?.some((b) => b.code === 'EVIDENCE_PROVENANCE_UNPROVEN'), JSON.stringify(refused).slice(0, 200));
   assert.equal(fs.existsSync(path.join(e.anchors, w.auditId, 'a0001.json')), false, 'nenhum recibo sem prova de coleta');
   // restaurada a prova, o AUTOR conclui (recuperação legítima preservada)
-  await sealAuditForTests({ evidenceDir: w.evidenceDir, auditId: w.auditId, sealsDir, keys });
+  await sealAuditV2ForTests({ evidenceDir: w.evidenceDir, auditId: w.auditId, sealsDir, keys });
   const reopened = makeService(e, previewOver(w, { evidenceProvenance: policyFor(sealsDir, keys).policy }));
   const done = await reopened.finalize(OP_A, w.auditId, body);
   assert.ok(done.ok && done.value.recoveredPending === true, JSON.stringify(done).slice(0, 200));
@@ -340,7 +342,7 @@ test('R3-MINOR-1 (regressão do revisor): REMOVER a captura 2 não faz a captura
   await appendForgedCapture(w, '2026-10-22T13:30:00.000Z'); // 2ª captura (LEGÍTIMA neste teste: é atestada abaixo)
   const sealsDir = tmpDir('lep-');
   const keys = evidenceKeys();
-  await sealAuditForTests({ evidenceDir: w.evidenceDir, auditId: w.auditId, sealsDir, keys });
+  await sealAuditV2ForTests({ evidenceDir: w.evidenceDir, auditId: w.auditId, sealsDir, keys });
   const preview = previewOver(w, { evidenceProvenance: policyFor(sealsDir, keys).policy });
   const before = await preview.evaluate(OP_B, w.auditId);
   assert.ok(before.ok);
@@ -436,7 +438,7 @@ test('R3-MINOR-3: o status do provedor do layout legado ENTRA na prova de coleta
   const unsealed = await legacyPreview(base, policy).evaluate(OP_B, LEGACY_AUDIT);
   assert.ok(unsealed.ok && unsealed.value.payload.evidence.provenance?.reason === 'LEGACY_NO_SEAL' && unsealed.value.payload.finalization.allowed === false);
   // atestado por quem tem a chave (ato explícito) — o manifesto cobre capturas, relatórios E o status
-  const manifest = await sealAuditForTests({ evidenceDir: base, auditId: LEGACY_AUDIT, sealsDir, keys });
+  const manifest = await sealAuditV2ForTests({ evidenceDir: base, auditId: LEGACY_AUDIT, sealsDir, keys });
   assert.ok(manifest.entries.some((entry) => entry.ref === 'legacy-status:c0001'));
   const sealed = await legacyPreview(base, policy).evaluate(OP_B, LEGACY_AUDIT);
   assert.ok(sealed.ok && sealed.value.payload.evidence.provenance?.status === 'AUTHENTICATED');
@@ -446,7 +448,7 @@ test('R3-MINOR-3: o status do provedor do layout legado ENTRA na prova de coleta
 test('R3-MINOR-3 (regressão do revisor): REESCREVER o serper-status.json (e o SHA256SUMS) muda o perfil, mas a base DEIXA de ser autêntica (EVIDENCE_HASH_MISMATCH) e a finalização é recusada', async () => {
   const { base, dir } = await legacyReplica();
   const { keys, sealsDir, policy } = legacyPolicy(base);
-  await sealAuditForTests({ evidenceDir: base, auditId: LEGACY_AUDIT, sealsDir, keys });
+  await sealAuditV2ForTests({ evidenceDir: base, auditId: LEGACY_AUDIT, sealsDir, keys });
   const before = await legacyPreview(base, policy).evaluate(OP_B, LEGACY_AUDIT);
   assert.ok(before.ok && before.value.payload.company.located === true && before.value.payload.evidence.provenance?.status === 'AUTHENTICATED');
   rewriteLegacyFile(dir, 'serper-status.json', '{"attempts":1,"status":500,"ok":false}');

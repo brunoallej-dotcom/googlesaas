@@ -12,7 +12,12 @@ import { createScoringBasisReader } from '../../src/lib/link-audit-evidence/scor
  * `TRUSTING_EVIDENCE_POLICY` autentica TUDO e existe só para que testes de OUTROS assuntos (decisões, resultados, interface) não dependam da
  * prova de coleta; a prova de coleta tem testes próprios com a política REAL (`link-audit-evidence-provenance.test.ts`).
  */
-export const TRUSTING_EVIDENCE_POLICY: EvidenceProvenancePolicy = { async classify() { return { status: 'AUTHENTICATED' }; } };
+/**
+ * R2.1: a resposta do caminho v2 (`AUTHENTICATED` com `{headSeq, headSealSha256, keyIds}`, contrato do verificador v2 §7.3), FICTÍCIA. A finalização só grava com essa prova
+ * completa; a resposta do caminho v1 (só `{status}`) deixou de ser finalizável. Valores fixos de teste, sem chave nenhuma por trás.
+ */
+export const TRUSTING_HEAD_PROOF = Object.freeze({ headSeq: 1, headSealSha256: '5e'.repeat(32), keyIds: Object.freeze(['ek-teste-0001']) as readonly string[] });
+export const TRUSTING_EVIDENCE_POLICY: EvidenceProvenancePolicy = { async classify() { return { status: 'AUTHENTICATED', ...TRUSTING_HEAD_PROOF }; } };
 
 export interface EvidenceKeys {
   readonly keyId: string;

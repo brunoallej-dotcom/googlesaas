@@ -1,0 +1,1745 @@
+{
+  "schemaVersion": 2,
+  "kind": "LINK_AUDIT_SCORE_RUN",
+  "auditId": "auditoria-legado-v2",
+  "finalizedAt": "2026-10-30T12:00:01.000Z",
+  "finalizedBy": "ana@empresa.com",
+  "outcome": "PONTUADO",
+  "scored": {
+    "level": "PUBLICAVEL"
+  },
+  "inconclusive": null,
+  "scoringAuditId": "auditoria-legado-v2",
+  "auditIdAlias": {
+    "applied": false,
+    "rule": "IDENTITY",
+    "reason": null,
+    "sourceAuditId": "auditoria-legado-v2"
+  },
+  "decisions": {
+    "head": {
+      "seq": 6,
+      "sha256": "ffb5edff661f4739614ba31aef10f1223cb2a704d047d39baa44e184ce61dbfc"
+    },
+    "count": 6,
+    "appliedIds": [
+      "op-c2",
+      "op-c3",
+      "op-img",
+      "op-obs",
+      "op-p3",
+      "op-scope"
+    ],
+    "applied": [
+      {
+        "decisionId": "op-c2",
+        "kind": "JUDGEMENT",
+        "seq": 1,
+        "stampCapture": 1,
+        "stampCollectedAt": "2026-10-22T10:00:00.000Z"
+      },
+      {
+        "decisionId": "op-c3",
+        "kind": "JUDGEMENT",
+        "seq": 2,
+        "stampCapture": 1,
+        "stampCollectedAt": "2026-10-22T10:00:00.000Z"
+      },
+      {
+        "decisionId": "op-img",
+        "kind": "IMAGES_CONFIRMATION",
+        "seq": 3,
+        "stampCapture": 1,
+        "stampCollectedAt": "2026-10-22T10:00:00.000Z"
+      },
+      {
+        "decisionId": "op-obs",
+        "kind": "OBSERVATION_CONFIRMATION",
+        "seq": 4,
+        "stampCapture": 1,
+        "stampCollectedAt": "2026-10-22T10:00:00.000Z"
+      },
+      {
+        "decisionId": "op-p3",
+        "kind": "JUDGEMENT",
+        "seq": 5,
+        "stampCapture": 1,
+        "stampCollectedAt": "2026-10-22T10:00:00.000Z"
+      },
+      {
+        "decisionId": "op-scope",
+        "kind": "SITE_SCOPE_ATTESTATION",
+        "seq": 6,
+        "stampCapture": 1,
+        "stampCollectedAt": "2026-10-22T10:00:00.000Z"
+      }
+    ]
+  },
+  "layout": "VERSIONED",
+  "evidenceBasis": [
+    {
+      "ref": "capture:c0001",
+      "kind": "CAPTURE",
+      "observedAt": "2026-10-22T10:00:00.000Z",
+      "contentSha256": "3b419f3f2acffcd045e3dc80b1a20aa5ec7a93cd925f651c26e4c98eb738e836",
+      "bodySha256": "2a017a73fd123ea027a42401bbdf6c0363eb1a9b1ca4449faf965671b2018c75",
+      "legacy": false,
+      "superseded": false
+    },
+    {
+      "ref": "capture:c0002",
+      "kind": "CAPTURE",
+      "observedAt": "2026-10-20T10:00:00-03:00",
+      "contentSha256": "8beeef8581f68e0ca0d9a38de71e9628c1557416a52c3fe26cdb485f7aad52a4",
+      "bodySha256": "3751063165dab52b9b0d4f479627fddf689b2ea0a90bb050f4787662512cbe93",
+      "legacy": false,
+      "superseded": false
+    },
+    {
+      "ref": "capture:c0003",
+      "kind": "CAPTURE",
+      "observedAt": "2026-10-20T10:00:00-03:00",
+      "contentSha256": "2385e954520150ef4c5e5ac5ff9f7b57cbf53ec302dc03bba5e3391188c5c103",
+      "bodySha256": "65fca7a43fc557d2d496e05d3a38e38be7c348edf20e64971af78c58fe1f6a40",
+      "legacy": false,
+      "superseded": false
+    },
+    {
+      "ref": "capture:c0004",
+      "kind": "CAPTURE",
+      "observedAt": "2026-10-20T10:00:00-03:00",
+      "contentSha256": "2565761bcd9842c82164c4a11e2ea62e2c317b4e1561b55bfceb34361fd59af8",
+      "bodySha256": "0f707a748bd2e79eaf2a358d99f80f32855715a07670cb1a6d06fe4e217dee5d",
+      "legacy": false,
+      "superseded": false
+    },
+    {
+      "ref": "capture:c0005",
+      "kind": "CAPTURE",
+      "observedAt": "2026-10-20T10:00:00-03:00",
+      "contentSha256": "138f15544f58651c32debf91ca2316dd5ed954edb9b09f1b06ee318899b25cd1",
+      "bodySha256": "2658e7fe0c3f1d28106bc9ebd40c2da1acdfc3b85017ef789e480fbbac1afb12",
+      "legacy": false,
+      "superseded": false
+    },
+    {
+      "ref": "capture:c0006",
+      "kind": "CAPTURE",
+      "observedAt": "2026-10-20T10:00:00-03:00",
+      "contentSha256": "b569ba1ed3871e71b433a95b6527f15452ca02833fbe1d2e362be7f2b6488560",
+      "bodySha256": "f75fee3ca0690431ce37812902ad5835670ed4047e0b88b1ea9492dd397b29e9",
+      "legacy": false,
+      "superseded": false
+    }
+  ],
+  "profileSource": {
+    "ref": "capture:c0001",
+    "observedAt": "2026-10-22T10:00:00.000Z",
+    "contentSha256": "3b419f3f2acffcd045e3dc80b1a20aa5ec7a93cd925f651c26e4c98eb738e836",
+    "bodySha256": "2a017a73fd123ea027a42401bbdf6c0363eb1a9b1ca4449faf965671b2018c75"
+  },
+  "referenceDate": "2026-10-22",
+  "referenceDateSource": {
+    "ref": "capture:c0001",
+    "observedAt": "2026-10-22T10:00:00.000Z",
+    "rule": "LATEST_VERIFIED_EVIDENCE_DAY"
+  },
+  "websiteDerivation": null,
+  "mapperVersion": "lumos-map-v1",
+  "methodologyVersion": "lumos-reconstruida-v1",
+  "scoreModelVersion": "regua-d3b-r2",
+  "rulerFingerprint": "957f88fd2928b0f0bb99c2689adb400eeb15b64c504bc72a26c1df40b22b387d",
+  "input": {
+    "schemaVersion": 1,
+    "auditId": "auditoria-legado-v2",
+    "referenceDate": "2026-10-22",
+    "evidences": [
+      {
+        "id": "capture:c0001",
+        "origin": "GOOGLE_NATIVE",
+        "capture": "STORED_CAPTURE",
+        "status": "VERIFIED",
+        "observedAt": "2026-10-22T10:00:00.000Z",
+        "contentSha256": "3b419f3f2acffcd045e3dc80b1a20aa5ec7a93cd925f651c26e4c98eb738e836"
+      },
+      {
+        "id": "capture:c0002",
+        "origin": "OFFICIAL_SITE",
+        "capture": "STORED_CAPTURE",
+        "status": "VERIFIED",
+        "observedAt": "2026-10-20T10:00:00-03:00",
+        "contentSha256": "8beeef8581f68e0ca0d9a38de71e9628c1557416a52c3fe26cdb485f7aad52a4"
+      },
+      {
+        "id": "capture:c0003",
+        "origin": "OFFICIAL_SOCIAL",
+        "capture": "STORED_CAPTURE",
+        "status": "VERIFIED",
+        "observedAt": "2026-10-20T10:00:00-03:00",
+        "contentSha256": "2385e954520150ef4c5e5ac5ff9f7b57cbf53ec302dc03bba5e3391188c5c103"
+      },
+      {
+        "id": "capture:c0004",
+        "origin": "GOOGLE_NATIVE",
+        "capture": "STORED_CAPTURE",
+        "status": "VERIFIED",
+        "observedAt": "2026-10-20T10:00:00-03:00",
+        "contentSha256": "2565761bcd9842c82164c4a11e2ea62e2c317b4e1561b55bfceb34361fd59af8"
+      },
+      {
+        "id": "capture:c0005",
+        "origin": "GOOGLE_NATIVE",
+        "capture": "STORED_CAPTURE",
+        "status": "VERIFIED",
+        "observedAt": "2026-10-20T10:00:00-03:00",
+        "contentSha256": "138f15544f58651c32debf91ca2316dd5ed954edb9b09f1b06ee318899b25cd1"
+      },
+      {
+        "id": "capture:c0006",
+        "origin": "GOOGLE_NATIVE",
+        "capture": "STORED_CAPTURE",
+        "status": "VERIFIED",
+        "observedAt": "2026-10-20T10:00:00-03:00",
+        "contentSha256": "b569ba1ed3871e71b433a95b6527f15452ca02833fbe1d2e362be7f2b6488560"
+      }
+    ],
+    "profile": {
+      "name": [
+        {
+          "evidenceIds": [
+            "capture:c0001"
+          ],
+          "complete": false,
+          "value": "Padaria Exemplo v1"
+        }
+      ],
+      "address": [
+        {
+          "evidenceIds": [
+            "capture:c0001"
+          ],
+          "complete": false,
+          "value": {
+            "raw": "Rua das Flores, 100, Centro, Cidade Exemplo - GO, 75000-000",
+            "parsed": {
+              "street": "Rua das Flores",
+              "number": "100",
+              "city": "Cidade Exemplo",
+              "state": "GO"
+            }
+          }
+        }
+      ],
+      "phone": [
+        {
+          "evidenceIds": [
+            "capture:c0001"
+          ],
+          "complete": false,
+          "value": "(62) 3233-7847"
+        }
+      ],
+      "hours": [
+        {
+          "evidenceIds": [
+            "capture:c0001"
+          ],
+          "complete": false,
+          "value": {
+            "kind": "STRUCTURED",
+            "days": [
+              {
+                "day": 0,
+                "closed": false,
+                "intervals": [
+                  [
+                    "08:00",
+                    "18:00"
+                  ]
+                ]
+              },
+              {
+                "day": 1,
+                "closed": false,
+                "intervals": [
+                  [
+                    "08:00",
+                    "18:00"
+                  ]
+                ]
+              },
+              {
+                "day": 2,
+                "closed": false,
+                "intervals": [
+                  [
+                    "08:00",
+                    "18:00"
+                  ]
+                ]
+              },
+              {
+                "day": 3,
+                "closed": false,
+                "intervals": [
+                  [
+                    "08:00",
+                    "18:00"
+                  ]
+                ]
+              },
+              {
+                "day": 4,
+                "closed": false,
+                "intervals": [
+                  [
+                    "08:00",
+                    "18:00"
+                  ]
+                ]
+              },
+              {
+                "day": 5,
+                "closed": false,
+                "intervals": [
+                  [
+                    "08:00",
+                    "18:00"
+                  ]
+                ]
+              },
+              {
+                "day": 6,
+                "closed": false,
+                "intervals": [
+                  [
+                    "08:00",
+                    "18:00"
+                  ]
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "primaryCategory": [
+        {
+          "evidenceIds": [
+            "capture:c0001"
+          ],
+          "complete": false,
+          "value": "Padaria"
+        }
+      ],
+      "additionalCategories": [
+        {
+          "evidenceIds": [
+            "capture:c0001"
+          ],
+          "complete": false,
+          "value": [
+            "Confeitaria",
+            "Cafeteria"
+          ]
+        }
+      ],
+      "description": [
+        {
+          "evidenceIds": [
+            "capture:c0001"
+          ],
+          "complete": false,
+          "value": {
+            "lengthChars": 400
+          }
+        }
+      ],
+      "services": [
+        {
+          "evidenceIds": [
+            "capture:c0001"
+          ],
+          "complete": false,
+          "value": 8
+        }
+      ],
+      "attributes": [
+        {
+          "evidenceIds": [
+            "capture:c0001"
+          ],
+          "complete": false,
+          "value": 4
+        }
+      ],
+      "products": [
+        {
+          "evidenceIds": [
+            "capture:c0001"
+          ],
+          "complete": false,
+          "value": 5
+        }
+      ],
+      "logoCover": [
+        {
+          "evidenceIds": [
+            "capture:c0001"
+          ],
+          "complete": false,
+          "value": {
+            "logo": true,
+            "cover": true
+          }
+        }
+      ],
+      "photos": [
+        {
+          "evidenceIds": [
+            "capture:c0001"
+          ],
+          "complete": false,
+          "value": 25
+        }
+      ],
+      "videos": [
+        {
+          "evidenceIds": [
+            "capture:c0001"
+          ],
+          "complete": false,
+          "value": 2
+        }
+      ],
+      "latestMedia": [
+        {
+          "evidenceIds": [
+            "capture:c0001"
+          ],
+          "complete": false,
+          "value": {
+            "kind": "EXACT",
+            "date": "2026-09-22"
+          }
+        }
+      ],
+      "latestReviewDate": [
+        {
+          "evidenceIds": [
+            "capture:c0001"
+          ],
+          "complete": false,
+          "value": {
+            "kind": "EXACT",
+            "date": "2026-10-02"
+          }
+        }
+      ],
+      "replies": [
+        {
+          "evidenceIds": [
+            "capture:c0001"
+          ],
+          "complete": false,
+          "value": {
+            "ownerReplyFieldExposed": true,
+            "reviewsRead": 10,
+            "allReviewsRead": false,
+            "repliedCount": 9,
+            "pairs": [
+              {
+                "reviewDate": "2026-09-01",
+                "replyDate": "2026-09-02"
+              },
+              {
+                "reviewDate": "2026-09-05",
+                "replyDate": "2026-09-06"
+              },
+              {
+                "reviewDate": "2026-09-10",
+                "replyDate": "2026-09-12"
+              }
+            ]
+          }
+        }
+      ],
+      "posts": [
+        {
+          "evidenceIds": [
+            "capture:c0001"
+          ],
+          "complete": false,
+          "value": {
+            "exposed": true,
+            "items": [
+              {
+                "date": {
+                  "kind": "EXACT",
+                  "date": "2026-10-15"
+                }
+              },
+              {
+                "date": {
+                  "kind": "EXACT",
+                  "date": "2026-10-10"
+                }
+              },
+              {
+                "date": {
+                  "kind": "EXACT",
+                  "date": "2026-09-25"
+                }
+              },
+              {
+                "date": {
+                  "kind": "EXACT",
+                  "date": "2026-09-10"
+                }
+              },
+              {
+                "date": {
+                  "kind": "EXACT",
+                  "date": "2026-08-30"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "actions": [
+        {
+          "evidenceIds": [
+            "capture:c0001"
+          ],
+          "complete": false,
+          "value": {
+            "kinds": [
+              "PHONE",
+              "WHATSAPP",
+              "MESSAGES"
+            ]
+          }
+        }
+      ]
+    },
+    "site": {
+      "scope": {
+        "kind": "SITEMAP_COMPLETE",
+        "pagesRead": [
+          {
+            "url": "https://exemplo.com.br/",
+            "status": 200,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "fetchedAt": "2026-10-21T10:00:00-03:00"
+          }
+        ],
+        "requestCap": 8,
+        "capReached": false,
+        "blockers": [],
+        "sitemap": {
+          "urlsListed": 1,
+          "urlsRead": 1
+        },
+        "limitations": []
+      },
+      "accessibility": {
+        "evidenceIds": [
+          "capture:c0002"
+        ],
+        "outcome": "OK",
+        "status": 200
+      },
+      "offers": {
+        "evidenceIds": [
+          "capture:c0002"
+        ],
+        "distinctNamedOffers": 6,
+        "determination": {
+          "method": "OPERATOR_CONFIRMED",
+          "operatorRecordId": "op-obs"
+        }
+      },
+      "journey": {
+        "evidenceIds": [
+          "capture:c0002"
+        ],
+        "elements": [
+          "CTA",
+          "CATALOG_OR_SERVICE",
+          "CONTACT_OR_PURCHASE"
+        ],
+        "determination": {
+          "method": "OPERATOR_CONFIRMED",
+          "operatorRecordId": "op-obs"
+        }
+      }
+    },
+    "nap": {
+      "sources": [
+        {
+          "sourceId": "site-nap",
+          "kind": "SITE",
+          "evidenceIds": [
+            "capture:c0002"
+          ],
+          "name": "Padaria Exemplo",
+          "address": "Rua das Flores, 100 - Centro - Cidade Exemplo GO 75000-000",
+          "phone": "62 3233-7847"
+        }
+      ]
+    },
+    "competitors": [
+      {
+        "id": "comp-a",
+        "name": "Concorrente A",
+        "region": "Cidade Exemplo",
+        "equivalenceCriterion": "mesma cidade e categoria",
+        "verifiableElements": 2,
+        "evidenceIds": [
+          "capture:c0004"
+        ],
+        "rating": "4.8",
+        "reviewCount": 120
+      },
+      {
+        "id": "comp-b",
+        "name": "Concorrente B",
+        "region": "Cidade Exemplo",
+        "equivalenceCriterion": "mesma cidade e categoria",
+        "verifiableElements": 2,
+        "evidenceIds": [
+          "capture:c0005"
+        ],
+        "rating": "4.5",
+        "reviewCount": 80
+      },
+      {
+        "id": "comp-c",
+        "name": "Concorrente C",
+        "region": "Cidade Exemplo",
+        "equivalenceCriterion": "mesma cidade e categoria",
+        "verifiableElements": 3,
+        "evidenceIds": [
+          "capture:c0006"
+        ],
+        "rating": "4.3",
+        "reviewCount": 40
+      }
+    ],
+    "authority": {
+      "findings": [
+        {
+          "class": "OFFICIAL_SITE",
+          "corroborated": true,
+          "evidenceIds": [
+            "capture:c0002"
+          ]
+        },
+        {
+          "class": "SOCIAL",
+          "corroborated": true,
+          "evidenceIds": [
+            "capture:c0003"
+          ]
+        }
+      ]
+    },
+    "operatorRecords": [
+      {
+        "id": "op-c2",
+        "operatorEmail": "ana@empresa.com",
+        "recordedAt": "2026-10-21T12:00:00-03:00",
+        "justification": "Conferido no painel e no site oficial pelo operador responsável.",
+        "kind": "JUDGEMENT",
+        "subcriterionId": "C2",
+        "value": "COMPATIBLE"
+      },
+      {
+        "id": "op-c3",
+        "operatorEmail": "ana@empresa.com",
+        "recordedAt": "2026-10-21T12:00:00-03:00",
+        "justification": "Conferido no painel e no site oficial pelo operador responsável.",
+        "kind": "JUDGEMENT",
+        "subcriterionId": "C3",
+        "value": "ALL_RELEVANT"
+      },
+      {
+        "id": "op-img",
+        "operatorEmail": "ana@empresa.com",
+        "recordedAt": "2026-10-21T12:00:00-03:00",
+        "justification": "Conferido no painel e no site oficial pelo operador responsável.",
+        "kind": "IMAGES_CONFIRMATION",
+        "imageTypes": [
+          "PLACE",
+          "PRODUCT_OR_SERVICE"
+        ],
+        "evidenceIds": [
+          "capture:c0002"
+        ]
+      },
+      {
+        "id": "op-obs",
+        "operatorEmail": "ana@empresa.com",
+        "recordedAt": "2026-10-21T12:00:00-03:00",
+        "justification": "Conferido no painel e no site oficial pelo operador responsável.",
+        "kind": "OBSERVATION_CONFIRMATION",
+        "subcriterionIds": [
+          "S5",
+          "X4"
+        ]
+      },
+      {
+        "id": "op-p3",
+        "operatorEmail": "ana@empresa.com",
+        "recordedAt": "2026-10-21T12:00:00-03:00",
+        "justification": "Conferido no painel e no site oficial pelo operador responsável.",
+        "kind": "JUDGEMENT",
+        "subcriterionId": "P3",
+        "value": "SPECIFIC",
+        "sampleSize": 5
+      },
+      {
+        "id": "op-scope",
+        "operatorEmail": "ana@empresa.com",
+        "recordedAt": "2026-10-21T12:00:00-03:00",
+        "justification": "Conferido no painel e no site oficial pelo operador responsável.",
+        "kind": "SITE_SCOPE_ATTESTATION",
+        "subcriterionIds": [
+          "S5",
+          "V5",
+          "X4"
+        ],
+        "scopeDescription": "Sitemap integralmente percorrido e páginas de oferta conferidas manualmente."
+      }
+    ]
+  },
+  "result": {
+    "auditId": "auditoria-legado-v2",
+    "confidence": {
+      "factors": [
+        {
+          "id": "COVERAGE",
+          "justification": "Cobertura global de 74% (Alta a partir de 90%; Média de 65% a 89%; Baixa abaixo de 65%).",
+          "level": "MEDIUM",
+          "refs": [
+            "N1",
+            "N2",
+            "N3",
+            "N4",
+            "N5",
+            "C1",
+            "C2",
+            "S1",
+            "S2",
+            "S3",
+            "S4",
+            "S5",
+            "R3",
+            "P1",
+            "P2",
+            "P3",
+            "V1",
+            "V2",
+            "V3",
+            "V4",
+            "V5",
+            "A1",
+            "A2",
+            "A3",
+            "X3",
+            "X4",
+            "L3"
+          ],
+          "value": {
+            "d": 1,
+            "n": 74
+          },
+          "valueText": "74%"
+        },
+        {
+          "id": "BREADTH",
+          "justification": "7 critério(s) com pelo menos metade do peso elegível avaliado (Alta com 7 ou mais; Média com 5 a 6; Baixa com menos).",
+          "level": "HIGH",
+          "refs": [
+            "NAP",
+            "CATEGORIES",
+            "SERVICES",
+            "REVIEW_REPLIES",
+            "VISUALS",
+            "POSTS_ACTIVITY",
+            "CONVERSION"
+          ],
+          "value": {
+            "d": 1,
+            "n": 7
+          },
+          "valueText": "7 critério(s)"
+        },
+        {
+          "id": "RELIABILITY",
+          "justification": "100.00% dos pontos avaliados têm evidência primária (captura armazenada ou anexo com hash) (Alta a partir de 90%; Média a partir de 60%; Baixa abaixo).",
+          "level": "HIGH",
+          "refs": [],
+          "value": {
+            "d": 148,
+            "n": 148
+          },
+          "valueText": "100.00%"
+        },
+        {
+          "id": "FRESHNESS",
+          "justification": "0.00% dos pontos avaliados dependem de evidência com mais de 90 dias em relação ao snapshot (Alta até 10%; Média até 40%; Baixa acima). Evidência com mais de 180 dias não fundamenta pontos.",
+          "level": "HIGH",
+          "refs": [],
+          "value": {
+            "d": 148,
+            "n": 0
+          },
+          "valueText": "0.00%"
+        },
+        {
+          "id": "CONFLICTS",
+          "justification": "0 conflito(s) aberto(s) entre fontes (Alta sem conflitos; Média com até 2; Baixa com mais).",
+          "level": "HIGH",
+          "refs": [],
+          "value": {
+            "d": 1,
+            "n": 0
+          },
+          "valueText": "0 conflito(s)"
+        },
+        {
+          "id": "NA_WEIGHT",
+          "justification": "0 ponto(s) de peso não aplicável (Alta até 15; Média até 30; Baixa acima). Não aplicável não soma à cobertura nem altera o índice.",
+          "level": "HIGH",
+          "refs": [],
+          "value": {
+            "d": 2,
+            "n": 0
+          },
+          "valueText": "0 ponto(s)"
+        }
+      ],
+      "level": "MEDIUM",
+      "levelLabel": "Média",
+      "limitingFactors": [
+        "COVERAGE"
+      ]
+    },
+    "conflicts": [],
+    "criteria": [
+      {
+        "evaluatedHalfPoints": 30,
+        "id": "NAP",
+        "label": "Dados essenciais e consistência NAP",
+        "notApplicableHalfPoints": 0,
+        "notVerifiedHalfPoints": 0,
+        "obtainedHalfPoints": 27,
+        "sampleInsufficientHalfPoints": 0,
+        "status": "EVALUATED",
+        "subcriteria": [
+          "N1",
+          "N2",
+          "N3",
+          "N4",
+          "N5"
+        ],
+        "weight": 15
+      },
+      {
+        "evaluatedHalfPoints": 14,
+        "id": "CATEGORIES",
+        "label": "Categorias e relevância comercial",
+        "notApplicableHalfPoints": 0,
+        "notVerifiedHalfPoints": 6,
+        "obtainedHalfPoints": 14,
+        "sampleInsufficientHalfPoints": 0,
+        "status": "PARTIAL",
+        "subcriteria": [
+          "C1",
+          "C2",
+          "C3"
+        ],
+        "weight": 10
+      },
+      {
+        "evaluatedHalfPoints": 24,
+        "id": "SERVICES",
+        "label": "Serviços, produtos, descrição e atributos",
+        "notApplicableHalfPoints": 0,
+        "notVerifiedHalfPoints": 0,
+        "obtainedHalfPoints": 24,
+        "sampleInsufficientHalfPoints": 0,
+        "status": "EVALUATED",
+        "subcriteria": [
+          "S1",
+          "S2",
+          "S3",
+          "S4",
+          "S5"
+        ],
+        "weight": 12
+      },
+      {
+        "evaluatedHalfPoints": 12,
+        "id": "REVIEWS",
+        "label": "Avaliações e reputação",
+        "notApplicableHalfPoints": 0,
+        "notVerifiedHalfPoints": 24,
+        "obtainedHalfPoints": 12,
+        "sampleInsufficientHalfPoints": 0,
+        "status": "PARTIAL",
+        "subcriteria": [
+          "R1",
+          "R2",
+          "R3"
+        ],
+        "weight": 18
+      },
+      {
+        "evaluatedHalfPoints": 16,
+        "id": "REVIEW_REPLIES",
+        "label": "Respostas às avaliações",
+        "notApplicableHalfPoints": 0,
+        "notVerifiedHalfPoints": 0,
+        "obtainedHalfPoints": 16,
+        "sampleInsufficientHalfPoints": 0,
+        "status": "EVALUATED",
+        "subcriteria": [
+          "P1",
+          "P2",
+          "P3"
+        ],
+        "weight": 8
+      },
+      {
+        "evaluatedHalfPoints": 20,
+        "id": "VISUALS",
+        "label": "Fotos, vídeos e identidade visual",
+        "notApplicableHalfPoints": 0,
+        "notVerifiedHalfPoints": 0,
+        "obtainedHalfPoints": 20,
+        "sampleInsufficientHalfPoints": 0,
+        "status": "EVALUATED",
+        "subcriteria": [
+          "V1",
+          "V2",
+          "V3",
+          "V4",
+          "V5"
+        ],
+        "weight": 10
+      },
+      {
+        "evaluatedHalfPoints": 16,
+        "id": "POSTS_ACTIVITY",
+        "label": "Publicações e atividade",
+        "notApplicableHalfPoints": 0,
+        "notVerifiedHalfPoints": 0,
+        "obtainedHalfPoints": 16,
+        "sampleInsufficientHalfPoints": 0,
+        "status": "EVALUATED",
+        "subcriteria": [
+          "A1",
+          "A2",
+          "A3"
+        ],
+        "weight": 8
+      },
+      {
+        "evaluatedHalfPoints": 10,
+        "id": "CONVERSION",
+        "label": "Conversão e jornada",
+        "notApplicableHalfPoints": 0,
+        "notVerifiedHalfPoints": 10,
+        "obtainedHalfPoints": 10,
+        "sampleInsufficientHalfPoints": 0,
+        "status": "PARTIAL",
+        "subcriteria": [
+          "X1",
+          "X2",
+          "X3",
+          "X4",
+          "X5"
+        ],
+        "weight": 10
+      },
+      {
+        "evaluatedHalfPoints": 6,
+        "id": "LOCAL_AUTHORITY",
+        "label": "Autoridade local e competitividade",
+        "notApplicableHalfPoints": 0,
+        "notVerifiedHalfPoints": 12,
+        "obtainedHalfPoints": 6,
+        "sampleInsufficientHalfPoints": 0,
+        "status": "PARTIAL",
+        "subcriteria": [
+          "L1",
+          "L2",
+          "L3"
+        ],
+        "weight": 9
+      }
+    ],
+    "displayData": {
+      "reviews": null
+    },
+    "index": {
+      "classification": "LOCAL_REFERENCE",
+      "classificationLabel": "Referência local",
+      "decimal2": "97.97",
+      "exact": {
+        "den": 37,
+        "num": 3625
+      },
+      "shown": 98
+    },
+    "inputSha256": "a9a195e8206bd1f567d77251934b56218bbc544534f430f049f433396951cba1",
+    "kind": "LUMOS_SCORE_RESULT",
+    "limitations": [
+      {
+        "code": "NOT_VERIFIED",
+        "text": "Não verificados (8; 26 pontos fora do denominador): C3, R1, R2, X1, X2, X5, L1, L2."
+      },
+      {
+        "code": "SITE_SCOPE",
+        "text": "Site: escopo SITEMAP_COMPLETE, 1 página(s) lida(s); os achados valem para o escopo lido, não para o domínio inteiro."
+      }
+    ],
+    "methodologyVersion": "lumos-reconstruida-v1",
+    "naRegistry": [],
+    "naSensitivity": null,
+    "notices": [
+      "O Índice Lumos não é uma nota oficial do Google.",
+      "Metodologia reconstruída (lumos-reconstruida-v1, régua regua-d3b-r2): não é o agente original recuperado nem garante comportamento idêntico a ele.",
+      "Itens Não verificados ficam fora do denominador: ausência de evidência nunca vira nota zero.",
+      "Índice publicável (cobertura de 74%), acompanhado de cobertura, confiança e limitações."
+    ],
+    "publication": {
+      "gates": [
+        {
+          "id": "EVALUATED_DATA",
+          "passed": true,
+          "text": "Há pontos possíveis avaliados (denominador maior que zero)."
+        },
+        {
+          "id": "COVERAGE_MIN",
+          "passed": true,
+          "text": "Cobertura global de 74% (mínimo de 40%)."
+        },
+        {
+          "id": "CRITERIA_MIN",
+          "passed": true,
+          "text": "9 critério(s) com pelo menos 3 pontos possíveis efetivamente avaliados (mínimo de 3)."
+        },
+        {
+          "id": "NAP_OR_REVIEWS",
+          "passed": true,
+          "text": "Entre os critérios com pontos suficientes avaliados há NAP ou Avaliações."
+        },
+        {
+          "id": "INTEGRITY",
+          "passed": true,
+          "text": "Invariantes dos pontos e rastreabilidade de cada ponto verificadas."
+        }
+      ],
+      "status": "PUBLISHED",
+      "statusText": "Índice publicável (cobertura de 74%), acompanhado de cobertura, confiança e limitações."
+    },
+    "referenceDate": "2026-10-22",
+    "resultSha256": "d75ddd88e083a8a9d683c4c585a034f2c292afbb7f1bcbbcba7d683a72458765",
+    "rulerFingerprint": "957f88fd2928b0f0bb99c2689adb400eeb15b64c504bc72a26c1df40b22b387d",
+    "scoreModelVersion": "regua-d3b-r2",
+    "subcriteria": [
+      {
+        "criterionId": "NAP",
+        "evaluatedHalfPoints": 6,
+        "evidenceIds": [
+          "capture:c0001"
+        ],
+        "grade": "PRIMARY",
+        "id": "N1",
+        "maxEvidenceAgeDays": 0,
+        "maxHalfPoints": 6,
+        "notes": [],
+        "obtainedHalfPoints": 6,
+        "operatorRecordIds": [],
+        "reason": "Nome presente no perfil (3 de 3 pontos).",
+        "reasonCode": "PRESENT",
+        "state": "SCORED",
+        "tier": "presente"
+      },
+      {
+        "criterionId": "NAP",
+        "evaluatedHalfPoints": 6,
+        "evidenceIds": [
+          "capture:c0001"
+        ],
+        "grade": "PRIMARY",
+        "id": "N2",
+        "maxEvidenceAgeDays": 0,
+        "maxHalfPoints": 6,
+        "notes": [],
+        "obtainedHalfPoints": 6,
+        "operatorRecordIds": [],
+        "reason": "Endereço completo (logradouro, número, cidade e UF) (3 de 3 pontos).",
+        "reasonCode": "PRESENT",
+        "state": "SCORED",
+        "tier": "endereço completo"
+      },
+      {
+        "criterionId": "NAP",
+        "evaluatedHalfPoints": 6,
+        "evidenceIds": [
+          "capture:c0001"
+        ],
+        "grade": "PRIMARY",
+        "id": "N3",
+        "maxEvidenceAgeDays": 0,
+        "maxHalfPoints": 6,
+        "notes": [],
+        "obtainedHalfPoints": 6,
+        "operatorRecordIds": [],
+        "reason": "Telefone presente no perfil (3 de 3 pontos).",
+        "reasonCode": "PRESENT",
+        "state": "SCORED",
+        "tier": "presente"
+      },
+      {
+        "criterionId": "NAP",
+        "evaluatedHalfPoints": 4,
+        "evidenceIds": [
+          "capture:c0001"
+        ],
+        "grade": "PRIMARY",
+        "id": "N4",
+        "maxEvidenceAgeDays": 0,
+        "maxHalfPoints": 4,
+        "notes": [],
+        "obtainedHalfPoints": 4,
+        "operatorRecordIds": [],
+        "reason": "Horários: 7 dias definidos (2 de 2 pontos).",
+        "reasonCode": "TIER_MATCHED",
+        "state": "SCORED",
+        "tier": "7 dias definidos"
+      },
+      {
+        "criterionId": "NAP",
+        "evaluatedHalfPoints": 8,
+        "evidenceIds": [
+          "capture:c0001",
+          "capture:c0002"
+        ],
+        "grade": "PRIMARY",
+        "id": "N5",
+        "maxEvidenceAgeDays": 2,
+        "maxHalfPoints": 8,
+        "notes": [
+          "Fontes comparadas: 1; campos divergentes: name."
+        ],
+        "obtainedHalfPoints": 5,
+        "operatorRecordIds": [],
+        "reason": "Consistência de NAP entre o perfil e as fontes listadas: 1 campo divergente (2.5 de 4 pontos).",
+        "reasonCode": "TIER_MATCHED",
+        "state": "SCORED",
+        "tier": "1 campo divergente"
+      },
+      {
+        "criterionId": "CATEGORIES",
+        "evaluatedHalfPoints": 6,
+        "evidenceIds": [
+          "capture:c0001"
+        ],
+        "grade": "PRIMARY",
+        "id": "C1",
+        "maxEvidenceAgeDays": 0,
+        "maxHalfPoints": 6,
+        "notes": [],
+        "obtainedHalfPoints": 6,
+        "operatorRecordIds": [],
+        "reason": "Categoria principal presente no perfil (3 de 3 pontos).",
+        "reasonCode": "PRESENT",
+        "state": "SCORED",
+        "tier": "presente"
+      },
+      {
+        "criterionId": "CATEGORIES",
+        "evaluatedHalfPoints": 8,
+        "evidenceIds": [
+          "capture:c0001"
+        ],
+        "grade": "PRIMARY",
+        "id": "C2",
+        "maxEvidenceAgeDays": 0,
+        "maxHalfPoints": 8,
+        "notes": [],
+        "obtainedHalfPoints": 8,
+        "operatorRecordIds": [
+          "op-c2"
+        ],
+        "reason": "Compatibilidade confirmada pelo operador (registro op-c2): compatível (4 de 4 pontos).",
+        "reasonCode": "TIER_MATCHED",
+        "state": "SCORED",
+        "tier": "compatível"
+      },
+      {
+        "criterionId": "CATEGORIES",
+        "evaluatedHalfPoints": 0,
+        "evidenceIds": [
+          "capture:c0001"
+        ],
+        "grade": "PRIMARY",
+        "id": "C3",
+        "maxEvidenceAgeDays": 0,
+        "maxHalfPoints": 6,
+        "notes": [],
+        "obtainedHalfPoints": 0,
+        "operatorRecordIds": [],
+        "reason": "Lista de categorias adicionais não lida por inteiro. Não verificado: fora do denominador (não é zero).",
+        "reasonCode": "FIELD_NOT_EXPOSED_OR_INCOMPLETE",
+        "state": "NOT_VERIFIED",
+        "tier": null
+      },
+      {
+        "criterionId": "SERVICES",
+        "evaluatedHalfPoints": 4,
+        "evidenceIds": [
+          "capture:c0001"
+        ],
+        "grade": "PRIMARY",
+        "id": "S1",
+        "maxEvidenceAgeDays": 0,
+        "maxHalfPoints": 4,
+        "notes": [],
+        "obtainedHalfPoints": 4,
+        "operatorRecordIds": [],
+        "reason": "Descrição nativa: ≥ 250 caracteres (2 de 2 pontos).",
+        "reasonCode": "TIER_MATCHED",
+        "state": "SCORED",
+        "tier": "≥ 250 caracteres"
+      },
+      {
+        "criterionId": "SERVICES",
+        "evaluatedHalfPoints": 6,
+        "evidenceIds": [
+          "capture:c0001"
+        ],
+        "grade": "PRIMARY",
+        "id": "S2",
+        "maxEvidenceAgeDays": 0,
+        "maxHalfPoints": 6,
+        "notes": [],
+        "obtainedHalfPoints": 6,
+        "operatorRecordIds": [],
+        "reason": "Serviços/itens cadastrados no Google: ≥ 5 itens (3 de 3 pontos).",
+        "reasonCode": "TIER_MATCHED",
+        "state": "SCORED",
+        "tier": "≥ 5 itens"
+      },
+      {
+        "criterionId": "SERVICES",
+        "evaluatedHalfPoints": 4,
+        "evidenceIds": [
+          "capture:c0001"
+        ],
+        "grade": "PRIMARY",
+        "id": "S3",
+        "maxEvidenceAgeDays": 0,
+        "maxHalfPoints": 4,
+        "notes": [],
+        "obtainedHalfPoints": 4,
+        "operatorRecordIds": [],
+        "reason": "Atributos do perfil: ≥ 3 atributos (2 de 2 pontos).",
+        "reasonCode": "TIER_MATCHED",
+        "state": "SCORED",
+        "tier": "≥ 3 atributos"
+      },
+      {
+        "criterionId": "SERVICES",
+        "evaluatedHalfPoints": 4,
+        "evidenceIds": [
+          "capture:c0001"
+        ],
+        "grade": "PRIMARY",
+        "id": "S4",
+        "maxEvidenceAgeDays": 0,
+        "maxHalfPoints": 4,
+        "notes": [],
+        "obtainedHalfPoints": 4,
+        "operatorRecordIds": [],
+        "reason": "Produtos cadastrados no Google: ≥ 3 produtos (2 de 2 pontos).",
+        "reasonCode": "TIER_MATCHED",
+        "state": "SCORED",
+        "tier": "≥ 3 produtos"
+      },
+      {
+        "criterionId": "SERVICES",
+        "evaluatedHalfPoints": 6,
+        "evidenceIds": [
+          "capture:c0002"
+        ],
+        "grade": "PRIMARY",
+        "id": "S5",
+        "maxEvidenceAgeDays": 2,
+        "maxHalfPoints": 6,
+        "notes": [
+          "Escopo documentado (SITEMAP_COMPLETE, 1 páginas lidas) com atestado do operador (op-scope): vale no escopo documentado, não além dele."
+        ],
+        "obtainedHalfPoints": 6,
+        "operatorRecordIds": [
+          "op-obs",
+          "op-scope"
+        ],
+        "reason": "Oferta pública em fonte própria: ≥ 5 ofertas nomeadas (3 de 3 pontos).",
+        "reasonCode": "TIER_MATCHED",
+        "state": "SCORED",
+        "tier": "≥ 5 ofertas nomeadas"
+      },
+      {
+        "criterionId": "REVIEWS",
+        "evaluatedHalfPoints": 0,
+        "evidenceIds": [],
+        "grade": "NONE",
+        "id": "R1",
+        "maxEvidenceAgeDays": null,
+        "maxHalfPoints": 12,
+        "notes": [],
+        "obtainedHalfPoints": 0,
+        "operatorRecordIds": [],
+        "reason": "Nenhuma observação para este campo. Não verificado: fora do denominador (não é zero).",
+        "reasonCode": "NO_OBSERVATION",
+        "state": "NOT_VERIFIED",
+        "tier": null
+      },
+      {
+        "criterionId": "REVIEWS",
+        "evaluatedHalfPoints": 0,
+        "evidenceIds": [],
+        "grade": "NONE",
+        "id": "R2",
+        "maxEvidenceAgeDays": null,
+        "maxHalfPoints": 12,
+        "notes": [],
+        "obtainedHalfPoints": 0,
+        "operatorRecordIds": [],
+        "reason": "Nenhuma observação para este campo. Não verificado: fora do denominador (não é zero).",
+        "reasonCode": "NO_OBSERVATION",
+        "state": "NOT_VERIFIED",
+        "tier": null
+      },
+      {
+        "criterionId": "REVIEWS",
+        "evaluatedHalfPoints": 12,
+        "evidenceIds": [
+          "capture:c0001"
+        ],
+        "grade": "PRIMARY",
+        "id": "R3",
+        "maxEvidenceAgeDays": 0,
+        "maxHalfPoints": 12,
+        "notes": [],
+        "obtainedHalfPoints": 12,
+        "operatorRecordIds": [],
+        "reason": "Recência da avaliação mais recente: até 30 dias (6 de 6 pontos).",
+        "reasonCode": "TIER_MATCHED",
+        "state": "SCORED",
+        "tier": "até 30 dias"
+      },
+      {
+        "criterionId": "REVIEW_REPLIES",
+        "evaluatedHalfPoints": 8,
+        "evidenceIds": [
+          "capture:c0001"
+        ],
+        "grade": "PRIMARY",
+        "id": "P1",
+        "maxEvidenceAgeDays": 0,
+        "maxHalfPoints": 8,
+        "notes": [],
+        "obtainedHalfPoints": 8,
+        "operatorRecordIds": [],
+        "reason": "9 de 10 avaliações lidas respondidas: ≥ 90 % (4 de 4 pontos).",
+        "reasonCode": "TIER_MATCHED",
+        "state": "SCORED",
+        "tier": "≥ 90 %"
+      },
+      {
+        "criterionId": "REVIEW_REPLIES",
+        "evaluatedHalfPoints": 4,
+        "evidenceIds": [
+          "capture:c0001"
+        ],
+        "grade": "PRIMARY",
+        "id": "P2",
+        "maxEvidenceAgeDays": 0,
+        "maxHalfPoints": 4,
+        "notes": [],
+        "obtainedHalfPoints": 4,
+        "operatorRecordIds": [],
+        "reason": "Mediana do tempo de resposta (3 pares): mediana até 7 dias (2 de 2 pontos).",
+        "reasonCode": "TIER_MATCHED",
+        "state": "SCORED",
+        "tier": "mediana até 7 dias"
+      },
+      {
+        "criterionId": "REVIEW_REPLIES",
+        "evaluatedHalfPoints": 4,
+        "evidenceIds": [
+          "capture:c0001"
+        ],
+        "grade": "PRIMARY",
+        "id": "P3",
+        "maxEvidenceAgeDays": 0,
+        "maxHalfPoints": 4,
+        "notes": [],
+        "obtainedHalfPoints": 4,
+        "operatorRecordIds": [
+          "op-p3"
+        ],
+        "reason": "Qualidade das respostas segundo revisão humana (op-p3): específicas/humanas (2 de 2 pontos).",
+        "reasonCode": "TIER_MATCHED",
+        "state": "SCORED",
+        "tier": "específicas/humanas"
+      },
+      {
+        "criterionId": "VISUALS",
+        "evaluatedHalfPoints": 4,
+        "evidenceIds": [
+          "capture:c0001"
+        ],
+        "grade": "PRIMARY",
+        "id": "V1",
+        "maxEvidenceAgeDays": 0,
+        "maxHalfPoints": 4,
+        "notes": [],
+        "obtainedHalfPoints": 4,
+        "operatorRecordIds": [],
+        "reason": "Logo e capa do perfil: logo e capa (2 de 2 pontos).",
+        "reasonCode": "TIER_MATCHED",
+        "state": "SCORED",
+        "tier": "logo e capa"
+      },
+      {
+        "criterionId": "VISUALS",
+        "evaluatedHalfPoints": 6,
+        "evidenceIds": [
+          "capture:c0001"
+        ],
+        "grade": "PRIMARY",
+        "id": "V2",
+        "maxEvidenceAgeDays": 0,
+        "maxHalfPoints": 6,
+        "notes": [],
+        "obtainedHalfPoints": 6,
+        "operatorRecordIds": [],
+        "reason": "Fotos no perfil: ≥ 20 fotos (3 de 3 pontos).",
+        "reasonCode": "TIER_MATCHED",
+        "state": "SCORED",
+        "tier": "≥ 20 fotos"
+      },
+      {
+        "criterionId": "VISUALS",
+        "evaluatedHalfPoints": 2,
+        "evidenceIds": [
+          "capture:c0001"
+        ],
+        "grade": "PRIMARY",
+        "id": "V3",
+        "maxEvidenceAgeDays": 0,
+        "maxHalfPoints": 2,
+        "notes": [],
+        "obtainedHalfPoints": 2,
+        "operatorRecordIds": [],
+        "reason": "Vídeos no perfil: ≥ 1 vídeo (1 de 1 pontos).",
+        "reasonCode": "TIER_MATCHED",
+        "state": "SCORED",
+        "tier": "≥ 1 vídeo"
+      },
+      {
+        "criterionId": "VISUALS",
+        "evaluatedHalfPoints": 4,
+        "evidenceIds": [
+          "capture:c0001"
+        ],
+        "grade": "PRIMARY",
+        "id": "V4",
+        "maxEvidenceAgeDays": 0,
+        "maxHalfPoints": 4,
+        "notes": [],
+        "obtainedHalfPoints": 4,
+        "operatorRecordIds": [],
+        "reason": "Recência da mídia nativa: mídia até 90 dias (2 de 2 pontos).",
+        "reasonCode": "TIER_MATCHED",
+        "state": "SCORED",
+        "tier": "mídia até 90 dias"
+      },
+      {
+        "criterionId": "VISUALS",
+        "evaluatedHalfPoints": 4,
+        "evidenceIds": [
+          "capture:c0002"
+        ],
+        "grade": "PRIMARY",
+        "id": "V5",
+        "maxEvidenceAgeDays": 2,
+        "maxHalfPoints": 4,
+        "notes": [
+          "Escopo documentado (SITEMAP_COMPLETE, 1 páginas lidas) com atestado do operador (op-scope): vale no escopo documentado, não além dele."
+        ],
+        "obtainedHalfPoints": 4,
+        "operatorRecordIds": [
+          "op-img",
+          "op-scope"
+        ],
+        "reason": "Presença visual em fonte própria: ≥ 2 tipos de imagem real (2 de 2 pontos).",
+        "reasonCode": "TIER_MATCHED",
+        "state": "SCORED",
+        "tier": "≥ 2 tipos de imagem real"
+      },
+      {
+        "criterionId": "POSTS_ACTIVITY",
+        "evaluatedHalfPoints": 6,
+        "evidenceIds": [
+          "capture:c0001"
+        ],
+        "grade": "PRIMARY",
+        "id": "A1",
+        "maxEvidenceAgeDays": 0,
+        "maxHalfPoints": 6,
+        "notes": [],
+        "obtainedHalfPoints": 6,
+        "operatorRecordIds": [],
+        "reason": "Há publicação vigente (≤ 180 dias e não expirada) (3 de 3 pontos).",
+        "reasonCode": "TIER_MATCHED",
+        "state": "SCORED",
+        "tier": "ao menos uma publicação vigente"
+      },
+      {
+        "criterionId": "POSTS_ACTIVITY",
+        "evaluatedHalfPoints": 6,
+        "evidenceIds": [
+          "capture:c0001"
+        ],
+        "grade": "PRIMARY",
+        "id": "A2",
+        "maxEvidenceAgeDays": 0,
+        "maxHalfPoints": 6,
+        "notes": [],
+        "obtainedHalfPoints": 6,
+        "operatorRecordIds": [],
+        "reason": "Recência da última publicação: até 30 dias (3 de 3 pontos).",
+        "reasonCode": "TIER_MATCHED",
+        "state": "SCORED",
+        "tier": "até 30 dias"
+      },
+      {
+        "criterionId": "POSTS_ACTIVITY",
+        "evaluatedHalfPoints": 4,
+        "evidenceIds": [
+          "capture:c0001"
+        ],
+        "grade": "PRIMARY",
+        "id": "A3",
+        "maxEvidenceAgeDays": 0,
+        "maxHalfPoints": 4,
+        "notes": [],
+        "obtainedHalfPoints": 4,
+        "operatorRecordIds": [],
+        "reason": "Publicações nos últimos 90 dias: ≥ 4 publicações em 90 dias (2 de 2 pontos).",
+        "reasonCode": "TIER_MATCHED",
+        "state": "SCORED",
+        "tier": "≥ 4 publicações em 90 dias"
+      },
+      {
+        "criterionId": "CONVERSION",
+        "evaluatedHalfPoints": 0,
+        "evidenceIds": [],
+        "grade": "NONE",
+        "id": "X1",
+        "maxEvidenceAgeDays": null,
+        "maxHalfPoints": 4,
+        "notes": [],
+        "obtainedHalfPoints": 0,
+        "operatorRecordIds": [],
+        "reason": "Nenhuma observação para este campo. Não verificado: fora do denominador (não é zero).",
+        "reasonCode": "NO_OBSERVATION",
+        "state": "NOT_VERIFIED",
+        "tier": null
+      },
+      {
+        "criterionId": "CONVERSION",
+        "evaluatedHalfPoints": 0,
+        "evidenceIds": [],
+        "grade": "NONE",
+        "id": "X2",
+        "maxEvidenceAgeDays": null,
+        "maxHalfPoints": 2,
+        "notes": [],
+        "obtainedHalfPoints": 0,
+        "operatorRecordIds": [],
+        "reason": "Nenhuma observação para este campo. Não verificado: fora do denominador (não é zero).",
+        "reasonCode": "NO_OBSERVATION",
+        "state": "NOT_VERIFIED",
+        "tier": null
+      },
+      {
+        "criterionId": "CONVERSION",
+        "evaluatedHalfPoints": 4,
+        "evidenceIds": [
+          "capture:c0001"
+        ],
+        "grade": "PRIMARY",
+        "id": "X3",
+        "maxEvidenceAgeDays": 0,
+        "maxHalfPoints": 4,
+        "notes": [],
+        "obtainedHalfPoints": 4,
+        "operatorRecordIds": [],
+        "reason": "Canais de contato/ação no perfil (o website não conta): ≥ 3 canais (2 de 2 pontos).",
+        "reasonCode": "TIER_MATCHED",
+        "state": "SCORED",
+        "tier": "≥ 3 canais"
+      },
+      {
+        "criterionId": "CONVERSION",
+        "evaluatedHalfPoints": 6,
+        "evidenceIds": [
+          "capture:c0002"
+        ],
+        "grade": "PRIMARY",
+        "id": "X4",
+        "maxEvidenceAgeDays": 2,
+        "maxHalfPoints": 6,
+        "notes": [
+          "Escopo documentado (SITEMAP_COMPLETE, 1 páginas lidas) com atestado do operador (op-scope): vale no escopo documentado, não além dele."
+        ],
+        "obtainedHalfPoints": 6,
+        "operatorRecordIds": [
+          "op-obs",
+          "op-scope"
+        ],
+        "reason": "Jornada no site: 3 elementos da jornada (3 de 3 pontos).",
+        "reasonCode": "TIER_MATCHED",
+        "state": "SCORED",
+        "tier": "3 elementos da jornada"
+      },
+      {
+        "criterionId": "CONVERSION",
+        "evaluatedHalfPoints": 0,
+        "evidenceIds": [],
+        "grade": "NONE",
+        "id": "X5",
+        "maxEvidenceAgeDays": null,
+        "maxHalfPoints": 4,
+        "notes": [],
+        "obtainedHalfPoints": 0,
+        "operatorRecordIds": [],
+        "reason": "Nenhuma observação para este campo. Não verificado: fora do denominador (não é zero).",
+        "reasonCode": "NO_OBSERVATION",
+        "state": "NOT_VERIFIED",
+        "tier": null
+      },
+      {
+        "criterionId": "LOCAL_AUTHORITY",
+        "evaluatedHalfPoints": 0,
+        "evidenceIds": [],
+        "grade": "NONE",
+        "id": "L1",
+        "maxEvidenceAgeDays": null,
+        "maxHalfPoints": 6,
+        "notes": [],
+        "obtainedHalfPoints": 0,
+        "operatorRecordIds": [],
+        "reason": "Nenhuma observação para este campo. Não verificado: fora do denominador (não é zero).",
+        "reasonCode": "NO_OBSERVATION",
+        "state": "NOT_VERIFIED",
+        "tier": null
+      },
+      {
+        "criterionId": "LOCAL_AUTHORITY",
+        "evaluatedHalfPoints": 0,
+        "evidenceIds": [],
+        "grade": "NONE",
+        "id": "L2",
+        "maxEvidenceAgeDays": null,
+        "maxHalfPoints": 6,
+        "notes": [],
+        "obtainedHalfPoints": 0,
+        "operatorRecordIds": [],
+        "reason": "Nenhuma observação para este campo. Não verificado: fora do denominador (não é zero).",
+        "reasonCode": "NO_OBSERVATION",
+        "state": "NOT_VERIFIED",
+        "tier": null
+      },
+      {
+        "criterionId": "LOCAL_AUTHORITY",
+        "evaluatedHalfPoints": 6,
+        "evidenceIds": [
+          "capture:c0002",
+          "capture:c0003"
+        ],
+        "grade": "PRIMARY",
+        "id": "L3",
+        "maxEvidenceAgeDays": 2,
+        "maxHalfPoints": 6,
+        "notes": [
+          "Sem protocolo de busca completo nas quatro classes: 0 ou 1 tipo não se comprova."
+        ],
+        "obtainedHalfPoints": 6,
+        "operatorRecordIds": [],
+        "reason": "Prova externa de autoridade: ≥ 2 tipos corroborados (3 de 3 pontos).",
+        "reasonCode": "TIER_MATCHED",
+        "state": "SCORED",
+        "tier": "≥ 2 tipos corroborados"
+      }
+    ],
+    "totals": {
+      "coveragePercent": 74,
+      "criteriaWithAnyPoints": [
+        "NAP",
+        "CATEGORIES",
+        "SERVICES",
+        "REVIEWS",
+        "REVIEW_REPLIES",
+        "VISUALS",
+        "POSTS_ACTIVITY",
+        "CONVERSION",
+        "LOCAL_AUTHORITY"
+      ],
+      "criteriaWithMinPoints": [
+        "NAP",
+        "CATEGORIES",
+        "SERVICES",
+        "REVIEWS",
+        "REVIEW_REPLIES",
+        "VISUALS",
+        "POSTS_ACTIVITY",
+        "CONVERSION",
+        "LOCAL_AUTHORITY"
+      ],
+      "eligibleCoverage": {
+        "d": 50,
+        "n": 37
+      },
+      "evaluatedHalfPoints": 148,
+      "notApplicableHalfPoints": 0,
+      "notVerifiedHalfPoints": 52,
+      "obtainedHalfPoints": 145,
+      "sampleInsufficientHalfPoints": 0
+    }
+  },
+  "inputSha256": "a9a195e8206bd1f567d77251934b56218bbc544534f430f049f433396951cba1",
+  "resultSha256": "d75ddd88e083a8a9d683c4c585a034f2c292afbb7f1bcbbcba7d683a72458765",
+  "ledgerHead": {
+    "ledgerSeq": 3,
+    "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "seq": 1,
+  "prevSha256": null,
+  "origin": {
+    "v": 1,
+    "kid": "ok-test-a",
+    "tag": "861ef9f89600c84b2618a97527214617bdceb2f24915c18f5055a81938000cd9"
+  },
+  "contentSha256": "ef6879310b91a81e64fff1e6a3f2c340cf2f0660327a88e284c0b3c7e9573b9a"
+}

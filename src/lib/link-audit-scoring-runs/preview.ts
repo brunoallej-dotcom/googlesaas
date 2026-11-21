@@ -1,5 +1,5 @@
 import { evidenceToProveFromBasis } from '../link-audit-evidence/evidence-to-prove';
-import { CLOSED_EVIDENCE_PROVENANCE, type EvidenceProvenancePolicy, type EvidenceTrust, type EvidenceTrustReason } from '../link-audit-evidence/provenance';
+import { CLOSED_EVIDENCE_PROVENANCE, MAX_CHAIN_SEALS, MAX_TRUST_KEYS, type EvidenceHeadProof, type EvidenceProvenancePolicy, type EvidenceTrust, type EvidenceTrustReason } from '../link-audit-evidence/provenance';
 import { canonicalJson, sha256Hex } from '../link-audit/canonical';
 import { CRITERIA } from '../link-audit/methodology';
 import type { OperatorRecord, ScoringInput } from '../link-audit/scoring/input';
@@ -71,6 +71,11 @@ export interface Evaluation {
   readonly held: readonly HeldDecision[];
   /** Impressão digital das DUAS leituras que concordaram (head, pendente, registros e base). */
   readonly fingerprint: string;
+  /**
+   * R2.1: a prova v2 que atestou a coleta (`{headSeq, headSealSha256, keyIds}`, exatamente como o verificador devolveu em `AUTHENTICATED`, contrato §7.3) — a que a finalização
+   * grava como `evidenceProvenance`. `null` sem evidência, sem autenticação ou com a resposta do caminho v1 (sem cabeça): nada é finalizável. INTERNA: nunca sai na prévia.
+   */
+  readonly provenance: EvidenceHeadProof | null;
 }
 export type EvaluationResult = { readonly ok: true; readonly value: Evaluation } | PreviewFailure;
 
@@ -202,6 +207,32 @@ const familyLabel = (family: string): string => FAMILY_LABEL[family] ?? 'Dado au
 
 const fail = (code: PreviewFailureCode, head?: Head | null): PreviewFailure => ({ ok: false, code, issues: [], ...(head !== undefined ? { head } : {}) });
 
+const HEX64 = /^[0-9a-f]{64}$/;
+/** Padrão do id da lista de chaves (o mesmo de `TRUST_KEY_ID` do verificador; conferido por teste). */
+const KEY_ID = /^[a-z0-9][a-z0-9-]{3,31}$/;
+/**
+ * R2.1: a prova v2 COMPLETA e bem formada de uma resposta `AUTHENTICATED`, ou `null`. O caminho v1 (modo `[1,2]` com `v1` por último) responde só `{status}`: sem cabeça não há o que
+ * gravar, e a finalização só aceita a prova v2 (produção usa `[2]`, contrato §4.2). Forma inesperada vinda da política (cabeça fora de 1..256, hash que não é hex minúsculo de 64,
+ * `keyIds` vazios, fora de ordem, repetidos, mais de 16 ou fora do padrão) ⇒ `null`: falha fechada, nunca uma prova "consertada". Devolve uma cópia (nada da política vaza por referência).
+ * @internal exportada só para teste.
+ */
+export function headProofOf(trust: EvidenceTrust | null): EvidenceHeadProof | null {
+  if (trust === null || trust.status !== 'AUTHENTICATED' || !('headSeq' in trust)) return null;
+  const { headSeq, headSealSha256, keyIds } = trust as { headSeq: unknown; headSealSha256: unknown; keyIds: unknown };
+  if (typeof headSeq !== 'number' || !Number.isInteger(headSeq) || headSeq < 1 || headSeq > MAX_CHAIN_SEALS) return null;
+  if (typeof headSealSha256 !== 'string' || !HEX64.test(headSealSha256)) return null;
+  if (!Array.isArray(keyIds) || keyIds.length < 1 || keyIds.length > MAX_TRUST_KEYS) return null;
+  const ids: string[] = [];
+  for (const id of keyIds as unknown[]) {
+    if (typeof id !== 'string' || !KEY_ID.test(id) || (ids.length > 0 && (ids[ids.length - 1] as string) >= id)) return null; // distintos e em ordem estrita
+    ids.push(id);
+  }
+  return { headSeq, headSealSha256, keyIds: ids };
+}
+/** Para a FINALIZAÇÃO, `AUTHENTICATED` sem a prova v2 completa é `SEAL_VERSION_NOT_ALLOWED` ("só manifestos no formato novo"): a prévia diz isso e bloqueia (R2.1). */
+const finalizationTrust = (trust: EvidenceTrust | null): EvidenceTrust | null =>
+  trust !== null && trust.status === 'AUTHENTICATED' && headProofOf(trust) === null ? { status: 'UNAUTHENTICATED', reason: 'SEAL_VERSION_NOT_ALLOWED' } : trust;
+
 interface Snapshot {
   readonly decisions: ListPayload;
   readonly basis: Extract<ScoringBasisOutcome, { status: 'NO_EVIDENCE' | 'READY' }>;
@@ -299,13 +330,16 @@ export function createScoringPreviewService(deps: PreviewDeps) {
           missing: buildMissing(view),
           finalization: { allowed: false, expectedHead: decisions.head, expectedInputSha256: null, latest: null },
       };
-      return { ok: true, value: { payload: noEvidencePayload, input: null, inputSha256: null, result: null, outcome: null, mapped: null, basis: null, decisions, applied: [], held: [], fingerprint: fp } };
+      return { ok: true, value: { payload: noEvidencePayload, input: null, inputSha256: null, result: null, outcome: null, mapped: null, basis: null, decisions, applied: [], held: [], fingerprint: fp, provenance: null } };
     }
 
     const basis = s.basis.basis;
     if (basis.auditId !== auditId) return fail('AUDIT_IDENTITY_MISMATCH');
-    // SEM prova independente de que as evidências vieram da coleta, nada é finalizável (a prévia continua consultável e rotulada)
-    if (s.trust === null || s.trust.status !== 'AUTHENTICATED') serviceBlockers.push(previewBlocker('EVIDENCE_PROVENANCE_UNPROVEN', 'BLOCKING', { reasonCode: s.trust?.status === 'UNAUTHENTICATED' ? s.trust.reason : 'VERIFICATION_ERROR' }));
+    // SEM prova independente de que as evidências vieram da coleta, nada é finalizável (a prévia continua consultável e rotulada). R2.1: a prova precisa ser a v2 COMPLETA (com
+    // cabeça e chaves, que o resultado grava); a resposta do caminho v1 vira SEAL_VERSION_NOT_ALLOWED aqui e na projeção pública (a impressão digital usa a resposta crua).
+    const trust = finalizationTrust(s.trust);
+    const provenance = headProofOf(trust);
+    if (trust === null || trust.status !== 'AUTHENTICATED') serviceBlockers.push(previewBlocker('EVIDENCE_PROVENANCE_UNPROVEN', 'BLOCKING', { reasonCode: trust?.status === 'UNAUTHENTICATED' ? trust.reason : 'VERIFICATION_ERROR' }));
 
     /* decisões: aplicar ou RETER (campos estruturados; o alias nunca é usado para localizar nada) */
     const recordsById = new Map<string, OperatorRecord>(decisions.operatorRecords.map((record) => [record.id, record]));
@@ -400,7 +434,8 @@ export function createScoringPreviewService(deps: PreviewDeps) {
         },
         evidence: {
           integrity: { status: 'OK', checkedFiles: null },
-          provenance: s.trust === null ? null : { status: s.trust.status, reason: s.trust.status === 'UNAUTHENTICATED' ? s.trust.reason : null, missingRefs: s.trust.status === 'UNAUTHENTICATED' ? [...(s.trust.missingRefs ?? [])] : [] },
+          // só status, motivo e referências ausentes: a cabeça e as chaves (R2.1) ficam na `Evaluation`, nunca na prévia pública
+          provenance: trust === null ? null : { status: trust.status, reason: trust.status === 'UNAUTHENTICATED' ? trust.reason : null, missingRefs: trust.status === 'UNAUTHENTICATED' ? [...(trust.missingRefs ?? [])] : [] },
           layout: basis.layout,
           referenceDate: mapped.traceability.referenceDate,
           referenceDateSource: mapped.traceability.referenceDateSource ? { ref: mapped.traceability.referenceDateSource.ref, observedAt: mapped.traceability.referenceDateSource.observedAt } : null,
@@ -427,7 +462,7 @@ export function createScoringPreviewService(deps: PreviewDeps) {
         missing: buildMissing(mapped.criteriaView),
         finalization: { allowed, expectedHead: decisions.head, expectedInputSha256: mapped.input ? mapped.inputSha256 : null, latest: null },
     };
-    return { ok: true, value: { payload, input: mapped.input, inputSha256: mapped.input ? mapped.inputSha256 : null, result, outcome, mapped, basis, decisions, applied: appliedStamps, held, fingerprint: fp } };
+    return { ok: true, value: { payload, input: mapped.input, inputSha256: mapped.input ? mapped.inputSha256 : null, result, outcome, mapped, basis, decisions, applied: appliedStamps, held, fingerprint: fp, provenance } };
   }
 
   /** Duas leituras que concordam (até 3 tentativas) e então o cálculo. Base de `preview` e da finalização. */
