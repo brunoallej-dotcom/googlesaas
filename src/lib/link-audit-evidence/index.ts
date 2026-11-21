@@ -16,3 +16,6 @@ export type {
   VersionDto,
 } from './present';
 export { AUDIT_ID_PATTERN } from './types';
+// R2.2: a porta de reconferência da proveniência (servidor), composta nas rotas de pontuação e injetada na releitura dos resultados
+export { createProvenanceRecheck } from './provenance-recheck';
+export type { ProvenanceRecheck, ProvenanceRecheckConfig, ProvenanceRecheckPort } from './provenance-recheck';
