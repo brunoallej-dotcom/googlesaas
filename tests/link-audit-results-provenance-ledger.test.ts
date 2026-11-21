@@ -1,15 +1,20 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
 import { createSealedEvidenceProvenance, parseTrustKeys, sealSha256 } from '../src/lib/link-audit-evidence/provenance';
 import type { ScoreRun } from '../src/lib/link-audit-scoring-runs/results-types';
-import { clearStorageFatal } from '../src/lib/link-audit-storage';
-import { hashTree, registerCleanup, tmpDir } from './helpers/link-audit-decisions-fixtures';
+import type { LedgerRecord } from '../src/lib/link-audit-ledger';
+import { clearStorageFatal, seal, serialize } from '../src/lib/link-audit-storage';
+import { ANA, clock, hashTree, must, registerCleanup, tmpDir } from './helpers/link-audit-decisions-fixtures';
 import { evidenceKeys, sealAuditForTests, sealAuditV2ForTests, type EvidenceKeys } from './helpers/link-audit-evidence-provenance-fixtures';
-import { ledgerRecords, type LedgerWorld } from './helpers/link-audit-ledger-fixtures';
+import { LEDGER_AUTH_A, ledgerRecords, type LedgerWorld } from './helpers/link-audit-ledger-fixtures';
+import { servicesOver } from './helpers/link-audit-ledger-results-fixtures';
+import { TEST_ORIGIN } from './helpers/link-audit-origin-fixtures';
 import { previewOver } from './helpers/link-audit-preview-fixtures';
 import { makeService, OP_A, OP_B, receiptPath, runPath, type ResultsEnv } from './helpers/link-audit-results-fixtures';
-import { finalizerOver, protectedWorld, runsOf } from './helpers/link-audit-results-ledger-finalize-fixtures';
+import { resign } from './helpers/link-audit-results-ledger-fixtures';
+import { finalizerOver, openRunWorld, protectedWorld, runsOf } from './helpers/link-audit-results-ledger-finalize-fixtures';
 
 /*
  * R2.1 com o LIVRO (auditoria protegida, formato v2 com `ledgerHead`): o resultado confirmado pelo livro grava a proveniência devolvida pelo verificador v2 real; o `RUN_INTENT`
@@ -102,3 +107,69 @@ test('R2.1 livro: prova só v1 ⇒ NOT_FINALIZABLE; nada publicado e NENHUM RUN_
   assert.ok(!(await ledgerRecords(w)).some((r) => r.event === 'RUN_INTENT'));
   assert.deepEqual((await runsOf(e, w.auditId)).all, []);
 });
+
+/* ============================================================================================ pendente LEGADA com o livro (revisão do PR #55) */
+
+const overwrite = (file: string, text: string): void => {
+  fs.chmodSync(file, 0o644);
+  fs.writeFileSync(file, text);
+  fs.chmodSync(file, 0o444);
+};
+
+/**
+ * Operação de resultado aberta em B ou C cujo resultado pendente é LEGADO (gravado como o código anterior à R2.1 gravava: sem `evidenceProvenance`). Monta-se a partir de uma
+ * pendente real: tira-se o campo, refaz-se a etiqueta de origem (chave de TESTE do servidor) e o selo, o recibo da fase C passa a citar o novo hash e o `RUN_INTENT` (último
+ * registro do livro) é reassinado com o novo `runSha256`. O livro continua íntegro e vê a operação aberta na mesma fase.
+ */
+async function legacyOpenRun(phase: 'B' | 'C') {
+  const { w, e, body, run } = await openRunWorld(phase);
+  const { contentSha256, origin, evidenceProvenance, ...unsigned } = run;
+  void contentSha256;
+  void origin;
+  assert.ok(evidenceProvenance, 'a pendente real (R2.1) tem o campo');
+  const legacy = seal({ ...unsigned, origin: TEST_ORIGIN.sign('RUN', unsigned) }) as ScoreRun;
+  overwrite(runPath(e, 1, w.auditId), serialize(legacy));
+  if (phase === 'C') {
+    const { contentSha256: receiptSha, ...receipt } = JSON.parse(fs.readFileSync(receiptPath(e, 1, w.auditId), 'utf8')) as Record<string, unknown>;
+    void receiptSha;
+    overwrite(receiptPath(e, 1, w.auditId), serialize(seal({ ...receipt, headSha256: legacy.contentSha256 })));
+  }
+  const records = await ledgerRecords(w);
+  const intent = records.at(-1) as LedgerRecord;
+  assert.equal(intent.event, 'RUN_INTENT');
+  const resigned = resign(LEDGER_AUTH_A, intent, (u) => ({ ...u, run: { ...(u.run as Record<string, unknown>), runSha256: legacy.contentSha256 } }));
+  overwrite(path.join(w.ledgerDir, w.auditId, `l${String(intent.ledgerSeq).padStart(6, '0')}.json`), serialize(resigned));
+  const view = await must(servicesOver(w, e).list(ANA, w.auditId, clock()));
+  assert.equal(view.ledger.state, 'PROTECTED', show(view.ledger));
+  assert.equal(view.ledger.runs?.open?.phase, phase, `fase ${phase} vista pelo livro: ${show(view.ledger.runs)}`);
+  return { w, e, body, legacy };
+}
+
+for (const phase of ['B', 'C'] as const) {
+  test(`R2.1 livro: pendente LEGADA em ${phase} (sem evidenceProvenance) ⇒ NOT_FINALIZABLE/PROVENANCE_NOT_RECORDED; nenhum recibo, livro sem registro novo, RUN_INTENT aberto e novas finalizações recusadas como hoje`, async () => {
+    const { w, e, body, legacy } = await legacyOpenRun(phase);
+    assert.equal('evidenceProvenance' in legacy, false);
+    const ledgerBefore = hashTree(w.ledgerDir);
+    const anchorsBefore = hashTree(e.anchors);
+    const runsBefore = hashTree(e.base);
+    const f = finalizerOver(w, e);
+    // o AUTOR, com o pedido IDÊNTICO e a origem comprovada: a conclusão é recusada
+    const refused = await f.results.finalize(OP_A, w.auditId, body);
+    assert.ok(!refused.ok && refused.code === 'NOT_FINALIZABLE' && refused.blockers?.some((b) => b.code === 'EVIDENCE_PROVENANCE_UNPROVEN' && b.reasonCode === 'PROVENANCE_NOT_RECORDED'), show(refused));
+    assert.equal(refused.pending?.seq, 1, 'a pendente continua dita');
+    assert.equal(refused.pending?.receipt, phase === 'C' ? 'PRESENT' : 'MISSING');
+    assert.deepEqual(hashTree(w.ledgerDir), ledgerBefore, 'livro sem registro novo (nem RUN_CONFIRMED, nem RUN_ABORTED)');
+    assert.deepEqual(hashTree(e.anchors), anchorsBefore, phase === 'B' ? 'nenhum recibo gravado' : 'o recibo da fase C não muda');
+    assert.deepEqual(hashTree(e.base), runsBefore, 'o resultado legado não é reescrito');
+    assert.equal(fs.existsSync(receiptPath(e, 1, w.auditId)), phase === 'C');
+    const view = await must(servicesOver(w, e).list(ANA, w.auditId, clock()));
+    assert.equal(view.ledger.runs?.open?.phase, phase, 'o RUN_INTENT continua aberto');
+    // novas finalizações continuam recusadas como hoje (a pendente bloqueia): outro operador com o pedido idêntico e o autor com outro pedido
+    const other = await f.results.finalize(OP_B, w.auditId, body);
+    assert.equal(other.ok ? null : other.code, 'RESULT_PENDING_UNCONFIRMED', show(other));
+    const fresh = await f.results.finalize(OP_A, w.auditId, { ...body, expectedInputSha256: 'f'.repeat(64) });
+    assert.equal(fresh.ok ? null : fresh.code, 'RESULT_PENDING_UNCONFIRMED', show(fresh));
+    assert.deepEqual(hashTree(w.ledgerDir), ledgerBefore, 'nada gravado no livro pelas tentativas');
+    assert.deepEqual([hashTree(e.base), hashTree(e.anchors)], [runsBefore, anchorsBefore]);
+  });
+}
