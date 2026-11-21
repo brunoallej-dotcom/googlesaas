@@ -142,8 +142,8 @@ test('PG-L01 dev@localhost (bypass de desenvolvimento) tem o mesmo tratamento: p
 });
 
 test('PG-L01 identidade inválida (não texto, vazia, gigante, sem @, com controle) ⇒ UNAVAILABLE, sem lançar', () => {
-  const env = withLogKey(LOG_KEY_A);
+  const source = operatorRefSourceFromEnv(withLogKey(LOG_KEY_A));
   for (const invalid of [undefined, null, 42, {}, ['a@b.co'], '', '   ', 'sem-arroba', 'a@b@c', `${'a'.repeat(320)}@exemplo.com`, 'a\u0000b@exemplo.com', 'a b@exemplo.com']) {
-    assert.equal(refOf(env, invalid), OPERATOR_REF_UNAVAILABLE, `entrada: ${JSON.stringify(invalid)}`);
+    assert.equal(source.operatorRef(invalid), OPERATOR_REF_UNAVAILABLE, `entrada: ${JSON.stringify(invalid)}`);
   }
 });
