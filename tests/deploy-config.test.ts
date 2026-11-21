@@ -135,7 +135,7 @@ test('segredos: todos externos (docker secret), nenhum valor em arquivo de impla
   const code = stripComments(stack);
   const section = code.slice(code.indexOf('\nsecrets:'));
   const names = [...section.matchAll(/^ {2}(gmn_[a-z_]+):\n\s+external: true/gm)].map((m) => m[1]);
-  assert.deepEqual(names.sort(), ['gmn_link_audit_guard_db_url', 'gmn_link_audit_guard_id_key', 'gmn_link_audit_ledger_key', 'gmn_link_audit_log_key', 'gmn_link_audit_origin_key', 'gmn_redis_conf', 'gmn_redis_password', 'gmn_redis_url', 'gmn_serper_api_key', 'gmn_supabase_anon', 'gmn_supabase_service_role']);
+  assert.deepEqual(names.sort(), ['gmn_link_audit_ledger_key', 'gmn_link_audit_log_key', 'gmn_link_audit_origin_key', 'gmn_redis_conf', 'gmn_redis_password', 'gmn_redis_url', 'gmn_serper_api_key', 'gmn_supabase_anon', 'gmn_supabase_service_role']);
   for (const file of ['stack.yml', 'Dockerfile', 'docker-entrypoint.sh', '.env.production.example']) {
     const text = read(file);
     assert.ok(!/eyJ[A-Za-z0-9_-]{20,}/.test(text), `${file}: parece conter um JWT`);
@@ -285,13 +285,11 @@ const PHASE6_DIRS: readonly Phase6Dir[] = [
   { env: 'GMN_LINK_AUDIT_DECISIONS_LEDGER_DIR', target: '/data/decisions-ledger', readOnly: false, hostMarker: 'GMN_RAIZ_DADOS_LIVRO' },
   { env: 'GMN_LINK_AUDIT_EVIDENCE_SEALS_DIR', target: '/data/evidence-seals', readOnly: true, hostMarker: 'GMN_RAIZ_DADOS_MANIFESTOS' },
 ];
-/** Segredos da Fase 6 entregues por arquivo: variável → nome do Swarm secret. A guarda é RESERVA da G1.a (provedor Supabase, G0): nome provisório. */
+/** Segredos da Fase 6 entregues por arquivo: variável → nome do Swarm secret. Os da guarda externa entram com o código da G1.b (a stack só declara o que o código lê). */
 const PHASE6_SECRETS: Readonly<Record<string, string>> = {
   GMN_LINK_AUDIT_ORIGIN_KEY: 'gmn_link_audit_origin_key',
   GMN_LINK_AUDIT_LEDGER_KEY: 'gmn_link_audit_ledger_key',
   GMN_LINK_AUDIT_LOG_KEY: 'gmn_link_audit_log_key',
-  GMN_LINK_AUDIT_GUARD_DB_URL: 'gmn_link_audit_guard_db_url',
-  GMN_LINK_AUDIT_GUARD_ID_KEY: 'gmn_link_audit_guard_id_key',
 };
 /** Só durante uma rotação (spec VC-E2): na lista do entrypoint, mas NÃO declaradas no `stack.yml` permanente. */
 const ROTATION_ONLY_SECRETS = ['GMN_LINK_AUDIT_ORIGIN_RETIRED_KEYS', 'GMN_LINK_AUDIT_LEDGER_RETIRED_KEYS'] as const;
@@ -369,6 +367,9 @@ test('PG-V01 stack: chaves da Fase 6 só por Swarm secret externo, com *_FILE; n
     assert.ok(!new RegExp(`${variable}\\s*[:=]`).test(code), `${variable} nunca recebe valor no YAML`);
   }
   for (const variable of ROTATION_ONLY_SECRETS) assert.ok(!code.includes(variable), `${variable} só entra durante uma rotação (VC-E2)`);
+  for (const text of [code, stripComments(entrypoint)]) {
+    assert.ok(!/GMN_LINK_AUDIT_GUARD_|gmn_link_audit_guard_/.test(text), 'os segredos da guarda entram com o código que os lê (G1.b): um deploy da G1.a não depende deles');
+  }
 });
 
 test('PG-V01 stack: nenhum valor literal nas variáveis da Fase 6 nem material de chave nos arquivos de implantação (VC-E1, VC-E3)', () => {
@@ -405,7 +406,7 @@ test('PG-V01 Worker: nenhuma variável GMN_LINK_AUDIT_*, nenhum secret e nenhum 
 });
 
 test('PG-V01 entrypoint: a lista fixa inclui os nomes da Fase 6, continua fixa e não passa a exigi-los (VC-E2)', () => {
-  assert.deepEqual(entrypointSecretNames(), [...ORIGINAL_SECRET_VARS, 'GMN_LINK_AUDIT_ORIGIN_KEY', 'GMN_LINK_AUDIT_ORIGIN_RETIRED_KEYS', 'GMN_LINK_AUDIT_LEDGER_KEY', 'GMN_LINK_AUDIT_LEDGER_RETIRED_KEYS', 'GMN_LINK_AUDIT_LOG_KEY', 'GMN_LINK_AUDIT_GUARD_DB_URL', 'GMN_LINK_AUDIT_GUARD_ID_KEY']);
+  assert.deepEqual(entrypointSecretNames(), [...ORIGINAL_SECRET_VARS, 'GMN_LINK_AUDIT_ORIGIN_KEY', 'GMN_LINK_AUDIT_ORIGIN_RETIRED_KEYS', 'GMN_LINK_AUDIT_LEDGER_KEY', 'GMN_LINK_AUDIT_LEDGER_RETIRED_KEYS', 'GMN_LINK_AUDIT_LOG_KEY']);
   const code = stripComments(entrypoint);
   assert.ok(!/\benv\b\s*\||printenv|compgen|\bset\b\s*\||export -p|\/proc\/self\/environ/.test(code), 'nada de varrer o ambiente');
   const required = code.match(/for required in ([^;]+); do/);

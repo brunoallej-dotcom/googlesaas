@@ -8,7 +8,8 @@
 #
 # Os segredos NÃO ficam aqui: são `docker secret` externos criados antes do deploy.
 # Fase 6 (G1.a; spec dos portões de produção §5.3): esta versão exige, ANTES do deploy, as seis pastas novas no host (marcadores
-# GMN_RAIZ_DADOS_*, sem caminho padrão) e os cinco secrets gmn_link_audit_* (ordem de ativação no GUIA-DE-IMPLANTACAO.md).
+# GMN_RAIZ_DADOS_*, sem caminho padrão) e os três secrets gmn_link_audit_* (ordem de ativação no GUIA-DE-IMPLANTACAO.md).
+# A stack só declara o que o código lê: os secrets da guarda externa entram com o código da G1.b.
 
 services:
   gmn-web:
@@ -48,10 +49,6 @@ services:
       GMN_LINK_AUDIT_ORIGIN_KEY_FILE: /run/secrets/gmn_link_audit_origin_key
       GMN_LINK_AUDIT_LEDGER_KEY_FILE: /run/secrets/gmn_link_audit_ledger_key
       GMN_LINK_AUDIT_LOG_KEY_FILE: /run/secrets/gmn_link_audit_log_key
-      # Guarda externa (G1.b, provedor Supabase): credencial do papel de escrita da guarda e chave HMAC que pseudonimiza o auditId.
-      # Nomes RESERVADOS pela G1.a; o código que os lê é da G1.b.
-      GMN_LINK_AUDIT_GUARD_DB_URL_FILE: /run/secrets/gmn_link_audit_guard_db_url
-      GMN_LINK_AUDIT_GUARD_ID_KEY_FILE: /run/secrets/gmn_link_audit_guard_id_key
     secrets:
       - gmn_supabase_service_role
       - gmn_supabase_anon
@@ -60,8 +57,6 @@ services:
       - gmn_link_audit_origin_key
       - gmn_link_audit_ledger_key
       - gmn_link_audit_log_key
-      - gmn_link_audit_guard_db_url
-      - gmn_link_audit_guard_id_key
     volumes:
       - type: bind
         source: ${GMN_DATA_ROOT:-/srv/gmn}/audits
@@ -319,8 +314,4 @@ secrets:
   gmn_link_audit_ledger_key:
     external: true
   gmn_link_audit_log_key:
-    external: true
-  gmn_link_audit_guard_db_url:
-    external: true
-  gmn_link_audit_guard_id_key:
     external: true

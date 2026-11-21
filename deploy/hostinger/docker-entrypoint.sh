@@ -12,11 +12,11 @@ fail() {
 
 # 1) Segredos por arquivo (lista fixa: nada de varrer o ambiente). Os da Fase 6 só são entregues ao web e NÃO são exigidos aqui:
 #    sem eles a aplicação já falha fechada (503 / NOT_CONFIGURED). As listas *_RETIRED_KEYS só existem durante uma rotação.
-#    GMN_LINK_AUDIT_GUARD_*: nomes reservados para a guarda externa (G1.b).
+#    Os segredos da guarda externa entram nesta lista com o código que os lê (G1.b).
 for name in SUPABASE_SERVICE_ROLE_KEY NEXT_PUBLIC_SUPABASE_ANON_KEY SERPER_API_KEY REDIS_URL \
   GMN_LINK_AUDIT_ORIGIN_KEY GMN_LINK_AUDIT_ORIGIN_RETIRED_KEYS \
   GMN_LINK_AUDIT_LEDGER_KEY GMN_LINK_AUDIT_LEDGER_RETIRED_KEYS \
-  GMN_LINK_AUDIT_LOG_KEY GMN_LINK_AUDIT_GUARD_DB_URL GMN_LINK_AUDIT_GUARD_ID_KEY; do
+  GMN_LINK_AUDIT_LOG_KEY; do
   eval "file=\${${name}_FILE:-}"
   if [ -n "$file" ]; then
     [ -r "$file" ] || fail "segredo ilegível: $file"
