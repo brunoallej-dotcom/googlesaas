@@ -27,7 +27,9 @@ function finalizerWith(w: LedgerWorld, e: ResultsEnv, keys: EvidenceKeys, sealsD
   const base = finalizerOver(w, e);
   const policy = createSealedEvidenceProvenance({ sealsDir, trustedKeys: parseTrustKeys(keys.trustKeys) as never, acceptedVersions: versions });
   const preview = previewOver({ evidenceDir: w.evidenceDir, raw: base.decisions }, { evidenceProvenance: policy });
-  return { preview, results: makeService(e, preview, { ledger: base.decisions.resultsLedger }) };
+  const port = base.decisions.resultsLedger;
+  if (!port) throw new Error('serviço de decisões sem a porta do livro');
+  return { preview, results: makeService(e, preview, { ledger: port }) };
 }
 async function bodyFrom(preview: ReturnType<typeof previewOver>, auditId: string) {
   const ev = await preview.evaluate(OP_A, auditId);

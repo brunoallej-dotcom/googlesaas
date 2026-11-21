@@ -315,7 +315,7 @@ test('R2.1 escrita: avaliação SEM prova (mesmo "finalizável" e sem bloqueios)
 });
 
 test('R2.1 escrita: avaliação com prova MALFORMADA nunca é gravada (o esquema do registro recusa antes de publicar)', async () => {
-  for (const provenance of [{ ...PROOF, keyIds: ['ek-teste-0002', 'ek-teste-0001'] }, { ...PROOF, headSeq: 0 }, { ...PROOF, headSealSha256: 'XY' }, { ...PROOF, keyIds: [] }, { ...PROOF, extra: 1 }]) {
+  for (const provenance of [{ ...PROOF, keyIds: ['ek-teste-0002', 'ek-teste-0001'] }, { ...PROOF, headSeq: 0 }, { ...PROOF, headSealSha256: 'XY' }, { ...PROOF, keyIds: [] }, { ...PROOF, headSeq: 257 }, { ...PROOF, keyIds: ['EK-X'] }]) {
     const ev = { ...buildEvaluation(), provenance } as never;
     const e = resultsEnv();
     const attempt = await makeService(e, new FakeEvaluator(ev)).finalize(OP_A, 'auditoria-res-0001', bodyOf(ev));

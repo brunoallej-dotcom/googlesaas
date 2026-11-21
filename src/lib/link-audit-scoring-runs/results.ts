@@ -2,7 +2,7 @@ import path from 'node:path';
 import type { WebsiteExpectation } from '../link-audit-evidence/scoring-basis';
 import { judgeOrigin, originStatusOf, type OriginAuthenticator, type OriginStatus, type OriginVerdict } from '../link-audit-origin';
 import { STORE_AUDIT_ID } from './audit-id-alias';
-import type { PreviewBlocker } from './blockers';
+import { previewBlocker, type PreviewBlocker } from './blockers';
 import { MINIMUM_COVERAGE_PERCENT } from './outcome';
 import { PREVIEW_HTTP_STATUS, PREVIEW_MESSAGE, type DurabilityExpectation, type DurabilityOutcome, type Evaluation, type LedgerReason, type LedgerRunReissueStep, type LedgerView, type PreviewActor, type PreviewFailure, type PreviewFailureCode, type ResultsLedgerPort, type ResultsLedgerRead, type RunDraft, type RunRefusal, type RunStep } from './preview';
 import { appendRun, assertResultsBase, isDurabilityUnknown, nodeFsOps, probeDirectory, readRunLog, reissueRunReceipt, type FsOps, type RunAnchorSummary, type RunLedgerContextGate, type RunLedgerGate, type RunLedgerHooks, type RunLog, type RunReissueGate, type StoreErrorCode } from './results-store';
@@ -308,6 +308,10 @@ const unexplained = (runs: readonly ScoreRun[]): ResultsFailure | null => {
   return bad ? failure('RESULT_INTEGRITY', `${String(bad.seq).padStart(4, '0')}: o registro não se explica a partir de si mesmo.`) : null;
 };
 const sameHead = (a: Head | null, b: Head | null): boolean => (a === null || b === null ? a === b : a.seq === b.seq && a.sha256 === b.sha256);
+/** R2.1: a avaliação não trouxe a prova v2 completa (só a resposta do caminho v1, ou nenhuma): o mesmo motivo que a prévia mostra. */
+const NO_V2_PROOF = previewBlocker('EVIDENCE_PROVENANCE_UNPROVEN', 'BLOCKING', { reasonCode: 'SEAL_VERSION_NOT_ALLOWED' });
+/** R2.1: a pendente foi gravada antes da R2.1, sem `evidenceProvenance`; concluí-la daria um resultado confirmado sem a proveniência que o atestou. */
+const NOT_RECORDED = previewBlocker('EVIDENCE_PROVENANCE_UNPROVEN', 'BLOCKING', { reasonCode: 'PROVENANCE_NOT_RECORDED' });
 
 /* ------------------------------------------------------------------ finalização pelo livro (R1.3; spec §16.17.3) */
 
@@ -602,10 +606,11 @@ export function createScoringResultsService(deps: ResultsDeps) {
   }
 
   function draftFrom(evaluation: Evaluation, operator: string, finalizedAt: string): ScoreRunDraft | null {
-    const { input, result, outcome, mapped, basis, decisions } = evaluation;
+    const { input, result, outcome, mapped, basis, decisions, provenance } = evaluation;
     const alias = mapped?.traceability.auditId;
     const referenceDateSource = mapped?.traceability.referenceDateSource;
-    if (!input || !result || !outcome || !mapped || !basis || !alias || !referenceDateSource || evaluation.inputSha256 === null) return null;
+    // R2.1: sem a prova v2 da avaliação nada é montado (defesa em profundidade: a finalização já recusou com NOT_FINALIZABLE)
+    if (!input || !result || !outcome || !mapped || !basis || !alias || !referenceDateSource || evaluation.inputSha256 === null || !provenance) return null;
     const website = mapped.traceability.websiteDerivation;
     const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
     // Auditoria PROTEGIDA pelo livro ⇒ formato v2 citando a cabeça de DECISÕES do livro (§16.17.7: nunca uma posição RUN_*; uma finalização não a move); sem livro (testes da 6B/6C
@@ -638,6 +643,8 @@ export function createScoringResultsService(deps: ResultsDeps) {
       inputSha256: evaluation.inputSha256,
       resultSha256: result.resultSha256,
       ...(ledgerHead ? { ledgerHead } : {}),
+      // R2.1: a cabeça e as chaves EXATAS que o verificador v2 devolveu nesta avaliação (cópia; nada é recalculado nem reordenado)
+      evidenceProvenance: { headSeq: provenance.headSeq, headSealSha256: provenance.headSealSha256, keyIds: [...provenance.keyIds] },
     };
   }
 
@@ -832,6 +839,8 @@ export function createScoringResultsService(deps: ResultsDeps) {
               // (4) o histórico de decisões não regrediu desde o head gravado. O pedido do operador (`expectedHead`/`expectedInputSha256`) vem da
               // interface a partir do próprio arquivo: NÃO é prova de nada.
               if (judgeOrigin(deps.origin, 'RUN', last) !== 'PROVEN') return reject({ ...failure('RESULT_PENDING_ORIGIN_UNPROVEN'), ...pendingBody(last) });
+              // (1a) R2.1: pendente LEGADA, sem a proveniência registrada, nunca vira resultado confirmado (como a pendente anterior à prova de origem): nenhum recibo
+              if (last.evidenceProvenance === undefined) return reject({ ...failure('NOT_FINALIZABLE'), blockers: [NOT_RECORDED], ...pendingBody(last) });
               // (1b) com o livro: a origem também comprovada pela testemunha que o livro lê (D-16)
               const unprovable = runLedger ? runLedger.conclusionBlocked('ORIGIN') : null;
               if (unprovable) return reject({ ...unprovable, ...pendingBody(last) });
@@ -874,6 +883,8 @@ export function createScoringResultsService(deps: ResultsDeps) {
           if (!ev.value.payload.finalization.allowed || ev.value.payload.blockers.some((b) => b.severity === 'BLOCKING')) {
             return reject({ ...failure('NOT_FINALIZABLE'), blockers: ev.value.payload.blockers });
           }
+          // 3b. R2.1: a escrita nova EXIGE a prova v2 completa da avaliação (cabeça e chaves que o resultado grava). Sem ela, mesmo com a prévia "finalizável", nada é gravado.
+          if (!ev.value.provenance) return reject({ ...failure('NOT_FINALIZABLE'), blockers: [...ev.value.payload.blockers, NO_V2_PROOF] });
           // 4. recheca do website BRUTO íntegro, só no servidor
           const emitted = ev.value.input?.profile?.website?.[0]?.value;
           if (emitted !== undefined) {
