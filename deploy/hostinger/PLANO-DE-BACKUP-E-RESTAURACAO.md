@@ -72,7 +72,10 @@ restauração antes da produção (onda G2, ensaios EN-02a a EN-03) e a cada tri
 O web é o **único** processo que grava as pastas; parar o web (com `stop-first`, réplica única) congela as seis no mesmo instante. A janela é
 curta (arquivos pequenos) e é combinada com quem opera (ninguém gravando). Os destinos `<…>` são pastas **já existentes**, montadas de outro
 disco/provedor. Cada rodada cria, em cada destino, a pasta `<RODADA>/` (exclusiva: falha se já existir) com `dados/` (a cópia),
-`SHA256SUMS` (hashes da **origem**, calculados com o web parado) e `CABECAS.json` (as cabeças da rodada).
+`SHA256SUMS` (hashes da **origem**, calculados com o web parado), `CABECAS.json` (as cabeças da rodada) e **um marcador persistente**:
+`RODADA-VALIDA` (gravado nas seis pastas só depois de as seis cópias conferirem) ou `RODADA-INCOMPLETA` (gravado pelo `trap` em toda pasta
+já criada, com data e hora UTC, o passo que falhou e o código de saída). A restauração só aceita rodada com `RODADA-VALIDA` e sem
+`RODADA-INCOMPLETA`.
 
 **Antes da rodada (GE-R9):** com o web no ar e ninguém gravando, registrar para cada auditoria em uso o `head` (`seq` + `sha256`) que a API
 de decisões e a de resultados devolvem e a vista do livro, num arquivo local `<ARQUIVO_DAS_CABECAS>` (pela sessão autenticada de um
@@ -82,38 +85,52 @@ set -euo pipefail                                        # qualquer falha aborta
 RODADA="$(date -u +%Y%m%d-%H%M%S)"                       # o MESMO rótulo em todas as pastas (pares do mesmo instante)
 CABECAS="<ARQUIVO_DAS_CABECAS>"
 [ -s "$CABECAS" ] || { echo "cabeças da rodada ausentes: nada foi feito" >&2; exit 1; }
-religar() {                                              # roda SEMPRE na saída (sucesso ou falha): o web volta, e a falha fica registrada
+PASSO="preparação"; CRIADAS=()                          # o passo corrente e as pastas de rodada já criadas (para o marcador de falha)
+religar() {                                              # roda SEMPRE na saída (sucesso ou falha): marca a falha, depois o web volta
   status=$?
+  if [ "$status" -ne 0 ]; then
+    for r in "${CRIADAS[@]}"; do
+      printf 'rodada %s INCOMPLETA\nquando (UTC): %s\npasso que falhou: %s\nsaída: %s\n' "$RODADA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        "$PASSO" "$status" > "$r/RODADA-INCOMPLETA" || echo "não foi possível marcar $r como incompleta" >&2
+    done
+    echo "BACKUP DA FASE 6 FALHOU (rodada $RODADA, passo: $PASSO, saída $status): rodada INVÁLIDA; web religado" >&2
+  fi
   docker service scale gmn_gmn-web=1 >/dev/null
-  if [ "$status" -ne 0 ]; then echo "BACKUP DA FASE 6 FALHOU (rodada $RODADA, saída $status): rodada INVÁLIDA; web religado" >&2; fi
 }
 trap religar EXIT
-docker service scale gmn_gmn-web=0                       # congela as gravações
+PASSO="parar o web"; docker service scale gmn_gmn-web=0  # congela as gravações
 copia() {
-  origem="$1"; rodada="$2/$RODADA"
-  mkdir -- "$rodada"                                     # exclusivo: nunca reaproveita nem sobrescreve uma rodada
+  nome="$1"; origem="$2"; rodada="$3/$RODADA"
+  PASSO="$nome: criar a rodada"; mkdir -- "$rodada"      # exclusivo: nunca reaproveita nem sobrescreve uma rodada
+  CRIADAS+=("$rodada")
+  PASSO="$nome: hashes da origem"
   ( cd -- "$origem" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum ) > "$rodada/SHA256SUMS"
-  rsync -a -- "$origem"/ "$rodada/dados"/                # pasta nova: nada a sobrescrever; nunca --delete
+  PASSO="$nome: cópia"; rsync -a -- "$origem"/ "$rodada/dados"/            # pasta nova: nada a sobrescrever; nunca --delete
+  PASSO="$nome: conferência"
   ( cd -- "$rodada/dados" && sha256sum --quiet --strict -c ../SHA256SUMS )    # a cópia confere, arquivo a arquivo, com a origem
   [ "$(find "$origem" -type f | wc -l)" -eq "$(find "$rodada/dados" -type f | wc -l)" ]   # e não tem arquivo a mais nem a menos
-  cp -- "$CABECAS" "$rodada/CABECAS.json"                # as cabeças ficam DENTRO da rodada, em todas as cópias (inclusive a do livro)
+  PASSO="$nome: cabeças"; cp -- "$CABECAS" "$rodada/CABECAS.json"          # as cabeças ficam DENTRO da rodada (inclusive na do livro)
 }
-copia "$GMN_RAIZ_DADOS_DECISOES"           "<DESTINO_BACKUP_DADOS_FASE6>/decisions"
-copia "$GMN_RAIZ_DADOS_RESULTADOS"         "<DESTINO_BACKUP_DADOS_FASE6>/results"
-copia "$GMN_RAIZ_DADOS_RECIBOS_DECISOES"   "<DESTINO_BACKUP_RECIBOS_DECISOES>"
-copia "$GMN_RAIZ_DADOS_RECIBOS_RESULTADOS" "<DESTINO_BACKUP_RECIBOS_RESULTADOS>"
-copia "$GMN_RAIZ_DADOS_LIVRO"              "<DESTINO_BACKUP_LIVRO>"
-copia "$GMN_RAIZ_DADOS_MANIFESTOS"         "<DESTINO_BACKUP_MANIFESTOS>"
+copia decisoes           "$GMN_RAIZ_DADOS_DECISOES"           "<DESTINO_BACKUP_DADOS_FASE6>/decisions"
+copia resultados         "$GMN_RAIZ_DADOS_RESULTADOS"         "<DESTINO_BACKUP_DADOS_FASE6>/results"
+copia recibos-decisoes   "$GMN_RAIZ_DADOS_RECIBOS_DECISOES"   "<DESTINO_BACKUP_RECIBOS_DECISOES>"
+copia recibos-resultados "$GMN_RAIZ_DADOS_RECIBOS_RESULTADOS" "<DESTINO_BACKUP_RECIBOS_RESULTADOS>"
+copia livro              "$GMN_RAIZ_DADOS_LIVRO"              "<DESTINO_BACKUP_LIVRO>"
+copia manifestos         "$GMN_RAIZ_DADOS_MANIFESTOS"         "<DESTINO_BACKUP_MANIFESTOS>"
+PASSO="marcar a rodada como válida"                      # só depois de as SEIS cópias conferirem
+for r in "${CRIADAS[@]}"; do printf 'rodada %s VALIDA\nquando (UTC): %s\n' "$RODADA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$r/RODADA-VALIDA"; done
 echo "rodada $RODADA válida nos seis destinos"
 ```
 - **Depois:** com o web de volta, as cabeças lidas pela API precisam ser **iguais** às de `<ARQUIVO_DAS_CABECAS>`. Se mudaram, alguém gravou
-  durante a janela: registrar a rodada como inválida e fazer outra (com outro rótulo; a inválida nunca é apagada nem reaproveitada).
-- Uma rodada só vale se o bloco terminou com "rodada … válida". Falha em qualquer cópia ⇒ o `trap` religa o web e registra a falha; as
-  pastas parciais dessa rodada ficam como estão, marcadas como inválidas no registro, e nunca são usadas numa restauração.
+  durante a janela: marcar a rodada como incompleta nas seis pastas (`printf 'rodada <RODADA> INCOMPLETA\nmotivo: cabeças mudaram durante a
+  janela\n' > <destino>/<RODADA>/RODADA-INCOMPLETA`) e fazer outra, com outro rótulo; a incompleta nunca é apagada nem reaproveitada.
+- Uma rodada só vale com `RODADA-VALIDA` e sem `RODADA-INCOMPLETA` nas seis pastas. Falha em qualquer passo ⇒ o `trap` grava
+  `RODADA-INCOMPLETA` (data e hora UTC, passo, código de saída) em toda pasta da rodada já criada, religa o web e avisa no stderr; as pastas
+  parciais ficam como estão e a restauração as recusa.
 - Envio remoto (`rsync` para outra máquina ou `restic` com um repositório **por destino**): as mesmas regras, ou seja, rodada nova e
   exclusiva, hashes da origem conferidos na cópia, **nunca `--delete`**, nunca sobrescrever, nunca `restic forget` de uma rodada que seja a
   única referência.
-- Conferência no destino, a qualquer momento: `( cd <destino>/<RODADA>/dados && sha256sum --strict -c ../SHA256SUMS )`.
+- Conferência no destino, a qualquer momento: `test -f <destino>/<RODADA>/RODADA-VALIDA && test ! -e <destino>/<RODADA>/RODADA-INCOMPLETA && ( cd <destino>/<RODADA>/dados && sha256sum --strict -c ../SHA256SUMS )`.
 - Nada é copiado para **dentro** das pastas vivas fora do código (o leitor recusa arquivo criado à mão; checklist de produção §9).
 
 ### Restauração da Fase 6 (sempre os pares do mesmo instante, em pasta nova irmã da viva)
@@ -124,9 +141,11 @@ echo "rodada $RODADA válida nos seis destinos"
    `C=<destino>/<RODADA>`, a restaurada nasce como **irmã** de `P`, nunca dentro dela, e só com o conteúdo de `dados/`:
    ```bash
    set -euo pipefail
+   [ -f "$C/RODADA-VALIDA" ] && [ ! -e "$C/RODADA-INCOMPLETA" ] \
+     || { echo "rodada sem RODADA-VALIDA ou com RODADA-INCOMPLETA: recusada" >&2; exit 1; }
    N="$P.restaurado-<RODADA>"
    mkdir -m 0700 -- "$N"                                   # exclusivo: falha se já existir
-   rsync -a -- "$C/dados"/ "$N"/                            # só os dados: SHA256SUMS e CABECAS.json ficam no backup
+   rsync -a -- "$C/dados"/ "$N"/                            # só os dados: SHA256SUMS, CABECAS.json e marcadores ficam no backup
    ( cd -- "$N" && sha256sum --quiet --strict -c "$C/SHA256SUMS" )
    ```
 3. Com **todas** as pastas da rodada restauradas e conferidas, parar o web e trocar cada uma, guardando a viva como irmã (nunca apagar):
