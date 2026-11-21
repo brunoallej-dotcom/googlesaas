@@ -466,6 +466,8 @@ export async function appendRun<F>(baseDir: unknown, auditId: unknown, build: (c
 
       // A primitiva NUNCA grava um resultado sem etiqueta de origem (defesa em profundidade: as rotas e o serviço já recusam sem chave)
       if (!options.origin) return fail('INTERNAL', 'Sem autenticador de origem, nenhum resultado é gravado.');
+      // R2.1: nem sem a proveniência que atestou a coleta (o esquema a deixa opcional só para o LEGADO lido do disco; malformada, o esquema recusa logo abaixo)
+      if ((built.draft as { readonly evidenceProvenance?: unknown }).evidenceProvenance === undefined) return fail('INTERNAL', 'Sem a proveniência da coleta (prova v2), nenhum resultado novo é gravado.');
       const unsigned = { ...built.draft, seq, prevSha256: confirmed[confirmed.length - 1]?.contentSha256 ?? null };
       const run = seal({ ...unsigned, origin: options.origin.sign('RUN', unsigned) });
       const checked = scoreRunSchema.safeParse(run);

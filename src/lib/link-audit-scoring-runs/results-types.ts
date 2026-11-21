@@ -46,6 +46,26 @@ const seq = z.number().int().min(1).max(MAX_RUNS);
 export const headSchema = z.object({ seq: z.number().int().min(1).max(9999), sha256: hex64 }).strict();
 export type RunHead = z.infer<typeof headSchema>;
 
+/*
+ * PROVENIÊNCIA REGISTRADA (R2.1; contrato do verificador v2 §7.3, O6 aprovado na D14 da spec do P1): a cabeça da cadeia de manifestos e as chaves que atestaram a coleta, como
+ * o verificador v2 as devolveu em `AUTHENTICATED`. Limites do contrato: `MAX_CHAIN_SEALS` = 256 posições e `MAX_TRUST_KEYS` = 16 itens na lista (os `keyIds` são ids da lista);
+ * o padrão do id é o da lista de chaves (`TRUST_KEY_ID`, conferido por teste contra `parseTrustKeyring`). Copiados aqui de propósito: este arquivo não importa o verificador
+ * (lista fechada de imports, RL-29).
+ */
+export const MAX_PROVENANCE_HEAD_SEQ = 256;
+export const MAX_PROVENANCE_KEY_IDS = 16;
+const provenanceKeyId = z.string().regex(/^[a-z0-9][a-z0-9-]{3,31}$/);
+const strictlyAscending = (ids: readonly string[]): boolean => ids.every((id, index) => index === 0 || (ids[index - 1] as string) < id);
+export const evidenceProvenanceSchema = z
+  .object({
+    headSeq: z.number().int().min(1).max(MAX_PROVENANCE_HEAD_SEQ),
+    headSealSha256: hex64,
+    /** Ids distintos e ORDENADOS das chaves das posições, mais o signatário do fecho usado (contrato §6). */
+    keyIds: z.array(provenanceKeyId).min(1).max(MAX_PROVENANCE_KEY_IDS).refine(strictlyAscending, { message: 'keyIds distintos e em ordem' }),
+  })
+  .strict();
+export type EvidenceProvenanceRecord = z.infer<typeof evidenceProvenanceSchema>;
+
 const evidenceItem = z
   .object({ ref, kind: z.enum(['CAPTURE', 'REPORT']), observedAt: isoAny, contentSha256: hex64, bodySha256: hex64.nullable(), legacy: z.boolean(), superseded: z.boolean() })
   .strict();
@@ -112,6 +132,11 @@ export const scoreRunSchema = z
     origin: originProofSchema.optional(),
     /** Cabeça de DECISÕES do livro no instante da finalização (v2; §16.17.7: nunca uma posição RUN_*): a leitura confere que a posição citada existe no livro com o mesmo hash. */
     ledgerHead: z.object({ ledgerSeq: z.number().int().min(1).max(4000), sha256: hex64 }).strict().optional(),
+    /**
+     * R2.1: proveniência que ATESTOU a coleta (cabeça da cadeia de manifestos e chaves, devolvidas pelo verificador v2 em `AUTHENTICATED`), nas versões 1 e 2 (sem v3). AUSENTE =
+     * resultado LEGADO, gravado antes da R2.1 ("proveniência não registrada"); toda escrita NOVA a exige (`appendRun`). Presente e malformada = falha de integridade na leitura.
+     */
+    evidenceProvenance: evidenceProvenanceSchema.optional(),
     prevSha256: hex64.nullable(),
     contentSha256: hex64,
   })
@@ -121,7 +146,8 @@ export const scoreRunSchema = z
     if (run.schemaVersion === RUN_SCHEMA_VERSION_LEDGER && run.ledgerHead === undefined) ctx.addIssue({ code: 'custom', message: 'o formato v2 exige ledgerHead' });
   });
 export type ScoreRun = z.infer<typeof scoreRunSchema>;
-export type ScoreRunDraft = Omit<ScoreRun, 'seq' | 'prevSha256' | 'contentSha256'>;
+/** O que uma escrita NOVA monta: a proveniência é OBRIGATÓRIA aqui (R2.1); só o legado lido do disco pode não tê-la. */
+export type ScoreRunDraft = Omit<ScoreRun, 'seq' | 'prevSha256' | 'contentSha256' | 'evidenceProvenance'> & { readonly evidenceProvenance: EvidenceProvenanceRecord };
 
 /** Recibo do resultado (protocolo genérico do I0). */
 export const runAnchorSchema = z
