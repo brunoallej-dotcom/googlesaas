@@ -1,6 +1,7 @@
 import type { OriginAuthenticator } from '../link-audit-origin';
 import {
   CHECKPOINT_EVERY,
+  GUARD_MAX_LAG,
   isRunEvent,
   LEDGER_CAPACITY_POLICY,
   MAX_LEDGER_RECORDS,
@@ -370,11 +371,36 @@ export type LedgerReadState =
   /** A base do livro travou depois de uma falha de fsync/erro fatal neste processo (M2). */
   | { readonly kind: 'DURABILITY_UNKNOWN' };
 
-/** O que a guarda externa (se houver) informa. */
+/**
+ * O que a guarda externa (se houver) informa. `head` é a leitura ANTERIOR ao livro (R7-05): só ela decide o `GUARD_MISMATCH`. `afterLedger` (G1.b.1) é uma releitura feita
+ * DEPOIS do livro, só quando o atraso medido com `head` passaria de `L_max` ou faltaria a cabeça (regras 2 e 3): o livro pode ter crescido entre as duas leituras numa corrida
+ * legítima, e o atraso é o do livro LIDO contra a guarda mais recente que se conhece.
+ */
 export type GuardEvidence =
   | { readonly status: 'NOT_CONFIGURED' }
   | { readonly status: 'UNAVAILABLE' }
-  | { readonly status: 'READ'; readonly head: LedgerHead | null };
+  | { readonly status: 'READ'; readonly head: LedgerHead | null; readonly afterLedger?: LedgerHead | null };
+
+/** Atraso da guarda sobre o livro lido (regras 2 e 3): a cabeça da guarda considerada e quantos registros do livro ela ainda não cobre. */
+export interface GuardLag {
+  readonly head: LedgerHead | null;
+  readonly lag: number;
+}
+/** Regras 2 e 3 da guarda (spec `link-audit-production-gates.md` §5.1.4): o atraso, ou `MISMATCH` quando a releitura posterior ao livro traz uma cabeça que ele não contém. */
+export function guardLagOf(guard: { readonly head: LedgerHead | null; readonly afterLedger?: LedgerHead | null }, records: readonly LedgerRecord[]): GuardLag | 'MISMATCH' {
+  const tail = records.length;
+  const before = guard.head;
+  const after = guard.afterLedger ?? null;
+  // a releitura só vale se andou para a frente (a guarda é monotônica); se já cobre além do que foi lido, o livro lido está todo publicado
+  if (after !== null && after.ledgerSeq > (before?.ledgerSeq ?? 0)) {
+    if (after.ledgerSeq > tail) return { head: after, lag: 0 };
+    if (records[after.ledgerSeq - 1]?.contentSha256 !== after.sha256) return 'MISMATCH';
+    return { head: after, lag: tail - after.ledgerSeq };
+  }
+  return { head: before, lag: tail - (before?.ledgerSeq ?? 0) };
+}
+/** A releitura da guarda depois do livro pode mudar o veredito: a cabeça falta com ≥ 2 registros, ou o atraso passa de `L_max` (o serviço relê só nesses casos). */
+export const guardVerdictNeedsReread = (head: LedgerHead | null, records: number): boolean => (head === null && records >= 2) || records - (head?.ledgerSeq ?? 0) > GUARD_MAX_LAG;
 
 export interface ProtectionInput {
   readonly configured: boolean;
@@ -442,6 +468,8 @@ export interface Evaluation {
    * sem ela (e, até lá, julgou sobre R1, falhando fechado para os resultados); quem avalia relê os resultados e avalia de novo com `resultsAfterLedger`.
    */
   readonly needsFreshResults: boolean;
+  /** Atraso da guarda sobre o livro lido (`null` sem guarda lida ou antes das testemunhas). O serviço deriva dele o alarme de `BEHIND` prolongado (§5.1.7, `T`). */
+  readonly guardLag: GuardLag | null;
 }
 
 const matchesOp = (entry: DecisionRef, op: LedgerOp): boolean =>
@@ -460,6 +488,8 @@ export function evaluateProtection(input: ProtectionInput): Evaluation {
   const guardStatus: GuardStatus = input.guard.status === 'NOT_CONFIGURED' ? 'NOT_CONFIGURED' : input.guard.status === 'UNAVAILABLE' ? 'UNAVAILABLE' : 'CONSISTENT';
   /** Família de resultados: só existe depois das TESTEMUNHAS (R6-05); atribuída antes do cruzamento livro × decisões, entra em toda vista montada dali em diante. */
   let runs: RunsJudgement | null = null;
+  /** Atraso da guarda (regras 2 e 3), conhecido depois das testemunhas. */
+  let guardLag: GuardLag | null = null;
   const make = (state: LedgerView['state'], reason: LedgerReason | null, replay: LedgerReplay | null, extra: Partial<LedgerView> = {}, plan: RecoveryPlan = none): Evaluation => {
     const settled = runs ? settleRuns(runs, state) : null;
     return {
@@ -482,6 +512,7 @@ export function evaluateProtection(input: ProtectionInput): Evaluation {
       plan,
       runPlan: planRun(replay?.openRun ?? null, settled, state, runs?.reissue ?? null),
       needsFreshResults: runs?.needsFreshResults ?? false,
+      guardLag,
     };
   };
   const unresolved = (reason: LedgerReason, replay: LedgerReplay | null = null, extra: Partial<LedgerView> = {}, plan: RecoveryPlan = none): Evaluation => make('HISTORY_UNRESOLVED', reason, replay, extra, plan);
@@ -522,6 +553,15 @@ export function evaluateProtection(input: ProtectionInput): Evaluation {
   }
   if (input.guard.status === 'READ' && input.guard.head) {
     if (at(input.guard.head.ledgerSeq)?.contentSha256 !== input.guard.head.sha256) return unresolved('GUARD_MISMATCH', replay, { externalGuard: 'MISMATCH' });
+  }
+  if (input.guard.status === 'READ') {
+    // REGRAS 2 E 3 (G1.b.1, PG-G01/PG-G02): também testemunhas — antes de qualquer receita. Uma cabeça que falta com ≥ 2 registros ("esqueceu" ou nunca publicou além da
+    // inscrição) e um atraso acima de `L_max` não vêm de fluxo legítimo: toda operação nova publica antes de começar e o RECOVER da rotação publica antes do CHECKPOINT.
+    const lag = guardLagOf(input.guard, replay.records);
+    if (lag === 'MISMATCH') return unresolved('GUARD_MISMATCH', replay, { externalGuard: 'MISMATCH' });
+    guardLag = lag;
+    if (lag.head === null && replay.records.length >= 2) return unresolved('GUARD_HEAD_MISSING', replay, { externalGuard: 'BEHIND' });
+    if (lag.lag > GUARD_MAX_LAG) return unresolved('GUARD_LAGGING', replay, { externalGuard: 'BEHIND' });
   }
   // CRUZAMENTO DE RESULTADOS (§16.17.5): DEPOIS das testemunhas e ANTES do cruzamento livro × decisões — vale para toda vista montada daqui em diante, inclusive as de razão de DECISÃO.
   // (1) As contradições julgadas SÓ sobre R1 (R1 → L: todo `sk` visto em R1 tem `RUN_INTENT` durável no livro lido depois) podem ser o único sinal de livro truncado ou refeito:
@@ -580,7 +620,7 @@ export function evaluateProtection(input: ProtectionInput): Evaluation {
     recoverable = age >= input.staleMs;
   }
 
-  const guardBehind = input.guard.status === 'READ' && (input.guard.head === null ? replay.head.ledgerSeq > 0 : input.guard.head.ledgerSeq < replay.head.ledgerSeq);
+  const guardBehind = guardLag !== null && guardLag.lag > 0;
   return make(
     'PROTECTED',
     null,

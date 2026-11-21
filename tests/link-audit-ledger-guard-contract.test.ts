@@ -243,11 +243,16 @@ test('PG-G02 (fluxos): o pior caso da §5.1.7 (CHECKPOINT automático, INTENT + 
 
   // nenhum caminho legítimo grava o 6º: operação nova (com CHECKPOINT automático devido), RECOVER (com rotação devida) e reenvio da reemissão
   const length = (await ledgerRecords(w)).length;
-  const blocked = await svc().create(BIA, w.auditId, { record: rec.naModel(), expectedHead: behind.head }, clock());
+  const decisionsHead = (await must(svc().list(BIA, w.auditId, clock()))).head;
+  const blocked = await svc().create(BIA, w.auditId, { record: rec.naModel(), expectedHead: decisionsHead }, clock());
   assert.ok(!blocked.ok && blocked.code === 'LEDGER_GUARD_UNAVAILABLE', JSON.stringify(blocked).slice(0, 200));
   const rotationRefused = await svc({ auth: rotatedOnce() }).ledgerAction(ANA, w.auditId, { action: 'RECOVER' }, clock());
   assert.ok(!rotationRefused.ok && rotationRefused.code === 'LEDGER_GUARD_UNAVAILABLE', JSON.stringify(rotationRefused).slice(0, 200));
-  await must(svc().create(ANA, w.auditId, { record: rec.c3(), expectedHead: behind.head }, clock()));
+  fs.rmSync(anchorPath(w, 2)); // o mesmo recibo removido de novo: a reemissão já registrada não grava outro registro (no máximo uma por entrada confirmada)
+  const again = await must(svc().list(ANA, w.auditId, clock()));
+  assert.equal(again.ledger.reason, 'RECEIPT_REMOVED');
+  await must(svc().create(ANA, w.auditId, { record: rec.c3(), expectedHead: again.head }, clock()));
+  assert.ok(fs.existsSync(anchorPath(w, 2)));
   assert.equal((await ledgerRecords(w)).length, length, 'nada novo entrou no livro');
   assert.equal(await lagOf(w), GUARD_MAX_LAG);
 
