@@ -20,7 +20,7 @@
 | R1 | ADR-0002: confirmação de resultados pelo livro de cabeças (fase C do resultado só pelo autor) | W0 (§16.17 revisada), W1, W3 | W2 | ✅ R1.1–R1.6 mergeadas (#39, #41, #45, #46, #49 e o PR da R1.6); portão da R1 satisfeito no código, nada implantado |
 | R2 | Resultado confirmado registra a proveniência que o atestou (`headSeq`, `headSealSha256`, `keyIds`); `UNAUTHENTICATED` na releitura ⇒ revisão humana | W3, R1 | W4 | 🟡 R2.1 (prova na avaliação, campo gravado e validado) neste PR; R2.2 (reconferência, porta, interface) a seguir |
 | W4 | CLI `sign` (manifesto `v2`) | W1, W3, decisões §13.2 itens 1, 2 e 4 (tomadas: D10, D11, D12/D14) | — | 🟡 W4.1 (#38), W4.2 (#40), W4.3 (#42), W4.4 (#44) e W4.5 (#48) mergeadas; W4.6 em revisão |
-| W5 | Procedimento, dossiê e ensaio ponta a ponta em homologação com chave descartável | W4, R1, R2 | — | ⬜ decisões tomadas (D15, spec §13.4) |
+| W5 | Procedimento, dossiê e ensaio ponta a ponta em homologação com chave descartável | W4, R1, R2 | — | 🟡 W5.1 (documentação) ✅ neste PR; W5.2 (pendências de código) e W5.3 (ensaio em homologação) a seguir |
 | W6 | Coleta LIVE nova da TUVAPLAST (fora do código) | W5 + autorização escrita específica (**dada em 20/11/2026, D16**) | — | ⬜ autorizada; roda depois do ensaio da W5 |
 
 Ordem prática: W0 → {W1 ∥ W3} → {W2 ∥ R1} → {R2 ∥ W4} → W5 → W6. A R1 espera a W3 porque as duas mexem nos validadores da
@@ -356,7 +356,35 @@ interface (`audit-page/validators.ts`).
     0444, do custodiante ou do root (revisão independente da W4.6).
   - **`close-key` sob `--permission` (limite declarado na W4.6):** a conferência das pastas acima da pasta de recibos e da cópia do servidor exige
     grants largos (o Node concede a subárvore inteira de uma pasta); decidir entre a linha larga (`--allow-fs-read=/`, escrita só na cópia do
-    servidor) e uma conferência que não dependa do `lstat` das pastas acima.
+    servidor) e uma conferência que não dependa do `lstat` das pastas acima. **Decidido na W5.1 (manager, sob a delegação D15):**
+    a linha larga, com `--allow-fs-read=/` como único grant de leitura e escrita só em `<seals-dir>/_closures`
+    (`p1-runbook-custodiante.md` §9); o código ainda recusa `/` (pendência W5.2-2 abaixo).
+- **Fatias (22/11/2026, manager; um PR por fatia):**
+
+  | Fatia | Entrega | Status |
+  |---|---|---|
+  | W5.1 | Documentação, sem código: `p1-runbook-custodiante.md` (estação, artefato, linha exata do `sign`, chave K1 e conferência do perfil do KDF, cópias, fluxo, aceite de risco, `close-key`, destruição da chave do ensaio, suplente), `p1-runbook-conferente.md`, `p1-modelo-dossie.md` (partes A e B, aceite formal de risco), `p1-livro-de-manifestos.md` (formato e conferência periódica), `p1-canal-de-entrega-manifestos.md` (requisitos RC-01 a RC-10 e procedimento do canal pelo CI) e `p1-relatorio-ensaio-modelo.md` (roteiro do ensaio e verificação de entrada da nota 6 da R2.1) | ✅ neste PR |
+  | W5.2 | Pendências de código achadas na W5.1 (lista abaixo), com testes antes do código | ⬜ |
+  | W5.3 | Ensaio em homologação com chave descartável e o relatório `p1-relatorio-ensaio.md` (goal da onda). Depende da W5.2 e da pilha de homologação isolada criada pelo responsável (D-G0-12), com o volume de manifestos (G1.a) | ⬜ |
+
+  **Pendências de código da W5.2:**
+  1. **D15.6(d)** (`operator = custodiante` passa a marcar `requiresLaterReview: true`): hoje a marca é `roleException ||
+     sameRole(operator, approvedBy)` (`src/lib/link-audit-attestation/sign-core.ts:366`); falta o caso operador = custodiante, com
+     teste (IA-16) e a spec §5.5 passo 9 atualizada. Decisão do manager registrada na W5.1: não implementar na fatia de documentação.
+  2. **`close-key` sob `--permission`:** aceitar `--allow-fs-read=/` só no `close-key` e só como o único grant de leitura (`/` é
+     prefixo de texto de todos), mantendo a escrita só em `_closures`. Hoje `isNarrowPath` recusa `/` nos dois subcomandos
+     (`src/lib/link-audit-attestation/sign-args.ts:493`, aplicado em `:510`; o comentário de `:495-501` já registra o limite até a
+     W5). Falta também exercitar o `close-key` completo pelo artefato sob `--permission` no CI (nunca exercitado: notas da W4.6,
+     revisão item 5) e confirmar se criar `_closures` e o `fsync` da pasta funcionam com o grant de escrita só em `_closures`.
+  3. **Canal de entrega pelo CI** (D7, D15.5): workflow, comando de pré-verificação com o verificador `v2`, receptor no host com
+     criação exclusiva e `fsync`, testes (CE-1, CE-2, CE-3 e CE-5 de `p1-canal-de-entrega-manifestos.md` §5; o CE-4, volume no
+     `stack.yml`, é da G1.a). Antes do código: decidir por onde o manifesto entra no CI (repositório público, privado ou outro
+     meio) e de onde o CI lê a lista fixada (§4 do mesmo documento).
+  4. **Coleta sintética para a homologação:** a pilha não tem Serper (D-G0-12), e o CLI de coleta só expõe DRY_RUN e LIVE
+     (`scripts/link-audit-collect.ts:51-56`); o modo SIMULATED existe só no runtime, com provedores injetados
+     (`src/lib/link-audit-runtime/run.ts:158-160`). Sem um comando (ou semente) que grave uma captura no layout versionado e
+     imprima o relatório `--json` com `source.capture.sha256`, o passo S-02 do ensaio não tem como produzir o hash do coletor que o
+     `export` exige.
 - **Goal command**: `/goal test -f docs/phase6-auditoria-link/p1-relatorio-ensaio.md && grep -q "AUTHENTICATED" docs/phase6-auditoria-link/p1-relatorio-ensaio.md && grep -q "RUN_CONFIRMED" docs/phase6-auditoria-link/p1-relatorio-ensaio.md, stop after 3 tries`
 
 ## Onda W6 — Coleta LIVE nova da TUVAPLAST (fora do código)
