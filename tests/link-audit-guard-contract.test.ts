@@ -9,6 +9,7 @@ import {
   GUARD_BEHIND_ALARM_MS,
   GUARD_MAX_LAG,
   GUARD_RESPONSE_TIMEOUT_MS,
+  MAX_LEDGER_RECORDS,
   type DecisionRef,
   type ExternalGuardPort,
   type LedgerRecord,
@@ -199,12 +200,15 @@ test('PG-G02 (modelo): L_max = 5 (D-G0-4); atraso ≤ 5 ⇒ PROTECTED com BEHIND
   assert.deepEqual([at(1).state, at(1).reason, at(1).externalGuard, at(1).runs], ['HISTORY_UNRESOLVED', 'GUARD_LAGGING', 'BEHIND', undefined], 'atraso 6 ⇒ congela');
 });
 
-test('PG-G02 (modelo, leitura concorrente): atraso medido acima de L_max só porque o livro cresceu entre a leitura da guarda e a do livro NÃO é GUARD_LAGGING — vale a releitura da guarda feita depois do livro; ela nunca esconde um MISMATCH', () => {
+test('PG-G02 (modelo, leitura concorrente): atraso medido acima de L_max só porque o livro cresceu entre a leitura da guarda e a do livro NÃO é GUARD_LAGGING — vale a releitura da guarda feita depois do livro, conferida no livro; ela nunca esconde um MISMATCH nem aceita cabeça além da cauda', () => {
   const refs = decisionChain(3);
   const records = syntheticLedger(LEDGER_AUTH_A, AUD, refs);
   const ev = (afterLedger: { ledgerSeq: number; sha256: string } | null) => evaluateProtection(modelInput(records, refs, { status: 'READ', head: headAt(records, 1), afterLedger })).view;
   assert.deepEqual([ev(headAt(records, 6)).state, ev(headAt(records, 6)).externalGuard], ['PROTECTED', 'BEHIND']);
-  assert.deepEqual([ev({ ledgerSeq: 9, sha256: H('9') }).state, ev({ ledgerSeq: 9, sha256: H('9') }).externalGuard], ['PROTECTED', 'CONSISTENT'], 'a guarda já cobre além do que foi lido');
+  assert.deepEqual([ev(headAt(records, 7)).state, ev(headAt(records, 7)).externalGuard], ['PROTECTED', 'CONSISTENT'], 'a releitura cobre a cauda, com o hash do livro');
+  // revisão do PR #56: cabeça ALÉM da cauda do livro avaliado nunca é "coberta" — o serviço relê o livro antes; se ela ainda não está lá, não está provada
+  assert.deepEqual([ev({ ledgerSeq: 9, sha256: H('9') }).state, ev({ ledgerSeq: 9, sha256: H('9') }).reason, ev({ ledgerSeq: 9, sha256: H('9') }).externalGuard], ['HISTORY_UNRESOLVED', 'GUARD_MISMATCH', 'MISMATCH'], 'cabeça futura não provada ⇒ falha fechada');
+  assert.deepEqual([ev({ ledgerSeq: 8, sha256: (records[6] as LedgerRecord).contentSha256 }).reason], ['GUARD_MISMATCH'], 'nem com o hash de outro registro');
   assert.deepEqual([ev({ ledgerSeq: 6, sha256: H('f') }).state, ev({ ledgerSeq: 6, sha256: H('f') }).reason], ['HISTORY_UNRESOLVED', 'GUARD_MISMATCH'], 'releitura com cabeça que o livro não contém');
   assert.deepEqual([ev(null).reason, ev(headAt(records, 1)).reason], ['GUARD_LAGGING', 'GUARD_LAGGING'], 'a releitura não ajudou: continua acima do limite');
   // a cabeça lida ANTES do livro continua decidindo o MISMATCH (a releitura não o apaga)
@@ -225,6 +229,51 @@ test('PG-G02 (serviço, leitura concorrente): a guarda lida ANTES do livro está
   const stuck: ExternalGuardPort = { publish: (r) => w.guard.publish(r), latest: async () => ({ ok: true, head: stale }) };
   const frozen = (await must(serviceOver(w, { guard: stuck }).list(BIA, w.auditId, clock()))).ledger;
   assert.deepEqual([frozen.state, frozen.reason], ['HISTORY_UNRESOLVED', 'GUARD_LAGGING']);
+});
+
+/** Guarda cuja 1ª leitura (antes do livro) está 6 atrás e a 2ª (depois do livro) devolve `second()` — o que outro processo publicou no meio. */
+function racingGuard(w: LedgerWorld, stale: { ledgerSeq: number; sha256: string }, second: () => Promise<{ ok: true; head: { ledgerSeq: number; sha256: string } | null }>) {
+  let calls = 0;
+  const port: ExternalGuardPort = { publish: (r) => w.guard.publish(r), latest: async () => (++calls % 2 === 1 ? { ok: true, head: stale } : second()) };
+  return port;
+}
+async function sevenRecords(): Promise<{ w: LedgerWorld; stale: { ledgerSeq: number; sha256: string } }> {
+  const w = await ledgerWorld({ withGuard: true });
+  for (const record of [rec.c2(), rec.c3(), rec.naModel()]) await must(w.protectedService.create(ANA, w.auditId, { record }, clock()));
+  const records = await ledgerRecords(w);
+  assert.equal(records.length, 7);
+  return { w, stale: { ledgerSeq: 1, sha256: (records[0] as LedgerRecord).contentSha256 } };
+}
+
+test('PG-G02 (serviço, leitura concorrente — revisão do PR #56): cabeça da releitura POSTERIOR à cauda lida ⇒ o serviço relê o livro e só a aceita se ela existe nele como registro válido (prefixo); a vista e a cauda são as do livro RELIDO', async () => {
+  const { w, stale } = await sevenRecords();
+  // outro processo gravou 8 e 9 e publicou 9 entre a leitura do livro e a releitura da guarda
+  const grows = racingGuard(w, stale, async () => {
+    const records = await appendLedger(w, LEDGER_AUTH_A, checkpointMaker, checkpointMaker);
+    const tail = records[records.length - 1] as LedgerRecord;
+    assert.deepEqual(await w.guard.publish({ auditId: w.auditId, ledgerSeq: tail.ledgerSeq, sha256: tail.contentSha256 }), { ok: true });
+    return { ok: true, head: { ledgerSeq: tail.ledgerSeq, sha256: tail.contentSha256 } };
+  });
+  const view = (await must(serviceOver(w, { guard: grows }).list(BIA, w.auditId, clock()))).ledger;
+  assert.deepEqual([view.state, view.reason, view.externalGuard, view.head?.ledgerSeq], ['PROTECTED', null, 'CONSISTENT', 9], 'a vista é a do livro relido, com a cauda 9');
+});
+
+test('PG-G02 (serviço, leitura concorrente — revisão do PR #56): cabeça futura com hash arbitrário (ou de posição que o livro relido não tem) ⇒ HISTORY_UNRESOLVED/GUARD_MISMATCH, nada vigente, e o CHECKPOINT da rotação NÃO entra', async () => {
+  const { w, stale } = await sevenRecords();
+  const forged = racingGuard(w, stale, async () => ({ ok: true, head: { ledgerSeq: 9, sha256: H('9') } }));
+  const log = alarmLog();
+  const listed = await must(serviceOver(w, { guard: forged, guardAlarms: log.sink }).list(BIA, w.auditId, clock()));
+  assert.deepEqual([listed.ledger.state, listed.ledger.reason, listed.ledger.externalGuard, listed.decisions.length, listed.finalizable], ['HISTORY_UNRESOLVED', 'GUARD_MISMATCH', 'MISMATCH', 0, false]);
+  assert.ok(kindsOf(log.alarms).includes('GUARD_MISMATCH'), JSON.stringify(log.alarms));
+  // posição que existe no livro relido, mas com outro hash
+  const records = await ledgerRecords(w);
+  const otherHash = racingGuard(w, stale, async () => ({ ok: true, head: { ledgerSeq: 7, sha256: (records[5] as LedgerRecord).contentSha256 } }));
+  assert.equal((await must(serviceOver(w, { guard: otherHash }).list(BIA, w.auditId, clock()))).ledger.reason, 'GUARD_MISMATCH');
+  // rotação: a cabeça futura não provada nunca vale como CONSISTENT para o CHECKPOINT
+  const before = await ledgerEvents(w);
+  const recover = await serviceOver(w, { guard: racingGuard(w, stale, async () => ({ ok: true, head: { ledgerSeq: 9, sha256: H('9') } })), auth: rotatedOnce() }).ledgerAction(ANA, w.auditId, { action: 'RECOVER' }, clock());
+  assert.ok(!recover.ok, JSON.stringify(recover).slice(0, 200));
+  assert.deepEqual(await ledgerEvents(w), before, 'nenhum CHECKPOINT');
 });
 
 /**
@@ -416,6 +465,49 @@ test('PG-G05 (regra 7, serviço): CONFLICT (outro sha256 na mesma posição) SEM
   assert.ok(conflict.log.alarms.some((alarm) => alarm.kind === 'GUARD_PUBLISH_FAILED_AFTER_RECORD' && alarm.cause === 'CONFLICT'));
   const view = await viewOf(conflict.w);
   assert.deepEqual([view.state, view.reason], ['HISTORY_UNRESOLVED', 'GUARD_MISMATCH']);
+});
+
+test('PG-G05 / PG-G06 (regra 7 + regra 5, revisão do PR #56): publicação STALE seguida de prazo esgotado no latest de conferência ⇒ guarda INDISPONÍVEL (GUARD_UNAVAILABLE e o alarme dela), nunca um falso GUARD_MISMATCH — na publicação obrigatória e no ponto S8', async () => {
+  const w = await ledgerWorld({ withGuard: true });
+  let armed = false;
+  let staleFrom = Number.POSITIVE_INFINITY;
+  const port: ExternalGuardPort = {
+    async publish(record) {
+      if (record.ledgerSeq < staleFrom) return w.guard.publish(record);
+      armed = true;
+      return { ok: false, reason: 'STALE' };
+    },
+    latest: (auditId) => (armed ? new Promise(() => undefined) : w.guard.latest(auditId)),
+  };
+  /** Só a conferência do STALE (depois de armada) perde o prazo; as demais chamadas respondem antes. */
+  const timer = { start: (_ms: number, onTimeout: () => void) => (armed ? (queueMicrotask(onTimeout), () => undefined) : () => undefined) };
+  // (a) publicação obrigatória do prepare: recusa com GUARD_UNAVAILABLE
+  staleFrom = 1;
+  const log = alarmLog();
+  const svc = serviceOver(w, { guard: port, guardTimer: timer, guardAlarms: log.sink });
+  const refused = await svc.create(ANA, w.auditId, { record: rec.c2(), expectedHead: null }, clock());
+  assert.ok(!refused.ok && refused.code === 'LEDGER_GUARD_UNAVAILABLE', JSON.stringify(refused).slice(0, 200));
+  assert.match(JSON.stringify(refused), /livro: GUARD_UNAVAILABLE/);
+  assert.doesNotMatch(JSON.stringify(refused), /GUARD_MISMATCH/);
+  assert.deepEqual(kindsOf(log.alarms), ['GUARD_UNAVAILABLE'], JSON.stringify(log.alarms));
+  assert.deepEqual(await ledgerEvents(w), ['GENESIS'], 'nada novo entrou');
+  // (b) ponto S8: o CONFIRMED (3) recebe STALE e a conferência perde o prazo ⇒ causa UNAVAILABLE
+  armed = false;
+  staleFrom = 3;
+  const s8 = alarmLog();
+  const done = await serviceOver(w, { guard: port, guardTimer: timer, guardAlarms: s8.sink }).create(ANA, w.auditId, { record: rec.c2(), expectedHead: null }, clock());
+  assert.ok(done.ok, JSON.stringify(done).slice(0, 200));
+  assert.ok(s8.alarms.some((alarm) => alarm.kind === 'GUARD_PUBLISH_FAILED_AFTER_RECORD' && alarm.point === 'S8' && alarm.cause === 'UNAVAILABLE'), JSON.stringify(s8.alarms));
+  assert.ok(!kindsOf(s8.alarms).includes('GUARD_MISMATCH'));
+});
+
+test('PG-G06 (porta, revisão do PR #56): ledgerSeq da guarda fora da faixa do livro (1..MAX_LEDGER_RECORDS) ⇒ resposta fora do esquema ⇒ indisponível', async () => {
+  const port: ExternalGuardPort = { latest: async () => ({ ok: true, head: { ledgerSeq: MAX_LEDGER_RECORDS + 1, sha256: H('a') } }), publish: async () => ({ ok: true }) };
+  assert.deepEqual(await boundGuard(port, manualTimer()).latest(AUD_G), { ok: false });
+  const inRange: ExternalGuardPort = { latest: async () => ({ ok: true, head: { ledgerSeq: MAX_LEDGER_RECORDS, sha256: H('a') } }), publish: async () => ({ ok: true }) };
+  assert.deepEqual(await boundGuard(inRange, manualTimer()).latest(AUD_G), { ok: true, head: { ledgerSeq: MAX_LEDGER_RECORDS, sha256: H('a') } });
+  const synthetic = createSyntheticGuard({ dir: tmpDir('lad-gmax-') });
+  assert.deepEqual(await synthetic.publish({ auditId: AUD_G, ledgerSeq: MAX_LEDGER_RECORDS + 1, sha256: H('a') }), { ok: false, reason: 'UNAVAILABLE' });
 });
 
 /* ============================================================================ GE-E6 (parte pura): alarmes sem PII, idade do BEHIND, porta que falha */
