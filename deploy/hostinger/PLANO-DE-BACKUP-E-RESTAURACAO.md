@@ -72,43 +72,56 @@ restauração antes da produção (onda G2, ensaios EN-02a a EN-03) e a cada tri
 O web é o **único** processo que grava as pastas; parar o web (com `stop-first`, réplica única) congela as seis no mesmo instante. A janela é
 curta (arquivos pequenos) e é combinada com quem opera (ninguém gravando). Os destinos `<…>` são pastas **já existentes**, montadas de outro
 disco/provedor. Cada rodada cria, em cada destino, a pasta `<RODADA>/` (exclusiva: falha se já existir) com `dados/` (a cópia),
-`SHA256SUMS` (hashes da **origem**, calculados com o web parado), `CABECAS.json` (as cabeças da rodada) e **um marcador persistente**:
-`RODADA-VALIDA` (gravado nas seis pastas só depois de as seis cópias conferirem) ou `RODADA-INCOMPLETA` (gravado pelo `trap` em toda pasta
-já criada, com data e hora UTC, o passo que falhou e o código de saída). A restauração só aceita rodada com `RODADA-VALIDA` e sem
-`RODADA-INCOMPLETA`.
+`SHA256SUMS` (manifesto: hashes e lista de arquivos da **origem**, calculados com o web parado e confirmado), `CABECAS.json` (as cabeças da
+rodada) e **um marcador persistente**: `RODADA-VALIDA` (gravado nas seis pastas só depois de as seis cópias conferirem) ou
+`RODADA-INCOMPLETA` (gravado pelo `trap` em toda pasta já criada, com data e hora UTC, o passo que falhou e o código de saída). A
+restauração só aceita rodada com `RODADA-VALIDA` e sem `RODADA-INCOMPLETA`.
+
+**Uma rodada por vez (trava global).** A rodada (e a restauração) roda sob `flock -n` num arquivo de trava `<ARQUIVO_DE_TRAVA_DO_BACKUP>`,
+**fora** das pastas de dados e dos destinos (por exemplo, em `/run/lock`). A trava é pega **antes** de tocar no web e fica com o processo
+até ele religar o web. Quem não pega a trava sai na hora, **sem** parar nem religar o web e sem `trap`. O `trap` só religa o web se **esta**
+execução o parou, e devolve o número de réplicas que ele tinha antes.
 
 **Antes da rodada (GE-R9):** com o web no ar e ninguém gravando, registrar para cada auditoria em uso o `head` (`seq` + `sha256`) que a API
 de decisões e a de resultados devolvem e a vista do livro, num arquivo local `<ARQUIVO_DAS_CABECAS>` (pela sessão autenticada de um
 operador, mesmo site; nunca pelo console do banco).
 ```bash
 set -euo pipefail                                        # qualquer falha aborta a rodada
-RODADA="$(date -u +%Y%m%d-%H%M%S)"                       # o MESMO rótulo em todas as pastas (pares do mesmo instante)
+exec 9>"<ARQUIVO_DE_TRAVA_DO_BACKUP>"                    # trava GLOBAL, fora das pastas de dados
+flock -n 9 || { echo "outra rodada (ou restauração) da Fase 6 em andamento: nada foi feito; o web não foi tocado" >&2; exit 1; }
+RODADA="$(date -u +%Y%m%d-%H%M%S)-$$"                    # o MESMO rótulo nas seis pastas (pares do mesmo instante), único por execução
 CABECAS="<ARQUIVO_DAS_CABECAS>"
 [ -s "$CABECAS" ] || { echo "cabeças da rodada ausentes: nada foi feito" >&2; exit 1; }
-PASSO="preparação"; CRIADAS=()                          # o passo corrente e as pastas de rodada já criadas (para o marcador de falha)
-religar() {                                              # roda SEMPRE na saída (sucesso ou falha): marca a falha, depois o web volta
+PASSO="preparação"; CRIADAS=(); PAREI=0                  # passo corrente, pastas de rodada já criadas, e se ESTA execução parou o web
+ANTES="$(docker service inspect --format '{{.Spec.Mode.Replicated.Replicas}}' gmn_gmn-web)"
+religar() {                                              # roda SEMPRE na saída: marca a falha; religa SÓ se esta execução parou o web
   status=$?
   if [ "$status" -ne 0 ]; then
     for r in "${CRIADAS[@]}"; do
       printf 'rodada %s INCOMPLETA\nquando (UTC): %s\npasso que falhou: %s\nsaída: %s\n' "$RODADA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         "$PASSO" "$status" > "$r/RODADA-INCOMPLETA" || echo "não foi possível marcar $r como incompleta" >&2
     done
-    echo "BACKUP DA FASE 6 FALHOU (rodada $RODADA, passo: $PASSO, saída $status): rodada INVÁLIDA; web religado" >&2
+    echo "BACKUP DA FASE 6 FALHOU (rodada $RODADA, passo: $PASSO, saída $status): rodada INVÁLIDA" >&2
   fi
-  docker service scale gmn_gmn-web=1 >/dev/null
+  if [ "$PAREI" -eq 1 ]; then docker service scale "gmn_gmn-web=$ANTES" >/dev/null; fi
 }
 trap religar EXIT
-PASSO="parar o web"; docker service scale gmn_gmn-web=0  # congela as gravações
+if [ "$ANTES" != 0 ]; then PASSO="parar o web"; PAREI=1; docker service scale gmn_gmn-web=0; fi
+PASSO="confirmar o web parado"                           # réplicas 0 E nenhum contêiner do serviço rodando neste nó (o web é fixado nele)
+[ "$(docker service inspect --format '{{.Spec.Mode.Replicated.Replicas}}' gmn_gmn-web)" = 0 ]
+[ -z "$(docker ps -q --filter label=com.docker.swarm.service.name=gmn_gmn-web)" ]
+lista() { ( cd -- "$1" && find . -type f -print0 | LC_ALL=C sort -z | tr '\0' '\n' ); }          # lista exata de arquivos de uma pasta
 copia() {
   nome="$1"; origem="$2"; rodada="$3/$RODADA"
   PASSO="$nome: criar a rodada"; mkdir -- "$rodada"      # exclusivo: nunca reaproveita nem sobrescreve uma rodada
   CRIADAS+=("$rodada")
-  PASSO="$nome: hashes da origem"
+  PASSO="$nome: manifesto da origem"
   ( cd -- "$origem" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum ) > "$rodada/SHA256SUMS"
   PASSO="$nome: cópia"; rsync -a -- "$origem"/ "$rodada/dados"/            # pasta nova: nada a sobrescrever; nunca --delete
   PASSO="$nome: conferência"
-  ( cd -- "$rodada/dados" && sha256sum --quiet --strict -c ../SHA256SUMS )    # a cópia confere, arquivo a arquivo, com a origem
-  [ "$(find "$origem" -type f | wc -l)" -eq "$(find "$rodada/dados" -type f | wc -l)" ]   # e não tem arquivo a mais nem a menos
+  ( cd -- "$rodada/dados" && sha256sum --quiet --strict -c ../SHA256SUMS )    # cada arquivo do manifesto confere na cópia
+  diff -- <(cut -c67- "$rodada/SHA256SUMS") <(lista "$rodada/dados")          # e a cópia tem EXATAMENTE os arquivos do manifesto
+  diff -- <(cut -c67- "$rodada/SHA256SUMS") <(lista "$origem")                # e a origem não mudou durante a janela
   PASSO="$nome: cabeças"; cp -- "$CABECAS" "$rodada/CABECAS.json"          # as cabeças ficam DENTRO da rodada (inclusive na do livro)
 }
 copia decisoes           "$GMN_RAIZ_DADOS_DECISOES"           "<DESTINO_BACKUP_DADOS_FASE6>/decisions"
@@ -150,7 +163,8 @@ echo "rodada $RODADA válida nos seis destinos"
    ```
 3. Com **todas** as pastas da rodada restauradas e conferidas, parar o web e trocar cada uma, guardando a viva como irmã (nunca apagar):
    ```bash
-   docker service scale gmn_gmn-web=0
+   exec 9>"<ARQUIVO_DE_TRAVA_DO_BACKUP>"; flock -n 9 || { echo "rodada de backup em andamento: não restaurar agora" >&2; exit 1; }
+   docker service scale gmn_gmn-web=0                      # a trava fica com esta sessão até religar o web (passo 4)
    mv -- "$P" "$P.antigo-$(date -u +%Y%m%d-%H%M%S)"        # a viva sai para um caminho IRMÃO (nunca para dentro de si mesma)
    mv -- "$P.restaurado-<RODADA>" "$P"                     # a restaurada volta para a origem
    chown -R 10001:10001 -- "$P" && chmod 0700 -- "$P"
