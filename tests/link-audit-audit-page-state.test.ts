@@ -45,7 +45,7 @@ test('reducer: invalidar a prévia a bloqueia até uma nova leitura bem-sucedida
 
 test('reducer: detalhe de resultado ignora resposta de outro número (corrida de cliques)', () => {
   let state = pageReducer(ready(), { type: 'DETAIL_SELECT', seq: 2 });
-  state = pageReducer(state, { type: 'DETAIL_OK', seq: 1, data: { confirmation: 'LEDGER', stale: false, decisionsChanged: false, superseded: false, run: {} as never } });
+  state = pageReducer(state, { type: 'DETAIL_OK', seq: 1, data: { confirmation: 'LEDGER', stale: false, decisionsChanged: false, superseded: false, provenanceState: 'VERIFIED', run: {} as never } });
   assert.deepEqual([state.detail.seq, state.detail.phase, state.detail.data], [2, 'loading', null]);
   state = pageReducer(state, { type: 'DETAIL_FAIL', seq: 1, phase: 'error', message: 'x' });
   assert.equal(state.detail.phase, 'loading');
