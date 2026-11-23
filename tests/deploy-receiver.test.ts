@@ -736,6 +736,69 @@ test('revisão do PR #70 (item 4b): a mesma TAG com outro id de imagem no contê
   assert.ok(identity.some((args) => args[2] === 'task') && identity.some((args) => args[2] === 'container'), 'tarefa ⇒ contêiner ⇒ id da imagem');
 });
 
+const pendingPath = (w: World): string => path.join(w.stateDir, 'trust-keys.pending');
+
+test('revisão do PR #70 (item 5): a lista nova fica PENDENTE (atômica, 0644) antes do docker stack deploy; falha depois do deploy (rollback, prazo, PD-xx) deixa a pendente e a instalada anterior intacta; falha antes do stack deploy não grava pendente; sucesso promove a pendente (some) a instalada', async () => {
+  const a = testKey('chave-prod-a');
+  const b = testKey('chave-prod-b');
+  const installed = trustFile([trustLine(a)]);
+  const next = trustFile([trustLine(a), trustLine(b)]);
+  const breakers: ReadonlyArray<readonly [string, (w: World) => void]> = [
+    ['rollback', (w) => void (w.scenario.updateStates = ['rollback_completed'])],
+    ['prazo', (w) => void (w.scenario.updateStates = ['updating'])],
+    ['PD-07', (w) => void (w.scenario.afterDeploy = (services) => void (services.get('gmn_gmn-web')!.Spec.TaskTemplate.ContainerSpec.Env = []))],
+  ];
+  for (const [label, breaker] of breakers) {
+    const w = world({ installed, trust: next });
+    breaker(w);
+    const r = await deploy(w);
+    assert.notEqual(r.outcome.exitCode, 0, label);
+    assert.deepEqual(fs.readFileSync(pendingPath(w)), next, `${label}: pendente = a lista nova`);
+    assert.equal(fs.statSync(pendingPath(w)).mode & 0o777, 0o644);
+    assert.deepEqual(fs.readFileSync(installedPath(w)), installed, `${label}: a instalada fica`);
+  }
+  const beforeDeploy = world({ installed, trust: next });
+  beforeDeploy.scenario.stackConfigOk = false;
+  refusedWith(await deploy(beforeDeploy), 'ERRO E_STACK_CONFIG');
+  assert.ok(!fs.existsSync(pendingPath(beforeDeploy)), 'sem stack deploy, sem pendente');
+  const ok = world({ installed, trust: next });
+  const seen: string[] = [];
+  ok.scenario.beforeCall = (request) => {
+    if (request.program === 'docker' && request.args[0] === 'stack') seen.push(`${request.args[1]}:${fs.existsSync(pendingPath(ok)) ? 'pendente' : 'sem'}`);
+  };
+  const r = await deploy(ok);
+  assert.deepEqual(seen, ['config:sem', 'deploy:pendente'], 'a pendente é gravada entre o stack config e o stack deploy');
+  assert.equal(r.outcome.exitCode, 0, String(r.outcome.stderr));
+  assert.ok(!fs.existsSync(pendingPath(ok)), 'promovida: a pendente some');
+  assert.deepEqual(fs.readFileSync(installedPath(ok)), next);
+  assert.ok(r.log.entries.some((entry) => entry.event === 'trust.installed' && entry.fields.promotedFromPending === true));
+});
+
+test('revisão do PR #70 (item 5): com uma pendente de um deploy que falhou, a lista do deploy seguinte tem de ser transição válida a partir da instalada E da pendente (senão E_TRUST_LIST_TRANSITION, sem docker); pendente ilegível ou link ⇒ E_TRUST_LIST_TRANSITION; válida das duas ⇒ instala e limpa a pendente', async () => {
+  const a = testKey('chave-prod-a');
+  const b = testKey('chave-prod-b');
+  const installed = trustFile([trustLine(a), trustLine(b)]);
+  const revokedPending = trustFile([trustLine(a), trustLine(b, 'revoked')]);
+  const back = world({ installed, trust: installed });
+  fs.writeFileSync(pendingPath(back), revokedPending, { mode: 0o644 });
+  const r = await deploy(back);
+  refusedWith(r, 'ERRO E_TRUST_LIST_TRANSITION');
+  assert.equal(r.runner.calls.length, 0, 'nada do Docker');
+  assert.deepEqual(fs.readFileSync(pendingPath(back)), revokedPending, 'a pendente fica');
+  const garbage = world({ installed, trust: installed });
+  fs.writeFileSync(pendingPath(garbage), 'lixo\n');
+  refusedWith(await deploy(garbage), 'ERRO E_TRUST_LIST_TRANSITION');
+  const linked = world({ installed, trust: installed });
+  fs.symlinkSync(installedPath(linked), pendingPath(linked));
+  refusedWith(await deploy(linked), 'ERRO E_TRUST_LIST_TRANSITION');
+  const forward = world({ installed, trust: revokedPending });
+  fs.writeFileSync(pendingPath(forward), revokedPending, { mode: 0o644 });
+  const done = await deploy(forward);
+  assert.equal(done.outcome.exitCode, 0, String(done.outcome.stderr));
+  assert.deepEqual(fs.readFileSync(installedPath(forward)), revokedPending);
+  assert.ok(!fs.existsSync(pendingPath(forward)));
+});
+
 /* ===================================================================================================================== passo 13 */
 
 test('P9-D10 cada PD-01 a PD-08 reprovado ⇒ E_POSTDEPLOY_CHECK <PD-xx> (saída 64), e a lista não é instalada', async () => {

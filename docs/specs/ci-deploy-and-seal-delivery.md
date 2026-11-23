@@ -675,7 +675,16 @@ chamador, prazo com `SIGKILL` e teto de saída). A lista de confiança usa o mó
   `bind:/app/.data/audits` e `tmpfs:/tmp`. PD-06 aceita a tag com ou sem `@sha256:…` na especificação e confere a identidade efetiva: toda tarefa em execução do web (pelo menos
   uma) e, com o Worker ligado, do Worker roda um contêiner do id carregado no passo 9. PD-07 exige uma única entrada, igual à lista.
   PD-08 exige, em homologação, exatamente `GMN_LINK_AUDIT_HOMOLOGATION=1`. Consulta que falha reprova a verificação que dependia dela.
-- **Passo 14:** `trust-keys.txt` com `fchmod 0644` explícito, para o `umask` não tirar a leitura do receptor de manifestos. Falha ao
+- **Lista pendente** (revisão do PR #70, item 5): depois do `docker stack config` e logo antes do `docker stack deploy`, a lista nova é
+  gravada de forma atômica em `<estado>/trust-keys.pending` (temporário + `fsync` + `rename` + `fsync` da pasta, `0644`). A partir daí o
+  serviço pode rodar com ela, mesmo que o deploy termine em `E_ROLLED_BACK`, `E_CONVERGE_TIMEOUT` ou `E_POSTDEPLOY_CHECK`, que deixam a
+  pendente e a instalada anterior intactas. Se existe uma pendente no começo de um deploy, a lista nova tem de ser transição válida (§5.3)
+  a partir da instalada **e** da pendente. Pendente que não é arquivo regular, ilegível ou fora do formato ⇒ `E_TRUST_LIST_TRANSITION`.
+  Assim nem uma execução aprovada antiga nem a chave de deploy desfazem uma revogação que já pode estar no serviço. O receptor de
+  manifestos (P9.3b) continua lendo **só** a instalada.
+- **Passo 14:** só depois do PD-07, a pendente é **promovida** a `trust-keys.txt` (`rename` + `fsync` da pasta). Se ela não tem mais os
+  bytes recebidos, a instalada é gravada direto, de forma atômica. A instalada tem `fchmod 0644` explícito, para o `umask` não tirar a
+  leitura do receptor de manifestos. Falha ao
   instalar ⇒ `E_INTERNAL`, com o serviço já atualizado: o responsável segue o `PLANO-DE-ROLLBACK.md`. Falha ao apagar o pacote só vai
   ao log.
 - **Saída e sinais:** a entrada escreve exatamente uma linha e sai. Exceção não tratada ⇒ `E_INTERNAL`. stdout ou stderr fechado ⇒ saída

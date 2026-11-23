@@ -10,7 +10,7 @@ import type { ReceiverDeps } from './ports';
 import { runPostdeployChecks, TRUST_KEYS_ENV } from './postdeploy';
 import { bundleFileName, INCOMING_DIR } from './staging';
 import { bindSources, interpolatedNames, readVerifiedStack, removeStaleStackCopies, writePrivateCopies, type VerifiedStack } from './stack-files';
-import { installTrustList, receiveTrustList } from './trust';
+import { installTrustList, receiveTrustList, writePendingTrustList } from './trust';
 
 /*
  * P9.3a — `deploy <sha40> <bundle-sha256> <stack-sha256> <overlay-sha256|-> <trust-sha256> <supabase-fp12>`, os passos 1 a 15 do §5.6, NA ORDEM.
@@ -125,11 +125,12 @@ export function stackEnvironment(host: HostConfig, stack: VerifiedStack, tag: st
  * Passos 10 e 11: `docker stack config` (stdout nem ao log: tem o ambiente renderizado) e `docker stack deploy`, sem `--prune`, os dois sobre as
  * CÓPIAS PRIVADAS dos bytes conferidos no passo 2, apagadas no fim (revisão do PR #70).
  */
-async function configureAndDeploy(config: ReceiverConfig, stack: VerifiedStack, env: Record<string, string>, deps: ReceiverDeps): Promise<void> {
+async function configureAndDeploy(config: ReceiverConfig, stack: VerifiedStack, env: Record<string, string>, beforeDeploy: () => Promise<void>, deps: ReceiverDeps): Promise<void> {
   const copies = await writePrivateCopies(stack, config.stateDir, deps);
   try {
     const rendered = await runProgram({ program: 'docker', args: ['stack', 'config', ...composeArgs(copies.paths)], env, timeoutMs: STACK_CONFIG_TIMEOUT_MS, maxOutputBytes: STACK_CONFIG_MAX_OUTPUT, logStdout: false, label: 'docker stack config' }, deps);
     if (rendered.exitCode !== 0 || rendered.timedOut || rendered.overflow) throw new ReceiverError('E_STACK_CONFIG', null, 'docker stack config refused');
+    await beforeDeploy();
     const deployed = await runProgram({ program: 'docker', args: ['stack', 'deploy', '--resolve-image', 'never', ...composeArgs(copies.paths), config.stackName], env, timeoutMs: STACK_DEPLOY_TIMEOUT_MS, maxOutputBytes: SMALL_OUTPUT, logStdout: true, label: 'docker stack deploy' }, deps);
     if (deployed.exitCode !== 0 || deployed.timedOut) throw new ReceiverError('E_STACK_DEPLOY', null, 'docker stack deploy failed');
   } finally {
@@ -152,7 +153,9 @@ export async function runDeploy(command: DeployCommand, config: ReceiverConfig, 
   const images = await loadBundle(bundle.file, listing, config.env, command.sha40, deps); // 9
   const webService = `${config.stackName}_gmn-web`;
   const before = snapshotOf(await inspectService(webService, 'E_INTERNAL', deps));
-  await configureAndDeploy(config, stack, stackEnvironment(host, stack, images.tag, trust.value, deps.childPath), deps); // 10, 11
+  const env = stackEnvironment(host, stack, images.tag, trust.value, deps.childPath);
+  // a lista nova fica PENDENTE antes do stack deploy (o serviço pode rodar com ela mesmo se o deploy falhar depois); promovida no passo 14
+  await configureAndDeploy(config, stack, env, () => writePendingTrustList(trust, config.stateDir, deps), deps); // 10, 11
   await waitForConvergence(webService, images.webRef, images.webImageId, before, deps); // 12
   await runPostdeployChecks({ stackName: config.stackName, env: config.env, webRef: images.webRef, workerRef: images.workerRef, webImageId: images.webImageId, workerImageId: images.workerImageId, workerReplicas: host.workerReplicas, trustValue: trust.value }, deps); // 13
   const installedSha256 = await installTrustList(trust, config.stateDir, deps); // 14
