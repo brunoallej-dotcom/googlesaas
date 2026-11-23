@@ -71,15 +71,15 @@ flowchart LR
 
 | Componente | S | T | R | I | D | E | Notas |
 |---|---|---|---|---|---|---|---|
-| Workflow `deploy.yml` | DC-11 | DC-03 | DC-14 | DC-08 | DC-16 | DC-11 | dispatch só na `main`; segredos de ambiente |
+| Workflow `deploy.yml` | DC-11 | DC-03, DC-21 | DC-14 | DC-08 | DC-16 | DC-11 | dispatch só na `main`; commit na cabeça da `main`; segredos de ambiente |
 | Job `seals` (`ci.yml`) | — (sem credencial) | DC-04, DC-17 | — | — | DC-20 | — | PR de fork sem segredo |
 | Environments | DC-11 | — | DC-14 | — | — | DC-11 | revisor único (risco aceito) |
 | Chaves SSH | DC-01, DC-10 | — | DC-14 | DC-08 | — | DC-01 | Ed25519, por usuário e ambiente |
-| Receptor de deploy | DC-01 | DC-13 | DC-14 | DC-08 | DC-12 | DC-02 | grupo `docker` = root |
+| Receptor de deploy | DC-01 | DC-07, DC-13, DC-21 | DC-14 | DC-08 | DC-12 | DC-02 | grupo `docker` = root; lista chega pelo stdin |
 | Receptor de manifestos | DC-05 | DC-05, DC-06 | DC-14 | DC-08 | DC-12 | DC-18 | sem `docker`; só acrescenta |
 | `link-audit-seals/` + lista | — | DC-04, DC-07, DC-17 | DC-14 | DC-09 | — | DC-07 | público |
 | Logs públicos | — | — | — | DC-08 | — | — | só códigos fixos |
-| Pilha `gmn-hml` | — | DC-13 | — | DC-13 | DC-12 | DC-13 | mesma VPS |
+| Pilha `gmn-hml` | — | DC-13 | — | DC-13, DC-22 | DC-12 | DC-13, DC-22 | mesma VPS e mesma rede externa do Traefik |
 | Administrador da VPS | — | DC-19 | — | — | — | — | limite declarado |
 | Reversão de imagem | — | DC-15 | — | — | — | — | R6-09 |
 
@@ -100,7 +100,9 @@ não guardam estado.
     da spec).
   - Infra: `restrict,command=` + `ForceCommand`; `authorized_keys` em pasta do root; wrapper confere o hash do artefato.
   - Processo: receptor só reinstalado pelo responsável, com `sha256sum -c`.
-- **Residual**: imagem arbitrária ainda roda como a aplicação (DC-01); um defeito no próprio Docker fica fora do alcance.
+- **Residual**: imagem arbitrária ainda roda como a aplicação (DC-01); um defeito no próprio Docker fica fora do alcance. A lista de
+  confiança também é escolhida por quem chama o `deploy` (vem no stdin). **Não é escalada nova:** quem implanta uma imagem
+  arbitrária já pode ignorar o verificador. A regra de transição no host impede reverter a lista (DC-07, DC-21).
 - **Status**: aberto (P9.3a, P9.4).
 
 ### DC-01 [ALTA] Falsificação — portador da chave de deploy implanta imagens próprias
@@ -130,11 +132,20 @@ não guardam estado.
 
 - **Vetor**: PR que acrescenta uma chave `active` própria, desfaz uma revogação ou troca o hash de um fecho, seguido de deploy.
 - **Probabilidade**: Baixa. **Impacto**: Alto (manifestos forjados passam a valer). **Risco**: Médio.
-- **Mitigação**: regras de transição no CI (`revoked` terminal, `retired` sem volta, hash fixado imutável, nada removido; P9-T03);
-  fixação só de fecho já mergeado (P9-T04); lista e manifestos nunca no mesmo PR (P9-T05); CODEOWNERS do responsável no arquivo
-  (P9-O02); deploy aprovado; conferência do livro de manifestos item 5 contra o hash que o receptor registra.
-- **Residual**: conta do GitHub do responsável comprometida (limite declarado, ADR-0004).
-- **Status**: aberto (P9.2).
+- **Variante: lista escolhida no receptor.** A lista chega ao receptor de deploy pelo stdin do `deploy`, e quem tem a chave de
+  deploy pode mandar outra. **Não é escalada nova:** a mesma chave já implanta imagem arbitrária (DC-02).
+- **Mitigação**:
+  - CI: regras de transição (`revoked` terminal, `retired` sem volta, hash fixado imutável, nada removido; P9-T03); fixação só
+    de fecho já mergeado e válido (P9-T04, P9-T07); lista e manifestos nunca no mesmo PR (P9-T05);
+  - Processo: CODEOWNERS do responsável no arquivo (P9-O02); deploy aprovado;
+  - Host: as mesmas regras de transição contra a lista **instalada** (`E_TRUST_LIST_TRANSITION`, P9-D14), que valem também para
+    a chave vazada e para uma execução antiga;
+  - Registro: o `OK DEPLOYED` devolve o sha256 da lista instalada e o resumo o registra (P9-D11); a conferência do livro de
+    manifestos (item 5) compara o hash instalado (log do receptor) com o arquivo do repositório no commit implantado.
+- **Residual**: conta do GitHub do responsável comprometida (limite declarado, ADR-0004). Quem tem a chave de deploy ainda pode
+  **acrescentar** uma chave `active` própria (transição permitida), mas a conferência do livro acusa a divergência. Opção
+  futura: amarrar imagens e lista à execução aprovada por um token OIDC do GitHub verificado no host (spec §11.4).
+- **Status**: aberto (P9.2, P9.3a).
 
 ### DC-08 [ALTA] Informação — log público expõe host, domínio, projeto Supabase ou caminho real
 
@@ -229,8 +240,12 @@ não guardam estado.
 
 ### DC-16 [BAIXA] Negação de serviço — job pendente cancelado
 
-- **Vetor**: limite do GitHub: um pendente do mesmo grupo de concorrência é cancelado por outro mais novo.
-- **Mitigação**: a entrega manda todos os arquivos e é idempotente; o deploy usa a `main` do momento.
+- **Vetor**: limite do GitHub: um job pendente do mesmo grupo de concorrência é cancelado por outro mais novo. Com um grupo só
+  por ambiente, um deploy cancelaria uma entrega pendente, e vice-versa.
+- **Mitigação**: grupos por operação e ambiente (`gmn-<amb>-deploy`, `gmn-<amb>-seals`, P9-W06). Na mesma operação, o mais novo
+  substituir o pendente é seguro: o deploy antigo falharia em `NOT_MAIN_HEAD`, e a entrega manda todos os arquivos
+  (idempotente). Deploy e entrega correndo juntos: a lista é instalada de forma atômica no fim do deploy, e uma entrega com outra
+  lista falha fechada com `E_TRUST_LIST_MISMATCH` e se repete (P9-R13).
 - **Status**: aceito.
 
 ### DC-17 [BAIXA] Adulteração — conversão de fim de linha ou editor mudam os bytes
@@ -243,6 +258,9 @@ não guardam estado.
 - **Vetor**: se o receptor de manifestos instalasse a lista, a chave dele bastaria para validar uma chave própria.
 - **Mitigação**: só o receptor de deploy instala a lista; o de manifestos só a lê e exige o hash do commit (P9-R03); usuários e
   chaves separados (RC-09).
+- **Observação**: quem instala a lista é a chave de deploy, que pode escolhê-la. Não é escalada nova, porque a mesma chave já
+  implanta imagem arbitrária (DC-02), e a lista só avança por transição válida (DC-07, P9-D14). A separação garante que a chave
+  de manifestos **sozinha** não consegue nada sem a chave de assinatura.
 - **Status**: aberto (P9.3).
 
 ### DC-19 [INFO] Adulteração — administrador da VPS por fora do canal
@@ -259,6 +277,40 @@ não guardam estado.
   estrita do verificador antes do `JSON.parse`; o job não tem segredo e tem `timeout-minutes`.
 - **Status**: aberto (P9.2).
 
+### DC-21 [ALTA] Adulteração — execução aprovada antiga reverte a lista de confiança (e a aplicação)
+
+- **Vetor**: um deploy fica esperando aprovação por horas ou dias. Nesse meio tempo, a `main` recebe uma revogação de chave (ou
+  uma correção). Aprovar a execução antiga implantaria as imagens e a lista do commit antigo, e desfaria a revogação no servidor
+  e no receptor de manifestos.
+- **Probabilidade**: Média (uma pessoa, aprovações acumuladas). **Impacto**: Alto (uma chave revogada volta a valer). **Risco**:
+  Alto.
+- **Mitigação**:
+  - Workflow: `github.sha` tem de ser a cabeça atual de `refs/heads/main` (`git ls-remote`, só leitura) no início do job e de
+    novo imediatamente antes do comando `deploy` por SSH (`NOT_MAIN_HEAD`, P9-W11). Grupos de concorrência por operação: um
+    deploy mais novo substitui o pendente.
+  - Host: a lista nova tem de ser transição válida a partir da instalada (`E_TRUST_LIST_TRANSITION`, P9-D14), o que cobre os
+    segundos entre a última conferência e a instalação, além da chave vazada.
+- **Residual**: imagens de um commit superado nos poucos segundos entre a segunda conferência e o `docker stack deploy`; um deploy
+  novo corrige.
+- **Status**: aberto (P9.3a, P9.4).
+
+### DC-22 [MÉDIA] Elevação / Informação — movimento lateral a partir do web de homologação pela rede externa do Traefik
+
+- **Vetor**: o web de homologação entra na mesma rede externa (`automacaotrafegopagoredeinterna`) que o web de produção e os
+  outros serviços da VPS ligados a ela. Um web de homologação comprometido (por imagem de teste ou por credencial de laboratório
+  mais fraca) alcança esses serviços direto, sem passar pelo Traefik, inclusive a porta 3000 do web de produção.
+- **Probabilidade**: Baixa. **Impacto**: Médio. **Risco**: Baixo a médio.
+- **Mitigação**:
+  - Config: a sobreposição não acrescenta rede (P9-H02, P9-H09).
+  - Segredos: nenhum secret ou credencial em comum com a produção (P9-H09, P9-O08), então o web de homologação não leva
+    credencial de produção; projeto Supabase diferente, conferido pelo receptor (P9-D05).
+  - Dados: só sintéticos; Worker em 0; sem Serper.
+  - App: o web de produção exige sessão em tudo, menos `/login`.
+  - O Traefik e a rede não são alterados (`GUIA-DE-IMPLANTACAO.md` proíbe).
+- **Residual**: a mesma exposição de rede do web de produção, sem segmentação; aceito como limite declarado da homologação na
+  mesma VPS (spec §5.11).
+- **Status**: aberto (P9.4; conferência P9-O08).
+
 ## 7. Casos de abuso
 
 - Abrir um PR que acrescenta `seal-0002.json` a uma auditoria alheia, assinado por uma chave revogada, esperando que o CI só olhe o
@@ -270,3 +322,6 @@ não guardam estado.
 - Disparar o deploy de uma branch de teste com o workflow alterado. O ambiente recusa a branch, e os segredos não são liberados.
 - Fazer uma revogação e, no mesmo PR, acrescentar um manifesto da chave nova. `SEALS_AND_TRUST_LIST_TOGETHER`.
 - Configurar a homologação com a URL do Supabase de produção para "testar de verdade". `E_HML_PRODUCTION_PROJECT`.
+- Aprovar hoje um deploy disparado antes de uma revogação de chave. `NOT_MAIN_HEAD` no início do job e, se escapar, a
+  `E_TRUST_LIST_TRANSITION` no host (`revoked` não volta).
+- Com a chave de deploy vazada, mandar uma lista que desfaz uma revogação. `E_TRUST_LIST_TRANSITION`.

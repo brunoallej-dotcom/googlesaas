@@ -732,7 +732,7 @@ Motivos:
 
 > Spec de origem: `docs/specs/ci-deploy-and-seal-delivery.md` (PROPOSTA, 23/11/2026). A decisão do responsável de 23/11/2026
 > (recomendação do `p1-canal-de-entrega-manifestos.md` §6.3) está registrada lá. ADR-0004; ameaças
-> `docs/security/threats/deploy-pelo-ci.md` (DC-01 a DC-20). Os critérios P9-xx são os da spec §6. Valem as **regras de todas
+> `docs/security/threats/deploy-pelo-ci.md` (DC-01 a DC-22). Os critérios P9-xx são os da spec §6. Valem as **regras de todas
 > as ondas** acima. Por cima delas:
 >
 > - **nenhuma fatia P9 faz deploy**, cria usuário, chave, segredo de ambiente ou pasta no host: são ações do responsável (spec
@@ -743,21 +743,21 @@ Motivos:
 | Onda | Entrega | Depende de | Paralela com | Status |
 |------|---------|------------|--------------|--------|
 | P9.1 | Spec, ADR-0004, modelo de ameaças DC-xx, decisão do responsável registrada no p1-canal §6.3, linhas no plano e no P-9 da spec dos portões | decisão do responsável (23/11/2026) | W5.3 (sem código) | 🟡 este PR |
-| P9.2 | Caminho `link-audit-seals/` (dois `trust-keys.txt` vazios, `.gitattributes`, `.dockerignore`); núcleo puro `src/lib/link-audit-seals-channel/` (gramática de caminhos, `auditId` opaco, forma canônica, lista: parser, regras de ambiente e de transição, regras do conjunto de mudanças, cadeia pelo verificador `v2` real); CLI `link-audit:seals-check`; job `seals` no `ci.yml`; runbooks do custodiante e de chaves (fixação por PR, `aud-<16 hex>`) | P9.1 | P9.3a | ⬜ |
-| P9.3a | Receptor de deploy (`src/lib/deploy-receiver/`, entrada em `scripts/`), build reprodutível dos artefatos dos receptores com hash versionado em `deploy/hostinger/receivers.sha256` e job do CI que o confere | P9.1 | P9.2 | ⬜ |
+| P9.2 | Caminho `link-audit-seals/` (dois `trust-keys.txt` vazios, `.gitattributes`, `.dockerignore`); núcleo puro `src/lib/link-audit-seals-channel/` (gramática de caminhos, `auditId` opaco, forma canônica, lista: parser, regras de ambiente e de transição, regras do conjunto de mudanças, cadeia pelo verificador `v2` real); CLI `link-audit:seals-check`; job `seals` no `ci.yml`; runbooks do custodiante e de chaves (fixação por PR, ordem da aposentadoria, `aud-<16 hex>`) | P9.1 | — | ⬜ |
+| P9.3a | Receptor de deploy (`src/lib/deploy-receiver/`, entrada em `scripts/`), com a regra de transição contra a lista instalada; build reprodutível dos artefatos dos receptores com hash versionado em `deploy/hostinger/receivers.sha256` e job do CI que o confere | P9.2 (módulo da lista: parser do arquivo, regras de ambiente e de transição) | — (pode começar antes, mas mergeia depois da P9.2) | ⬜ |
 | P9.3b | Receptor de manifestos (núcleo do canal + verificador `v2` + gravação exclusiva do `sign` extraída para módulo compartilhado; hash do artefato do `sign` refeito); `verificar-pastas-fase6.sh` com a regra nova da pasta de manifestos; emendas VC-E8, PG-V04 e EN-12 | P9.2, P9.3a (pipeline dos artefatos) | P9.4 | ⬜ |
 | P9.4 | `.github/workflows/deploy.yml` (job `deploy`); `stack.yml` com nomes do Traefik parametrizados e secrets em sintaxe longa; sobreposição `deploy/hostinger/stack-hml.yml`; testes estáticos do workflow e da stack; runbook do responsável `deploy/hostinger/RUNBOOK-DEPLOY-PELO-CI.md` (H-01 a H-10, produção, rotação, incidente); guias, plano de rollback, verificação pós-deploy e `CLAUDE.md` | P9.3a | P9.3b | ⬜ |
 | P9.5 | Jobs `seals-verify` e `seals-deliver` no `deploy.yml`; registro RC-08 no resumo; procedimento final do p1-canal §3 e campos do livro de manifestos | P9.3b, P9.4 (mesmo arquivo `deploy.yml`) | W5.3 (código só; o ensaio não usa o canal enquanto ela não estiver na `main`) | ⬜ |
 
-Ordem prática: P9.1 → {P9.2 ∥ P9.3a} → {P9.3b ∥ P9.4} → P9.5. Depois da P9.4: ações H-01 a H-10 do responsável → primeiro
+Ordem prática: P9.1 → P9.2 → P9.3a → {P9.3b ∥ P9.4} → P9.5. Depois da P9.4: ações H-01 a H-10 do responsável → primeiro
 deploy de homologação pelo workflow → W5.3 (entrega manual como desvio D-01, salvo se a P9.5 já estiver na `main`) → G2 (ensaio
 do canal, P9-O06) → G3 (provisionamento e primeiro deploy de produção, P9-O07).
 
 Motivos:
 
-- **P9.2 ∥ P9.3a:** não dividem arquivo de código (núcleo do canal × receptor de deploy). As duas acrescentam um job ao
-  `ci.yml` (`seals` e o dos artefatos dos receptores): jobs independentes, então o conflito é só textual e a segunda a mergear
-  rebaseia. O conflito da lista `test` do `package.json` se resolve por união.
+- **P9.3a depois da P9.2:** o receptor de deploy valida a lista e a transição a partir da instalada com o módulo da lista da
+  P9.2 (revisão do PR #66). As duas acrescentam um job ao `ci.yml` (`seals` e o dos artefatos dos receptores), mas, em sequência,
+  não há conflito.
 - **P9.3b depois da P9.2 e da P9.3a:** o receptor de manifestos empacota o núcleo do canal (P9.2) e entra no pipeline dos
   artefatos criado pela P9.3a.
 - **P9.4 depois da P9.3a:** o workflow chama a gramática do receptor de deploy, e os testes estáticos conferem os dois lados.
@@ -773,7 +773,7 @@ Motivos:
 - **Escopo**: spec §5.2, §5.3, §5.4; `tests/link-audit-seals-check.test.ts`, `tests/link-audit-seals-trust-list.test.ts`, teste
   de isolamento do módulo novo; job `seals` no `ci.yml`; emendas VC-E3 e P-7 (spec dos portões), runbook de chaves §4, runbook do
   custodiante, exemplo do `docs/security/README.md`.
-- **Critérios de aceite**: P9-S01 a P9-S12, P9-T01 a P9-T06, P9-W10, P9-H08.
+- **Critérios de aceite**: P9-S01 a P9-S12, P9-T01 a P9-T07, P9-W10, P9-H08.
 - **Goal command**: `/goal npm test && test -f link-audit-seals/producao/trust-keys.txt && test -f link-audit-seals/homologacao/trust-keys.txt && grep -q "seals (append-only, v2)" .github/workflows/ci.yml, stop after 3 tries`
 
 ### Onda P9.3a — Receptor de deploy e artefatos dos receptores
@@ -781,7 +781,7 @@ Motivos:
 - **Objetivo**: o único comando que a chave de deploy executa, com gramática fechada e saída só em códigos fixos.
 - **Escopo**: spec §5.6, §5.8; `tests/deploy-receiver.test.ts` (Docker, `tar` e `gzip` falsos); build dos artefatos e job do CI
   com o hash versionado.
-- **Critérios de aceite**: P9-D01 a P9-D13.
+- **Critérios de aceite**: P9-D01 a P9-D14.
 - **Goal command**: `/goal npm test && test -f deploy/hostinger/receivers.sha256, stop after 3 tries`
 
 ### Onda P9.3b — Receptor de manifestos e pasta de manifestos
@@ -791,7 +791,7 @@ Motivos:
 - **Escopo**: spec §5.7, §5.8, §5.10; `tests/link-audit-seal-receiver.test.ts`; extração da gravação exclusiva do `sign-run.ts`
   (hash do artefato do `sign` refeito no mesmo PR); `verificar-pastas-fase6.sh` + `tests/deploy-verificar-pastas.test.ts`; guia
   §3.3; plano de backup (restauração com dono, grupo e modo); emendas VC-E8, PG-V04 e EN-12.
-- **Critérios de aceite**: P9-R01 a P9-R12, P9-F01.
+- **Critérios de aceite**: P9-R01 a P9-R13, P9-F01.
 - **Goal command**: `/goal npm test && grep -q "2750" deploy/hostinger/verificar-pastas-fase6.sh, stop after 3 tries`
 
 ### Onda P9.4 — Workflow de deploy, homologação e runbook do responsável
@@ -800,8 +800,8 @@ Motivos:
 - **Escopo**: spec §5.5, §5.5.1, §5.11; `tests/deploy-workflow.test.ts` (estático); `tests/deploy-config.test.ts` estendido;
   `RUNBOOK-DEPLOY-PELO-CI.md`; `GUIA-DE-IMPLANTACAO.md` §1–§2 e §3.4, `PLANO-DE-ROLLBACK.md`, `VERIFICACAO-POS-DEPLOY.md`; `CLAUDE.md`
   (linhas de deploy).
-- **Critérios de aceite**: P9-W01 a P9-W08, P9-H01 a P9-H05. P9-H06 e P9-H07 são conferências do responsável no primeiro deploy
-  de homologação.
+- **Critérios de aceite**: P9-W01 a P9-W08, P9-W11, P9-H01 a P9-H05, P9-H09. P9-H06, P9-H07 e P9-O08 são conferências do
+  responsável no primeiro deploy de homologação.
 - **Goal command**: `/goal npm test && test -f .github/workflows/deploy.yml && test -f deploy/hostinger/stack-hml.yml && test -f deploy/hostinger/RUNBOOK-DEPLOY-PELO-CI.md, stop after 3 tries`
 
 ### Onda P9.5 — Entrega dos manifestos pelo CI

@@ -22,7 +22,7 @@
 > `VERIFICACAO-POS-DEPLOY.md`, `PLANO-DE-ROLLBACK.md`); `.github/workflows/ci.yml`.
 >
 > **Documentos ligados:** ADR `docs/adr/0004-ci-deploy-over-restricted-ssh.md`; ameaças
-> `docs/security/threats/deploy-pelo-ci.md` (DC-01 a DC-20).
+> `docs/security/threats/deploy-pelo-ci.md` (DC-01 a DC-22).
 
 ## 1. Objetivo
 
@@ -153,7 +153,7 @@ que não estão no repositório. O receptor não toca neles. A pasta de produç�
 | Quem | Como lê |
 |---|---|
 | CI (job `seals` e `seals-verify`) | o arquivo no commit |
-| Receptor de deploy | recebe os bytes no `deploy` (§5.6), confere o hash declarado, valida, passa o valor à `docker stack deploy` como `GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS` e, só depois de o serviço convergir, instala a cópia em `<estado>/trust-keys.txt` |
+| Receptor de deploy | recebe os bytes no `deploy` (§5.6), confere o hash declarado, valida, confere que a lista nova é uma **transição válida a partir da instalada** (`E_TRUST_LIST_TRANSITION`), passa o valor à `docker stack deploy` como `GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS` e, só depois de o serviço convergir, instala a cópia em `<estado>/trust-keys.txt` |
 | Servidor web | a variável, como hoje (`trustKeysForServer`, `simulated.ts:33`; `scoring/shared.ts:107`): **sem mudança de código** |
 | Receptor de manifestos | a cópia instalada; cada `put` traz o sha256 da lista do commit, e lista diferente recusa (`E_TRUST_LIST_MISMATCH`) |
 
@@ -161,6 +161,20 @@ Assim o CI e o servidor usam os mesmos bytes por construção (mesmo commit), e 
 entrega. A chave de manifestos **não** instala lista (RC-09; ameaça DC-18). Mudar a lista exige PR revisado e deploy aprovado.
 A edição do arquivo é o ponto de controle que o p1-canal §4 previa: entra na conferência do livro de manifestos (§5, item 5),
 agora pelo histórico do git e pelo hash que o receptor de deploy registra.
+
+**Quem chama o `deploy` escolhe a lista (limite declarado).** A lista chega ao receptor de deploy pelo stdin. Quem tem a chave
+de deploy pode mandar outra lista. **Não é uma escalada nova:** a mesma chave já implanta uma imagem arbitrária, que pode
+ignorar o verificador (DC-02, comprometimento da aplicação). Mitigações:
+
+1. no host, a lista nova tem de ser uma **transição válida a partir da instalada**, pelas regras de transição abaixo (§5.6
+   passo 3). Nem a chave vazada nem uma execução aprovada antiga revertem uma revogação, reativam uma aposentada, trocam um
+   hash fixado ou removem um item. A primeira instalação (arquivo instalado ausente ou vazio) é livre;
+2. o `OK DEPLOYED` devolve o sha256 da lista **instalada**, e o resumo do job o registra (§5.9);
+3. a conferência do livro de manifestos (`p1-livro-de-manifestos.md` §5, item 5) compara o hash da lista instalada (log do
+   receptor de deploy) com o do arquivo do repositório no commit implantado.
+
+Opção futura, fora de escopo: amarrar imagens e lista à execução aprovada por um token OIDC do GitHub verificado no host
+(§11.4).
 
 **Formato do arquivo.** Um item por linha, na gramática do contrato `v2` §5 (`<id>:<pub>` | `<id>:<pub>:active|retired|revoked`
 | `<id>:<pub>:retired:<sha256>`), `\n` no fim de cada linha, sem linha vazia, sem comentário, sem espaço, no máximo 16 linhas
@@ -175,8 +189,9 @@ trava já recusaria a lista inteira). Homologação: todo id com `ensaio-` (a W5
 | Mudança | Aceita? |
 |---|---|
 | Item novo `active` (ou `retired` sem fecho) | sim |
-| `active` → `retired` | sim |
-| `retired` → `retired:<sha256>` (fixar o fecho) | sim, **só** se `_closures/<id>.json` já existe no commit-base com esse sha256 dos bytes (o fecho é entregue antes de ser fixado) |
+| `active` → `retired:<sha256>` (aposentar e fixar de uma vez) | sim, **só** se `_closures/<id>.json` já existe no commit-base com esse sha256 dos bytes e passa de novo pelo S-11 contra a lista do commit. É o caminho do runbook: o `close-key` produz o fecho com R ainda ativa (`keyStateRefusal`, `sign-closure.ts:115-122`, só recusa R revogada), então não há janela sem cobertura |
+| `active` → `retired` (sem hash) | sim, mas as posições de R **deixam de autenticar até a fixação**: pelo contrato `v2` §6, aposentada sem hash fixado nunca conta (`SEAL_KEY_RETIRED_UNCOVERED`). O runbook não usa este caminho |
+| `retired` → `retired:<sha256>` (fixar depois) | sim, com a mesma condição do fecho no commit-base e do S-11 |
 | qualquer → `revoked` | sim |
 | `revoked` → outro estado | **não** (`TRUST_LIST_TRANSITION`) |
 | `retired` → `active` | **não** |
@@ -187,6 +202,19 @@ trava já recusaria a lista inteira). Homologação: todo id com `ensaio-` (a W5
 
 Um PR não pode, no mesmo ambiente, mudar a lista **e** acrescentar manifestos (`SEALS_AND_TRUST_LIST_TOGETHER`): a lista nova só
 vale no host depois do deploy, e o PR da lista é revisado sozinho.
+
+**Mesmas regras no host.** O receptor de deploy aplica a tabela acima contra a lista **instalada** (§5.6 passo 3), menos a
+condição do fecho no commit-base, que só o CI vê.
+
+**Ordem da aposentadoria** (emenda ao runbook de chaves §4, P9.2):
+
+1. PR do fecho `_closures/<R>.json`;
+2. entrega do fecho, com `WRITTEN` ou `ALREADY_PRESENT` no resumo;
+3. PR da fixação, `active → retired:<sha256>`;
+4. deploy.
+
+O receptor de deploy não lê a pasta de manifestos (o usuário de deploy não está no grupo `10001`), então não confere a entrega
+do passo 2. Fixar antes de entregar deixa as posições de R descobertas até a entrega (falha fechada, transitória).
 
 **Mudanças de código (fatias P9.2 e P9.3).** Os dois `trust-keys.txt` (vazios no início); parser do arquivo, regras de ambiente
 e de transição no núcleo novo do canal (§5.4); o receptor de deploy recusa o arquivo de variáveis do host que ainda defina
@@ -225,9 +253,9 @@ empacotado no receptor de manifestos (P9.3b).
 | S-09 | Os `seq` novos de uma auditoria vêm depois do maior `seq` do commit-base, contíguos | `SEALS_NOT_AT_END` |
 | S-10 | Para cada auditoria com arquivo novo, a cadeia inteira do commit (base + novos) passa pelo verificador `v2` real: lista do commit com estados, fechos de `<amb>/seals/_closures/`, `acceptedVersions: [2]`, evidências = entradas da cabeça (o método de `readSealChain`, `sign-chain.ts:59`), e o resultado é `AUTHENTICATED` com `headSeq` = último `seq` novo e `headSealSha256` = `sealSha256` dele | `SEAL_V2_<RAZÃO>` (as razões fixas de `EvidenceTrustReason`) ou `SEAL_HEAD_MISMATCH` |
 | S-11 | Fecho novo: `parseKeyRetirementClosureText`; signatário na lista e assinatura válida; `retiredKeyId` na lista; cada `heads[]` existe na cadeia do repositório com o mesmo `seq` e `sealSha256` | `CLOSURE_<MOTIVO>` |
-| S-12 | Lista: gramática, `parseTrustKeyring` não nulo (ou arquivo vazio), regra de ambiente, regras de transição do §5.3 | `TRUST_LIST_FORMAT`, `TRUST_LIST_ENV_PREFIX`, `TRUST_LIST_TRANSITION` |
+| S-12 | Lista: gramática, `parseTrustKeyring` não nulo (ou arquivo vazio), regra de ambiente, regras de transição do §5.3. Uma fixação `retired:<sha256>` roda de novo o S-11 sobre o fecho fixado | `TRUST_LIST_FORMAT`, `TRUST_LIST_ENV_PREFIX`, `TRUST_LIST_TRANSITION` |
 | S-13 | Lista e manifestos do mesmo ambiente no mesmo PR | `SEALS_AND_TRUST_LIST_TOGETHER` |
-| S-14 | Resumo do job: por arquivo novo, caminho relativo, `sha256sum` dos bytes, `seq` e `sealSha256`, para o conferente comparar com o livro | — |
+| S-14 | Resumo do job, uma linha por arquivo novo, por tipo (§5.9). Manifesto: caminho relativo, `sha256sum` dos bytes, `seq`, `sealSha256`. Fecho: caminho relativo, `sha256sum` dos bytes, `retiredKeyId`, `signerKeyId` e as cabeças como `auditId:seq:<prefixo do sealSha256>`. O conferente compara com o livro | — |
 
 As cadeias que o PR não toca **não** são reverificadas. Uma revogação legítima deixa cadeias antigas `SEAL_KEY_REVOKED`, e isso não
 pode travar o CI para sempre. Quando a lista muda, o resumo traz, só como informação, o veredito de cada cadeia do ambiente sob a
@@ -277,10 +305,25 @@ permissions:
   cache compartilhado abre envenenamento (DC-03).
 - O job `seals-deliver` não roda `npm` nem código do repositório: só `git`, `sha256sum` e `ssh`. A verificação com código já
   rodou em `seals-verify`, sem segredo.
-- Permissão extra **só** no job `deploy`: `actions: read`, para listar as execuções do `ci.yml` no SHA exato (§5.5.1, passo 1).
-- `concurrency` por job: `group: gmn-<ambiente>`, `cancel-in-progress: false`. Deploy e entrega do mesmo ambiente nunca correm
-  juntos. Limite do GitHub: um job pendente é cancelado por outro mais novo do mesmo grupo. A entrega é idempotente e o deploy
-  usa a `main` do momento, então o mais novo cobre o cancelado (§7).
+- **Permissões por job.** As `permissions` de um job **substituem** as do workflow (não somam), então cada job declara as suas,
+  sem nenhuma de escrita:
+
+  | Job | `permissions` |
+  |---|---|
+  | `deploy` | `contents: read` + `actions: read` (a segunda lista as execuções do `ci.yml` no SHA exato, §5.5.1 passo 1) |
+  | `seals-verify` | `contents: read` |
+  | `seals-deliver` | `contents: read` |
+
+  O `permissions: contents: read` do topo fica só como padrão.
+- **`concurrency` por operação e ambiente:** `gmn-<amb>-deploy` no `deploy` e `gmn-<amb>-seals` no `seals-deliver`, com
+  `cancel-in-progress: false`. Os grupos são separados porque o GitHub cancela um job **pendente** quando chega outro mais novo
+  do mesmo grupo: com um grupo só, um deploy cancelaria uma entrega pendente, e vice-versa.
+  - Dentro da mesma operação, o mais novo substituir o pendente é seguro. O deploy antigo falharia em `NOT_MAIN_HEAD` de
+    qualquer forma (§5.5.1), e a entrega manda todos os arquivos, de forma idempotente.
+  - Deploy e entrega do mesmo ambiente podem correr ao mesmo tempo. O receptor de deploy só instala a lista no passo 14, de
+    forma atômica (`rename`). Uma entrega que encontra no host outra lista que não a do seu commit falha fechada com
+    `E_TRUST_LIST_MISMATCH`, sem gravar nada. Resolve-se rodando a entrega de novo depois do deploy (dispatch `acao =
+    entregar-selos`).
 - Segredos só como **segredos de ambiente** (nunca de repositório), passados por `env:` no passo que os usa; nunca `${{ secrets.* }}`
   nem `${{ inputs.* }}` dentro de `run:`; sem `set -x`, sem `ssh -v`.
 - `timeout-minutes`: 60 no `deploy`, 20 no `seals-deliver`.
@@ -304,25 +347,32 @@ dispara e aprova as próprias execuções (risco aceito, §11.2).
 
 1. **CI verde no SHA:** a execução mais recente do `ci.yml` por `push` com `head_sha = github.sha` concluiu `success`. Senão,
    `CI_NOT_GREEN` ou `CI_PENDING`.
-2. Checkout do SHA, sem credencial persistida.
-3. **Build** dos alvos `web` e `worker` de `deploy/hostinger/Dockerfile` (como `build-images.sh:16-21`), `linux/amd64`, tag
+2. **O commit ainda é a cabeça da `main`:** no início do job, isto é, depois da aprovação (que pode ter esperado horas ou dias),
+   o `git ls-remote` de `refs/heads/main` com o token do job (só leitura) tem de devolver `github.sha`. Senão sai `NOT_MAIN_HEAD`,
+   e nada é construído. A conferência se repete imediatamente antes do comando `deploy` por SSH (passo 9). Motivo: uma
+   execução aprovada antiga, de um commit já superado, implantaria imagens antigas e uma lista antiga, desfazendo por exemplo
+   uma revogação (DC-21). A janela entre a segunda conferência e a instalação no host fica coberta pela regra de transição do
+   receptor (§5.6 passo 3).
+3. Checkout do SHA, sem credencial persistida.
+4. **Build** dos alvos `web` e `worker` de `deploy/hostinger/Dockerfile` (como `build-images.sh:16-21`), `linux/amd64`, tag
    **`<amb>-<sha40>`** (ex.: `gmn-web:producao-<sha40>`). Os argumentos vêm do `env:` do passo (`--build-arg
    NEXT_PUBLIC_SUPABASE_URL` sem `=valor`, para o valor não aparecer na linha de comando). A tag carrega o ambiente porque a URL
    do Supabase é embutida no build (`GUIA-DE-IMPLANTACAO.md` §0): as imagens de homologação e de produção do mesmo commit são
    diferentes e vivem no mesmo daemon Docker.
-4. **Pacote:** `docker save gmn-web:<tag> gmn-worker:<tag> | gzip -n` em `$RUNNER_TEMP`, com sha256 e tamanho. Nunca vira artefato
+5. **Pacote:** `docker save gmn-web:<tag> gmn-worker:<tag> | gzip -n` em `$RUNNER_TEMP`, com sha256 e tamanho. Nunca vira artefato
    nem vai a registry.
-5. **Hashes declarados:** `deploy/hostinger/stack.yml`; em homologação, também `deploy/hostinger/stack-hml.yml` (§5.11); a lista
+6. **Hashes declarados:** `deploy/hostinger/stack.yml`; em homologação, também `deploy/hostinger/stack-hml.yml` (§5.11); a lista
    `link-audit-seals/<amb>/trust-keys.txt`; e a impressão do projeto Supabase (12 primeiros hex do sha256 de
    `GMN_BUILD_SUPABASE_URL`), que só vai ao receptor e **não** ao resumo.
-6. **Chave:** só agora (depois do build) a chave e o `known_hosts` são escritos em `$RUNNER_TEMP/ssh` (0700/0600). Opções fixas:
+7. **Chave:** só agora (depois do build) a chave e o `known_hosts` são escritos em `$RUNNER_TEMP/ssh` (0700/0600). Opções fixas:
    `-T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=<arquivo>
    -o GlobalKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=20 -o ServerAliveInterval=15`.
-7. `upload` (§5.6) com o pacote no stdin; depois `deploy` com a lista no stdin.
-8. **Verificação externa somente leitura** (do runner, contra `https://$GMN_PUBLIC_HOST`, com repetição por até 2 min): `/login`
+8. `upload` (§5.6) com o pacote no stdin.
+9. Nova conferência `NOT_MAIN_HEAD`; logo depois, `deploy` com a lista no stdin.
+10. **Verificação externa somente leitura** (do runner, contra `https://$GMN_PUBLIC_HOST`, com repetição por até 2 min): `/login`
    = 200 (`EX-01`); `/api/system/health` = 401 (`EX-02`); `/api/link-audit/evidence` = 401 (`EX-03`); TLS válido (o `curl`
    verifica). Só os códigos vão ao log.
-9. `if: always()`: apaga a pasta da chave e escreve o resumo (§5.9).
+11. `if: always()`: apaga a pasta da chave e escreve o resumo (§5.9).
 
 #### 5.5.2 Job `seals-deliver`
 
@@ -375,7 +425,11 @@ inspect` e `docker info`; nada é carregado nem implantado antes do passo 9):
 2. **A stack é do host:** sha256 de `--stack` (e de `--overlay`) = os declarados, senão `E_STACK_FILE_MISMATCH`. O `stack.yml` e
    a sobreposição são instalados pelo responsável a partir do commit (desvio D-1, §11.1).
 3. **Lista:** stdin até 8 KiB; sha256 = `trust-sha256`; formato, `parseTrustKeyring` e regra de ambiente (§5.3), senão
-   `E_TRUST_LIST_MISMATCH` / `E_TRUST_LIST_INVALID`.
+   `E_TRUST_LIST_MISMATCH` / `E_TRUST_LIST_INVALID`. Depois, **transição a partir da lista instalada** (`<estado>/trust-keys.txt`)
+   pelas regras do §5.3, menos a condição do fecho no commit-base, que só o CI vê. Sem `revoked` → outro estado, sem `retired`
+   → `active`, sem trocar ou tirar hash fixado, sem trocar chave ou id, sem remover item. Arquivo instalado ausente ou vazio ⇒
+   primeira instalação, livre. Lista igual à instalada passa. Senão, `E_TRUST_LIST_TRANSITION`, e nada é carregado nem
+   implantado (DC-21; protege contra execução aprovada antiga e contra a lista escolhida por quem tem a chave).
 4. **Arquivo de variáveis do host**, por um parser estrito (`NOME=valor`, aspas simples ou duplas sem expansão, `#` e linhas
    vazias; o resto recusa). O receptor nunca o executa como shell. Proibidas nos dois ambientes: `GMN_IMAGE_TAG` e
    `GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS` (o receptor define as duas), `GMN_AUTH_DISABLED`, `GMN_DEMO_MODE`. Proibida em produção:
@@ -406,7 +460,8 @@ inspect` e `docker info`; nada é carregado nem implantado antes do passo 9):
     `E_POSTDEPLOY_CHECK <PD-xx>`. O serviço já foi atualizado: o responsável decide pelo `PLANO-DE-ROLLBACK.md`.
 14. **Instala a lista** em `<estado>/trust-keys.txt` (temporário + `fsync` + `rename` + `fsync` da pasta; arquivo de configuração
     do receptor, não manifesto), só se PD-07 passou, e apaga o pacote recebido.
-15. Sucesso: `OK DEPLOYED <amb>-<sha40> <web-image-id> <worker-image-id> <stack-sha256> <overlay-sha256|-> <trust-sha256>`.
+15. Sucesso: `OK DEPLOYED <amb>-<sha40> <web-image-id> <worker-image-id> <stack-sha256> <overlay-sha256|-> <trust-sha256>`, em que
+    `trust-sha256` é o sha256 da lista **instalada** no passo 14, lido de volta do arquivo.
 
 O log local (`--log`, `0600`, do usuário do receptor; rotação pelo responsável) guarda as saídas do Docker. Elas podem conter
 caminhos reais e nunca vão ao SSH.
@@ -510,6 +565,7 @@ fecho ou o **nome** de uma variável. Nunca conteúdo de arquivo, caminho real, 
 | 63 | `E_CONVERGE_TIMEOUT` | deploy | não convergiu em 10 min |
 | 64 | `E_POSTDEPLOY_CHECK <PD-xx>` | deploy | verificação pós-deploy falhou |
 | 65 | `E_DATA_PREFIX` | deploy | pasta de homologação fora do prefixo |
+| 66 | `E_TRUST_LIST_TRANSITION` | deploy | lista nova não é transição válida a partir da instalada |
 
 O `ssh` sai com 255 quando não conecta. O job registra `SSH_CONNECT_FAILED`, e o host fica mascarado por ser segredo.
 
@@ -518,16 +574,29 @@ O `ssh` sai com 255 quando não conecta. O job registra `SSH_CONNECT_FAILED`, e 
 O resumo (`$GITHUB_STEP_SUMMARY`) é público e só tem campos públicos. O custodiante copia a linha para o livro de manifestos
 (coluna "entrega (id da execução do CI)", `p1-livro-de-manifestos.md` §2), porque a retenção dos logs do GitHub é limitada.
 
-Entrega de manifestos, uma linha por arquivo:
+**Verificação** (job `seals` no PR; `seals-verify` na entrega), uma linha por arquivo, numa tabela por tipo (S-14):
+
+| manifesto: caminho relativo | sha256 dos bytes | `seq` | `sealSha256` |
+|---|---|---|---|
+| `aud-…/seal-0003.json` | `<64 hex>` | `3` | `<64 hex>` |
+
+| fecho: caminho relativo | sha256 dos bytes | `retiredKeyId` | `signerKeyId` | cabeças (todas) |
+|---|---|---|---|---|
+| `_closures/<R>.json` | `<64 hex>` | `<R>` | `<S>` | `aud-…:3:<12 hex>`, `aud-…:1:<12 hex>`, … (`auditId:seq:` + 12 primeiros hex do `sealSha256`) |
+
+**Entrega** (`seals-deliver`), uma linha por arquivo, dos dois tipos:
 
 | execução | tentativa | commit | ambiente | caminho relativo | sha256 dos bytes | resultado | código |
 |---|---|---|---|---|---|---|---|
 | `<run_id>` | `<run_attempt>` | `<sha40>` | `producao` | `aud-…/seal-0003.json` | `<64 hex>` | `WRITTEN` / `ALREADY_PRESENT` / `FALHOU` | `OK` / `E_…` |
 
-Deploy, uma linha por execução:
+O `seals-deliver` não roda código do repositório e não interpreta o JSON. O livro junta as duas tabelas da mesma execução pelo
+caminho e pelo sha256.
 
-| execução | commit | ambiente | pacote sha256 | stack sha256 | sobreposição sha256 | lista sha256 | imagem web | imagem worker | CI verde | EX-01..03 | resultado |
-|---|---|---|---|---|---|---|---|---|---|---|---|
+**Deploy**, uma linha por execução (a lista é a **instalada**, devolvida no `OK DEPLOYED`):
+
+| execução | commit | ambiente | pacote sha256 | stack sha256 | sobreposição sha256 | lista instalada sha256 | imagem web | imagem worker | CI verde | cabeça da `main` | EX-01..03 | resultado |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
 
 O resumo nunca leva host, porta, domínio, URL ou impressão do projeto Supabase, nem saída do Docker.
 
@@ -581,6 +650,19 @@ Mesmo workflow, ambiente `homologacao`, mesma VPS e mesmo nó, como **stack sepa
 **Sequência (spec dos portões §10.4):** primeiro o ensaio W5.3; a G2 só depois do relatório da W5 aprovado; nunca os dois ao
 mesmo tempo na mesma pilha.
 
+**Limite declarado: rede externa do Traefik compartilhada.** O web de homologação entra na mesma rede externa
+(`automacaotrafegopagoredeinterna`, `stack.yml:110`) que o web de produção e os outros serviços da VPS ligados a ela. Tem a
+mesma exposição do web de produção e pode alcançar diretamente outros serviços dessa rede (inclusive a porta 3000 do web de
+produção), sem passar pelo Traefik. O Traefik e a rede não são alterados (`GUIA-DE-IMPLANTACAO.md` proíbe). Mitigações:
+
+- a sobreposição não acrescenta rede (P9-H02, P9-H09);
+- a homologação não tem **nenhum** secret ou credencial em comum com a produção: secrets do Swarm, chaves SSH, segredos do
+  ambiente do GitHub e projeto Supabase (P9-H09, P9-O08). Um web de homologação comprometido não leva credencial de produção;
+- os dados são só sintéticos, o Worker fica em 0 e não há Serper;
+- o web de produção continua exigindo sessão em tudo, menos `/login`.
+
+Ameaça DC-22.
+
 **Limite declarado:** o alias DNS `gmn-web` existe nas duas stacks na rede externa compartilhada. Nada resolve esse nome por
 ela (o Traefik usa os IPs das tarefas, e o Redis está só na rede interna), mas o nome não é único. Os serviços não podem ser
 renomeados por sobreposição.
@@ -609,7 +691,8 @@ relatório indicado.
 - [ ] **P9-S09** fecho novo com signatário fora da lista, assinatura inválida, nome ≠ `retiredKeyId` ou cabeça ausente da cadeia do
   repositório ⇒ `CLOSURE_<MOTIVO>`.
 - [ ] **P9-S10** PR sem nada sob `link-audit-seals/` ⇒ job verde sem `npm ci` (teste estático do workflow).
-- [ ] **P9-S11** o resumo traz `sha256sum`, `seq` e `sealSha256` de cada arquivo novo e nenhum conteúdo de arquivo.
+- [ ] **P9-S11** o resumo traz uma linha por arquivo novo, por tipo: manifesto com `sha256sum`, `seq` e `sealSha256`; fecho
+  com `sha256sum`, `retiredKeyId`, `signerKeyId` e as cabeças `auditId:seq:<12 hex>`. Nenhum conteúdo de arquivo além disso.
 - [ ] **P9-S12** cadeias não tocadas não são reverificadas: uma revogação na lista não deixa vermelho um PR que só mexe em outra
   auditoria.
 
@@ -619,8 +702,11 @@ relatório indicado.
   ⇒ `TRUST_LIST_FORMAT`; arquivo vazio ⇒ aceito (política fechada).
 - [ ] **P9-T02** `ensaio-` em produção, ou id sem `ensaio-` em homologação ⇒ `TRUST_LIST_ENV_PREFIX`.
 - [ ] **P9-T03** cada transição proibida do §5.3 ⇒ `TRUST_LIST_TRANSITION`; cada permitida passa.
-- [ ] **P9-T04** fixar `retired:<hash>` sem o fecho no commit-base, ou com outro hash ⇒ recusa.
+- [ ] **P9-T04** fixar `retired:<hash>` (vindo de `active` ou de `retired`) sem o fecho no commit-base, com outro hash ou com
+  um fecho que não passa no S-11 ⇒ recusa.
 - [ ] **P9-T05** lista e manifestos do mesmo ambiente no mesmo PR ⇒ `SEALS_AND_TRUST_LIST_TOGETHER`.
+- [ ] **P9-T07** `active → retired:<sha256>` com o fecho no commit-base, de sha256 igual e válido no S-11 ⇒ aceito; `active →
+  retired` sem hash ⇒ aceito, e o resumo avisa que as posições de R deixam de autenticar até a fixação.
 - [ ] **P9-T06** a junção das linhas por `,` é exatamente o que `parseTrustKeyring` aceita, e o servidor continua lendo a
   variável (`scoring/shared.ts` inalterado; teste estático).
 
@@ -646,6 +732,8 @@ relatório indicado.
 - [ ] **P9-R11** o artefato reconstruído tem o hash versionado e roda sob `node --permission` com os grants do §5.7, gravando
   com `fsync` no Node 22 (job do CI).
 - [ ] **P9-R12** depois da gravação, o arquivo é `0444` e a pasta nova herda o grupo e o setgid da raiz.
+- [ ] **P9-R13** lista instalada trocada (`rename` atômico) no meio de uma sequência de `put`: os seguintes recusam com
+  `E_TRUST_LIST_MISMATCH`, nada é gravado e nenhum lê um arquivo parcial; repetidos com o hash novo, gravam.
 
 **Receptor de deploy (P9.3a), com `docker`, `tar` e `gzip` falsos no `PATH` (sem rede, sem Docker real):**
 
@@ -663,26 +751,35 @@ relatório indicado.
   wrapper, sem `--prune`; `GMN_IMAGE_TAG` e a lista no ambiente do filho, não na linha de comando.
 - [ ] **P9-D09** convergência em `rollback_completed` ⇒ `E_ROLLED_BACK`, e a lista **não** é instalada.
 - [ ] **P9-D10** cada PD-01 a PD-08 reprovado ⇒ `E_POSTDEPLOY_CHECK <PD-xx>`.
-- [ ] **P9-D11** sucesso ⇒ uma linha `OK DEPLOYED …`, lista instalada com o hash recebido, pacote apagado.
+- [ ] **P9-D11** sucesso ⇒ uma linha `OK DEPLOYED …` com o sha256 da lista **instalada** (relido do arquivo), igual ao recebido;
+  pacote apagado.
 - [ ] **P9-D12** espaço insuficiente ⇒ `E_DISK_LOW`; pastas recusadas pelo script ⇒ `E_HOST_FOLDERS`.
 - [ ] **P9-D13** nenhuma saída do `docker` chega ao stdout/stderr do receptor (teste com saída falsa contendo um caminho).
+- [ ] **P9-D14** contra a lista instalada: `revoked` → outro estado, `retired` → `active`, hash fixado trocado ou tirado, chave ou
+  id trocados, item removido (inclusive voltar à lista vazia) ⇒ `E_TRUST_LIST_TRANSITION`, sem `docker load` e sem instalar.
+  Arquivo instalado ausente ou vazio ⇒ qualquer lista válida passa. Lista igual à instalada passa.
 
 **Workflows, teste estático (P9.4 e P9.5):**
 
-- [ ] **P9-W01** `deploy.yml`: gatilhos e entradas exatamente os do §5.5; `permissions: contents: read` no topo; só o job `deploy`
-  com `actions: read`.
+- [ ] **P9-W01** `deploy.yml`: gatilhos e entradas exatamente os do §5.5. **Permissões efetivas por job**: todo job declara
+  `permissions`; `deploy` = exatamente `{contents: read, actions: read}`; `seals-verify` e `seals-deliver` = exatamente
+  `{contents: read}`; nenhum `write` em lugar nenhum; topo = `contents: read`.
 - [ ] **P9-W02** `deploy` só com `github.ref == 'refs/heads/main'`; `environment` = a entrada; `seals-deliver` com `environment` da
   matriz.
 - [ ] **P9-W03** toda `uses:` fixada por SHA de 40 hex e só entre as actions já usadas no `ci.yml`.
 - [ ] **P9-W04** nenhum `upload-artifact`, `docker push`, `docker login`, `actions/cache`, `cache:` do `setup-node` ou `type=gha`
   em `deploy.yml`.
 - [ ] **P9-W05** nenhum `${{ secrets.` e nenhum `${{ inputs.` dentro de `run:`; nenhum `set -x` nem `ssh -v`.
-- [ ] **P9-W06** `concurrency` por ambiente, sem `cancel-in-progress: true`.
+- [ ] **P9-W06** `concurrency` por operação e ambiente: `gmn-<amb>-deploy` no `deploy` e `gmn-<amb>-seals` no `seals-deliver`;
+  nenhum grupo comum às duas operações; nenhum `cancel-in-progress: true`.
 - [ ] **P9-W07** `StrictHostKeyChecking=yes` e `UserKnownHostsFile` explícito em todo `ssh`; nenhum `StrictHostKeyChecking=no`
   nem `accept-new`.
 - [ ] **P9-W08** a chave só é escrita depois do passo de build, e há limpeza com `if: always()`.
 - [ ] **P9-W09** `seals-deliver` não roda `npm`, `node` nem `npx`.
 - [ ] **P9-W10** `ci.yml`: job `seals` sem filtro de caminho, sem segredo, `persist-credentials: false`, base = `HEAD^1` no PR.
+- [ ] **P9-W11** o job `deploy` compara `github.sha` com `refs/heads/main` (`git ls-remote`, só leitura) no início do job, antes do
+  checkout e do build, e de novo imediatamente antes do comando `deploy` por SSH; diferença ⇒ `NOT_MAIN_HEAD` (teste estático da
+  presença e da ordem dos passos).
 
 **Stack e homologação (P9.4):**
 
@@ -697,6 +794,8 @@ relatório indicado.
 - [ ] **P9-H07** **[doc]** `docker stack config -c stack.yml -c stack-hml.yml` no host funde os secrets de topo (registrado
   junto com o P9-H06).
 - [ ] **P9-H08** `.dockerignore` exclui `link-audit-seals`; `.gitattributes` tem `link-audit-seals/** -text`.
+- [ ] **P9-H09** a sobreposição não declara `networks` (nem no topo nem nos serviços) e dá `name: gmn-hml_*` a **todos** os secrets
+  de topo do `stack.yml`: nenhum secret de homologação aponta para um nome de produção (teste estático que cruza as duas listas).
 
 **Pastas (P9.3b):**
 
@@ -715,13 +814,24 @@ relatório indicado.
 - [ ] **P9-O05** pasta de manifestos com `stat -c '%U:%g %a'` = `gmn-seals:10001 2750` (EN-12 da G2; G-3 em produção).
 - [ ] **P9-O06** **G2:** entrega de um manifesto e de um fecho pelo canal em homologação (`WRITTEN`, depois `ALREADY_PRESENT` na
   segunda execução, `E_EXISTS_DIFFERENT` com bytes alterados) e recusa de manifesto não assinado; critério de entrada da produção.
+- [ ] **P9-O08** nenhum segredo ou credencial em comum entre homologação e produção: cada secret `gmn-hml_*` gerado ou obtido
+  de novo (laboratório Supabase, guarda de laboratório, chaves de origem, do livro, de log e do pseudônimo, senha do Redis),
+  chaves SSH e segredos dos ambientes do GitHub distintos. O responsável registra a lista, com a data, no relatório do ensaio
+  W5.3; a impressão do Supabase é conferida pelo receptor (P9-D05).
 - [ ] **P9-O07** primeiro deploy de produção pelo workflow, com a verificação pós-deploy completa (`VERIFICACAO-POS-DEPLOY.md`) e o
   primeiro teste de escrita só numa auditoria sintética combinada (P-9).
 
 ## 7. Casos-limite
 
-- **Job pendente cancelado por outro mais novo do mesmo grupo** (comportamento do GitHub): a entrega manda todos os arquivos e é
-  idempotente; o deploy usa a `main` do momento. Nada se perde, e o resumo mostra qual execução entregou.
+- **Job pendente cancelado por outro mais novo do mesmo grupo** (comportamento do GitHub): os grupos são por operação e ambiente
+  (§5.5), então um deploy nunca cancela uma entrega, nem o contrário. Dentro da mesma operação, a entrega manda todos os
+  arquivos (idempotente), e um deploy antigo falharia em `NOT_MAIN_HEAD`. Nada se perde, e o resumo mostra qual execução
+  entregou.
+- **Execução de deploy aprovada muito depois de disparada:** se a `main` andou, `NOT_MAIN_HEAD` no início do job e nada é
+  construído. Se a `main` andar durante o build, a segunda conferência barra antes do `deploy`. O que sobra (segundos entre a
+  conferência e o passo 14) é coberto, para a lista, pela regra de transição do host. Dispara-se um deploy novo.
+- **Entrega durante um deploy que troca a lista:** a entrega cuja lista difere da instalada naquele instante recusa com
+  `E_TRUST_LIST_MISMATCH`, sem gravar. Repete-se depois do deploy.
 - **Entrega antes do deploy da lista nova:** `E_TRUST_LIST_MISMATCH`. Faz-se o deploy e depois a entrega por `workflow_dispatch`
   (`acao = entregar-selos`).
 - **Dois custodiantes com o mesmo `seq`:** o segundo PR conflita no git (mesmo caminho, bytes diferentes) ou recusa em S-09/S-10.
@@ -735,8 +845,10 @@ relatório indicado.
   entrega o grava de novo.
 - **Revogação de chave:** cadeias com posição da chave revogada viram `SEAL_KEY_REVOKED` no servidor e no CI informativo. Um PR que
   acrescenta à cadeia recusa (S-10), e o runbook manda abrir auditoria nova.
-- **Fecho entregue e fixação depois:** a fixação exige o fecho no commit-base (S-12). Fixar antes de entregar deixaria posições
-  aposentadas descobertas por um tempo (falha fechada, transitória).
+- **Aposentadoria de chave:** a ordem é PR do fecho → entrega → PR `active → retired:<sha256>` → deploy (§5.3). A fixação exige
+  o fecho no commit-base (S-12). Se a fixação chegar ao host antes da entrega do fecho, as posições de R ficam descobertas até a
+  entrega. Se alguém usar `active → retired` sem hash, as cadeias de R deixam de autenticar até a fixação. Nos dois casos a
+  falha é fechada e transitória.
 - **CI do commit ainda rodando ou vermelho:** `CI_PENDING` / `CI_NOT_GREEN`; nada é construído.
 - **Deploy do mesmo commit duas vezes:** `docker load` re-etiqueta a mesma imagem, a stack não muda, converge na hora.
 - **Deploy com o Worker ligado em produção:** a atualização do Worker segue o `stop-first` com até 30 min de encerramento gracioso
@@ -756,14 +868,18 @@ relatório indicado.
 
 ## 8. Segurança
 
-Modelo de ameaças: `docs/security/threats/deploy-pelo-ci.md` (DC-01 a DC-20). Em resumo:
+Modelo de ameaças: `docs/security/threats/deploy-pelo-ci.md` (DC-01 a DC-22). Em resumo:
 
 - **Autenticação:** chaves Ed25519 por usuário e por ambiente, só como segredo de ambiente; chave de host fixada.
-- **Autorização:** revisor obrigatório nos ambientes, só `main`, comando forçado, nenhum shell. A chave de deploy equivale a root no
-  host pelo grupo `docker` (DC-02). Por isso o receptor não aceita stack vinda do CI, e a gramática é fechada.
+- **Autorização:** revisor obrigatório nos ambientes, só `main`, commit ainda na cabeça da `main` (`NOT_MAIN_HEAD`), comando
+  forçado, nenhum shell. A chave de deploy equivale a root no host pelo grupo `docker` (DC-02). Por isso o receptor não aceita
+  stack vinda do CI, e a gramática é fechada. Quem tem a chave de deploy escolhe a lista de confiança, mas isso não é escalada
+  nova, porque a mesma chave já implanta imagem arbitrária. A regra de transição no host impede reverter a lista (DC-07,
+  DC-21).
 - **Separação (RC-09):** a chave de manifestos não tem `docker`, não troca a lista e só acrescenta o que o verificador aceita.
 - **Dados:** nenhum dado de cliente no repositório nem no log; `auditId` opaco; host, domínio e projeto só como segredo; saída dos
   receptores em código fixo.
+- **Homologação na rede externa do Traefik:** a mesma exposição do web de produção, sem credencial em comum (DC-22).
 - **Limites mantidos:** o administrador da VPS fica fora da garantia (D15.5); a mesma conta do GitHub concentra código, CI e canal
   (spec do P1 §5.5.1 item 6); uma chave de deploy vazada compromete a aplicação, mas não o host.
 
@@ -802,7 +918,7 @@ autorização escrita da implantação (checklist §0).
 
 ### 10.2 Ordem de implantação
 
-1. P9.1 (esta spec) → {P9.2 ∥ P9.3a} → {P9.3b ∥ P9.4} → P9.5 (plano de ondas).
+1. P9.1 (esta spec) → P9.2 → P9.3a → {P9.3b ∥ P9.4} → P9.5 (plano de ondas).
 2. Depois da P9.4: H-01 a H-10 → **primeiro deploy de homologação pelo workflow** (P9-H06, P9-H07).
 3. **W5.3** em homologação. A entrega do manifesto é **manual**, como desvio declarado D-01 da D15.5 (decisão a do manager,
    p1-canal §6.1), até a P9.5 estar na `main`. Se a P9.5 já estiver na `main` antes do ensaio, o ensaio usa o canal e o desvio
@@ -831,11 +947,11 @@ autorização escrita da implantação (checklist §0).
 | D-1 | Receptor de deploy roda `docker stack config` + `docker stack deploy` (sem dizer de onde vem a stack) | A stack (e a sobreposição de homologação) é **instalada pelo responsável** no host. Cada deploy confere o sha256 do arquivo instalado contra o do commit (`E_STACK_FILE_MISMATCH`). O CI entrega só imagens e a lista | O usuário de deploy está no grupo `docker`. Uma stack vinda do CI pode montar `/` do host (`type: bind`, como `stack.yml:71-102`) e dar root fora da aplicação, atingindo Traefik e os outros projetos da VPS (`stack.yml:1-3`). Assim, a chave de deploy vazada compromete a aplicação, mas não o host. Alternativa futura: stack vinda do CI com uma política mecânica sobre a configuração renderizada (exige um parser de YAML no receptor) |
 | D-2 | Chave de host fixada por **variável** de ambiente | **Segredo** de ambiente (`GMN_SSH_KNOWN_HOSTS`, `GMN_SSH_HOST`, `GMN_SSH_PORT`) | Repositório público ⇒ log público; o GitHub só mascara segredos, e as mensagens do `ssh` repetem o host. A linha do `known_hosts` traz o host |
 | D-3 | Parametrizar o `stack.yml` para homologação | Sobreposição `stack-hml.yml` com dois `-c`; no `stack.yml` só os nomes do Traefik (com padrão `gmn`) e a sintaxe longa dos secrets | `tests/link-audit-simulated-guards.test.ts:279-280` proíbe `GMN_LINK_AUDIT_HOMOLOGATION` no `stack.yml`; a lista de secrets do serviço (`stack.yml:59-69`, `:195-199`) não se remove por variável; os nomes do Traefik são globais (`stack.yml:159-177`) |
-| D-4 | `permissions: contents: read` | Mais `actions: read` **só** no job `deploy` | Para conferir que o `ci.yml` está verde no SHA exato antes de construir: a `main` aceita merge com checks do PR, e a execução no commit de merge pode falhar depois |
+| D-4 | `permissions: contents: read` | Permissões declaradas por job (as do job substituem as do workflow): `deploy` com `contents: read` **e** `actions: read`; `seals-verify` e `seals-deliver` com `contents: read` | O `actions: read` serve para conferir que o `ci.yml` está verde no SHA exato antes de construir: a `main` aceita merge com checks do PR, e a execução no commit de merge pode falhar depois. Declarar só `actions: read` no job tiraria o `contents: read` dele |
 | D-5 | Ensaio do canal na G2 | Se a P9.5 chegar à `main` antes da W5.3, o ensaio da W5 já usa o canal | Remove o desvio D-01 quando possível; não muda a regra de nunca entregar à mão em produção |
 | D-6 | Lista de onde o CI lê a lista fixada (proposta em aberto) | Arquivo versionado por ambiente + instalação pelo receptor de deploy + variável no servidor (sem mudar o servidor) + hash em cada entrega | A chave de manifestos não pode instalar a lista (RC-09); o servidor já lê a variável (`scoring/shared.ts:107`) e a `stack.yml` já a interpola (`:42`) |
 | D-7 | Receptor de manifestos com "publicação exclusiva" (CE-3 diz que o `publishExclusive` não serve) | Reaproveita `linkExclusive`/`commitFile` do `sign`, que já reportam a falha do `fsync` da pasta | `sign-run.ts:242-262` (`SIGN_WRITE_UNCONFIRMED`), revisado na W4.3/W4.6; extrair para módulo compartilhado muda o hash do artefato do `sign` |
-| D-8 | Fatia única "receptores + testes" | Duas fatias: P9.3a (deploy) e P9.3b (manifestos) | O receptor de manifestos depende do núcleo do canal da P9.2; o de deploy não, e pode correr em paralelo com a P9.2 |
+| D-8 | Fatia única "receptores + testes" | Duas fatias: P9.3a (deploy) e P9.3b (manifestos), as duas depois da P9.2 | Os dois receptores reusam o módulo da lista da P9.2 (parser do arquivo, regras de ambiente e de transição); o de manifestos também usa o núcleo do canal e entra no pipeline de artefatos criado pela P9.3a |
 
 ### 11.2 Questões para o responsável
 
@@ -852,15 +968,26 @@ autorização escrita da implantação (checklist §0).
 - **P-7** (spec dos portões §10.1): "chave pública ativa na lista" passa a ser PR em `link-audit-seals/producao/trust-keys.txt` +
   deploy (P9.2).
 - **VC-E8, PG-V04, EN-12:** a pasta de manifestos é `gmn-seals:10001 2750` (P9.3b).
-- **Runbook de chaves §4** e **runbook do custodiante**: fixação por PR; `auditId` `aud-<16 hex>` gerado na autorização; entrega
-  por PR (P9.2).
+- **Runbook de chaves §4** e **runbook do custodiante**: fixação por PR; ordem da aposentadoria (fecho → entrega → `active →
+  retired:<sha256>` → deploy, §5.3); `auditId` `aud-<16 hex>` gerado na autorização; entrega por PR (P9.2).
 - **`p1-canal-de-entrega-manifestos.md` §3:** procedimento final com o PR e o resumo do job (P9.5).
+- **`p1-livro-de-manifestos.md`** §5, item 5: comparar o sha256 da lista instalada (log do receptor de deploy e resumo do deploy)
+  com o do `trust-keys.txt` no commit implantado. §2: juntar as tabelas de verificação e de entrega pelo id da execução, caminho
+  e sha256 (P9.5).
 - **`docs/security/README.md`:** o exemplo `aud-002-autorizacao-01` não vale para auditorias atestadas (P9.2).
 - **`GUIA-DE-IMPLANTACAO.md`** §1–§2 (o build e a transferência passam ao workflow) e §3.4 (P9.4), §3.3 (P9.3b);
   **`PLANO-DE-ROLLBACK.md`** (reversão por commit + workflow) e **`VERIFICACAO-POS-DEPLOY.md`** (nome da stack como parâmetro)
   (P9.4).
 - **`CLAUDE.md`:** "Deploy staging" passa a apontar para o ambiente `homologacao` do `deploy.yml`, e "Deploy prod" para o mesmo
   workflow (P9.4).
+
+### 11.4 Opções futuras (fora de escopo)
+
+- **Amarrar imagens e lista à execução aprovada** por um token OIDC do GitHub (`id-token: write` no job), verificado no host pelo
+  receptor de deploy (emissor, repositório, `ref = refs/heads/main`, ambiente, `sha` e um *nonce* ligado ao pacote e à lista).
+  Assim, uma chave de deploy vazada sozinha não bastaria para implantar. Exige a verificação de JWT no receptor, a chave pública
+  do emissor no host e a rotação dela, por isso fica para depois.
+- **Stack vinda do CI** com uma política mecânica sobre a configuração renderizada (desvio D-1).
 
 ## 12. Rastreabilidade
 
@@ -873,8 +1000,8 @@ autorização escrita da implantação (checklist §0).
 | RC-05 temporário + `fsync` + `link()` + `fsync` da pasta | §5.7 passo 7, P9-R07 |
 | RC-06 verificação `v2` antes de gravar | S-10 no CI; §5.7 passo 6 no host |
 | RC-07 o servidor só aceita pelo próprio verificador | inalterado (`scoring/shared.ts:108-113`) |
-| RC-08 registro por entrega | §5.9 |
-| RC-09 credencial exclusiva | §5.10, §5.3 (a chave de manifestos não troca a lista) |
+| RC-08 registro por entrega | §5.9 (verificação por tipo + entrega; deploy com a lista instalada) |
+| RC-09 credencial exclusiva | §5.10, §5.3 (a chave de manifestos não troca a lista; a de deploy só a avança por transição válida, §5.6 passo 3) |
 | RC-10 falha fechada com código fixo | §5.8 |
 
 | Pendência (p1-canal §5) | Onde |

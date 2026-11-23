@@ -38,8 +38,11 @@ Forças em jogo:
 1. **Um workflow, `.github/workflows/deploy.yml`**, com três jobs. O `deploy` roda só por `workflow_dispatch` na `main`, para
    `homologacao` ou `producao`. O `seals-verify` e o `seals-deliver` rodam no push na `main` que toca o caminho de manifestos, ou
    por dispatch. Cada ambiente é um **GitHub Environment** com o responsável como revisor obrigatório e só a `main`. Os segredos
-   são de ambiente. Permissão `contents: read` (mais `actions: read` só no `deploy`). Actions fixadas por SHA. Sem artefato,
-   registry nem cache nos jobs com segredo.
+   são de ambiente. As permissões são declaradas por job, porque as do job substituem as do workflow: o `deploy` declara
+   `contents: read` e `actions: read`; o `seals-verify` e o `seals-deliver`, `contents: read`. O `deploy` só segue se o commit
+   ainda é a cabeça da `main`, conferido no início do job e de novo antes do comando de deploy (`NOT_MAIN_HEAD`). A
+   concorrência é por operação e ambiente (`gmn-<ambiente>-deploy`, `gmn-<ambiente>-seals`). Actions fixadas por SHA. Sem
+   artefato, registry nem cache nos jobs com segredo.
 2. **As imagens são construídas no próprio job**, a partir do commit exato, com tag `<ambiente>-<sha40>`, e seguem pelo SSH como
    um `docker save` comprimido. Nunca viram artefato nem vão a registry.
 3. **SSH restrito a receptores de comando único.** São dois usuários de host por ambiente: o de deploy (grupo `docker`) e o de
@@ -55,8 +58,10 @@ Forças em jogo:
 6. **O receptor de manifestos** verifica de novo, no host, contra a pasta real (`seq` = último + 1). Grava com temporário,
    `fsync`, `link()` exclusivo e `fsync` da pasta. Bytes idênticos já presentes são idempotentes; bytes diferentes recusam.
 7. **A lista de confiança tem fonte única**, `link-audit-seals/<ambiente>/trust-keys.txt`. O CI a lê do commit. O receptor de
-   deploy a passa ao servidor (a mesma variável de hoje) e a instala no host. O receptor de manifestos confere o hash dela a cada
-   entrega. A chave de manifestos nunca troca a lista.
+   deploy a passa ao servidor (a mesma variável de hoje) e a instala no host, só se ela for uma transição válida a partir da
+   lista instalada (`revoked` terminal, `retired` sem volta, hash fixado imutável, nada removido). O receptor de manifestos
+   confere o hash dela a cada entrega. A chave de manifestos nunca troca a lista. Quem tem a chave de deploy escolhe a lista,
+   mas isso não é escalada nova: a mesma chave já implanta imagem arbitrária.
 8. **A homologação** é a stack `gmn-hml` na mesma VPS: sobreposição própria, pastas, secrets, Redis, domínio e laboratório
    Supabase separados, Worker em 0 e sem Serper. É implantada pelo mesmo workflow.
 
@@ -84,6 +89,12 @@ Forças em jogo:
 - O manifesto expõe publicamente `auditId` opaco, datas, `keyId` e frequência das atestações (sem dado pessoal).
 - O build dura alguns minutos no runner a cada deploy (sem cache, de propósito).
 - O alias DNS `gmn-web` não é único na rede externa compartilhada quando as duas stacks estão no ar.
+- O web de homologação fica na mesma rede externa do Traefik que o de produção e os outros serviços: mesma exposição, sem
+  segmentação. A mitigação é não ter nenhum secret ou credencial em comum com a produção.
+- Uma entrega de manifestos que corre junto com um deploy que troca a lista falha fechada (`E_TRUST_LIST_MISMATCH`) e precisa
+  ser repetida.
+- Uma chave de deploy vazada ainda pode **acrescentar** uma chave de confiança própria. Não pode reverter a lista, e a
+  conferência do livro de manifestos acusa a divergência.
 
 ### Neutral / follow-ups
 
@@ -91,6 +102,8 @@ Forças em jogo:
 - Rever o ADR se houver uma segunda pessoa (autoaprovação), registry sem custo ou necessidade de stack vinda do CI. Neste último
   caso, com uma política mecânica sobre a configuração renderizada.
 - Fixar por digest a imagem-base do `Dockerfile` (`node:22.23.2-bookworm-slim` vai por tag), em fatia própria.
+- Opção futura: amarrar imagens e lista à execução aprovada por um token OIDC do GitHub verificado no host (spec §11.4), para
+  que a chave de deploy sozinha não baste.
 
 ## Alternatives considered
 
