@@ -45,6 +45,11 @@ Opções: `scripts/link-audit-seal.ts:31-46`. Um `--collector-hash cNNNN=<hex64>
 `--out` é arquivo novo, fora da pasta de evidências e da árvore do projeto (`EXPORT_OUT_UNSAFE`). `--show-summary` só se for
 preciso ver nome/cidade/UF na tela; o arquivo do pacote sempre tem o resumo.
 
+> **Só no ensaio da W5 (homologação, captura SIMULADA, spec do P1 §5.7):** o `export` de uma captura simulada exige `--simulated`
+> **e** `GMN_LINK_AUDIT_HOMOLOGATION=1` no ambiente do comando; a saída começa com "ATENÇÃO: SIMULADA — ensaio". Sem os dois, a captura
+> simulada é recusada (`EXPORT_SIMULATED_CAPTURE`, código 3), e `--simulated` numa auditoria real também. **Em produção, nunca se usa
+> nenhum dos dois.** O comando do ensaio está no S-03 de `p1-relatorio-ensaio-modelo.md`.
+
 Conferir na saída (ou no `--json`) e anotar no dossiê A:
 
 | O quê | Esperado | Se não |

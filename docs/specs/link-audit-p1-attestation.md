@@ -714,7 +714,9 @@ Códigos de saída como no LIVE (0 ok, 1 uso, 3 recusado antes de gravar, 4/5 fa
    do pacote e do manifesto. Pacote, aprovação e manifesto `v2` **não mudam de formato** (D15.6(e): `entries[].source` continua fora;
    nada de `v3`). Captura simulada e captura real não se misturam na mesma auditoria: o pré-voo do armazenamento recusa nos dois sentidos
    (no LIVE, antes de pagar); a gravação recusa a simulada numa auditoria real e nunca descarta uma resposta paga.
-4. **`export`.** Auditoria com captura simulada ⇒ `EXPORT_SIMULATED_CAPTURE` (código 3), salvo com `--simulated` **e** a mesma trava;
+4. **`export`.** Auditoria com captura simulada ⇒ `EXPORT_SIMULATED_CAPTURE` (código 3), salvo com `--simulated` **e** a mesma trava,
+   conferida em duas camadas testadas cada uma sozinha (a recusa antecipada do CLI e a montagem pura do `export`, que recebe a opção e a
+   trava separadas);
    `--simulated` sem a trava, ou numa auditoria sem captura simulada ⇒ a mesma recusa. Com a trava, a saída avisa "SIMULADA — ensaio" e o
    `--json` traz `simulated: true` (ausente nas exportações reais: a forma estável não muda). A trava é a única leitura do ambiente do
    processo no `export`, feita em `src/lib/link-audit-evidence/simulated.ts` (só a variável da trava; o CLI e os módulos do `export`

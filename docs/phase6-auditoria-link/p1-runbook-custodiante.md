@@ -338,6 +338,8 @@ coleta LIVE --json ─► export ─► conferência + dossiê A + approval.json
 
    Opções em `scripts/link-audit-seal.ts:31-46`. Um `--collector-hash` por captura nova; `--max-gap-hours 24` (D13); `--out` fora
    da árvore do projeto e da pasta de evidências (`EXPORT_OUT_UNSAFE`). Detalhe da conferência no `p1-runbook-conferente.md`.
+   **No ensaio da W5** a coleta é a SIMULADA (não a LIVE) e o `export` leva `--simulated` com `GMN_LINK_AUDIT_HOMOLOGATION=1` no
+   ambiente do comando (spec do P1 §5.7; comandos no S-02 e no S-03 de `p1-relatorio-ensaio-modelo.md`). Em produção, nunca.
 3. **Conferência e aprovação** (conferente): dossiê parte A congelado (o SHA-256 dos bytes vai para `approval.json`) e
    `approval.json` (§5.4 da spec).
 4. **Transporte para a estação:** pacote, `approval.json`, dossiê A e aceite de risco por mídia, para `<PASTA_DAS_ENTRADAS>`.
