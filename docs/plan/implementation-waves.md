@@ -365,7 +365,19 @@ interface (`audit-page/validators.ts`).
   |---|---|---|
   | W5.1 | Documentação, sem código: `p1-runbook-custodiante.md` (estação, artefato, linha exata do `sign`, chave K1 e conferência do perfil do KDF, cópias, fluxo, aceite de risco, `close-key`, destruição da chave do ensaio, suplente), `p1-runbook-conferente.md`, `p1-modelo-dossie.md` (partes A e B, aceite formal de risco), `p1-livro-de-manifestos.md` (formato e conferência periódica), `p1-canal-de-entrega-manifestos.md` (requisitos RC-01 a RC-10 e procedimento do canal pelo CI) e `p1-relatorio-ensaio-modelo.md` (roteiro do ensaio e verificação de entrada da nota 6 da R2.1) | ✅ neste PR |
   | W5.2 | Pendências de código achadas na W5.1 (lista abaixo), com testes antes do código | ⬜ |
-  | W5.3 | Ensaio em homologação com chave descartável e o relatório `p1-relatorio-ensaio.md` (goal da onda). Depende da W5.2 e da pilha de homologação isolada criada pelo responsável (D-G0-12), com o volume de manifestos (G1.a) | ⬜ |
+  | W5.3 | Ensaio em homologação com chave descartável e o relatório `p1-relatorio-ensaio.md` (goal da onda). Depende dos itens 1, 2 e 4 da W5.2 (o item 2 só para o passo opcional do `close-key`) e da pilha de homologação isolada criada pelo responsável (D-G0-12), com o volume de manifestos (G1.a). **Não** depende do canal do CI: a entrega é manual, como desvio declarado (decisão a abaixo) | ⬜ |
+
+  **Decisões do manager sob a delegação D15 (22/11/2026, revisão do PR #58):**
+  - **a.** O ensaio W5.3 pode rodar em homologação com entrega **manual** do manifesto, registrada no relatório como desvio
+    declarado da D15.5 (desvio D-01 do `p1-relatorio-ensaio-modelo.md`). A entrega pelo canal do CI é ensaiada de novo na G2, antes
+    de produção, e isso é **critério de entrada da produção**. Nunca há entrega manual em produção.
+  - **b.** A conferência do livro de manifestos contra o servidor é feita antes de cada sessão de assinatura e, no mínimo,
+    trimestralmente (`p1-livro-de-manifestos.md` §5).
+  - **c.** O canal de entrega pelo CI (quem, onde, credencial) aguarda a **decisão do responsável sobre o deploy pelo CI (P-9)**.
+    Recomendação do manager (`p1-canal-de-entrega-manifestos.md` §6): um único pipeline de deploy pelo CI com um job de entrega de
+    manifestos; manifesto por PR com `auditId` opaco; verificação `v2` no CI antes do merge; entrega por job em ambiente
+    protegido, com aprovação do responsável, por chave SSH restrita a um comando receptor que confere de novo a assinatura e grava
+    com criação exclusiva e `fsync`.
 
   **Pendências de código da W5.2:**
   1. **D15.6(d)** (`operator = custodiante` passa a marcar `requiresLaterReview: true`): hoje a marca é `roleException ||
@@ -378,8 +390,9 @@ interface (`audit-page/validators.ts`).
      revisão item 5) e confirmar se criar `_closures` e o `fsync` da pasta funcionam com o grant de escrita só em `_closures`.
   3. **Canal de entrega pelo CI** (D7, D15.5): workflow, comando de pré-verificação com o verificador `v2`, receptor no host com
      criação exclusiva e `fsync`, testes (CE-1, CE-2, CE-3 e CE-5 de `p1-canal-de-entrega-manifestos.md` §5; o CE-4, volume no
-     `stack.yml`, é da G1.a). Antes do código: decidir por onde o manifesto entra no CI (repositório público, privado ou outro
-     meio) e de onde o CI lê a lista fixada (§4 do mesmo documento).
+     `stack.yml`, é da G1.a). **Aguarda a decisão do responsável sobre o P-9** (decisão c acima); só depois dela vira código.
+     Falta decidir também de onde o CI lê a lista fixada (§4 do mesmo documento). Não bloqueia a W5.3 (decisão a); bloqueia a G2
+     e a produção.
   4. **Coleta sintética para a homologação:** a pilha não tem Serper (D-G0-12), e o CLI de coleta só expõe DRY_RUN e LIVE
      (`scripts/link-audit-collect.ts:51-56`); o modo SIMULATED existe só no runtime, com provedores injetados
      (`src/lib/link-audit-runtime/run.ts:158-160`). Sem um comando (ou semente) que grave uma captura no layout versionado e
@@ -586,6 +599,9 @@ Motivos:
   - o roteiro da spec §10.4 (16 ensaios: EN-01, EN-02a a EN-02e, EN-03 a EN-12): rollback coordenado, restaurações, rollback de imagem, queda do provedor,
     falha de publicação depois do fecho, sequência falsa, reconciliação, `ANCHOR_PENDING`, `ENOSPC`, ações
     administrativas e pastas no host;
+  - o ensaio da **entrega de manifestos pelo canal do CI** (D15.5), que o ensaio da W5 fez de forma manual como desvio declarado;
+    é critério de entrada da produção (decisão a do manager na W5, sob a delegação D15; `p1-canal-de-entrega-manifestos.md` §6).
+    Depende da decisão do responsável sobre o P-9 e do código do canal (W5.2, item 3);
   - relatório `docs/phase6-auditoria-link/producao-relatorio-ensaio-g2.md`, com uma linha por ensaio no formato
     `| EN-xx | PASSOU ou FALHOU | resultado observado | evidência |` e uma linha por atestação no formato
     `| AT-G2-xx | SIM | evidência |` (AT-G2-01 nada em produção; AT-G2-02 chaves e credenciais do ensaio destruídas ou
