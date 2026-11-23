@@ -453,7 +453,14 @@ test('P9.5 runbook §8 e emendas do canal e do livro: primeira entrega em homolo
   const section8 = runbook.slice(runbook.indexOf('## 8. Entrega de manifestos pelo CI'));
   assert.ok(section8.startsWith('## 8. Entrega de manifestos pelo CI (P9.5)'), 'seção 8 no fim do runbook');
   for (const sub of ['### 8.1 O que precisa existir antes', '### 8.2 Primeira entrega em homologação (G2, P9-O06)', '### 8.3 Códigos da entrega', '### 8.4 Incidentes da entrega']) assert.ok(section8.includes(sub), sub);
-  for (const code of ['GMN_SEALS_SSH_KEY', 'NOT_MAIN_HEAD', 'E_TRUST_LIST_MISMATCH', 'E_WRITE_UNCONFIRMED', 'E_EXISTS_DIFFERENT', 'E_POSTWRITE_VERIFY', 'SEALS_REFUSED', 'SEALS_NO_BASE', 'RECEIVER_UNKNOWN_ERROR EXIT_<n>']) assert.ok(section8.includes(code), code);
+  for (const code of ['GMN_SEALS_SSH_KEY', 'NOT_MAIN_HEAD', 'E_TRUST_LIST_MISMATCH', 'E_WRITE_UNCONFIRMED', 'E_EXISTS_DIFFERENT', 'E_POSTWRITE_VERIFY', 'SEALS_REFUSED', 'SEALS_NO_BASE', 'RECEIVER_UNKNOWN_ERROR EXIT_<n>', 'SEALS_ARCHIVE_FULL', 'SUMMARY_TOO_LARGE']) assert.ok(section8.includes(code), code);
+  // revisão do PR #74: resultado indeterminado (item 7) e a recuperação de um arquivo histórico ausente (item 3): conjunto completo, nunca avulso
+  assert.match(section8, /\*\*"Resultado indeterminado \(conferir no host\)"\*\*/);
+  assert.match(section8, /\*\*Arquivo histórico ausente no host bloqueia todas as entregas\*\*[\s\S]*conjunto \*\*completo\*\*[\s\S]*seals\.flock[\s\S]*\*\*Nunca\*\* copie um manifesto avulso à mão/);
+  assert.ok(!section8.includes('RECEIVER_BAD_OUTPUT'), 'a entrega não usa mais RECEIVER_BAD_OUTPUT (resposta inteira ⇒ RECEIVER_UNKNOWN_ERROR)');
+  const spec = read('docs/specs/ci-deploy-and-seal-delivery.md');
+  for (const item of ['revisão do PR #74, item 1', 'revisão do PR #74, item 2', 'revisão do PR #74, item 3', 'revisão do PR #74, item 4', 'revisão do PR #74, item 5', 'revisão do PR #74, item 6', 'revisão do PR #74, item 7', 'revisão do PR #74, item 8', 'revisão do PR #74, item 9']) assert.ok(spec.includes(item), `spec registra a ${item}`);
+  assert.ok(!/paths: \['link-audit-seals/.test(spec), 'o push da spec não tem mais paths');
   assert.match(section8, /gh workflow run deploy\.yml --repo <DONO>\/<REPO> --ref main -f ambiente=homologacao -f acao=entregar-selos/);
   assert.match(section8, /conteúdo idêntico já presente/);
   assert.match(section8, /\*\*sem\*\* o passo 7 \(nunca se escreve à mão na pasta de\nmanifestos de produção\)/);

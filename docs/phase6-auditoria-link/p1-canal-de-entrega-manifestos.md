@@ -56,9 +56,9 @@ runbook `deploy/hostinger/RUNBOOK-DEPLOY-PELO-CI.md` §8.
    O conferente compara a linha do resumo (caminho, `sha256sum`, `seq`, `sealSha256`) com o livro antes de aprovar. Recusa ⇒ nada entra
    na `main`; o custodiante registra no livro e não tenta outro caminho.
 4. **Merge** na `main` pelo responsável.
-5. **`seals-verify`** (job do `deploy.yml`, disparado pelo push na `main` no caminho dos manifestos, sem segredo): roda de novo o
-   verificador sobre o push (S-10 nas auditorias tocadas) e S-03 a S-08 sobre a árvore inteira do ambiente, e diz quais ambientes têm
-   arquivos novos.
+5. **`seals-verify`** (job do `deploy.yml`, disparado por todo push na `main`, sem segredo): pelo diff local, vê se o push mexeu em
+   `link-audit-seals/*/seals/`; se mexeu, roda de novo o verificador sobre o push (S-10 nas auditorias tocadas) e S-03 a S-08 sobre a árvore
+   inteira do ambiente, e diz quais ambientes têm arquivos novos.
 6. **Aprovação do `seals-deliver`** pelo responsável no ambiente protegido (*Review deployments*). O job manda **todos** os arquivos do
    ambiente, em ordem (manifestos por `auditId` e `seq`, depois os fechos), um `put` por arquivo, ao receptor de manifestos, que verifica
    de novo no host (RC-06, `seq` = último + 1 no volume) e grava pelo RC-05. Para no primeiro erro (RC-10). Se a `main` andou desde o push
@@ -66,7 +66,8 @@ runbook `deploy/hostinger/RUNBOOK-DEPLOY-PELO-CI.md` §8.
    tudo de novo é idempotente.
 7. **Resumo do job (RC-08):** uma linha por arquivo com a execução, a tentativa, o commit, o ambiente, o caminho relativo, o `sha256sum` e
    o resultado: `WRITTEN` (gravado, verificado no host), `ALREADY_PRESENT` (**conteúdo idêntico já presente**: o host já tinha os mesmos
-   bytes e o receptor só os comparou; nunca é "verificado no host") ou `FALHOU` com o código.
+   bytes e o receptor só os comparou; nunca é "verificado no host"), `FALHOU` com o código, "resultado indeterminado (conferir no host)"
+   ou "não enviado".
 8. **Servidor:** a prévia da auditoria passa a mostrar a origem da coleta autenticada (RC-07).
 9. **Livro:** o custodiante copia para o livro (§2) as linhas da verificação (passo 5) e da entrega (passo 7) da mesma execução, juntadas
    pelo id da execução, pelo caminho e pelo `sha256sum`; o conferente registra a verificação pós-entrega (a prévia) e, no dossiê B, o id da

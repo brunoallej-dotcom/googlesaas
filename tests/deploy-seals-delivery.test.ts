@@ -718,3 +718,27 @@ test('P9.5 teto do resumo da entrega (revisão do PR #74, item 8): o pior caso a
   assert.equal(summaryRows(tooBig).length, 0, 'nenhuma tabela cortada');
   assert.match(text, /Resumo acima do teto de 900 KiB/);
 });
+
+test('P9.5 arquivo histórico ausente no host (revisão do PR #74, item 3): a reentrega do arquivo inteiro PARA nele com código claro (HEAD_MISMATCH depois de uma restauração ruim; SEAL_KEY_REVOKED num manifesto antigo de chave hoje revogada); os anteriores ficam registrados e os seguintes "não enviado"', (t) => {
+  const rels = [seal(AUD_A, 1), seal(AUD_A, 2), seal(AUD_A, 3), seal(AUD_B, 1)];
+  for (const reason of ['HEAD_MISMATCH', 'SEAL_KEY_REVOKED']) {
+    const fixture = deliverFixture(t, rels, [
+      forFile(rels[0] as string, ok('ALREADY_PRESENT', rels[0] as string)),
+      forFile(rels[1] as string, { rc: 32, stderr: `ERRO E_V2_REFUSED ${reason}\n` }),
+      forFile(rels[2] as string, ok('ALREADY_PRESENT', rels[2] as string)),
+      forFile(rels[3] as string, ok('WRITTEN', rels[3] as string)),
+    ]);
+    const result = deliver(fixture);
+    assertRefused(fixture.sandbox, result, 'E_V2_REFUSED', reason);
+    assert.equal(result.stderr, `ERRO E_V2_REFUSED ${reason}\n`, 'uma linha, código e razão claros');
+    assert.equal(calls(fixture.sandbox, 'ssh').length, 2, 'o manifesto novo de outra auditoria fica bloqueado atrás do arquivo que falta');
+    runScript(fixture.sandbox, 'seals-summary.sh', [], { ...SUMMARY_ENV, GMN_O_DELIVER: 'failure', GMN_E_DELIVER: 'E_V2_REFUSED' });
+    assert.deepEqual(summaryRows(fixture.sandbox).map((row) => [row[4], row[6], row[7]]), [
+      [`\`${rels[0]}\``, '`ALREADY_PRESENT`: conteúdo idêntico já presente', '`OK`'],
+      [`\`${rels[1]}\``, '`FALHOU`', `\`E_V2_REFUSED ${reason}\``],
+      [`\`${rels[2]}\``, 'não enviado', '`-`'],
+      [`\`${rels[3]}\``, 'não enviado', '`-`'],
+    ]);
+    assert.match(fs.readFileSync(fixture.sandbox.summaryFile, 'utf8'), /^Resultado: `E_V2_REFUSED`\. A entrega para no primeiro erro \(RC-10\): 2 arquivo\(s\) não enviado\(s\)\.$/m);
+  }
+});
