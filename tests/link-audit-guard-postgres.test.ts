@@ -362,3 +362,30 @@ test('migração 004 ↔ adaptador: a função e a tabela que o SQL fixo usa exi
   assert.match(rollback, /APAGAR-CABECAS-DA-GUARDA/);
   for (const text of [sql, rollback]) assert.ok(!/password\s+'|\bpassword\s+"|[0-9a-f]{32,}/i.test(text), 'nenhuma senha nem material no SQL');
 });
+
+test('CI da migração (revisão do PR #61): workflow próprio, fora do ci.yml, só nos caminhos da guarda, só leitura, sem secrets, ações fixadas pelos MESMOS SHAs do ci.yml e a imagem do Postgres por digest igual à padrão do guard-run.sh, que falha (não pula) sem pg', () => {
+  const read = (rel: string): string => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+  const workflow = read('.github/workflows/guard-migration.yml');
+  const ci = read('.github/workflows/ci.yml');
+  const harness = read('supabase/proposed/local-test/guard-run.sh');
+  for (const filter of ["'supabase/proposed/004*'", "'supabase/proposed/local-test/**'", "'src/lib/link-audit-ledger/guard-*'"]) {
+    assert.equal(workflow.split(`- ${filter}`).length - 1, 2, `${filter} em pull_request e em push`);
+  }
+  assert.match(workflow, /^permissions:\n {2}contents: read$/m);
+  assert.ok(!/secrets\.|GITHUB_TOKEN|pull_request_target|write/.test(workflow.replace(/^#.*$/gm, '')), 'sem secrets, sem escrita');
+  const uses = [...workflow.matchAll(/uses: (\S+@[0-9a-f]{40})/g)].map((m) => m[1]);
+  assert.deepEqual(uses.sort(), ['actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1', 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1']);
+  for (const action of uses) assert.ok(ci.includes(`uses: ${action}`), `${action} igual ao do ci.yml`);
+  assert.ok(!/uses: [^@\n]+@(?![0-9a-f]{40}\b)/.test(workflow), 'toda ação fixada por SHA');
+  assert.match(workflow, /node-version: '22'/);
+  assert.match(workflow, /run: npm ci/);
+  const image = /GUARD_PG_IMAGE: (public\.ecr\.aws\/supabase\/postgres@sha256:[0-9a-f]{64})/.exec(workflow)?.[1];
+  assert.ok(image, 'imagem por digest');
+  assert.ok(harness.includes(`IMAGE="\${1:-${image}}"`), 'o guard-run.sh usa o mesmo digest por padrão');
+  assert.match(workflow, /docker pull "\$GUARD_PG_IMAGE"/);
+  assert.match(workflow, /bash supabase\/proposed\/local-test\/guard-run\.sh "\$GUARD_PG_IMAGE"/);
+  assert.ok(!/guard-migration|guard-run/.test(ci), 'fora do ci.yml');
+  assert.match(harness, /--pull never --network none/);
+  assert.match(harness, /node_modules\/pg ausente \(rode npm ci; a etapa do adaptador real é obrigatória\)/);
+  assert.ok(!/AVISO: .*pulada|etapa do adaptador real pulada/.test(harness), 'nenhuma etapa pulada');
+});
