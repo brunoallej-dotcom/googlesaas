@@ -251,7 +251,7 @@ test('guias: permissões de /srv/gmn, backup fora do original e hash agregado in
   assert.match(migration, /--rsync-path='sudo rsync'/);
   const backup = read('PLANO-DE-BACKUP-E-RESTAURACAO.md');
   // Repositório público: os destinos locais são marcadores, nunca caminhos reais da máquina do responsável.
-  assert.ok(!/\/mnt\/[a-z]\/|\b[A-Za-z]:\\[^\\\s`]/.test(backup), 'nenhum caminho local real versionado no plano de backup');
+  assert.ok(!/\/(?:mnt\/[a-z]|home|Users|media|root)\/|\b[A-Za-z]:\\[^\\\s`]/.test(backup), 'nenhum caminho local real versionado no plano de backup (/mnt, /home, /Users, /media, /root ou unidade do Windows)');
   const destinations = [...backup.matchAll(/^rsync\b.*[ \t](\S+)[ \t]*$/gm)].map((m) => m[1] ?? '');
   assert.equal(destinations.length, 3, 'rotina semanal: evidence, link-audits e audits');
   // A pasta privada original vem da regra do próprio .gitignore (o teste não repete o nome dela).
