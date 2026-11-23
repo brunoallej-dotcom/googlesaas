@@ -1,9 +1,11 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { LedgerRecord } from '../../src/lib/link-audit-ledger';
+import type { GuardDbConnect, GuardDbSession, GuardDbValue, LedgerRecord } from '../../src/lib/link-audit-ledger';
+import { READER_BEGIN_SQL, READER_END_SQL, READER_HEADS_SQL, READER_IDENTITY_SQL, READER_ROWS_SQL } from '../../src/lib/link-audit-guard-reconcile/reader';
 import { serialize } from '../../src/lib/link-audit-storage';
 import { tmpDir } from './link-audit-decisions-fixtures';
+import type { SimulatedHeadRow } from './link-audit-guard-db-fixtures';
 import { LEDGER_AUTH_A, refOf, syntheticLedger } from './link-audit-ledger-fixtures';
 
 /*
@@ -79,3 +81,96 @@ export const headAt = (records: readonly LedgerRecord[], seq: number): { readonl
   if (!record) throw new Error(`sem registro ${seq}`);
   return { ledgerSeq: record.ledgerSeq, sha256: record.contentSha256 };
 };
+
+/* ------------------------------------------------------------------ provedor simulado do LEITOR (sem rede, sem banco) */
+
+/**
+ * Implementa as consultas do leitor da reconciliação (`reader.ts`) sobre as MESMAS linhas do provedor simulado do escritor
+ * (`simulatedGuardDb().rows`), para que o que o adaptador real publicou seja o que a reconciliação lê. A identidade da sessão é configurável
+ * (o escritor tem outro papel, sessão gravável e EXECUTE na publicação). Registra cada consulta e conta conexões abertas e encerradas.
+ */
+export interface SimulatedIdentity {
+  readonly role_name: string;
+  readonly default_read_only: string;
+  readonly can_publish: boolean;
+}
+export const READER_IDENTITY: SimulatedIdentity = { role_name: 'gmn_guard_reader', default_read_only: 'on', can_publish: false };
+export const WRITER_IDENTITY: SimulatedIdentity = { role_name: 'gmn_guard_writer', default_read_only: 'off', can_publish: true };
+
+export function simulatedReaderDb(rows: SimulatedHeadRow[] = [], identity: SimulatedIdentity = READER_IDENTITY) {
+  const queries: Array<{ readonly text: string; readonly values: readonly GuardDbValue[] }> = [];
+  const state = { connects: 0, ends: 0, open: 0, failConnect: false, failOn: null as string | null, hangOn: null as string | null, rewrite: null as ((text: string, rows: readonly unknown[]) => readonly unknown[]) | null, inTransaction: false };
+  const heads = (limit: number): SimulatedHeadRow[] => {
+    const refs = [...new Set(rows.map((row) => row.audit_ref))].sort();
+    return refs.flatMap((ref) => {
+      const top = rows.filter((row) => row.audit_ref === ref).sort((x, y) => y.ledger_seq - x.ledger_seq)[0];
+      return top ? [{ ...top }] : [];
+    }).slice(0, limit);
+  };
+  const at = (refs: readonly string[], seqs: readonly string[]): SimulatedHeadRow[] =>
+    rows.filter((row) => refs.some((ref, index) => ref === row.audit_ref && Number(seqs[index]) === row.ledger_seq)).map((row) => ({ ...row })).sort((x, y) => (x.audit_ref === y.audit_ref ? x.ledger_seq - y.ledger_seq : x.audit_ref < y.audit_ref ? -1 : 1));
+  const answer = (text: string, values: readonly GuardDbValue[]): readonly unknown[] => {
+    switch (text) {
+      case READER_IDENTITY_SQL:
+        return [{ ...identity }];
+      case READER_BEGIN_SQL:
+        state.inTransaction = true;
+        return [];
+      case READER_END_SQL:
+        state.inTransaction = false;
+        return [];
+      case READER_HEADS_SQL:
+        if (!state.inTransaction) throw new Error('sentinela: leitura fora da transação somente leitura');
+        return heads(values[0] as number);
+      case READER_ROWS_SQL:
+        if (!state.inTransaction) throw new Error('sentinela: leitura fora da transação somente leitura');
+        return at(values[0] as readonly string[], values[1] as readonly string[]);
+      default:
+        throw new Error('sentinela: SQL desconhecido');
+    }
+  };
+  const connect: GuardDbConnect = async () => {
+    state.connects += 1;
+    if (state.failConnect) throw new Error('sentinela: conexão recusada');
+    state.open += 1;
+    let ended = false;
+    const session: GuardDbSession = {
+      async query(text, values) {
+        queries.push({ text, values });
+        if (state.failOn === text) throw new Error('sentinela: consulta falhou');
+        if (state.hangOn === text) return new Promise(() => undefined);
+        const result = answer(text, values);
+        return { rows: state.rewrite ? state.rewrite(text, result) : result };
+      },
+      async end() {
+        if (ended) return;
+        ended = true;
+        state.open -= 1;
+        state.ends += 1;
+      },
+    };
+    return session;
+  };
+  return { connect, rows, queries, state };
+}
+export type SimulatedReaderDb = ReturnType<typeof simulatedReaderDb>;
+
+/** Relógio de prazo manual (o teste decide quando esgota). */
+export function manualTimer() {
+  const pending: Array<() => void> = [];
+  return {
+    timer: {
+      start(_ms: number, onTimeout: () => void) {
+        pending.push(onTimeout);
+        return () => {
+          const index = pending.indexOf(onTimeout);
+          if (index >= 0) pending.splice(index, 1);
+        };
+      },
+    },
+    fire: () => pending.splice(0).forEach((fn) => fn()),
+    get armed() {
+      return pending.length;
+    },
+  };
+}
