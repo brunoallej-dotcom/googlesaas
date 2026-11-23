@@ -47,6 +47,7 @@ process.umask(RECEIVER_UMASK);
 
 const KEY_A = signer('ek-host-a');
 const KEY_B = signer('ek-host-b');
+const KEY_R = signer('ek-host-revogada');
 const KEY_T = signer('ek-host-aposentada');
 const KEY_X = signer('ek-host-fora');
 const KEY_H = signer('ensaio-host-a');
@@ -551,9 +552,9 @@ test('trava de DEFESA, liberação: só apaga o arquivo que ainda é o MESMO que
 
 /* ===================================================================================================================== P9-R09 */
 
-test('P9-R09 fecho: as regras do S-11 contra as cadeias DO HOST (signatário fora da lista, assinatura forjada, aposentada fora da lista, cabeça ausente do host ou com outro sealSha256) ⇒ E_CLOSURE_REFUSED <MOTIVO> (33); válido ⇒ OK WRITTEN em _closures', async () => {
+test('P9-R09 fecho: as regras do S-11 contra as cadeias DO HOST (signatário fora da lista ou não `active`, assinatura forjada, aposentada fora da lista, cabeça ausente do host, com outro sealSha256 ou numa pasta de auditoria que é link) ⇒ E_CLOSURE_REFUSED <MOTIVO> (33); válido ⇒ OK WRITTEN em _closures', async () => {
   const w = sealWorld();
-  const trust = installTrust(w, [listItem(KEY_A), listItem(KEY_T)]);
+  const trust = installTrust(w, [listItem(KEY_A), listItem(KEY_T), listItem(KEY_B, 'retired'), listItem(KEY_R, 'revoked')]);
   const [onHost] = chainOf(AUD_A, [{ signer: KEY_T }]) as [ReturnType<typeof chainOf>[number]];
   deliverOnHost(w, onHost);
   const [notOnHost] = chainOf(AUD_B, [{ signer: KEY_T }]) as [ReturnType<typeof chainOf>[number]];
@@ -561,6 +562,8 @@ test('P9-R09 fecho: as regras do S-11 contra as cadeias DO HOST (signatário for
   const relpath = `_closures/${KEY_T.keyId}.json`;
   const cases: Array<[string, Record<string, unknown>, string]> = [
     ['signatário fora da lista', closureFor(KEY_T, KEY_X, [onHost]), 'SIGNER_NOT_LISTED'],
+    ['signatário aposentado na lista instalada', closureFor(KEY_T, KEY_B, [onHost]), 'SIGNER_NOT_ACTIVE'],
+    ['signatário revogado na lista instalada', closureFor(KEY_T, KEY_R, [onHost]), 'SIGNER_NOT_ACTIVE'],
     ['assinatura forjada', { ...closureFor(KEY_T, KEY_A, [onHost]), signature: closureFor(KEY_T, KEY_A, [notOnHost]).signature }, 'SIGNATURE_INVALID'],
     ['cabeça ausente do host', closureFor(KEY_T, KEY_A, [onHost, notOnHost]), 'HEAD_NOT_IN_REPO'],
     ['cabeça com outro sealSha256 no host', closureFor(KEY_T, KEY_A, [otherOnHostSha]), 'HEAD_NOT_IN_REPO'],
@@ -577,6 +580,14 @@ test('P9-R09 fecho: as regras do S-11 contra as cadeias DO HOST (signatário for
   const named = canonicalText(closureFor(KEY_T, KEY_A, [onHost]));
   assert.equal(stderrOf(await runReceiver(w, putLine(`_closures/${KEY_A.keyId}.json`, named, trust), named)), 'ERRO E_FORMAT', 'nome ≠ retiredKeyId');
   assert.equal(stderrOf(await runReceiver(w, putLine(relpath, '{"kind":"x"}\n', trust), '{"kind":"x"}\n')), 'ERRO E_FORMAT', 'fecho fora do esquema');
+  // revisão do PR #72, item 3: a cabeça numa pasta de auditoria que é link (para fora da raiz, com o manifesto certo lá) não conta
+  const outside = path.join(w.root, 'fora-da-raiz');
+  fs.mkdirSync(outside);
+  fs.renameSync(path.join(w.sealsRoot, AUD_A), path.join(outside, AUD_A));
+  fs.symlinkSync(path.join(outside, AUD_A), path.join(w.sealsRoot, AUD_A));
+  assert.equal(stderrOf(await runReceiver(w, putLine(relpath, named, trust), named)), 'ERRO E_CLOSURE_REFUSED HEAD_NOT_IN_REPO', 'pasta da auditoria como link');
+  fs.rmSync(path.join(w.sealsRoot, AUD_A));
+  fs.renameSync(path.join(outside, AUD_A), path.join(w.sealsRoot, AUD_A));
   const ok = await runReceiver(w, putLine(relpath, named, trust), named);
   assert.equal(stdoutOf(ok), `OK WRITTEN ${relpath} ${sha256(named)}`);
   assert.equal(fs.readFileSync(path.join(w.sealsRoot, relpath), 'utf8'), named);
@@ -637,7 +648,7 @@ test('P9-R10 o conjunto fechado: detalhe só em E_V2_REFUSED (razões do verific
   assert.equal(publicErrorLine('E_CLOSURE_REFUSED', 'SEAL_KEY_REVOKED'), 'ERRO E_CLOSURE_REFUSED', 'detalhe fora do conjunto do código some');
   assert.equal(publicErrorLine('E_FORMAT', 'SEAL_INVALID'), 'ERRO E_FORMAT');
   assert.deepEqual([...V2_REFUSAL_DETAILS], ['PROOF_NOT_CONFIGURED', 'NO_SEAL', 'LEGACY_NO_SEAL', 'SEAL_INVALID', 'EVIDENCE_NOT_SEALED', 'EVIDENCE_MISSING', 'EVIDENCE_HASH_MISMATCH', 'VERIFICATION_ERROR', 'SEAL_CHAIN_BROKEN', 'SEAL_NOT_CUMULATIVE', 'SEAL_DOWNGRADE', 'SEAL_VERSION_NOT_ALLOWED', 'SEAL_KEY_RETIRED_UNCOVERED', 'SEAL_KEY_REVOKED', 'HEAD_MISMATCH']);
-  assert.deepEqual([...CLOSURE_REFUSAL_DETAILS], ['SIGNER_NOT_LISTED', 'SIGNATURE_INVALID', 'RETIRED_NOT_LISTED', 'HEAD_NOT_IN_REPO']);
+  assert.deepEqual([...CLOSURE_REFUSAL_DETAILS], ['SIGNER_NOT_LISTED', 'SIGNER_NOT_ACTIVE', 'SIGNATURE_INVALID', 'RETIRED_NOT_LISTED', 'HEAD_NOT_IN_REPO']);
   for (const code of ['E_COMMAND', 'E_INPUT_TOO_LARGE', 'E_INPUT_TRUNCATED', 'E_HASH_MISMATCH', 'E_TRUST_LIST_MISMATCH', 'E_TRUST_LIST_INVALID', 'E_LOCKED', 'E_ARTIFACT', 'E_INTERNAL'] as const) {
     assert.equal(SEAL_RECEIVER_EXIT_CODES[code], RECEIVER_EXIT_CODES[code], code);
   }

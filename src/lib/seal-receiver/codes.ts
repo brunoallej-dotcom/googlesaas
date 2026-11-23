@@ -39,8 +39,11 @@ export const EXIT_OK = 0;
 export const V2_REFUSAL_DETAILS = [...EVIDENCE_TRUST_REASONS, 'HEAD_MISMATCH'] as const;
 export type V2RefusalDetail = (typeof V2_REFUSAL_DETAILS)[number];
 
-/** Detalhes do `E_CLOSURE_REFUSED`: os motivos do S-11 contra as cadeias do HOST (o `FORMAT` do fecho é `E_FORMAT`, passo 3). */
-export const CLOSURE_REFUSAL_DETAILS = ['SIGNER_NOT_LISTED', 'SIGNATURE_INVALID', 'RETIRED_NOT_LISTED', 'HEAD_NOT_IN_REPO'] as const satisfies readonly ClosureMotive[];
+/**
+ * Detalhes do `E_CLOSURE_REFUSED`: os motivos do S-11 contra as cadeias do HOST (o `FORMAT` do fecho é `E_FORMAT`, passo 3); `SIGNER_NOT_ACTIVE`:
+ * o signatário de um fecho novo não está `active` na lista instalada (revisão do PR #72, item 4).
+ */
+export const CLOSURE_REFUSAL_DETAILS = ['SIGNER_NOT_LISTED', 'SIGNER_NOT_ACTIVE', 'SIGNATURE_INVALID', 'RETIRED_NOT_LISTED', 'HEAD_NOT_IN_REPO'] as const satisfies readonly ClosureMotive[];
 export type ClosureRefusalDetail = (typeof CLOSURE_REFUSAL_DETAILS)[number];
 type UnlistedMotive = Exclude<ClosureMotive, ClosureRefusalDetail | 'FORMAT'>;
 /** Falha de compilação se o S-11 ganhar um motivo que este conjunto não tem. */

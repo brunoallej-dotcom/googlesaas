@@ -33,7 +33,8 @@ export function readOnlyFs(fs: BytesFsOps): BytesFsOps {
 const SELFTEST_HEAD_MISMATCH = 'SELFTEST_HEAD_MISMATCH';
 
 async function closureRefusal(candidate: Extract<Candidate, { readonly kind: 'closure' }>, root: string, trust: InstalledTrustList, fs: BytesFsOps): Promise<ClosureRefusalDetail | null> {
-  const motive = await closureMotive(candidate.closure, parseTrustKeyring(trust.value), root, readOnlyFs(fs));
+  // fecho NOVO: o signatário tem de estar `active` na lista instalada (revisão do PR #72, item 4)
+  const motive = await closureMotive(candidate.closure, parseTrustKeyring(trust.value), root, readOnlyFs(fs), 'active');
   // `FORMAT` é do passo 3 (`E_FORMAT`): o S-11 daqui nunca o devolve, e o conjunto público não o tem
   return motive === null || motive === 'FORMAT' ? null : motive;
 }
