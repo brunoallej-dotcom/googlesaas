@@ -358,12 +358,16 @@ function riskAcceptanceRefusal(approval: Approval, bytes: Uint8Array | null): Si
   return null;
 }
 
-/** Passo 9 (RS-01, D4): conferente ≠ custodiante, ou aceite formal existente e com o hash citado; operador = conferente não bloqueia, só marca revisão. */
+/**
+ * Passo 9 (RS-01, D4): conferente ≠ custodiante, ou aceite formal existente e com o hash citado. Operador = conferente (§13.3, D15.6(c)) e operador =
+ * custodiante (D15.6(d), W5.2a) não bloqueiam, só marcam revisão posterior.
+ */
 function roleDecision(approval: Approval, input: SignCoreInput): Roles {
   const roleException = sameRole(approval.approvedBy, input.custodian);
   const refused = roleException ? riskAcceptanceRefusal(approval, input.riskAcceptanceBytes) : null;
   if (refused) return refused;
-  return { ok: true, roleException, requiresLaterReview: roleException || sameRole(approval.operator, approval.approvedBy) };
+  const operatorAccumulates = sameRole(approval.operator, approval.approvedBy) || sameRole(approval.operator, input.custodian);
+  return { ok: true, roleException, requiresLaterReview: roleException || operatorAccumulates };
 }
 
 /** Passo 10: `sealedAt` (relógio injetado) ≥ `lastCollectedAt` e ≥ `sealedAt` do último manifesto. Todas com ms em UTC: ordem lexicográfica = cronológica. */

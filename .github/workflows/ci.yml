@@ -76,7 +76,7 @@ jobs:
         run: npm run link-audit:sign-artifact -- --out "$RUNNER_TEMP/sign-artifact"
       - name: Hash recompilado igual ao versionado
         run: cd "$RUNNER_TEMP/sign-artifact" && sha256sum -c "$GITHUB_WORKSPACE/docs/phase6-auditoria-link/p1-sign-artifact.sha256"
-      - name: Artefato sob node --permission (env -i, grants estreitos, pseudo-terminal)
+      - name: Artefato sob node --permission (env -i, pseudo-terminal; sign com grants estreitos e close-key com --allow-fs-read=/)
         env:
           LINK_AUDIT_ARTIFACT_STRICT: '1'
         run: node --require ./tests/register-typescript.cjs --test tests/link-audit-seal-sign-artifact.test.ts
