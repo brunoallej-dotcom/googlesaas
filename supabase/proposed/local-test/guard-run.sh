@@ -17,19 +17,23 @@ set -euo pipefail
 
 IMAGE="${1:-public.ecr.aws/supabase/postgres:17.11.0.018}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/../../.." && pwd)"
 MIGRATION="$HERE/../004_link_audit_guard.sql"
 ROLLBACK="$HERE/../004_link_audit_guard.rollback.sql"
 NAME="gmn-guard-localtest-$$-$RANDOM"
 COUNT=0
+# soquete Unix do contêiner montado numa pasta temporária: a etapa do adaptador real (Node + pg) conecta por ele, sem rede
+SOCK="$(mktemp -d)"
+chmod 0777 "$SOCK"
 
-cleanup() { docker rm -f "$NAME" >/dev/null 2>&1 || true; }
+cleanup() { docker rm -f "$NAME" >/dev/null 2>&1 || true; rm -rf "$SOCK" 2>/dev/null || true; }
 trap cleanup EXIT
 
 ok() { COUNT=$((COUNT + 1)); echo "OK    $1"; }
 fail() { echo "FALHOU: $1" >&2; exit 1; }
 
 docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "imagem $IMAGE ausente (o teste não baixa nada)"
-docker run -d --rm --pull never --network none --name "$NAME" -e POSTGRES_PASSWORD=sentinela-local "$IMAGE" >/dev/null
+docker run -d --rm --pull never --network none --name "$NAME" -v "$SOCK:/var/run/postgresql" -e POSTGRES_PASSWORD=sentinela-local "$IMAGE" >/dev/null
 for _ in $(seq 1 90); do
   if docker exec "$NAME" psql -h /var/run/postgresql -U supabase_admin -d postgres -Atc 'select 1' >/dev/null 2>&1; then break; fi
   sleep 1
@@ -66,11 +70,20 @@ rows() { admin -c "select count(*) from gmn_link_audit_guard.ledger_heads"; }
 catalog_snapshot() {
   admin -c "select string_agg(rolname || ':' || rolsuper || rolcreaterole || rolcanlogin, ',' order by rolname) from pg_roles" \
         -c "select string_agg(nspname || ':' || coalesce(nspacl::text, '-'), ',' order by nspname) from pg_namespace where nspname not like 'pg_temp%' and nspname not like 'pg_toast_temp%'" \
-        -c "select string_agg(pg_get_userbyid(defaclrole) || ':' || defaclnamespace::text || ':' || defaclobjtype::text || ':' || defaclacl::text, ',' order by 1) from pg_default_acl" \
-        -c "select string_agg(r.rolname || '>' || m.rolname || ':' || admin_option || inherit_option || set_option, ',' order by 1) from pg_auth_members a join pg_roles r on r.oid = a.roleid join pg_roles m on m.oid = a.member"
+        -c "select string_agg(pg_get_userbyid(defaclrole) || ':' || defaclnamespace::text || ':' || defaclobjtype::text || ':' || defaclacl::text, ',' order by pg_get_userbyid(defaclrole), defaclnamespace, defaclobjtype) from pg_default_acl" \
+        -c "select string_agg(r.rolname || '>' || m.rolname || ':' || admin_option || inherit_option || set_option, ',' order by r.rolname, m.rolname, a.grantor) from pg_auth_members a join pg_roles r on r.oid = a.roleid join pg_roles m on m.oid = a.member"
 }
 
-BEFORE="$(catalog_snapshot)"
+# a inicialização da imagem ainda aplica concessões depois de aceitar conexões: só segue com o catálogo ESTÁVEL (dois retratos iguais, 3 s apart)
+BEFORE=""
+for _ in $(seq 1 20); do
+  FIRST="$(catalog_snapshot 2>/dev/null || true)"
+  sleep 3
+  SECOND="$(catalog_snapshot 2>/dev/null || true)"
+  if [ -n "$FIRST" ] && [ "$FIRST" = "$SECOND" ] && docker exec "$NAME" psql -h /var/run/postgresql -U postgres -d postgres -Atc 'select 1' >/dev/null 2>&1; then BEFORE="$SECOND"; break; fi
+done
+[ -n "$BEFORE" ] || fail "o catálogo da imagem não estabilizou"
+ok "inicialização da imagem concluída (catálogo estável); retrato \"antes\" tirado"
 
 # ---------------------------------------------------------------- 1. pré-validação e conferência final abortam sem alterar nada
 admin -c "create schema gmn_link_audit_guard authorization postgres"
@@ -217,6 +230,19 @@ as_postgres_file "$MIGRATION"
 as_postgres_file "$ROLLBACK"
 eq "aplicar e reverter sem cabeças" "$BEFORE" "$(catalog_snapshot)"
 ok "laboratório recém-criado (sem cabeças): aplicar e reverter sem confirmação volta ao catálogo original"
+
+# ---------------------------------------------------------------- 11. o ADAPTADOR REAL (createPostgresGuard + pg) contra a migração aplicada
+if [ -d "$ROOT/node_modules/pg" ]; then
+  as_postgres_file "$MIGRATION"
+  ADAPTER_OUT="$(cd "$ROOT" && node --require ./tests/register-typescript.cjs supabase/proposed/local-test/guard-adapter-run.ts "$SOCK" 2>&1)" || fail "adaptador real: $ADAPTER_OUT"
+  echo "$ADAPTER_OUT" | grep '^OK' || true
+  COUNT=$((COUNT + $(echo "$ADAPTER_OUT" | grep -c '^OK')))
+  docker exec -i "$NAME" psql -h /var/run/postgresql -U postgres -d postgres -v ON_ERROR_STOP=1 -q -c "set gmn.guard_rollback_confirm = 'APAGAR-CABECAS-DA-GUARDA'" -f - < "$ROLLBACK"
+  eq "catálogo final" "$BEFORE" "$(catalog_snapshot)"
+  ok "depois da etapa do adaptador, o rollback confirmado volta ao catálogo original"
+else
+  echo "AVISO: node_modules/pg ausente; etapa do adaptador real pulada (rode npm ci)"
+fi
 
 echo
 echo "TODOS OS $COUNT TESTES LOCAIS DA GUARDA APROVADOS"

@@ -19,11 +19,15 @@ cp <repo>/supabase/proposed/local-test/run.mjs . && node run.mjs <caminho-do-rep
 `--network none` (sem rede, nenhuma porta publicada) e `--rm`. A imagem tem os papéis `anon`, `authenticated`,
 `service_role`, `authenticator` e `supabase_admin` e o `postgres` **sem superusuário**, como no projeto real
 (PostgreSQL 17.11). A migração roda como `postgres`; as conferências, como `supabase_admin` com `SET ROLE`, ou com login
-real pelo loopback **do contêiner** quando o que se confere é ajuste de papel. 21 verificações: pré-validação e
+real pelo loopback **do contêiner** quando o que se confere é ajuste de papel. 27 verificações: pré-validação e
 conferência final que abortam e desfazem tudo (inclusive privilégio vazado por `pg_read_all_data`), o catálogo do PG-G08,
 a regra 7 na função, a trava consultiva com duas sessões, 42501 para `anon`/`authenticated`/`service_role`/`authenticator`,
 os gatilhos mesmo para quem tem o privilégio, o prazo de 3 s no servidor, NOLOGIN do dono, idempotência, associações
 indevidas feitas por fora e o rollback (recusado com cabeças sem confirmação; com ela, catálogo idêntico ao de antes).
+Na etapa final, `guard-adapter-run.ts` roda o **adaptador real** (`createPostgresGuard`, com o SQL fixo dele e o `pg`) contra a
+migração aplicada, pelo soquete Unix do contêiner montado numa pasta temporária, como `gmn_guard_writer`: regra 7, rotação da
+chave do pseudônimo, só o `audit_ref` no banco e nenhuma conexão aberta ao fim. O TLS do conector de produção é provado nos
+testes do repositório (`tests/link-audit-guard-pg.test.ts`), não aqui.
 
 ```bash
 bash supabase/proposed/local-test/guard-run.sh            # imagem padrão: public.ecr.aws/supabase/postgres:17.11.0.018
