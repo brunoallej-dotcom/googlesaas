@@ -142,6 +142,28 @@ test('P9-F01 verificar-pastas: manifestos com 0700 ⇒ recusa; com 2750, grupo 1
   }
 });
 
+test('P9-F01 (revisão do PR #72, item 9) verificar-pastas: a pasta de MANIFESTOS por um caminho que não é o real (ela mesma como link, um pai como link, barra no fim ou `/./`) ⇒ recusa, como o receptor recusaria; as outras cinco por um pai que é link seguem as regras de antes', (t) => {
+  const root = sandbox(t);
+  const dirs = sameFs(root);
+  const refusedPath = (manifests: string, label: string): void => {
+    const result = run(argsOf({ ...dirs, manifestos: manifests }));
+    assert.equal(result.status, 1, label);
+    assert.match(result.stderr, /manifestos: o caminho configurado não é o caminho real/, label);
+  };
+  const alias = path.join(root, 'manifestos-apelido');
+  fs.symlinkSync(dirs.manifestos, alias);
+  refusedPath(alias, 'a própria pasta como link');
+  const parentLink = path.join(root, 'pai-apelido');
+  fs.symlinkSync(root, parentLink);
+  refusedPath(path.join(parentLink, 'manifestos'), 'um pai como link');
+  refusedPath(`${dirs.manifestos}/`, 'barra no fim');
+  refusedPath(path.join(root, '.', 'manifestos').replace(`${root}/`, `${root}/./`), '`/./` no caminho');
+  const decisionsViaLink = run(argsOf({ ...dirs, decisoes: path.join(parentLink, 'decisoes') }));
+  assert.equal(decisionsViaLink.status, 1);
+  assert.ok(!/caminho configurado/.test(decisionsViaLink.stderr), 'as outras cinco não ganham a regra');
+  assert.match(decisionsViaLink.stderr, /no mesmo dispositivo/, 'a recusa que sobra é a dos dispositivos');
+});
+
 test('PG-V04 verificar-pastas: seis pastas distintas no MESMO dispositivo ⇒ recusa pelos volumes independentes (recibos e livro)', (t) => {
   const result = run(argsOf(sameFs(sandbox(t))));
   assert.equal(result.status, 1, 'mesmo disco não é backup independente');

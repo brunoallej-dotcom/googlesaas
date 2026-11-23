@@ -5,7 +5,9 @@
 #  - o modo de uma das cinco pastas de dados não é 0700 (o dono 10001:10001 delas é conferido à parte, com `stat -c '%u:%g %a %n'`, no
 #    GUIA-DE-IMPLANTACAO.md §3.3);
 #  - a pasta de MANIFESTOS (P9.3b; spec docs/specs/ci-deploy-and-seal-delivery.md §5.10, VC-E8) não tem modo 2750, grupo 10001 e um dono que
-#    não é 10001 nem 0 (o usuário do receptor de manifestos, gmn-seals ou gmn-hml-seals: o web lê pelo grupo, só o receptor escreve);
+#    não é 10001 nem 0 (o usuário do receptor de manifestos, gmn-seals ou gmn-hml-seals: o web lê pelo grupo, só o receptor escreve), ou o
+#    caminho configurado dela não é o próprio caminho real (link simbólico em qualquer ponto, ou caminho não normalizado): o receptor de
+#    manifestos recusaria a mesma raiz (E_UNSAFE_PATH), então o deploy também recusa (revisão do PR #72, item 9);
 #  - duas resolvem (realpath, links simbólicos inclusive) para a mesma pasta, ou uma está dentro de outra (o código recusa);
 #  - algum dos DOIS volumes de recibos divide dispositivo (stat -c %d) com algum dos DOIS volumes de dados (decisões e resultados: matriz
 #    completa, não só "cada recibo × os próprios dados"), ou o livro divide dispositivo com dados ou recibos (checklist de produção §1:
@@ -39,6 +41,7 @@ for i in "${!NAMES[@]}"; do
   [ -d "$dir" ] || fail "${NAMES[$i]}: não é um diretório existente"
   REAL[i]="$(realpath -e -- "$dir")"
   if [ "$i" -eq "$MANIFESTS" ]; then
+    [ "$dir" = "${REAL[$i]}" ] || fail "manifestos: o caminho configurado não é o caminho real (link simbólico no caminho ou caminho não normalizado)"
     check_manifests "${REAL[$i]}"
   else
     mode="$(stat -c %a -- "${REAL[$i]}")"
