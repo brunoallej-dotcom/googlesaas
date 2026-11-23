@@ -662,6 +662,9 @@ O hash versionado passou a `395d5ba946e3f6b45c9689828947ca49107d3a9940db4f4ca457
   `--simulated` (`sign-args.ts`, `sign-core.ts`, `sign-terminal.ts`, `sign-run.ts`, `sign-cli.ts`; §5.7). O build reprodutível dá
   `37797893cdcc5fb64578cc41f08f0b403793ad464b2663a657a5d539eeefb5a1` (754 422 bytes), igual em duas pastas e conferido por `sha256sum -c`; os testes do artefato passam com ele. Para pacote real, o
   `sign` se comporta exatamente como antes (mesmo plano, mesma tela, mesmo recibo).
+- **Hash do artefato depois da confirmação da revisão do PR #62 (22/11/2026):** o `sign` passou a exigir chave de ensaio (id `ensaio-…`) com
+  `--simulated` e a recusá-la sem ele (`sign-core.ts`, `sign-args.ts`, `sign-chain.ts`; §5.7). O build reprodutível dá
+  `2fbf9851c34b2dd309d082cbb974669a0534eacd0b6aa3b7902d8ac841d440ab` (755 532 bytes), igual em duas pastas e conferido por `sha256sum -c`; os 19 testes do artefato passam.
 - **Teste, isolamento:** a limpeza da estação no HOME dos testes do artefato passou a ser registrada no nível do arquivo. Registrada dentro de um teste antes de qualquer `await`, ela ficava presa àquele teste e apagava a pasta para os seguintes (aparecia só ao rodar parte dos testes). Registrada tarde, numa execução completa, ela não rodava e deixava a pasta no HOME.
 
 ### 5.6 Manifesto `v2` e verificador `v2` (onda W3, contrato próprio)
@@ -718,9 +721,18 @@ Códigos de saída como no LIVE (0 ok, 1 uso, 3 recusado antes de gravar, 4/5 fa
    do pacote e do manifesto. **Revisão do PR #62 (decisão do manager):** a marca também ENTRA no pacote, como campo opcional
    `simulated: true` (só o literal, só no simulado), dentro do `packageSha256`; nos pacotes reais o campo não existe, e a forma e o hash
    deles não mudam. Aprovação e manifesto `v2` **não mudam de formato** (D15.6(e): `entries[].source` continua fora; nada de `v3`). Captura simulada e captura real não se misturam na mesma auditoria: o pré-voo do armazenamento recusa nos dois sentidos
-   (no LIVE, antes de pagar); a gravação recusa a simulada numa auditoria real e nunca descarta uma resposta paga. A pré-checagem falha
-   fechada (revisão do PR #62): só a pasta da auditoria comprovadamente inexistente (ENOENT) conta como vazia; listagem que falha por outro
-   motivo, ou captura existente que não se lê, é recusa.
+   (no LIVE, antes de pagar). A pré-checagem falha fechada (revisão do PR #62): só a pasta da auditoria comprovadamente inexistente (ENOENT)
+   conta como vazia; listagem que falha por outro motivo, ou captura existente que não se lê, é recusa.
+   **Reserva exclusiva do modo (confirmação da revisão do PR #62, decisão do manager):** o modo da auditoria (`LIVE` ou `SIMULATED`) é
+   reservado UMA vez, antes da primeira captura, no marcador `audit-mode.json` da pasta da auditoria, publicado com `publishExclusive`
+   (temporário + `link()` que nunca sobrescreve; selado com `contentSha256`). O runtime reserva no pré-voo, antes de consumir a autorização
+   e de pagar; o pré-voo e cada gravação (`writeCapture`) conferem o marcador e recusam o outro modo nos dois sentidos (`MODE_CONFLICT`;
+   marcador ilegível ⇒ recusa). Duas coletas concorrentes de modos diferentes: exatamente uma reserva, a outra é recusada (testes com duas
+   gravações no mesmo processo, dois processos e dois runtimes). Auditoria antiga sem marcador: o modo vem das capturas (todas legíveis e do
+   mesmo modo). **Resposta paga nunca descartada:** se, ainda assim, uma resposta LIVE paga encontrar a auditoria reservada como SIMULADA na
+   hora de gravar (corrida ou marcador adulterado), o runtime a grava, com o mesmo corpo, na auditoria de resgate `<auditId>-resgate-live`
+   (modo LIVE), nada entra na auditoria simulada, nenhum relatório é gerado e o caso sai como erro (código 5 no CLI), com o id do resgate.
+   O marcador não é evidência (fica fora do conjunto atestado) nem assinatura.
 4. **`export`.** Auditoria com captura simulada ⇒ `EXPORT_SIMULATED_CAPTURE` (código 3), salvo com `--simulated` **e** a mesma trava,
    conferida em duas camadas testadas cada uma sozinha (a recusa antecipada do CLI e a montagem pura do `export`, que recebe a opção e a
    trava separadas);
@@ -731,10 +743,21 @@ Códigos de saída como no LIVE (0 ok, 1 uso, 3 recusado antes de gravar, 4/5 fa
 5. **Leitor e interface.** A fonte aparece como "SIMULADA — ensaio" (lista e detalhe das evidências), com selo próprio. O relatório
    simulado atribui os dados ao gerador sintético, nunca ao Serper: `data.googleMaps.source: "SIMULATED"`, `verified[].viaSerper: false`
    e os textos do pipeline que diziam "obtido via Serper" reescritos (revisão do PR #62); o detalhe das evidências troca os rótulos de origem.
+   Na confirmação da revisão: a base de pontuação leva `provider: "SIMULATED"` na evidência simulada (o mapeador só aceita o par coerente
+   `provider SIMULATED` + `simulated: true`), o relatório gravado registra `calls.simulatedMaps` no lugar das chamadas ao Serper, o relatório em
+   memória da coleta simulada gravada é reescrito para o gerador sintético, e a prévia expõe `company.source` ("Gerador sintético do ensaio
+   (SIMULADA)") e `evidence.simulated`, usados pela matriz de critérios e pelo painel da empresa. Nas coletas reais, chaves e textos não mudam.
 5a. **`sign` (revisão do PR #62).** Pacote com `simulated: true` só é assinado com a opção própria `--simulated` (o `sign` roda com `env -i`:
    nada de variável de ambiente); sem ela ⇒ `SIGN_SIMULATED_PACKAGE` (código 3), e `--simulated` com pacote real também. A recusa vem logo
    depois de o pacote aprovado e íntegro ser conhecido, antes da confirmação humana e da frase. Com `--simulated`, a tela da confirmação
    mostra "ATENÇÃO: SIMULADA — ensaio" antes da digitação. O recibo não muda de forma.
+5b. **Chaves de ensaio `ensaio-…` (confirmação da revisão do PR #62, decisão do manager, sem `v3`):** o id da chave descartável do ensaio
+   começa pelo prefixo reservado `ensaio-`, e o modo fica visível no próprio manifesto assinado (o `keyId`). (a) `sign --simulated` só aceita
+   chave `ensaio-…` (a chave ativa de produção é recusada); (b) `sign` sem `--simulated` recusa chave `ensaio-…` (as duas: `SIGN_KEY_MODE_MISMATCH`,
+   código 3, no analisador, antes de ler qualquer entrada, e de novo no núcleo da cadeia); (c) a lista de confiança do servidor
+   (`GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS`, composta em `src/app/api/link-audit/scoring/shared.ts`) com qualquer id `ensaio-` é recusada inteira
+   (política fechada: nada autentica) salvo com `GMN_LINK_AUDIT_HOMOLOGATION=1` no web; (d) o runbook do custodiante e o roteiro do ensaio
+   mandam gerar a chave descartável com id `ensaio-…`. Nenhum teste ou fixture usa `ensaio-` para chave real.
 6. **Prévia e finalização (ponto escolhido: o bloqueio da prévia, que a finalização já respeita).** Base com evidência simulada ⇒
    bloqueio `SIMULATED_EVIDENCE`: `BLOCKING` sem a trava no servidor (a finalização responde `NOT_FINALIZABLE`; a conclusão de uma
    pendente também é recusada) e `WARNING` com `GMN_LINK_AUDIT_HOMOLOGATION=1` no web da pilha de homologação (o S-13 depende disso).
@@ -746,7 +769,7 @@ sobre a captura simulada (só na homologação) não leva a marca no próprio ar
 chaves do ensaio não estão na lista de produção (reconferência da R2.2). (c) O artefato do `sign` empacota o esquema da captura
 (`src/lib/link-audit-evidence/types.ts`): o hash versionado do artefato muda nesta fatia, sem mudança de comportamento do `sign`
 (histórico no §5.5.1: `08ee1c75…` sobre a base; `78de412e…` depois do merge com a W5.2a; `37797893…` depois da revisão do
-PR #62). (d) **Limite declarado (decisão do manager na revisão do PR #62):** o modo SIMULATED do runtime SEM armazenamento e com provedores
+PR #62; `2fbf9851…` depois da confirmação dela). (d) **Limite declarado (decisão do manager na revisão do PR #62):** o modo SIMULATED do runtime SEM armazenamento e com provedores
 injetados, que vem da Onda 4B e só os testes usam, não exige a trava; ele não grava nada. O runtime antigo não muda; um teste estático garante
 que o único chamador do runtime é o CLI de coleta, que nenhuma chamada dele injeta provedores (o SIMULATED do CLI usa só o gerador
 sintético, com a trava e gravando) e que nenhuma rota, página, componente ou worker importa o runtime.

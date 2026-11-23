@@ -129,7 +129,7 @@ existia ou o `sha256sum -c` falhou). Com `noclobber`, o shell nunca sobrescreve 
   Com `--json`, a pública derivada (`<KEY_ID>:<pública>`) também sai na saída de erro.
 
 > **Só no ensaio da W5 (pacote da coleta SIMULADA, spec do P1 §5.7):** acrescente `--simulated` às opções do `sign` (por exemplo, antes de
-> `--json`). Sem ela, o `sign` recusa o pacote simulado (`SIGN_SIMULATED_PACKAGE`, código 3) antes da confirmação e da frase; com ela, a
+> `--json`), com `--key-id <KEY_ID_ENSAIO>` (prefixo `ensaio-`; outra chave dá `SIGN_KEY_MODE_MISMATCH`). Sem ela, o `sign` recusa o pacote simulado (`SIGN_SIMULATED_PACKAGE`, código 3) antes da confirmação e da frase; com ela, a
 > tela da confirmação mostra "ATENÇÃO: SIMULADA — ensaio". `--simulated` com pacote real também é recusado. **Em produção, nunca.**
 
 ### 3.1 O que o custodiante faz durante a execução
@@ -222,7 +222,7 @@ PRF nem cifra. Por isso a conferência completa do §4.4 é obrigatória antes d
 |---|---|---|
 | Quem | quem conduz o ensaio | **somente o responsável (D15.7)** |
 | Quando | no ensaio em homologação | depois do relatório do ensaio aprovado e do aceite formal de risco assinado (D15.1) |
-| `keyId` | `<KEY_ID_ENSAIO>`, que nunca será reutilizado | `<KEY_ID_REAL>`, formato `ek-AAAAMM-a` (contrato P1 §2) |
+| `keyId` | `<KEY_ID_ENSAIO>`, que nunca será reutilizado, **sempre com o prefixo reservado `ensaio-`** (ex.: `ensaio-w5-aaaammdd`): o `sign --simulated` só aceita esse prefixo, o `sign` real o recusa, e o servidor sem a trava de homologação recusa a lista que o contém (spec do P1 §5.7) | `<KEY_ID_REAL>`, formato `ek-AAAAMM-a` (contrato P1 §2), **nunca** com o prefixo `ensaio-` |
 | Lista de chaves | só a da pilha de homologação | a de produção, por deploy do responsável |
 | Cópias | nenhuma além da estação (pode ensaiar o §5 com mídias descartáveis) | duas mídias offline (§5) |
 | Fim | destruída no fim do ensaio, com registro (§10) | aposentada a cada 12 meses (§9) ou revogada por comprometimento |

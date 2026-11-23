@@ -26,7 +26,7 @@
 | Node da estação (`<NODE22> --version`) | `<v22.x.y>` |
 | Pilha de homologação (rótulo; criada pelo responsável, D-G0-12) | `<PILHA_HOMOLOGACAO>` |
 | Auditoria do ensaio | `<AUDITORIA_DO_ENSAIO>` |
-| `keyId` descartável | `<KEY_ID_ENSAIO>` |
+| `keyId` descartável (começa por `ensaio-`, prefixo reservado) | `<KEY_ID_ENSAIO>` |
 
 ## 1. Pré-condições
 
@@ -36,7 +36,7 @@
 | PC-2 | Fatias W5.2a (D15.6(d) e, para o S-16, o `close-key` sob `--permission` com a linha larga) e W5.2b (coleta SIMULADA, spec §5.7) na `main`. O canal de entrega pelo CI **não** é pré-condição: o ensaio usa entrega manual (§5, desvio D-01) | `<SIM/NÃO>` | `<PR>` |
 | PC-3 | Estação conforme o runbook do custodiante §1 (E1–E8), sem rede durante a assinatura | `<SIM/NÃO>` | linha da sessão no livro |
 | PC-4 | Nenhum ensaio da G2 rodando na mesma pilha | `<SIM/NÃO>` | `<…>` |
-| PC-5 | O web da pilha de homologação roda com `GMN_LINK_AUDIT_HOMOLOGATION=1` (exatamente `1`), exigido pelo S-12 e pelo S-13; **nunca em produção** (a `stack.yml` de produção não declara a variável, e isso é testado) | `<SIM/NÃO>` | `<rótulo da configuração da pilha>` |
+| PC-5 | O web da pilha de homologação roda com `GMN_LINK_AUDIT_HOMOLOGATION=1` (exatamente `1`), exigido pelo S-12 e pelo S-13: sem a trava, a lista de chaves com a chave `ensaio-…` é recusada inteira e a evidência simulada bloqueia a finalização; **nunca em produção** (a `stack.yml` de produção não declara a variável, e isso é testado) | `<SIM/NÃO>` | `<rótulo da configuração da pilha>` |
 
 ## 2. Verificação de entrada (nota 6 da R2.1, `docs/plan/implementation-waves.md`)
 
@@ -69,9 +69,9 @@ hash, campo da vista). Um passo que falha para o ensaio; a falha e a correção 
 | S-03 | Export da captura SIMULADA | `GMN_LINK_AUDIT_HOMOLOGATION=1 npm run link-audit:seal -- export --evidence-dir <COPIA_DAS_EVIDENCIAS> --audit <AUDITORIA_DO_ENSAIO> --collector-hash c0001=<HASH_DO_COLETOR> --max-gap-hours 24 --seals-dir <COPIA_DOS_MANIFESTOS> --out <FORA_DO_PROJETO>/<PACOTE>.json --simulated` (runbook do conferente §2, quadro do ensaio) | saída 0; a saída começa com "ATENÇÃO: SIMULADA — ensaio"; `attestable: true`; checks como na tabela do conferente; `packageSha256`. Controle negativo (recomendado, antes): o mesmo comando sem `--simulated`, ou sem a trava, sai 3 com `EXPORT_SIMULATED_CAPTURE` e não grava o `--out` | `<…>` | `<PACKAGE_SHA256>` |
 | S-04 | Conferência e dossiê A congelado | runbook do conferente §3–§4 | dossiê A com hash; o pacote traz `"simulated": true` (dentro do `packageSha256`) e o dossiê o registra como pacote SIMULADO do ensaio; verificações humanas marcadas **ENSAIO** (sem Serper nem painel real: o `PASS` registra o roteiro, não uma conferência real) | `<…>` | `<SHA256_DO_DOSSIE_A>` |
 | S-05 | Aceite de risco de ensaio e `approval.json` | modelo do dossiê §3; conferente §4 | `approvedBy` = `CUST-01`; `riskAcceptance` com o hash do aceite de ensaio; `packageSha256` = o do pacote SIMULADO (com a marca); o aceite de ensaio cita que o `sign` vai rodar com `--simulated` | `<…>` | `<SHA256_DO_ACEITE>` |
-| S-06 | Chave descartável gerada e cifrada | runbook do custodiante §4.3 | arquivo `0600` em pasta `0700`; pública anotada | `<…>` | `<KEY_ID_ENSAIO>:<PUBLICA>` |
+| S-06 | Chave descartável gerada e cifrada, com id `ensaio-…` | runbook do custodiante §4.3 | arquivo `0600` em pasta `0700`; pública anotada; `<KEY_ID_ENSAIO>` começa por `ensaio-` (o `sign --simulated` só aceita esse prefixo, e o `sign` real o recusa) | `<…>` | `<KEY_ID_ENSAIO>:<PUBLICA>` |
 | S-07 | Perfil do KDF conferido | runbook do custodiante §4.4 (`asn1parse` filtrado) | PBES2, id-scrypt, N = 0x020000, r = 8, p = 1, aes-256-cbc (colar só as linhas de OID e INTEGER; se a forma divergir da tabela do runbook, registrar e corrigir o runbook) | `<…>` | `<linhas>` |
-| S-08 | Lista de chaves da homologação com a chave do ensaio `active` e deploy da homologação | `onda6c-runbook-chaves.md` §4 | `<KEY_ID_ENSAIO>:<PUBLICA>:active` na pilha | `<…>` | `<…>` |
+| S-08 | Lista de chaves da homologação com a chave do ensaio `active` e deploy da homologação | `onda6c-runbook-chaves.md` §4 | `<KEY_ID_ENSAIO>:<PUBLICA>:active` na pilha (aceita só porque o web tem a trava, PC-5; em produção, uma lista com id `ensaio-` é recusada inteira) | `<…>` | `<…>` |
 | S-09 | Artefato conferido | custodiante §2 (`namei -m`, `stat`, `sha256sum -c`) | `link-audit-sign.cjs: OK`; `444`; nenhuma pasta com escrita de terceiros | `<…>` | `<…>` |
 | S-10 | `sign` pelo artefato, sem rede, **com `--simulated`** | custodiante §3 (linha exata, mais `--simulated` no fim das opções do `sign`; quadro do ensaio no §3) | a tela da confirmação mostra "ATENÇÃO: SIMULADA — ensaio" antes da digitação; saída 0; recibo `{"ok":true…}` com `seq` 1, `roleException: true`, `requiresLaterReview: true`, `artifactSha256` = o conferido. Controle negativo (recomendado, antes): a mesma linha sem `--simulated` sai 3 com `SIGN_SIMULATED_PACKAGE`, sem pedir a confirmação nem a frase | `<…>` | `<SEAL_SHA256>` |
 | S-11 | Entrega **manual** na homologação (desvio declarado D-01) | `p1-canal-de-entrega-manifestos.md` §6 item 1 | só os bytes do manifesto, criação exclusiva no volume da pilha (nada sobrescrito), `sha256sum` antes e depois iguais ao do livro; quem fez e quando | `<…>` | `<SHA256 antes/depois>` |
