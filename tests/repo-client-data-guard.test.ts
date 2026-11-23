@@ -95,6 +95,8 @@ const FORBIDDEN: readonly ForbiddenTerm[] = [
   // Cidade + segmento da campanha dos clientes F e G: cada palavra sozinha é comum (a cidade é a padrão dos testes e da
   // lista do IBGE), então só a combinação na mesma linha é acusada.
   { sameLine: ['4320294e3e56b92f1bffc5507431f3ad209c035af9dd4ad6c9cbda5ec9fbc6bc', '7a5cace935306129774f182120c692fff24ef9273cf8ff781d8795cb07598c37'], kind: 'cidade + segmento da campanha (mesma linha)' },
+  // Domínio de produção do responsável (23/11/2026): só o marcador <DOMINIO_PRODUCAO> no repositório; o valor real fica na VPS e no GitHub.
+  { sha256: '6e50058faf0ecd99c149d3e2ff4751c77972ca37ae5b004736fb66adaf5c2223', kind: 'domínio de produção' },
 ];
 
 const INDEX_BY_HASH = new Map(FORBIDDEN.flatMap((term, index) => (term.sha256 ? [[term.sha256, index] as const] : [])));
