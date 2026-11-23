@@ -237,7 +237,10 @@ const DELIVER_ENV = { GMN_AMB: 'homologacao', GMN_SHA: '0123456789abcdef01234567
 const ok = (verdict: 'WRITTEN' | 'ALREADY_PRESENT', rel: string): FakeResponse => ({ stdout: `OK ${verdict} ${rel} ${sha256(content(rel))}\n` });
 const forFile = (rel: string, ...responses: FakeResponse[]): FakeRule => ({ match: [`put ${rel} `], responses });
 const deliver = (fixture: DeliverFixture, extra: Record<string, string> = {}): RunResult => runScript(fixture.sandbox, 'seals-deliver.sh', [], { ...DELIVER_ENV, ...extra });
-const results = (sandbox: Sandbox): string[][] => (fs.existsSync(resultsFile(sandbox)) ? readLines(resultsFile(sandbox)).map((line) => line.split('\t')) : []);
+/** Todas as linhas do registro da entrega (com os `STARTED`). */
+const rawResults = (sandbox: Sandbox): string[][] => (fs.existsSync(resultsFile(sandbox)) ? readLines(resultsFile(sandbox)).map((line) => line.split('\t')) : []);
+/** Só os resultados finais (sem os `STARTED` de antes de cada chamada). */
+const results = (sandbox: Sandbox): string[][] => rawResults(sandbox).filter((row) => row[2] !== 'STARTED');
 
 test('P9.5 entrega: um `put <relpath> <sha256> <trust-sha256>` por arquivo, na ordem da lista, com o arquivo no stdin, só pela configuração privada (`ssh -F … -T gmn-seal-receiver`); WRITTEN e ALREADY_PRESENT registrados', (t) => {
   const rels = [seal(AUD_A, 1), seal(AUD_A, 2), '_closures/ab-cd.json'];
@@ -250,6 +253,7 @@ test('P9.5 entrega: um `put <relpath> <sha256> <trust-sha256>` por arquivo, na o
   for (const call of sshCalls) assert.match(call.argv[4] ?? '', /^put (?:aud-[0-9a-f]{16}\/seal-\d{4}\.json|_closures\/[a-z0-9-]+\.json) [0-9a-f]{64} [0-9a-f]{64}$/);
   assert.deepEqual(results(fixture.sandbox), [[rels[0], sha256(content(rels[0] as string)), 'ALREADY_PRESENT', 'OK'], [rels[1], sha256(content(rels[1] as string)), 'WRITTEN', 'OK'], [rels[2], sha256(content(rels[2] as string)), 'WRITTEN', 'OK']]);
   assert.equal(outputs(fixture.sandbox).sent, '3');
+  assert.deepEqual(rawResults(fixture.sandbox).map((row) => row[2]), ['STARTED', 'ALREADY_PRESENT', 'STARTED', 'WRITTEN', 'STARTED', 'WRITTEN'], 'STARTED antes de cada chamada');
   assert.match(result.stdout, new RegExp(`^OK ALREADY_PRESENT ${rels[0]} [0-9a-f]{64}$`, 'm'));
   assertNoLeak(result, HOST_SENTINEL, 'sentinela-chave', 'falso');
 });
@@ -380,11 +384,11 @@ test('P9.5 resposta OK fora da forma: outra linha a mais, caminho ou sha256 que 
   ]) {
     const { fixture, result } = refusedBy(t, { stdout });
     assertRefused(fixture.sandbox, result, 'RECEIVER_UNKNOWN_ERROR', 'EXIT_0');
-    assert.deepEqual(results(fixture.sandbox).map((row) => [row[2], row[3]]), [['FALHOU', 'RECEIVER_UNKNOWN_ERROR EXIT_0']]);
+    assert.deepEqual(results(fixture.sandbox).map((row) => [row[2], row[3]]), [['INDETERMINADO', 'RECEIVER_UNKNOWN_ERROR EXIT_0']]);
   }
 });
 
-test('P9.5 entrega: ssh sem conexão (255) ⇒ SSH_CONNECT_FAILED HOST_KEY|AUTH|OTHER, sem repetir o stderr do ssh (host, endereço)', (t) => {
+test('P9.5 entrega: ssh sem conexão (255) ⇒ SSH_CONNECT_FAILED HOST_KEY|AUTH|OTHER, sem repetir o stderr do ssh (host, endereço); o arquivo fica INDETERMINADO (a chamada começou)', (t) => {
   const cases: Array<[string, string]> = [
     [`ssh: connect to host ${HOST_SENTINEL} port 22: Connection refused\n`, 'OTHER'],
     [`Host key for ${HOST_SENTINEL} has changed\nHost key verification failed.\n`, 'HOST_KEY'],
@@ -394,7 +398,34 @@ test('P9.5 entrega: ssh sem conexão (255) ⇒ SSH_CONNECT_FAILED HOST_KEY|AUTH|
     const { fixture, result } = refusedBy(t, { rc: 255, stderr });
     assertRefused(fixture.sandbox, result, 'SSH_CONNECT_FAILED', hint);
     assertNoLeak(result, HOST_SENTINEL, 'Connection refused');
+    assert.deepEqual(results(fixture.sandbox).map((row) => [row[2], row[3]]), [['INDETERMINADO', `SSH_CONNECT_FAILED ${hint}`]]);
   }
+});
+
+test('P9.5 resultado indeterminado (revisão do PR #74, item 7): conexão perdida depois do envio ou job CANCELADO no meio da chamada ⇒ "resultado indeterminado (conferir no host)"; "não enviado" só para quem nunca começou; os anteriores com o resultado confirmado', (t) => {
+  const rels = [seal(AUD_A, 1), seal(AUD_A, 2), seal(AUD_B, 1)];
+  const lost = deliverFixture(t, rels, [forFile(rels[0] as string, ok('WRITTEN', rels[0] as string)), forFile(rels[1] as string, { rc: 255, stderr: 'Connection reset by peer\n' }), forFile(rels[2] as string, ok('WRITTEN', rels[2] as string))]);
+  assertRefused(lost.sandbox, deliver(lost), 'SSH_CONNECT_FAILED', 'OTHER');
+  runScript(lost.sandbox, 'seals-summary.sh', [], { ...SUMMARY_ENV, GMN_O_DELIVER: 'failure', GMN_E_DELIVER: 'SSH_CONNECT_FAILED' });
+  assert.deepEqual(summaryRows(lost.sandbox).map((row) => [row[4], row[6], row[7]]), [
+    [`\`${rels[0]}\``, '`WRITTEN`: gravado (verificado no host)', '`OK`'],
+    [`\`${rels[1]}\``, 'resultado indeterminado (conferir no host)', '`SSH_CONNECT_FAILED OTHER`'],
+    [`\`${rels[2]}\``, 'não enviado', '`-`'],
+  ]);
+  assert.match(fs.readFileSync(lost.sandbox.summaryFile, 'utf8'), /\*\*1 arquivo\(s\) com resultado indeterminado:\*\*/);
+
+  const cancelled = deliverFixture(t, rels, [forFile(rels[0] as string, ok('ALREADY_PRESENT', rels[0] as string)), forFile(rels[1] as string, { killParent: true, stdout: ok('WRITTEN', rels[1] as string).stdout }), forFile(rels[2] as string, ok('WRITTEN', rels[2] as string))]);
+  const killed = deliver(cancelled);
+  assert.notEqual(killed.status, 0, 'o job foi interrompido no meio da chamada');
+  assert.deepEqual(rawResults(cancelled.sandbox).map((row) => [row[0], row[2]]), [[rels[0], 'STARTED'], [rels[0], 'ALREADY_PRESENT'], [rels[1], 'STARTED']]);
+  runScript(cancelled.sandbox, 'seals-summary.sh', [], { ...SUMMARY_ENV, GMN_O_DELIVER: 'cancelled' });
+  const text = fs.readFileSync(cancelled.sandbox.summaryFile, 'utf8');
+  assert.match(text, /^Resultado: `CANCELADO`\./m);
+  assert.deepEqual(summaryRows(cancelled.sandbox).map((row) => [row[6], row[7]]), [
+    ['`ALREADY_PRESENT`: conteúdo idêntico já presente', '`OK`'],
+    ['resultado indeterminado (conferir no host)', '`-`'],
+    ['não enviado', '`-`'],
+  ]);
 });
 
 test('P9.5 entrega: arquivo mudado depois do passo 1, lista ilegível ou acima do teto de 1000 (conferido antes do primeiro put), chave/configuração ou lista ausentes, hash da lista de confiança inválido ⇒ recusa sem ssh', (t) => {

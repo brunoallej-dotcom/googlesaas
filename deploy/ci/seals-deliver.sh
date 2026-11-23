@@ -13,7 +13,10 @@
 #   saída 29 com stdout e stderr vazios (stdout ou stderr do receptor fechados) = E_INTERNAL.
 # Qualquer outra coisa vira RECEIVER_UNKNOWN_ERROR EXIT_<n>, sem repetir nada do receptor nem do ssh; só a linha remontada é publicada.
 # Conexão que falha (255) vira SSH_CONNECT_FAILED HOST_KEY|AUTH|OTHER. O resultado de cada arquivo vai para $RUNNER_TEMP/gmn-seals/results (0600; só
-# caminho relativo, sha256, resultado e código), que o resumo publica (§5.9).
+# caminho relativo, sha256, resultado e código), que o resumo publica (§5.9): `STARTED` ANTES de cada chamada (revisão do PR #74, item 7) e,
+# depois, `WRITTEN`/`ALREADY_PRESENT`, `FALHOU <código do conjunto fechado>` (recusa confirmada pelo receptor) ou `INDETERMINADO <código>`
+# (conexão perdida ou resposta fora do conjunto fechado: o receptor pode ter gravado). Um `STARTED` sem linha seguinte (job cancelado no meio
+# da chamada) também é indeterminado; o resumo manda conferir no host.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 . deploy/ci/lib.sh
@@ -85,10 +88,16 @@ seal_response() {
 # record RESULTADO CÓDIGO: uma linha do resultado do arquivo atual (só campos públicos e já validados).
 record() { printf '%s\t%s\t%s\t%s\n' "$relpath" "$sha256" "$1" "$2" >>"$results"; }
 
-# refuse CÓDIGO [DETALHE]: registra a falha do arquivo atual e para (RC-10: nada depois dele é enviado).
+# refuse CÓDIGO [DETALHE]: registra a falha CONFIRMADA do arquivo atual e para (RC-10: nada depois dele é enviado).
 refuse() {
   record FALHOU "$1${2:+ $2}"
   gmn_fail "$1" "${2:-}"
+}
+
+# undetermined CÓDIGO DETALHE: a chamada começou, mas não há resultado confirmado (o receptor pode ter gravado); registra e para.
+undetermined() {
+  record INDETERMINADO "$1 $2"
+  gmn_fail "$1" "$2"
 }
 
 gmn_require_amb
@@ -117,12 +126,13 @@ while IFS=' ' read -r relpath sha256 extra <&3 || [ -n "${relpath:-}" ]; do
   remote_command="put ${relpath} ${sha256} ${GMN_TRUST_SHA256}"
   [ "${#remote_command}" -le "$MAX_PUT_COMMAND_BYTES" ] || refuse INTERNAL command-length
 
+  record STARTED -
   gmn_receiver_ssh "$remote_command" "$file"
   ssh_hint="$(gmn_ssh_hint "$GMN_SSH_STDERR")"
   seal_response "$GMN_SSH_RC"
   rm -f -- "$GMN_SSH_STDOUT" "$GMN_SSH_STDERR"
 
-  if [ "$GMN_SSH_RC" -eq "$GMN_CI_SSH_CONNECT_FAILED_RC" ]; then refuse SSH_CONNECT_FAILED "$ssh_hint"; fi
+  if [ "$GMN_SSH_RC" -eq "$GMN_CI_SSH_CONNECT_FAILED_RC" ]; then undetermined SSH_CONNECT_FAILED "$ssh_hint"; fi
   case "$outcome" in
     WRITTEN | ALREADY_PRESENT)
       record "$outcome" OK
@@ -132,7 +142,7 @@ while IFS=' ' read -r relpath sha256 extra <&3 || [ -n "${relpath:-}" ]; do
       read -r code detail <<<"$public"
       refuse "$code" "$detail"
       ;;
-    *) refuse RECEIVER_UNKNOWN_ERROR "EXIT_${GMN_SSH_RC}" ;;
+    *) undetermined RECEIVER_UNKNOWN_ERROR "EXIT_${GMN_SSH_RC}" ;;
   esac
 done 3<"$list"
 

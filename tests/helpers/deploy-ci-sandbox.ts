@@ -24,6 +24,8 @@ export interface FakeResponse {
   readonly stdout?: string;
   readonly stderr?: string;
   readonly rc?: number;
+  /** Mata o processo pai (SIGKILL) depois de registrar a chamada: simula o runner cancelando o job no meio da chamada. */
+  readonly killParent?: boolean;
 }
 export interface FakeRule {
   readonly match?: readonly string[];
@@ -84,6 +86,7 @@ if (index >= 0) {
   fs.writeFileSync(counter, String(n + 1));
   const responses = rules[index].responses;
   const response = responses[Math.min(n, responses.length - 1)];
+  if (response.killParent) process.kill(process.ppid, 'SIGKILL');
   if (response.stdout) process.stdout.write(response.stdout);
   if (response.stderr) process.stderr.write(response.stderr);
   process.exitCode = response.rc || 0;
