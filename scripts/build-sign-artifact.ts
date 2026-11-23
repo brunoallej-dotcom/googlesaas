@@ -111,14 +111,17 @@ export function artifactBuildOptions(entry: string, outfile: string): BuildOptio
   };
 }
 
-/** Pelo metafile: os imports que sobraram no arquivo de saída são externos, estáticos (`require`) e da lista literal. */
-function checkMetafileImports(metafile: Metafile): string[] {
+/**
+ * Pelo metafile: os imports que sobraram no arquivo de saída são externos, estáticos (`require`) e da lista literal. `allowed` só muda para os
+ * artefatos dos receptores (P9.3a, `scripts/build-receivers-artifact.ts`), cada um com a própria lista literal.
+ */
+export function checkMetafileImports(metafile: Metafile, allowed: readonly string[] = ARTIFACT_NODE_MODULES): string[] {
   const outputs = Object.values(metafile.outputs);
   if (outputs.length !== 1) throw new ArtifactBuildError('BUILD_FAILED', `o build devia gerar 1 arquivo (gerou ${outputs.length})`);
   const imports = (outputs[0] as Metafile['outputs'][string]).imports;
   for (const item of imports) {
     if (item.kind !== 'require-call') throw new ArtifactBuildError('DYNAMIC_LOAD', `import "${item.path}" de tipo ${item.kind} no artefato (só require estático)`);
-    if (item.external !== true || !ARTIFACT_NODE_MODULES.includes(item.path)) throw new ArtifactBuildError('IMPORT_NOT_ALLOWED', `import "${item.path}" fora da lista literal do §5.5.1 item 7`);
+    if (item.external !== true || !allowed.includes(item.path)) throw new ArtifactBuildError('IMPORT_NOT_ALLOWED', `import "${item.path}" fora da lista literal do §5.5.1 item 7`);
   }
   return [...new Set(imports.map((item) => item.path))].sort();
 }
@@ -127,7 +130,7 @@ function checkMetafileImports(metafile: Metafile): string[] {
  * Pelo texto do arquivo final: toda ocorrência do identificador `require` é uma chamada direta com string literal da lista; nenhuma outra forma de
  * carregar ou gerar código (cada exceção do zod, inteira e conferida pelo SHA-256, é retirada UMA vez antes da busca); nenhum caminho absoluto.
  */
-export function checkArtifactText(text: string, absolutePaths: readonly string[]): string[] {
+export function checkArtifactText(text: string, absolutePaths: readonly string[], allowed: readonly string[] = ARTIFACT_NODE_MODULES): string[] {
   for (const exception of ZOD_FUNCTION_EXCEPTIONS) {
     if (createHash('sha256').update(exception.text, 'utf8').digest('hex') !== exception.sha256) throw new ArtifactBuildError('BUILD_FAILED', `exceção do zod "${exception.name}" com texto que não confere com o SHA-256 fixado`);
   }
@@ -138,7 +141,7 @@ export function checkArtifactText(text: string, absolutePaths: readonly string[]
     const literal = LITERAL_REQUIRE.exec(text.slice(match.index));
     if (!literal || MEMBER_ACCESS.test(text.slice(0, match.index))) throw new ArtifactBuildError('DYNAMIC_LOAD', 'require como valor, membro ou com argumento que não é string literal no artefato');
     const specifier = literal[1] as string;
-    if (!ARTIFACT_NODE_MODULES.includes(specifier)) throw new ArtifactBuildError('IMPORT_NOT_ALLOWED', `require("${specifier}") fora da lista literal do §5.5.1 item 7`);
+    if (!allowed.includes(specifier)) throw new ArtifactBuildError('IMPORT_NOT_ALLOWED', `require("${specifier}") fora da lista literal do §5.5.1 item 7`);
     required.add(specifier);
   }
   for (const absolute of absolutePaths) if (absolute.length > 1 && text.includes(absolute)) throw new ArtifactBuildError('ABSOLUTE_PATH', 'caminho absoluto da máquina do build no artefato');

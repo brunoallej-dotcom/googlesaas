@@ -1,0 +1,172 @@
+import { createHash } from 'node:crypto';
+import { z } from 'zod';
+import { ReceiverError, type ReceiverCode } from './codes';
+import { imageInfo, parseJsonWith, runProgram, type ImageInfo } from './docker';
+import type { DeployEnvironment } from './grammar';
+import type { ReceiverDeps } from './ports';
+
+/*
+ * P9.3a — passos 8 (listagem) e 9 do `deploy` (spec §5.6): o pacote do `docker save | gzip -n`.
+ *  0. (passo 8, revisão do PR #70) a LISTA dos membros em fluxo (`tar -tvzf`, saída com teto), antes de qualquer carga: só arquivos regulares
+ *     e pastas, só os nomes que o `docker save` grava nos dois armazenamentos (`manifest.json`, `index.json`, `oci-layout`, `repositories`,
+ *     `blobs/sha256/<64 hex>`, `<64 hex>.json`, `<64 hex>/{VERSION,json,layer.tar}` e as pastas), nada absoluto, `..`, link, dispositivo ou
+ *     FIFO, nenhum membro repetido, e o total descompactado até 8 GiB; senão `E_BUNDLE_TAGS`. O total descompactado entra no espaço livre;
+ *  1. `gzip -t` (integridade do gzip);
+ *  2. o `manifest.json` do tar lido SEM extrair nada para o disco (`tar -xzOf <pacote> manifest.json`, para o stdout, com teto);
+ *  3. exatamente duas imagens, com `RepoTags` = `["gmn-web:<amb>-<sha40>"]` e `["gmn-worker:<amb>-<sha40>"]` e o `Config` num dos dois nomes
+ *     aceitos, senão `E_BUNDLE_TAGS` (e nenhum `docker load`);
+ *  4. `docker load -i` (`E_DOCKER_LOAD`) e conferência de cada imagem carregada, nos dois armazenamentos de imagens do Docker:
+ *     - clássico: o id da tag = `sha256:<digest do Config>`;
+ *     - containerd (padrão das instalações novas do Docker Engine 29; o id passa a ser o digest do manifesto): a tag carregada tem
+ *       EXATAMENTE a tag esperada nos `RepoTags`, o `Config` lido do pacote (mesmo `tar -xzOf`, com teto) tem o sha256 do próprio nome, e
+ *       os `RootFS.Layers` (diff_ids) da imagem carregada são exatamente os `rootfs.diff_ids` desse `Config`.
+ *     Qualquer divergência ⇒ `E_DOCKER_LOAD`. Os ids voltam no `OK DEPLOYED` (`sha256:<64 hex>`).
+ */
+
+const GZIP_TEST_TIMEOUT_MS = 15 * 60_000;
+const MEMBER_READ_TIMEOUT_MS = 15 * 60_000;
+const LOAD_TIMEOUT_MS = 30 * 60_000;
+const MANIFEST_MAX_BYTES = 1024 * 1024;
+const CONFIG_MAX_BYTES = 4 * 1024 * 1024;
+const LOAD_MAX_OUTPUT = 1024 * 1024;
+const NO_OUTPUT = 64 * 1024;
+const IMAGES_IN_BUNDLE = 2;
+/** `Config` no formato OCI (`blobs/sha256/<hex>`, Docker 25+) ou no antigo (`<hex>.json`). */
+const CONFIG_PATH = /^(?:blobs\/sha256\/([0-9a-f]{64})|([0-9a-f]{64})\.json)$/;
+const DIFF_ID = /^sha256:[0-9a-f]{64}$/;
+const LIST_TIMEOUT_MS = 15 * 60_000;
+const LIST_MAX_OUTPUT = 4 * 1024 * 1024;
+/** Teto do pacote descompactado (as duas imagens têm hoje ~1 GiB). */
+export const MAX_UNCOMPRESSED_BYTES = 8 * 1024 * 1024 * 1024;
+/** Uma linha do `tar -tv` do GNU tar: tipo e permissões, dono, tamanho, data, hora e o nome (sem espaço: os nomes aceitos não têm). */
+const LIST_LINE = /^([-dlhcbpsCMNV])[rwxsStT-]{9}\s+\S+\s+(\d+)\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(?::\d{2})?\s+(\S+)$/;
+const FILE_MEMBER = /^(?:manifest\.json|index\.json|oci-layout|repositories|blobs\/sha256\/[0-9a-f]{64}|[0-9a-f]{64}\.json|[0-9a-f]{64}\/(?:VERSION|json|layer\.tar))$/;
+const DIRECTORY_MEMBER = /^(?:blobs\/|blobs\/sha256\/|[0-9a-f]{64}\/)$/;
+/** `Layers` do `manifest.json`: o blob OCI ou o `layer.tar` do formato antigo. */
+const LAYER_PATH = /^(?:blobs\/sha256\/[0-9a-f]{64}|[0-9a-f]{64}\/layer\.tar)$/;
+
+const ManifestSchema = z.array(z.object({ Config: z.string(), RepoTags: z.array(z.string()).nullable(), Layers: z.array(z.string()) }));
+const ImageConfigSchema = z.object({ rootfs: z.object({ type: z.literal('layers'), diff_ids: z.array(z.string().regex(DIFF_ID)).min(1) }) });
+
+export interface BundleImages {
+  readonly tag: string;
+  readonly webRef: string;
+  readonly workerRef: string;
+  readonly webImageId: string;
+  readonly workerImageId: string;
+}
+
+/** Uma imagem do `manifest.json`, já conferida: a tag esperada, o caminho do `Config` dentro do tar e o digest dele. */
+interface BundleEntry {
+  readonly ref: string;
+  readonly configPath: string;
+  readonly configDigest: string;
+}
+
+export type LoadVerification = 'config-digest' | 'diff-ids';
+
+/** O que a listagem prova: os arquivos regulares do tar (nome → tamanho) e o total descompactado. */
+export interface BundleListing {
+  readonly files: ReadonlyMap<string, number>;
+  readonly uncompressedBytes: number;
+}
+
+export const imageTag = (env: DeployEnvironment, sha40: string): string => `${env}-${sha40}`;
+
+const tagsError = (note: string): ReceiverError => new ReceiverError('E_BUNDLE_TAGS', null, note);
+const loadError = (note: string): ReceiverError => new ReceiverError('E_DOCKER_LOAD', null, note);
+
+/** Um membro do tar para o stdout (nada extraído para o disco), com teto; falha ⇒ `ReceiverError(code)`. */
+async function readBundleMember(bundle: string, member: string, maxBytes: number, code: ReceiverCode, deps: ReceiverDeps): Promise<Uint8Array> {
+  const read = await runProgram({ program: 'tar', args: ['-xzOf', bundle, member], env: { PATH: deps.childPath }, timeoutMs: MEMBER_READ_TIMEOUT_MS, maxOutputBytes: maxBytes, logStdout: false, label: `tar ${member}` }, deps);
+  if (read.exitCode !== 0 || read.timedOut || read.overflow) throw new ReceiverError(code, null, `${member} unreadable in the bundle`);
+  return read.stdout;
+}
+
+function listedMember(line: string, files: Map<string, number>, seen: Set<string>): number {
+  const match = LIST_LINE.exec(line);
+  if (!match) throw tagsError('bundle listing line outside the expected format (link, device or name)');
+  const [, type, size, name] = match as unknown as [string, string, string, string];
+  if (seen.has(name)) throw tagsError('repeated member in the bundle');
+  seen.add(name);
+  if (type === 'd' && DIRECTORY_MEMBER.test(name)) return 0;
+  if (type !== '-' || !FILE_MEMBER.test(name)) throw tagsError('unexpected member type or name in the bundle');
+  const bytes = Number(size);
+  files.set(name, bytes);
+  return bytes;
+}
+
+/** Passo 8 (revisão do PR #70): a lista dos membros do pacote, em fluxo e com teto, antes de qualquer carga. */
+export async function listBundle(bundle: string, deps: ReceiverDeps): Promise<BundleListing> {
+  const listed = await runProgram({ program: 'tar', args: ['-tvzf', bundle], env: { PATH: deps.childPath }, timeoutMs: LIST_TIMEOUT_MS, maxOutputBytes: LIST_MAX_OUTPUT, logStdout: false, label: 'tar -tvzf' }, deps);
+  if (listed.exitCode !== 0 || listed.timedOut || listed.overflow) throw tagsError('bundle listing failed');
+  const files = new Map<string, number>();
+  const seen = new Set<string>();
+  let uncompressedBytes = 0;
+  for (const line of Buffer.from(listed.stdout).toString('utf8').split('\n')) {
+    if (line === '') continue;
+    uncompressedBytes += listedMember(line, files, seen);
+    if (uncompressedBytes > MAX_UNCOMPRESSED_BYTES) throw tagsError('bundle above the uncompressed cap');
+  }
+  if (files.size === 0) throw tagsError('empty bundle');
+  return { files, uncompressedBytes };
+}
+
+function entryOf(raw: z.infer<typeof ManifestSchema>[number], refs: readonly string[], seen: ReadonlySet<string>, listing: BundleListing): BundleEntry {
+  const tags = raw.RepoTags ?? [];
+  const ref = tags[0];
+  const config = CONFIG_PATH.exec(raw.Config);
+  if (tags.length !== 1 || ref === undefined || !refs.includes(ref) || seen.has(ref) || config === null) throw tagsError('bundle image tags differ from the expected ones');
+  // o Config e cada camada são arquivos listados no tar, com os nomes da gramática
+  if (!listing.files.has(raw.Config) || raw.Layers.length === 0 || raw.Layers.some((layer) => !LAYER_PATH.test(layer) || !listing.files.has(layer))) throw tagsError('manifest config or layers outside the bundle listing');
+  return { ref, configPath: raw.Config, configDigest: (config[1] ?? config[2]) as string };
+}
+
+/** Passos 9.1 a 9.3: `gzip -t`, o `manifest.json` e as duas tags esperadas. Nada é carregado. */
+async function bundleEntries(bundle: string, refs: readonly [string, string], listing: BundleListing, deps: ReceiverDeps): Promise<ReadonlyMap<string, BundleEntry>> {
+  const gzipTest = await runProgram({ program: 'gzip', args: ['-t', bundle], env: { PATH: deps.childPath }, timeoutMs: GZIP_TEST_TIMEOUT_MS, maxOutputBytes: NO_OUTPUT, logStdout: true, label: 'gzip -t' }, deps);
+  if (gzipTest.exitCode !== 0 || gzipTest.timedOut) throw tagsError('gzip -t refused the bundle');
+  const raw = await readBundleMember(bundle, 'manifest.json', MANIFEST_MAX_BYTES, 'E_BUNDLE_TAGS', deps);
+  const manifest = parseJsonWith(Buffer.from(raw).toString('utf8'), ManifestSchema, 'E_BUNDLE_TAGS', 'manifest.json');
+  if (manifest.length !== IMAGES_IN_BUNDLE) throw tagsError(`bundle with ${manifest.length} images`);
+  const entries = new Map<string, BundleEntry>();
+  for (const item of manifest) {
+    const entry = entryOf(item, refs, new Set(entries.keys()), listing);
+    entries.set(entry.ref, entry);
+  }
+  return entries;
+}
+
+const sameList = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && a.every((value, index) => value === b[index]);
+
+/** Armazenamento containerd: tag exata, `Config` do pacote íntegro e diff_ids iguais aos da imagem carregada. */
+async function verifyByDiffIds(entry: BundleEntry, info: ImageInfo, bundle: string, deps: ReceiverDeps): Promise<void> {
+  const tags = info.RepoTags ?? [];
+  if (tags.length !== 1 || tags[0] !== entry.ref) throw loadError(`${entry.ref}: loaded image tags differ from the expected one`);
+  const config = await readBundleMember(bundle, entry.configPath, CONFIG_MAX_BYTES, 'E_DOCKER_LOAD', deps);
+  if (createHash('sha256').update(config).digest('hex') !== entry.configDigest) throw loadError(`${entry.ref}: config blob differs from its digest`);
+  const parsed = parseJsonWith(Buffer.from(config).toString('utf8'), ImageConfigSchema, 'E_DOCKER_LOAD', 'image config');
+  if (!sameList(parsed.rootfs.diff_ids, info.RootFS?.Layers ?? [])) throw loadError(`${entry.ref}: loaded layers differ from the bundle config`);
+}
+
+/** A imagem carregada para uma tag é a do pacote: pelo id (clássico) ou pelos diff_ids (containerd). */
+async function verifyLoaded(entry: BundleEntry, bundle: string, deps: ReceiverDeps): Promise<{ readonly id: string; readonly verification: LoadVerification }> {
+  const info = await imageInfo(entry.ref, deps);
+  if (info.Id === `sha256:${entry.configDigest}`) return { id: info.Id, verification: 'config-digest' };
+  await verifyByDiffIds(entry, info, bundle, deps);
+  return { id: info.Id, verification: 'diff-ids' };
+}
+
+/** Passo 9 inteiro: confere o pacote, carrega e confere as imagens carregadas. */
+export async function loadBundle(bundle: string, listing: BundleListing, env: DeployEnvironment, sha40: string, deps: ReceiverDeps): Promise<BundleImages> {
+  const tag = imageTag(env, sha40);
+  const webRef = `gmn-web:${tag}`;
+  const workerRef = `gmn-worker:${tag}`;
+  const entries = await bundleEntries(bundle, [webRef, workerRef], listing, deps);
+  const load = await runProgram({ program: 'docker', args: ['load', '-i', bundle], env: { PATH: deps.childPath }, timeoutMs: LOAD_TIMEOUT_MS, maxOutputBytes: LOAD_MAX_OUTPUT, logStdout: true, label: 'docker load' }, deps);
+  if (load.exitCode !== 0 || load.timedOut || load.overflow) throw loadError('docker load failed');
+  const web = await verifyLoaded(entries.get(webRef) as BundleEntry, bundle, deps);
+  const worker = await verifyLoaded(entries.get(workerRef) as BundleEntry, bundle, deps);
+  deps.log.write('bundle.loaded', { tag, webImageId: web.id, workerImageId: worker.id, webVerification: web.verification, workerVerification: worker.verification });
+  return { tag, webRef, workerRef, webImageId: web.id, workerImageId: worker.id };
+}

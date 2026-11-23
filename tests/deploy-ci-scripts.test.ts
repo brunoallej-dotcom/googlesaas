@@ -138,6 +138,8 @@ function makeSandbox(t: { after: (fn: () => void) => void }, scenario: Scenario 
   fs.mkdirSync(ciDir, { recursive: true });
   for (const name of fs.readdirSync(CI_DIR)) fs.copyFileSync(path.join(CI_DIR, name), path.join(ciDir, name));
   fs.mkdirSync(path.join(root, 'deploy', 'hostinger'), { recursive: true });
+  // a impressão canônica do Supabase (revisão do PR #70), a mesma do receptor e do runbook
+  fs.copyFileSync(path.join(ROOT, 'deploy', 'hostinger', 'supabase-fp12.sh'), path.join(root, 'deploy', 'hostinger', 'supabase-fp12.sh'));
   fs.writeFileSync(path.join(root, 'deploy', 'hostinger', 'stack.yml'), 'services: {}\n');
   fs.writeFileSync(path.join(root, 'deploy', 'hostinger', 'stack-hml.yml'), 'services: {}\nsecrets: {}\n');
   for (const amb of ['producao', 'homologacao']) {
@@ -455,7 +457,7 @@ test('P9.4 upload: ssh sem conexão (255) ⇒ SSH_CONNECT_FAILED com dica fixa; 
   }
 });
 
-test('P9.4 receptor: só códigos do conjunto fechado do §5.8, com a saída numérica certa, e a linha pública remontada (sem caminho nem saída do Docker); outra saída ⇒ RECEIVER_UNKNOWN_ERROR / RECEIVER_BAD_OUTPUT', (t) => {
+test('P9.4 receptor: só códigos do conjunto fechado do §5.8, com a saída numérica certa, e a linha pública remontada (sem caminho nem saída do Docker; E_HOST_CONFIG com nome da lista ou sem detalhe, P9.3a); outra saída ⇒ RECEIVER_UNKNOWN_ERROR / RECEIVER_BAD_OUTPUT', (t) => {
   const refused = receiverFixture(t, [{ rc: 13, stderr: 'ERRO E_HASH_MISMATCH\n/srv/caminho-real-sentinela/saida do docker\n' }]);
   const result = runScript(refused.sandbox, 'receiver-call.sh', ['upload'], uploadEnv(refused));
   assert.equal(result.status, 1);
@@ -463,13 +465,17 @@ test('P9.4 receptor: só códigos do conjunto fechado do §5.8, com a saída num
   assert.equal(outputs(refused.sandbox).code, 'E_HASH_MISMATCH');
   assertNoLeak(result, 'caminho-real-sentinela', 'saida do docker');
 
-  const accepted: Array<[number, string]> = [[64, 'ERRO E_POSTDEPLOY_CHECK PD-07'], [52, 'ERRO E_HOST_CONFIG GMN_IMAGE_TAG'], [66, 'ERRO E_TRUST_LIST_TRANSITION']];
+  // P9.3a: E_HOST_CONFIG sem detalhe (linha fora do parser sem nome da lista fechada) é público como E_HOST_CONFIG, não RECEIVER_UNKNOWN_ERROR
+  const accepted: Array<[number, string]> = [[64, 'ERRO E_POSTDEPLOY_CHECK PD-07'], [52, 'ERRO E_HOST_CONFIG GMN_IMAGE_TAG'], [52, 'ERRO E_HOST_CONFIG'], [66, 'ERRO E_TRUST_LIST_TRANSITION']];
   for (const [rc, line] of accepted) {
     const fixture = receiverFixture(t, [{ rc, stderr: `aviso qualquer\n${line}\n` }]);
     const out = runScript(fixture.sandbox, 'receiver-call.sh', ['upload'], uploadEnv(fixture));
     assert.equal(out.stderr, `${line}\n`);
     assert.equal(outputs(fixture.sandbox).code, line.split(' ')[1]);
+    assert.ok(!out.stderr.includes('RECEIVER_UNKNOWN_ERROR'), line);
   }
+  const hostConfigWrongExit = receiverFixture(t, [{ rc: 53, stderr: 'ERRO E_HOST_CONFIG\n' }]);
+  assertRefused(hostConfigWrongExit.sandbox, runScript(hostConfigWrongExit.sandbox, 'receiver-call.sh', ['upload'], uploadEnv(hostConfigWrongExit)), 'RECEIVER_UNKNOWN_ERROR', 'EXIT_53');
 
   const garbage = receiverFixture(t, [{ rc: 1, stderr: 'Traceback /opt/caminho-sentinela\n' }]);
   const failed = runScript(garbage.sandbox, 'receiver-call.sh', ['upload'], uploadEnv(garbage));
@@ -486,7 +492,6 @@ test('P9.4 receptor: código desconhecido, detalhe fora da lista do código, det
   const cases: Array<[number, string, string]> = [
     [70, 'ERRO E_SEGREDO_SENTINELA', 'E_SEGREDO_SENTINELA'],
     [52, 'ERRO E_HOST_CONFIG SENHA_SENTINELA', 'SENHA_SENTINELA'],
-    [52, 'ERRO E_HOST_CONFIG', 'E_HOST_CONFIG'],
     [64, 'ERRO E_POSTDEPLOY_CHECK PD-09', 'PD-09'],
     [64, 'ERRO E_POSTDEPLOY_CHECK valor-sentinela', 'valor-sentinela'],
     [16, 'ERRO E_LOCKED detalhe-sentinela', 'detalhe-sentinela'],
@@ -541,6 +546,26 @@ test('P9-D01 (lado do workflow) deploy em homologação: overlay obrigatório; p
     setScenario(fixture.sandbox, { readStdin: ['ssh'] });
     assertRefused(fixture.sandbox, runScript(fixture.sandbox, 'receiver-call.sh', ['deploy'], deployEnv(fixture, amb, extra)), code, detail === '' ? undefined : detail);
     assert.equal(calls(fixture.sandbox, 'ssh').length, 0);
+  }
+});
+
+test('revisão do PR #70 (item 6, lado do workflow): impressão da ORIGEM CANÔNICA https://<host em minúsculas> — barra final, host em maiúsculas e :443 dão a mesma impressão; caminho, outra porta, http, usuário, consulta ⇒ BUILD_CONFIG_INVALID sem ssh e sem eco da URL', (t) => {
+  const canonical = 'https://laboratorio-sentinela.invalid';
+  const fp12 = sha256(canonical).slice(0, 12);
+  for (const url of [canonical, `${canonical}/`, 'https://Laboratorio-SENTINELA.invalid', 'https://laboratorio-sentinela.invalid:443/']) {
+    const fixture = receiverFixture(t, [{ stdout: deployedLine('producao', '-', sha256('')) }]);
+    const result = runScript(fixture.sandbox, 'receiver-call.sh', ['deploy'], deployEnv(fixture, 'producao', { GMN_BUILD_SUPABASE_URL: url }));
+    assert.equal(result.status, 0, `${url}: ${result.stderr}`);
+    const [call] = calls(fixture.sandbox, 'ssh');
+    assert.ok(call?.argv[call.argv.length - 1]?.endsWith(` ${fp12}`), url);
+    assertNoLeak(result, fp12, url);
+  }
+  for (const url of [`${canonical}/rest/v1`, 'https://laboratorio-sentinela.invalid:8443', 'http://laboratorio-sentinela.invalid', 'https://usuario:senha@laboratorio-sentinela.invalid', `${canonical}/?x=1`, `${canonical}#frag`, 'https://laboratorio_sentinela', ` ${canonical}`]) {
+    const fixture = receiverFixture(t, [{ stdout: 'nao-deveria-ser-chamado\n' }]);
+    const result = runScript(fixture.sandbox, 'receiver-call.sh', ['deploy'], deployEnv(fixture, 'producao', { GMN_BUILD_SUPABASE_URL: url }));
+    assertRefused(fixture.sandbox, result, 'BUILD_CONFIG_INVALID', 'GMN_BUILD_SUPABASE_URL');
+    assert.equal(calls(fixture.sandbox, 'ssh').length, 0, url);
+    assertNoLeak(result, url.trim());
   }
 });
 

@@ -288,7 +288,9 @@ test('P9.4 runbook (revisão do PR #69): blocos privilegiados param no erro, o a
   const h04 = section('### H-04', '### H-05');
   assert.match(h04, /\( set -euo pipefail[\s\S]*sha256sum -c -[\s\S]*sudo tar -xJf/, 'Node só instalado depois do sha256sum -c, num subshell que para no erro');
   assert.match(h04, /--forbid-supabase/);
-  assert.match(h04, /read -rsp 'URL do Supabase de PRODUÇÃO: ' U; printf '%s' "\$U" \| sha256sum \| cut -c1-12; unset U/);
+  // revisão do PR #70 (item 6): a impressão é a da ORIGEM CANÔNICA, pelo mesmo script do job, no clone limpo
+  assert.match(h04, /read -rsp 'URL do Supabase de PRODUÇÃO: ' U; echo; printf '%s' "\$U" \| bash deploy\/hostinger\/supabase-fp12\.sh; unset U/);
+  assert.ok(!/printf '%s' "\$U" \| sha256sum/.test(h04), 'nunca o sha256 dos bytes crus da URL');
   assert.ok(!/forbid-supabase[\s\S]*```bash[\s\S]*read -rsp 'URL do Supabase de produção/.test(section('## 3. Produção', '## 4.')), 'a impressão de produção não fica para a seção de produção');
   assert.ok(!/^\s*(?:sudo\s+)?(?:sh -c ')?[^#\n]*(?:\bsource\b|\s\.\s+\/opt\/gmn-hml)/m.test((runbook.match(/```bash[\s\S]*?```/g) ?? []).join('\n')), 'o arquivo de variáveis nunca é carregado como shell');
   const h06 = section('### H-06', '### H-07');

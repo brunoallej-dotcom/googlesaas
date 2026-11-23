@@ -1,8 +1,10 @@
 # Spec: deploy pelo CI e entrega dos manifestos selados (P-9)
 
 > **Status:** PROPOSTA, fatia **P9.1** (só documentação, 23/11/2026). **P9.2 implementada** (verificação antes do merge, job `seals`,
-> lista versionada e pasta `link-audit-seals/`; critérios marcados no §6 com o teste). Ainda não há `deploy.yml`, receptor,
-> usuário de host nem ambiente do GitHub. O código restante vem nas fatias P9.3a a P9.5
+> lista versionada e pasta `link-audit-seals/`; critérios marcados no §6 com o teste). **P9.4 implementada** (`deploy.yml`, scripts do
+> job, sobreposição de homologação e runbook do responsável). **P9.3a implementada** (receptor de deploy, artefato com hash versionado em
+> `deploy/hostinger/receivers.sha256`, modelos de *wrapper* e job `receivers artifact (build, hash)`; §5.6 "Implementação (P9.3a)";
+> P9-D01 a P9-D14 marcados no §6). Ainda não há usuário de host nem ambiente do GitHub. O código restante vem nas fatias P9.3a a P9.5
 > (`docs/plan/implementation-waves.md`, seção "Deploy pelo CI (P-9)"). Nenhuma fatia faz deploy: o primeiro deploy é do
 > responsável, pelo workflow, depois das ações do §10.1.
 >
@@ -412,8 +414,9 @@ dispara e aprova as próprias execuções (risco aceito, §11.2).
 5. **Pacote:** `docker save gmn-web:<tag> gmn-worker:<tag> | gzip -n` em `$RUNNER_TEMP`, com sha256 e tamanho. Nunca vira artefato
    nem vai a registry.
 6. **Hashes declarados:** `deploy/hostinger/stack.yml`; em homologação, também `deploy/hostinger/stack-hml.yml` (§5.11); a lista
-   `link-audit-seals/<amb>/trust-keys.txt`; e a impressão do projeto Supabase (12 primeiros hex do sha256 de
-   `GMN_BUILD_SUPABASE_URL`), que só vai ao receptor e **não** ao resumo.
+   `link-audit-seals/<amb>/trust-keys.txt`; e a impressão do projeto Supabase (12 primeiros hex do sha256 da origem canônica
+   `https://<host em minúsculas>` de `GMN_BUILD_SUPABASE_URL`, `deploy/hostinger/supabase-fp12.sh`), que só vai ao receptor e **não** ao
+   resumo.
 7. **Chave:** só agora (depois do build) a chave e o `known_hosts` são escritos em `$RUNNER_TEMP/ssh` (0700/0600). Opções fixas:
    `-T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=<arquivo>
    -o GlobalKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=20 -o ServerAliveInterval=15`.
@@ -433,8 +436,10 @@ dispara e aprova as próprias execuções (risco aceito, §11.2).
   ambiente (`GH_TOKEN`), sem montar cabeçalho nem pedir máscara ao runner (o SAST bloqueia `::add-mask::` de valor montado no
   workflow, regra `unsafe-add-mask-workflow-command`). Os demais passos chamam scripts pequenos em `deploy/ci/`, testados com comandos
   falsos no `PATH`.
-- **Impressão do projeto Supabase:** os 12 primeiros hex do sha256 dos bytes da URL, **sem** quebra de linha (o receptor calcula
-  igual sobre o `NEXT_PUBLIC_SUPABASE_URL` do arquivo do host). Calculada só no passo do `deploy`, a partir do segredo, e **nunca
+- **Impressão do projeto Supabase:** os 12 primeiros hex do sha256 da **origem canônica** `https://<host em minúsculas>` (revisão do
+  PR #70, `deploy/hostinger/supabase-fp12.sh`: a barra final, maiúsculas e `:443` não mudam a impressão; caminho, outra porta, `http`,
+  usuário, consulta ou fragmento ⇒ `BUILD_CONFIG_INVALID`). O receptor calcula igual sobre o `NEXT_PUBLIC_SUPABASE_URL` do arquivo do
+  host (`src/lib/deploy-receiver/supabase.ts`, conferido contra o script por teste). Calculada só no passo do `deploy`, a partir do segredo, e **nunca
   impressa**: vai só no comando remoto (argv do `ssh`, fora do log), nunca às saídas do passo nem ao resumo (teste). Nenhum passo do
   job usa `::add-mask::`.
 - **`OK DEPLOYED`:** o job aceita os ids das imagens no formato do Docker (`sha256:<64 hex>`), confere tag, stack e sobreposição
@@ -445,8 +450,9 @@ dispara e aprova as próprias execuções (risco aceito, §11.2).
   qualquer outra configuração (nem a do sistema). O usuário (`gmn-deploy`, `gmn-hml-deploy`) sai do ambiente, não de segredo.
 - **Saída do `ssh` e do receptor:** o stderr do `ssh` nunca vai ao log (repete host e endereço). O erro do receptor também não passa
   como veio: o código tem de ser do conjunto **fechado** do §5.8 (os do receptor de deploy e os comuns), com a saída numérica
-  correspondente; o detalhe só pode vir da lista fechada do código (`E_HOST_CONFIG <nome>` de uma lista fixa de variáveis,
-  `E_POSTDEPLOY_CHECK PD-01..PD-08`; os demais sem detalhe), e a linha pública é remontada pelo job. Qualquer outra coisa vira
+  correspondente; o detalhe só pode vir da lista fechada do código (`E_HOST_CONFIG <nome>` de uma lista fixa de variáveis, ou
+  `E_HOST_CONFIG` sem detalhe desde a P9.3a; `E_POSTDEPLOY_CHECK PD-01..PD-08`; os demais sem detalhe), e a linha pública é remontada
+  pelo job. Qualquer outra coisa vira
   `RECEIVER_UNKNOWN_ERROR EXIT_<n>`, sem repetir nada. Conexão que falha (255) vira `SSH_CONNECT_FAILED HOST_KEY|AUTH|OTHER`. **A
   P9.3a usa a mesma lista de nomes do `E_HOST_CONFIG`** (`HOST_CONFIG_NAMES` em `deploy/ci/receiver-call.sh`); um nome novo entra
   nela no mesmo PR.
@@ -564,6 +570,138 @@ inspect` e `docker info`; nada é carregado nem implantado antes do passo 9):
 O log local (`--log`, `0600`, do usuário do receptor; rotação pelo responsável) guarda as saídas do Docker. Elas podem conter
 caminhos reais e nunca vão ao SSH.
 
+**Implementação (P9.3a)** (`src/lib/deploy-receiver/`, entrada fina `scripts/deploy-receiver.ts`, artefato por
+`scripts/build-receivers-artifact.ts`, modelos de *wrapper* em `deploy/hostinger/receivers/`; testes `tests/deploy-receiver*.test.ts`).
+Núcleo puro, com disco, processo filho, relógio, trava, stdin e log só por portas (`ports.ts`); o adaptador de produção
+(`node-adapters.ts`) é o único arquivo com `node:fs` e `node:child_process` (só `execFile`, `shell: false`, ambiente completo dado pelo
+chamador, prazo com `SIGKILL` e teto de saída). A lista de confiança usa o módulo da P9.2 (`parseTrustListFile`,
+`trustListEnvironmentViolations`, `trustListTransition`), sem reimplementar. Decisões tomadas na fatia, todas de falha fechada:
+
+- **Wrapper e ambiente.** A linha do wrapper acima, com `env -i`, apagaria o `SSH_ORIGINAL_COMMAND`. O modelo o repassa explicitamente
+  (`"SSH_ORIGINAL_COMMAND=${SSH_ORIGINAL_COMMAND-}"`, um argumento do `env`, nunca interpretado pelo shell). O receptor exige o ambiente
+  exatamente com `PATH` (diretórios absolutos) e `SSH_ORIGINAL_COMMAND`. Qualquer outra variável (wrapper sem `env -i`), parâmetro fixo
+  inválido (flag desconhecida, repetida, ausente, caminho relativo ou não normalizado, flag de homologação em produção, impressão que
+  não tem 12 hex, inclusive o marcador sem preencher) ou log que não abre como arquivo regular sem permissão de grupo e outros ⇒
+  `E_INTERNAL`. O wrapper confere o sha256 com `/usr/bin/sha256sum` antes do `exec` (`E_ARTIFACT`, 17, sem rodar o Node). Modelos:
+  `gmn-deploy.modelo.sh` (produção, instalado em `/opt/gmn-receivers/bin/gmn-deploy`) e `gmn-hml-deploy.modelo.sh` (homologação,
+  `/opt/gmn-receivers/bin/gmn-hml-deploy`). O artefato fica em `/opt/gmn-receivers/<sha40 do commit>/`. Instalação: runbook
+  `RUNBOOK-DEPLOY-PELO-CI.md` H-04.
+- **Trava** (revisão do PR #70): a exclusão por ambiente é do kernel. O wrapper roda o receptor debaixo de `flock -n -E 75
+  <estado>/deploy.flock` (util-linux), sobre um arquivo do root criado no H-06; o filho herda o descritor, então a trava dura a
+  execução inteira e some sozinha quando o processo termina ou morre. A saída 75 do `flock` (nenhum código do §5.8 a usa) vira `ERRO
+  E_LOCKED`, com saída 16. Node, `flock` ou arquivo de trava ausentes ⇒ `ERRO E_INTERNAL`, com saída 29, sem caminho na saída. Do lado
+  do Node fica só uma trava de DEFESA, `<estado>/deploy.lock` (`O_EXCL`, com o pid), tomada pelo `upload` **e** pelo `deploy`. Arquivo
+  existente ⇒ `E_LOCKED`. Ela nunca retoma nem apaga uma trava alheia; a liberação só apaga o arquivo com o próprio pid. Depois de um
+  `SIGKILL`, o responsável confere a trava do kernel e apaga o arquivo à mão (runbook H-04). A gramática vem antes: `E_COMMAND` não lê
+  o stdin nem cria nada.
+- **Recebimento** `<estado>/incoming` (`0700`, criado pelo receptor; link ou arquivo no lugar ⇒ `E_INTERNAL`). O `upload` grava
+  `.bundle-<sha40>.partial-<aleatório>` (`O_EXCL | O_NOFOLLOW`, `0600`) e só renomeia para `bundle-<sha40>.tar.gz` depois do hash conferido
+  (`rename` + `fsync` da pasta). Só nomes nesses dois formatos são apagados, e o resto da pasta não é tocado. O stdin tem de terminar
+  (EOF) dentro do prazo de 120 s sem dados. O primeiro byte além do declarado recusa sem ler o resto. Prazo do stdin da lista no `deploy`: 30 s.
+- **Passo 2 e a stack usada** (revisão do PR #70, itens 3, 7 e 9): stack e sobreposição são lidas **uma vez**, como arquivos regulares
+  (link, ausente ou ilegível ⇒ `E_STACK_FILE_MISMATCH`), e o sha256 é calculado sobre esses bytes. Os passos 10 e 11 recebem **cópias
+  privadas** desses mesmos bytes, numa pasta `<estado>/.stack-<aleatório>` (`0700`, arquivos `0600`) apagada no fim, com sucesso ou
+  falha. Uma troca do arquivo instalado depois do passo 2 não muda o que é implantado. Pastas de cópia que sobraram de um receptor
+  morto são apagadas no começo do deploy seguinte (só esse nome, só os dois arquivos conhecidos). Do texto conferido também saem:
+  - as **origens de bind efetivas**: todo `source:` que, interpolado com o arquivo do host, é caminho absoluto, inclusive os derivados
+    `${GMN_DATA_ROOT}/audits`, `/link-audits`, `/evidence` e `/redis`. Em homologação, cada uma tem de ficar sob `--data-prefix` pelo
+    caminho real (link para fora, pasta ausente ou variável obrigatória sem valor ⇒ `E_DATA_PREFIX`). Um teste mantém a lista em
+    sincronia com o `stack.yml`;
+  - os **nomes interpolados** (`${NOME…}`, `$NOME`; `$$` é escape). O filho `docker stack …` recebe **só** essas variáveis do arquivo do
+    host, mais `GMN_IMAGE_TAG`, a lista e o `PATH` fixo. Nada além, como `GODEBUG` ou uma variável que a stack não usa, chega ao
+    `docker`.
+- **Passo 3:** lista instalada que existe mas não é arquivo regular, está ilegível ou fora do formato ⇒ `E_TRUST_LIST_TRANSITION` (como o
+  `BASE_UNREADABLE` do CI). As fixações novas (`newPins`) são aceitas no host: a prova do fecho é do CI. Stdin acima de 8 KiB ⇒
+  `E_INPUT_TOO_LARGE`. Os motivos de cada violação (`<id>:<MOTIVO>`) vão só ao log local.
+- **Passo 4, parser** (`host-vars.ts`). `$`, crase e barra invertida são recusados em **qualquer** valor, inclusive entre aspas simples, como
+  na conferência do runbook (H-08). `#` só comenta na coluna 0. Também recusam: linha só de espaços, espaço em volta do `=`, `export`,
+  comentário no fim da linha, caractere de controle (CR inclusive), BOM, UTF-8 inválido, arquivo acima de 64 KiB, nome repetido e os nomes
+  reservados `PATH`, `HOME`, `DOCKER_*` e `LD_*`, que mudariam o filho `docker` ou o daemon que ele alcança. Obrigatórias, além das do
+  passo 4: `NEXT_PUBLIC_SUPABASE_URL`, `GMN_HOST`, `GMN_NODE_HOSTNAME` e `GMN_OPERATOR_EMAILS` não vazias, e os seis `GMN_RAIZ_DADOS_*`
+  como caminho absoluto normalizado (a stack os exige com `:?`). `GMN_WORKER_REPLICAS` tem de ser de 0 a 99. Em homologação,
+  `GMN_DATA_ROOT` é obrigatória. "Sob o prefixo" aceita o próprio prefixo sem a barra (`GMN_DATA_ROOT=/srv/gmn-hml`, como no modelo do
+  H-08). Além do texto, o caminho **real** de cada pasta (e do prefixo) é conferido, então um link para fora, ou uma pasta que não
+  resolve, dá `E_DATA_PREFIX`. O detalhe do `E_HOST_CONFIG` só sai quando o nome é da lista fechada (`HOST_CONFIG_NAMES`, a mesma do
+  job). Linha sem nome reconhecível, ou com nome fora da lista, sai como `E_HOST_CONFIG` sem detalhe, que o job aceita e remonta igual
+  (`receiver-call.sh`). O log local leva o motivo e o
+  número da linha, nunca o valor.
+- **Passo 5:** as impressões são da **origem canônica** `https://<host em minúsculas>` (revisão do PR #70; a mesma regra do
+  `deploy/hostinger/supabase-fp12.sh`, que o job usa e o responsável usa para o `--forbid-supabase`). `NEXT_PUBLIC_SUPABASE_URL` fora
+  dessa forma (caminho, outra porta, `http`, usuário, consulta, fragmento) ⇒ `E_HOST_CONFIG NEXT_PUBLIC_SUPABASE_URL`. Em homologação,
+  `E_HML_PRODUCTION_PROJECT` vem antes e vale tanto para a impressão do arquivo do host quanto para a declarada pelo CI.
+- **Passo 6:** o script é executado direto (`execFile`, sem shell), com as seis pastas na ordem dele e só o `PATH`. Script ausente ⇒
+  `E_HOST_FOLDERS`.
+- **Passos 7 e 8:** o Worker ausente ("no such service" no `docker service inspect`) pula a conferência.
+  - **Listagem do pacote** (revisão do PR #70, item 8), antes do espaço livre e de qualquer carga: `tar -tvzf <pacote>` em fluxo, com
+    teto de saída. Valem só arquivos regulares e pastas com os nomes que o `docker save` grava nos dois armazenamentos (`manifest.json`,
+    `index.json`, `oci-layout`, `repositories`, `blobs/sha256/<64 hex>`, `<64 hex>.json`, `<64 hex>/{VERSION,json,layer.tar}` e as pastas
+    `blobs/`, `blobs/sha256/`, `<64 hex>/`).
+  - Caminho absoluto, `..`, link simbólico ou físico, dispositivo, FIFO, nome inesperado, membro repetido, linha fora do formato ou total
+    descompactado acima de 8 GiB ⇒ `E_BUNDLE_TAGS`.
+  - **Espaço livre:** a raiz do Docker vem de `docker info --format '{{json .DockerRootDir}}'`, e o espaço livre do `statfs` dela
+    (`bavail × bsize`) tem de ser ≥ max(10 GiB, 2 × o total **descompactado** da listagem).
+- **Passo 9:** `gzip -t <pacote>` e `tar -xzOf <pacote> manifest.json` (o `manifest.json` vai para o stdout, com teto de 1 MiB, e nada é
+  extraído para o disco). Qualquer falha nesses dois ou no esquema do manifesto ⇒ `E_BUNDLE_TAGS`, antes de qualquer `docker load`.
+  O `Config` de cada imagem tem de estar num dos dois caminhos (`^blobs/sha256/[0-9a-f]{64}$` do formato OCI, `^[0-9a-f]{64}\.json$` do
+  antigo), e cada `Layers` em `^blobs/sha256/[0-9a-f]{64}$` ou `^[0-9a-f]{64}/layer\.tar$`; `Config` e camadas têm de ser arquivos da
+  listagem. Depois do load, `docker image inspect --format '{{json .}}'` de cada tag confere a imagem nos **dois** armazenamentos do Docker
+  (revisão do PR #70: o Docker Engine 29 liga o *containerd image store* nas instalações novas, e a VPS pode usá-lo):
+  - **clássico:** o id é `sha256:<digest do Config>`, e basta isso;
+  - **containerd** (o id é o digest do manifesto, não o do `Config`; vale para todo id diferente do digest do `Config`): os `RepoTags`
+    são exatamente a tag esperada; o `Config` é lido do pacote pelo mesmo `tar -xzOf` (teto de 4 MiB, caminho do `manifest.json`) e tem
+    de ter o sha256 do próprio nome; os `RootFS.Layers` (diff_ids) da imagem carregada são exatamente os `rootfs.diff_ids` desse
+    `Config`, na mesma ordem.
+
+  Qualquer divergência ⇒ `E_DOCKER_LOAD`. O log local registra qual conferência valeu (`config-digest` ou `diff-ids`). No containerd,
+  o id do `OK DEPLOYED` é o que o Docker mostra (o digest do manifesto). **Limite declarado:** no containerd, a conferência pelos
+  diff_ids prova as camadas (o sistema de arquivos) e a tag, não os campos de execução do `Config` carregado (ambiente, comando). Isso
+  fica coberto pelo hash do pacote inteiro (passo 1, o mesmo que o job calculou) e pelo PD-06.
+- **Passos 10 e 11:** o ambiente dos dois `docker stack …` é o do passo 2 acima (as variáveis interpoladas, `GMN_IMAGE_TAG`, a lista e o
+  `PATH`), e os `-c` são as cópias privadas; as consultas ao Docker recebem só o `PATH`. O stdout do `docker stack config` não vai nem ao log local (tem o ambiente renderizado, com e-mails de
+  operador); o stderr vai.
+- **Passo 12** (revisão do PR #70, item 4): antes do `stack deploy`, o receptor fotografa o web: a especificação inteira e o
+  `UpdateStatus.StartedAt`.
+  - Se o deploy **mudou** a especificação, só vale a atualização começada por ele (outro `StartedAt`) num estado **terminal**
+    `completed`. `updating` (mesmo com as tarefas já na imagem nova), `paused` ou um `UpdateStatus` anterior (`updating`, `completed`,
+    `rollback_completed`) nunca valem: espera até o prazo.
+  - Uma atualização nova em `rollback_*` ⇒ `E_ROLLED_BACK`.
+  - Especificação igual (o mesmo commit de novo) ou serviço criado agora: não há atualização a esperar, e valem as tarefas.
+  - "As tarefas rodam a imagem nova" é a identidade **efetiva**: toda tarefa `desired-state=running` está em `Running` com a tag nova, e
+    o id da imagem do contêiner dela (`docker inspect --type task` ⇒ id do contêiner ⇒ `docker inspect --type container` ⇒ `.Image`) é o
+    id carregado no passo 9, não só a tag.
+  - Consulta a cada 5 s, a primeira 5 s depois do deploy. Falha passageira de consulta só vai ao log.
+- **Passo 13:** `docker service ls --filter label=com.docker.stack.namespace=<stack>` para as réplicas (`N/N`) e `docker service inspect`
+  para o resto. PD-04 olha `Spec.EndpointSpec.Ports` e `Endpoint.Ports` de **todos** os serviços da stack. PD-05 exige exatamente
+  `bind:/app/.data/audits` e `tmpfs:/tmp`. PD-06 aceita a tag com ou sem `@sha256:…` na especificação e confere a identidade efetiva: toda tarefa em execução do web (pelo menos
+  uma) e, com o Worker ligado, do Worker roda um contêiner do id carregado no passo 9. PD-07 exige uma única entrada, igual à lista.
+  PD-08 exige, em homologação, exatamente `GMN_LINK_AUDIT_HOMOLOGATION=1`. Consulta que falha reprova a verificação que dependia dela.
+- **Lista pendente** (revisão do PR #70, item 5): depois do `docker stack config` e logo antes do `docker stack deploy`, a lista nova é
+  gravada de forma atômica em `<estado>/trust-keys.pending` (temporário + `fsync` + `rename` + `fsync` da pasta, `0644`). A partir daí o
+  serviço pode rodar com ela, mesmo que o deploy termine em `E_ROLLED_BACK`, `E_CONVERGE_TIMEOUT` ou `E_POSTDEPLOY_CHECK`, que deixam a
+  pendente e a instalada anterior intactas. Se existe uma pendente no começo de um deploy, a lista nova tem de ser transição válida (§5.3)
+  a partir da instalada **e** da pendente. Pendente que não é arquivo regular, ilegível ou fora do formato ⇒ `E_TRUST_LIST_TRANSITION`.
+  Assim nem uma execução aprovada antiga nem a chave de deploy desfazem uma revogação que já pode estar no serviço. O receptor de
+  manifestos (P9.3b) continua lendo **só** a instalada.
+- **Passo 14:** só depois do PD-07, a pendente é **promovida** a `trust-keys.txt` (`rename` + `fsync` da pasta). Se ela não tem mais os
+  bytes recebidos, a instalada é gravada direto, de forma atômica. A instalada tem `fchmod 0644` explícito, para o `umask` não tirar a
+  leitura do receptor de manifestos. Falha ao
+  instalar ⇒ `E_INTERNAL`, com o serviço já atualizado: o responsável segue o `PLANO-DE-ROLLBACK.md`. Falha ao apagar o pacote só vai
+  ao log.
+- **Saída e sinais:** a entrada escreve exatamente uma linha e sai. Exceção não tratada ⇒ `E_INTERNAL`. stdout ou stderr fechado ⇒ saída
+  29, sem texto. `SIGHUP` (job cancelado, ssh caído) é ignorado: o `deploy` termina o que começou, com trava, lista e log coerentes. No
+  `upload`, o fim do stdin já recusa (`E_INPUT_TRUNCATED`).
+- **Log local:** uma linha JSON por evento (hora, pedido, evento, campos públicos, código). Ele guarda o stderr dos programas e o stdout
+  que não tem ambiente (`docker load`, `stack deploy`, script de pastas), com teto de 4 KiB, e o sha256 da lista instalada (conferência
+  do livro, §5.3 item 3). Nunca leva valor do arquivo de variáveis.
+- **Artefato:** `gmn-deploy-receiver.cjs` reaproveita as opções fixas do esbuild e as guardas de saída do `sign`
+  (`artifactBuildOptions`, `checkMetafileImports`, `checkArtifactText`, agora com a lista de módulos como parâmetro, e o hash do `sign`
+  não muda). A lista literal do receptor é `node:child_process`, `node:crypto`, `node:fs`, `node:fs/promises` e `node:path`. O zod roda
+  sem JIT (`scripts/receiver-artifact-zod.ts`, importado primeiro). `receivers.sha256` tem uma linha por artefato e depois uma por
+  **modelo de wrapper** (revisão do PR #70), na ordem de `VERSIONED_FILE_NAMES`; `#` é comentário, ignorado também pelo
+  `sha256sum -c --strict`. O build copia os modelos para a pasta de saída. Com isso, o `sha256sum -c` do clone limpo e o da VPS
+  conferem os bytes do modelo antes de ele ser preenchido, numa pasta privada (`mktemp -d`), e instalado como root. O sha256 do wrapper
+  instalado também é registrado (runbook H-04). A P9.3b acrescenta as linhas do receptor de manifestos e do modelo do wrapper dele.
+
 ### 5.7 Receptor de manifestos (CE-3)
 
 **Instalação.** Artefato Node único `gmn-seal-receiver.cjs`, mesmo processo do §5.6 (hash em `deploy/hostinger/receivers.sha256`).
@@ -649,13 +787,13 @@ fecho ou o **nome** de uma variável. Nunca conteúdo de arquivo, caminho real, 
 | 37 | `E_POSTWRITE_VERIFY` | manifestos | releitura não autentica |
 | 50 | `E_NOT_STAGED` | deploy | `deploy` sem `upload` correspondente |
 | 51 | `E_STACK_FILE_MISMATCH` | deploy | stack ou sobreposição do host ≠ commit |
-| 52 | `E_HOST_CONFIG <NOME>` | deploy | arquivo de variáveis fora das regras |
+| 52 | `E_HOST_CONFIG[ <NOME>]` | deploy | arquivo de variáveis fora das regras (o nome só quando é da lista fechada; sem nome reconhecível, sem detalhe) |
 | 53 | `E_HOST_FOLDERS` | deploy | `verificar-pastas-fase6.sh` recusou |
 | 54 | `E_SUPABASE_MISMATCH` | deploy | imagem e ambiente de projetos diferentes |
 | 55 | `E_HML_PRODUCTION_PROJECT` | deploy | homologação apontando para o projeto de produção |
 | 56 | `E_WORKER_REPLICAS_DRIFT` | deploy | réplicas do Worker ≠ arquivo do host |
 | 57 | `E_DISK_LOW` | deploy | pouco espaço na raiz do Docker |
-| 58 | `E_BUNDLE_TAGS` | deploy | pacote com outras imagens ou tags |
+| 58 | `E_BUNDLE_TAGS` | deploy | pacote fora do formato: membros (listagem), imagens ou tags |
 | 59 | `E_DOCKER_LOAD` | deploy | `docker load` falhou ou ids não conferem |
 | 60 | `E_STACK_CONFIG` | deploy | `docker stack config` recusou |
 | 61 | `E_STACK_DEPLOY` | deploy | `docker stack deploy` falhou |
@@ -836,27 +974,27 @@ relatório indicado.
 
 **Receptor de deploy (P9.3a), com `docker`, `tar` e `gzip` falsos no `PATH` (sem rede, sem Docker real):**
 
-- [ ] **P9-D01** gramática: cada campo fora do padrão, `overlay` presente em produção ou ausente em homologação ⇒ `E_COMMAND`.
-- [ ] **P9-D02** `upload` com bytes a mais, a menos ou hash diferente ⇒ código fixo, e o arquivo parcial apagado.
-- [ ] **P9-D03** stack ou sobreposição do host com outro hash ⇒ `E_STACK_FILE_MISMATCH`, sem chamar `docker`.
-- [ ] **P9-D04** arquivo de variáveis com variável proibida (cada uma do passo 4), linha fora do parser ou, em homologação, pasta
-  fora do prefixo ⇒ `E_HOST_CONFIG <NOME>` / `E_DATA_PREFIX`; o valor nunca aparece na saída.
-- [ ] **P9-D05** impressão do Supabase diferente ⇒ `E_SUPABASE_MISMATCH`; homologação com a impressão de produção ⇒
-  `E_HML_PRODUCTION_PROJECT`.
-- [ ] **P9-D06** réplicas do Worker diferentes do arquivo ⇒ `E_WORKER_REPLICAS_DRIFT`, sem `docker stack deploy`.
-- [ ] **P9-D07** pacote com tag de outro ambiente, de outro commit, imagem a mais ou a menos ⇒ `E_BUNDLE_TAGS`, sem
-  `docker load`.
-- [ ] **P9-D08** argv do `docker stack deploy` exato: `--resolve-image never`, os `-c` do ambiente, o nome da stack do
-  wrapper, sem `--prune`; `GMN_IMAGE_TAG` e a lista no ambiente do filho, não na linha de comando.
-- [ ] **P9-D09** convergência em `rollback_completed` ⇒ `E_ROLLED_BACK`, e a lista **não** é instalada.
-- [ ] **P9-D10** cada PD-01 a PD-08 reprovado ⇒ `E_POSTDEPLOY_CHECK <PD-xx>`.
-- [ ] **P9-D11** sucesso ⇒ uma linha `OK DEPLOYED …` com o sha256 da lista **instalada** (relido do arquivo), igual ao recebido;
-  pacote apagado.
-- [ ] **P9-D12** espaço insuficiente ⇒ `E_DISK_LOW`; pastas recusadas pelo script ⇒ `E_HOST_FOLDERS`.
-- [ ] **P9-D13** nenhuma saída do `docker` chega ao stdout/stderr do receptor (teste com saída falsa contendo um caminho).
-- [ ] **P9-D14** contra a lista instalada: `revoked` → outro estado, `retired` → `active`, hash fixado trocado ou tirado, chave ou
+- [x] **P9-D01** gramática: cada campo fora do padrão, `overlay` presente em produção ou ausente em homologação ⇒ `E_COMMAND`. Teste: `tests/deploy-receiver-grammar.test.ts` (P9.3a).
+- [x] **P9-D02** `upload` com bytes a mais, a menos ou hash diferente ⇒ código fixo, e o arquivo parcial apagado. Teste: `tests/deploy-receiver.test.ts` e `tests/deploy-receiver-artifact.test.ts` (P9.3a).
+- [x] **P9-D03** stack ou sobreposição do host com outro hash ⇒ `E_STACK_FILE_MISMATCH`, sem chamar `docker`. Teste: `tests/deploy-receiver.test.ts` (P9.3a).
+- [x] **P9-D04** arquivo de variáveis com variável proibida (cada uma do passo 4), linha fora do parser ou, em homologação, pasta
+  fora do prefixo ⇒ `E_HOST_CONFIG <NOME>` / `E_DATA_PREFIX`; o valor nunca aparece na saída. Teste: `tests/deploy-receiver-host-vars.test.ts` e `tests/deploy-receiver.test.ts` (P9.3a).
+- [x] **P9-D05** impressão do Supabase diferente ⇒ `E_SUPABASE_MISMATCH`; homologação com a impressão de produção ⇒
+  `E_HML_PRODUCTION_PROJECT`. Teste: `tests/deploy-receiver.test.ts` (P9.3a).
+- [x] **P9-D06** réplicas do Worker diferentes do arquivo ⇒ `E_WORKER_REPLICAS_DRIFT`, sem `docker stack deploy`. Teste: `tests/deploy-receiver.test.ts` (P9.3a).
+- [x] **P9-D07** pacote com tag de outro ambiente, de outro commit, imagem a mais ou a menos ⇒ `E_BUNDLE_TAGS`, sem
+  `docker load`. Teste: `tests/deploy-receiver.test.ts` (P9.3a).
+- [x] **P9-D08** argv do `docker stack deploy` exato: `--resolve-image never`, os `-c` do ambiente, o nome da stack do
+  wrapper, sem `--prune`; `GMN_IMAGE_TAG` e a lista no ambiente do filho, não na linha de comando. Teste: `tests/deploy-receiver.test.ts` (P9.3a).
+- [x] **P9-D09** convergência em `rollback_completed` ⇒ `E_ROLLED_BACK`, e a lista **não** é instalada. Teste: `tests/deploy-receiver.test.ts` (P9.3a).
+- [x] **P9-D10** cada PD-01 a PD-08 reprovado ⇒ `E_POSTDEPLOY_CHECK <PD-xx>`. Teste: `tests/deploy-receiver.test.ts` (P9.3a).
+- [x] **P9-D11** sucesso ⇒ uma linha `OK DEPLOYED …` com o sha256 da lista **instalada** (relido do arquivo), igual ao recebido;
+  pacote apagado. Teste: `tests/deploy-receiver.test.ts` (P9.3a).
+- [x] **P9-D12** espaço insuficiente ⇒ `E_DISK_LOW`; pastas recusadas pelo script ⇒ `E_HOST_FOLDERS`. Teste: `tests/deploy-receiver.test.ts` (P9.3a).
+- [x] **P9-D13** nenhuma saída do `docker` chega ao stdout/stderr do receptor (teste com saída falsa contendo um caminho). Teste: `tests/deploy-receiver.test.ts` (todas as execuções) e `tests/deploy-receiver-artifact.test.ts` (processo real) (P9.3a).
+- [x] **P9-D14** contra a lista instalada: `revoked` → outro estado, `retired` → `active`, hash fixado trocado ou tirado, chave ou
   id trocados, item removido (inclusive voltar à lista vazia) ⇒ `E_TRUST_LIST_TRANSITION`, sem `docker load` e sem instalar.
-  Arquivo instalado ausente ou vazio ⇒ qualquer lista válida passa. Lista igual à instalada passa.
+  Arquivo instalado ausente ou vazio ⇒ qualquer lista válida passa. Lista igual à instalada passa. Teste: `tests/deploy-receiver.test.ts` (P9.3a).
 
 **Workflows, teste estático (P9.4 e P9.5):**
 
