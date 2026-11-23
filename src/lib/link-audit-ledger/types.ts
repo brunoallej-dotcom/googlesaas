@@ -25,6 +25,14 @@ export const LEDGER_AUDIT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{7,63}$/;
 /** Pontos de verificação automáticos: a cada N registros e na primeira escrita depois de uma rotação de chave. */
 export const CHECKPOINT_EVERY = 64;
 /**
+ * `L_max` (spec `link-audit-production-gates.md` §5.1.4 regra 3, §5.1.7; D-G0-4): o maior número de registros que o protocolo grava depois da última publicação aceita
+ * pela guarda, com TODAS as publicações de melhor esforço falhando — CHECKPOINT automático + INTENT + fecho da decisão + fecho do resultado aberto + RECEIPT_REISSUED.
+ * Atraso ≤ `L_max` ⇒ `BEHIND`; acima ⇒ `HISTORY_UNRESOLVED` (`GUARD_LAGGING`). Só muda com registro na spec (contagem nova e motivo); um teste enumera os fluxos e o trava.
+ */
+export const GUARD_MAX_LAG = 5;
+/** `T` (D-G0-4): `BEHIND` há mais que isto desde o primeiro registro ainda não publicado ⇒ alarme (`GUARD_BEHIND_PROLONGED`). */
+export const GUARD_BEHIND_ALARM_MS = 15 * 60_000;
+/**
  * Teto de resultados por auditoria e nome do recibo de resultado (`aNNNN.json`): DUPLICADOS de `MAX_RUNS` e `runAnchorFileName` dos resultados
  * (`link-audit-scoring-runs/results-types.ts`), porque o livro não importa os resultados (lista fechada de imports). Um teste confere a igualdade.
  */
