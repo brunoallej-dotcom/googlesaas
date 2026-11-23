@@ -1,4 +1,4 @@
 # SHA-256 dos artefatos dos receptores do host (spec docs/specs/ci-deploy-and-seal-delivery.md §5.6 e §5.7), formato do sha256sum -c.
 # Refeito no mesmo PR que muda o fonte; conferido pelo job "receivers artifact (build, hash)" do ci.yml. Uma linha por artefato, na
 # ordem de RECEIVER_ARTIFACTS (scripts/build-receivers-artifact.ts). O receptor de manifestos (gmn-seal-receiver.cjs) entra na P9.3b.
-a9c2c8c938c3f88dccd1d6e7f4b50d921ed5edada5c15cc8af73f62ff45384cb  gmn-deploy-receiver.cjs
+b4c90881837ef049beceff1f7570f00b2f43c5c7522cf70680cced86c9d76a10  gmn-deploy-receiver.cjs

@@ -5,6 +5,16 @@ import test from 'node:test';
 import { registerCleanup } from './helpers/link-audit-evidence-fixtures';
 import {
   baseService,
+  CONFIG_DIGEST_WEB,
+  CONFIG_DIGEST_WORKER,
+  CONTAINERD_ID_WEB,
+  CONTAINERD_ID_WORKER,
+  containerdImages,
+  WEB_CONFIG,
+  WEB_CONFIG_PATH,
+  WEB_DIFF_IDS,
+  WORKER_CONFIG_PATH,
+  type LoadedImage,
   deployCommand,
   DOCKER_NOISE,
   FakeStdin,
@@ -358,7 +368,8 @@ test('P9-D07 pacote com tag de outro ambiente, de outro commit, imagem a mais ou
     ['tag duplicada', manifestFor(tag, { worker: `gmn-web:${tag}` })],
     ['duas tags numa imagem', JSON.stringify([{ Config: `${'c'.repeat(64)}.json`, RepoTags: [`gmn-web:${tag}`, 'gmn-web:latest'], Layers: [] }, { Config: `${'d'.repeat(64)}.json`, RepoTags: [`gmn-worker:${tag}`], Layers: [] }])],
     ['sem tag', JSON.stringify([{ Config: `${'c'.repeat(64)}.json`, RepoTags: null, Layers: [] }, { Config: `${'d'.repeat(64)}.json`, RepoTags: [`gmn-worker:${tag}`], Layers: [] }])],
-    ['Config fora do formato', manifestFor(tag).replace(`blobs/sha256/${'c'.repeat(64)}`, '../../etc/passwd')],
+    ['Config fora do formato', manifestFor(tag).replace(WEB_CONFIG_PATH, '../../etc/passwd')],
+    ['Config com caminho de outro formato', manifestFor(tag).replace(WEB_CONFIG_PATH, `sha256/${CONFIG_DIGEST_WEB}`)],
     ['não JSON', `${manifestFor(tag)}${manifestFor(tag)}`],
   ];
   for (const [label, manifest] of manifests) {
@@ -378,19 +389,77 @@ test('P9-D07 pacote com tag de outro ambiente, de outro commit, imagem a mais ou
   }
 });
 
-test('passo 9: docker load que falha, ou ids carregados ≠ os do manifesto ⇒ E_DOCKER_LOAD, sem stack deploy nem lista instalada', async () => {
+test('passo 9: docker load que falha, imagem que não aparece depois do load, ou id ≠ digest do Config com camadas diferentes ⇒ E_DOCKER_LOAD, sem stack deploy nem lista instalada', async () => {
   const failed = world();
   failed.scenario.loadOk = false;
   const r = await deploy(failed);
   refusedWith(r, 'ERRO E_DOCKER_LOAD');
   assert.equal(r.outcome.exitCode, 59);
   assert.ok(!stackDeployed(r));
+  const missing = world();
+  missing.scenario.loadedImages.delete(`gmn-web:producao-${SHA40}`);
+  refusedWith(await deploy(missing), 'ERRO E_DOCKER_LOAD');
   const otherId = world();
-  otherId.scenario.loadedIds.set(`gmn-worker:producao-${SHA40}`, `sha256:${'9'.repeat(64)}`);
+  otherId.scenario.loadedImages.set(`gmn-worker:producao-${SHA40}`, { Id: `sha256:${'9'.repeat(64)}`, RepoTags: [`gmn-worker:producao-${SHA40}`], Layers: [`sha256:${'8'.repeat(64)}`] });
   const wrong = await deploy(otherId);
   refusedWith(wrong, 'ERRO E_DOCKER_LOAD');
   assert.ok(!stackDeployed(wrong));
   assert.ok(!fs.existsSync(installedPath(otherId)));
+});
+
+const tarMembers = (r: Run): string[] => r.runner.calls.filter((call) => call.program === 'tar').map((call) => call.args[2] as string);
+
+test('passo 9, armazenamento CLÁSSICO: id da tag = sha256 do Config ⇒ aceito sem ler o Config do pacote (só o manifest.json)', async () => {
+  const w = world();
+  const r = await deploy(w);
+  assert.match(r.outcome.stdout ?? String(r.outcome.stderr), new RegExp(`^OK DEPLOYED producao-${SHA40} sha256:${CONFIG_DIGEST_WEB} sha256:${CONFIG_DIGEST_WORKER} `));
+  assert.deepEqual(tarMembers(r), ['manifest.json']);
+  assert.ok(r.log.entries.some((entry) => entry.event === 'bundle.loaded' && entry.fields.webVerification === 'config-digest' && entry.fields.workerVerification === 'config-digest'));
+});
+
+test('passo 9, armazenamento CONTAINERD (id = digest do manifesto): tag exata, Config do pacote íntegro e diff_ids iguais ⇒ aceito, e o OK DEPLOYED leva os ids do containerd', async () => {
+  for (const env of ['producao', 'homologacao'] as const) {
+    const w = world({ env });
+    w.scenario.loadedImages = containerdImages(`${env}-${SHA40}`);
+    const r = await deploy(w);
+    assert.equal(r.outcome.exitCode, 0, String(r.outcome.stderr));
+    assert.match(r.outcome.stdout ?? '', new RegExp(`^OK DEPLOYED ${env}-${SHA40} ${CONTAINERD_ID_WEB} ${CONTAINERD_ID_WORKER} `));
+    assert.deepEqual(tarMembers(r), ['manifest.json', WEB_CONFIG_PATH, WORKER_CONFIG_PATH], 'o Config de cada imagem lido do pacote pelo caminho do manifesto');
+    for (const call of r.runner.calls.filter((item) => item.program === 'tar')) assert.equal(call.args[0], '-xzOf', 'sempre para o stdout, nada extraído');
+    assert.ok(r.log.entries.some((entry) => entry.event === 'bundle.loaded' && entry.fields.webVerification === 'diff-ids' && entry.fields.workerVerification === 'diff-ids'));
+  }
+});
+
+test('passo 9, armazenamento CONTAINERD, divergências ⇒ E_DOCKER_LOAD (sem stack deploy, lista não instalada): camadas a mais, a menos ou em outra ordem; tag a mais, ausente ou outra; Config do pacote alterado, ausente ou sem rootfs', async () => {
+  const tag = `producao-${SHA40}`;
+  const web = `gmn-web:${tag}`;
+  type Breaker = (w: World) => void;
+  const setWeb = (w: World, over: Partial<LoadedImage>): void => void w.scenario.loadedImages.set(web, { ...(w.scenario.loadedImages.get(web) as LoadedImage), ...over });
+  const cases: ReadonlyArray<readonly [string, Breaker]> = [
+    ['camada a mais', (w) => setWeb(w, { Layers: [...WEB_DIFF_IDS, `sha256:${'4'.repeat(64)}`] })],
+    ['camada a menos', (w) => setWeb(w, { Layers: WEB_DIFF_IDS.slice(0, 1) })],
+    ['camadas em outra ordem', (w) => setWeb(w, { Layers: [...WEB_DIFF_IDS].reverse() })],
+    ['sem camadas', (w) => setWeb(w, { Layers: [] })],
+    ['tag a mais', (w) => setWeb(w, { RepoTags: [web, 'gmn-web:latest'] })],
+    ['sem tag', (w) => setWeb(w, { RepoTags: null })],
+    ['outra tag', (w) => setWeb(w, { RepoTags: [`gmn-web:producao-${OTHER_SHA40}`] })],
+    ['Config do pacote com outros bytes', (w) => void w.scenario.configs.set(WEB_CONFIG_PATH, Buffer.concat([WEB_CONFIG, Buffer.from(' ')]))],
+    ['Config ausente do pacote', (w) => void w.scenario.configs.delete(WORKER_CONFIG_PATH)],
+    ['Config sem rootfs', (w) => {
+      const bare = Buffer.from(JSON.stringify({ architecture: 'amd64', os: 'linux' }));
+      w.scenario.manifest = manifestFor(tag).replace(WEB_CONFIG_PATH, `blobs/sha256/${sha256(bare)}`);
+      w.scenario.configs.set(`blobs/sha256/${sha256(bare)}`, bare);
+    }],
+  ];
+  for (const [label, breaker] of cases) {
+    const w = world();
+    w.scenario.loadedImages = containerdImages(tag);
+    breaker(w);
+    const r = await deploy(w);
+    refusedWith(r, 'ERRO E_DOCKER_LOAD');
+    assert.ok(!stackDeployed(r), `${label}: sem stack deploy`);
+    assert.ok(!fs.existsSync(installedPath(w)), `${label}: lista não instalada`);
+  }
 });
 
 /* ===================================================================================================================== passos 10 a 12 */

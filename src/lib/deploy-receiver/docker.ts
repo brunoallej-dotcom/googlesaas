@@ -110,10 +110,16 @@ export async function dockerRootDir(deps: Pick<ReceiverDeps, 'runner' | 'log' | 
   return root;
 }
 
-const ImageIdSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
+/** O que o receptor usa do `docker image inspect` (o resto, como o ambiente da imagem, nem vai ao log). */
+const ImageInfoSchema = z.object({
+  Id: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  RepoTags: z.array(z.string()).nullable().optional(),
+  RootFS: z.object({ Layers: z.array(z.string()).nullable().optional() }).nullable().optional(),
+});
+export type ImageInfo = z.infer<typeof ImageInfoSchema>;
 
-/** `docker image inspect --format '{{.Id}}' <ref>`: o id (`sha256:<64 hex>`). */
-export async function imageId(ref: string, deps: Pick<ReceiverDeps, 'runner' | 'log' | 'childPath'>): Promise<string> {
-  const raw = await dockerQuery(['image', 'inspect', '--format', '{{json .Id}}', ref], `docker image inspect ${ref}`, 'E_DOCKER_LOAD', deps);
-  return parseJsonWith(raw.trim(), ImageIdSchema, 'E_DOCKER_LOAD', 'docker image inspect');
+/** `docker image inspect --format '{{json .}}' <ref>`: id (`sha256:<64 hex>`), tags e diff_ids da imagem carregada. */
+export async function imageInfo(ref: string, deps: Pick<ReceiverDeps, 'runner' | 'log' | 'childPath'>): Promise<ImageInfo> {
+  const raw = await dockerQuery(['image', 'inspect', '--format', '{{json .}}', ref], `docker image inspect ${ref}`, 'E_DOCKER_LOAD', deps);
+  return parseJsonWith(raw.trim(), ImageInfoSchema, 'E_DOCKER_LOAD', 'docker image inspect');
 }

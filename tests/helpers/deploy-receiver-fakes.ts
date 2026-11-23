@@ -105,11 +105,13 @@ export interface DockerScenario {
   rootDir: string;
   /** Saída do `tar -xzOf … manifest.json` (texto cru). */
   manifest: string;
+  /** Os `Config` dentro do pacote (caminho no tar → bytes), lidos pelo `tar -xzOf` no armazenamento containerd. */
+  configs: Map<string, Buffer>;
   gzipOk: boolean;
   tarOk: boolean;
   loadOk: boolean;
-  /** Ids que o `docker image inspect` devolve depois do load (ref → id). */
-  loadedIds: Map<string, string>;
+  /** O que o `docker image inspect` devolve depois do load (ref → id, tags e diff_ids). */
+  loadedImages: Map<string, LoadedImage>;
   stackConfigOk: boolean;
   stackDeployOk: boolean;
   foldersOk: boolean;
@@ -121,13 +123,49 @@ export interface DockerScenario {
   serviceLsFails?: boolean;
 }
 
-export const CONFIG_DIGEST_WEB = 'c'.repeat(64);
-export const CONFIG_DIGEST_WORKER = 'd'.repeat(64);
+export interface LoadedImage {
+  Id: string;
+  RepoTags: string[] | null;
+  Layers: string[];
+}
+
+/** Os `Config` das duas imagens (como o `docker save` grava): os diff_ids e um rótulo; o digest é o sha256 dos bytes. */
+const imageConfig = (role: string, diffIds: readonly string[]): Buffer => Buffer.from(JSON.stringify({ architecture: 'amd64', os: 'linux', config: { Labels: { papel: role } }, rootfs: { type: 'layers', diff_ids: diffIds } }));
+export const WEB_DIFF_IDS = [`sha256:${'1'.repeat(64)}`, `sha256:${'3'.repeat(64)}`];
+export const WORKER_DIFF_IDS = [`sha256:${'2'.repeat(64)}`];
+export const WEB_CONFIG = imageConfig('web', WEB_DIFF_IDS);
+export const WORKER_CONFIG = imageConfig('worker', WORKER_DIFF_IDS);
+export const CONFIG_DIGEST_WEB = sha256(WEB_CONFIG);
+export const CONFIG_DIGEST_WORKER = sha256(WORKER_CONFIG);
+/** Formato OCI para o web, antigo para o Worker (os dois que o receptor aceita). */
+export const WEB_CONFIG_PATH = `blobs/sha256/${CONFIG_DIGEST_WEB}`;
+export const WORKER_CONFIG_PATH = `${CONFIG_DIGEST_WORKER}.json`;
+/** Ids do armazenamento containerd: o digest do MANIFESTO, não o do Config. */
+export const CONTAINERD_ID_WEB = `sha256:${'e'.repeat(64)}`;
+export const CONTAINERD_ID_WORKER = `sha256:${'f'.repeat(64)}`;
+
+/** Imagens carregadas no armazenamento clássico (id = digest do Config). */
+export const classicImages = (tag: string): Map<string, LoadedImage> =>
+  new Map([
+    [`gmn-web:${tag}`, { Id: `sha256:${CONFIG_DIGEST_WEB}`, RepoTags: [`gmn-web:${tag}`], Layers: [...WEB_DIFF_IDS] }],
+    [`gmn-worker:${tag}`, { Id: `sha256:${CONFIG_DIGEST_WORKER}`, RepoTags: [`gmn-worker:${tag}`], Layers: [...WORKER_DIFF_IDS] }],
+  ]);
+/** Imagens carregadas no armazenamento containerd (id = digest do manifesto; a conferência é pelos diff_ids e pela tag). */
+export const containerdImages = (tag: string): Map<string, LoadedImage> =>
+  new Map([
+    [`gmn-web:${tag}`, { Id: CONTAINERD_ID_WEB, RepoTags: [`gmn-web:${tag}`], Layers: [...WEB_DIFF_IDS] }],
+    [`gmn-worker:${tag}`, { Id: CONTAINERD_ID_WORKER, RepoTags: [`gmn-worker:${tag}`], Layers: [...WORKER_DIFF_IDS] }],
+  ]);
+export const bundleConfigs = (): Map<string, Buffer> =>
+  new Map([
+    [WEB_CONFIG_PATH, WEB_CONFIG],
+    [WORKER_CONFIG_PATH, WORKER_CONFIG],
+  ]);
 
 export function manifestFor(tag: string, overrides: { web?: string; worker?: string; extra?: boolean; drop?: boolean } = {}): string {
   const entries = [
-    { Config: `blobs/sha256/${CONFIG_DIGEST_WEB}`, RepoTags: [overrides.web ?? `gmn-web:${tag}`], Layers: [`blobs/sha256/${'1'.repeat(64)}`] },
-    { Config: `${CONFIG_DIGEST_WORKER}.json`, RepoTags: [overrides.worker ?? `gmn-worker:${tag}`], Layers: [`blobs/sha256/${'2'.repeat(64)}`] },
+    { Config: WEB_CONFIG_PATH, RepoTags: [overrides.web ?? `gmn-web:${tag}`], Layers: [`blobs/sha256/${'1'.repeat(64)}`] },
+    { Config: WORKER_CONFIG_PATH, RepoTags: [overrides.worker ?? `gmn-worker:${tag}`], Layers: [`blobs/sha256/${'2'.repeat(64)}`] },
   ];
   if (overrides.extra) entries.push({ Config: `blobs/sha256/${'e'.repeat(64)}`, RepoTags: ['traefik:latest'], Layers: [] });
   if (overrides.drop) entries.pop();
@@ -160,7 +198,7 @@ export class FakeRunner implements ProcessRunner {
     this.calls.push(request);
     if (typeof request.program !== 'string') return this.scenario.foldersOk ? result(0, `ok ${DOCKER_NOISE}`) : result(1, '', `[verificar-pastas-fase6] RECUSADO: ${DOCKER_NOISE}`);
     if (request.program === 'gzip') return result(this.scenario.gzipOk ? 0 : 1, '', this.scenario.gzipOk ? '' : `gzip: ${DOCKER_NOISE}: invalid`);
-    if (request.program === 'tar') return this.scenario.tarOk ? result(0, this.scenario.manifest) : result(2, '', `tar: ${DOCKER_NOISE}`);
+    if (request.program === 'tar') return this.tar(request.args[2] as string);
     return this.docker(request);
   }
 
@@ -221,9 +259,18 @@ export class FakeRunner implements ProcessRunner {
     return result(0, `${lines.join('\n')}\n`);
   }
 
+  private tar(member: string): RunResult {
+    if (!this.scenario.tarOk) return result(2, '', `tar: ${DOCKER_NOISE}`);
+    if (member === 'manifest.json') return result(0, this.scenario.manifest);
+    const config = this.scenario.configs.get(member);
+    return config === undefined ? { ...result(2, '', `tar: ${member}: Not found in archive ${DOCKER_NOISE}`) } : { ...result(0), stdout: config };
+  }
+
   private imageInspect(ref: string): RunResult {
-    const id = this.scenario.loadedIds.get(ref);
-    return id === undefined ? result(1, '', `Error: No such image: ${ref}`) : result(0, `${JSON.stringify(id)}\n`);
+    const image = this.scenario.loadedImages.get(ref);
+    if (image === undefined) return result(1, '', `Error: No such image: ${ref}`);
+    // o ambiente da imagem (sentinela) nunca pode ir a lugar nenhum
+    return result(0, `${JSON.stringify({ Id: image.Id, RepoTags: image.RepoTags, RootFS: { Type: 'layers', Layers: image.Layers }, Config: { Env: [`NEXT_PUBLIC_SUPABASE_URL=${SENTINEL_URL}`] } })}\n`);
   }
 
   private deploy(request: RunRequest): RunResult {
@@ -332,10 +379,8 @@ export function world(options: WorldOptions = {}): World {
     gzipOk: true,
     tarOk: true,
     loadOk: true,
-    loadedIds: new Map([
-      [`gmn-web:${tag}`, `sha256:${CONFIG_DIGEST_WEB}`],
-      [`gmn-worker:${tag}`, `sha256:${CONFIG_DIGEST_WORKER}`],
-    ]),
+    configs: bundleConfigs(),
+    loadedImages: classicImages(tag),
     stackConfigOk: true,
     stackDeployOk: true,
     foldersOk: true,

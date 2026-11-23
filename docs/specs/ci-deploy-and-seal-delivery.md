@@ -614,10 +614,19 @@ chamador, prazo com `SIGKILL` e teto de saída). A lista de confiança usa o mó
   `docker info --format '{{json .DockerRootDir}}'`, e o espaço livre do `statfs` dela (`bavail × bsize`).
 - **Passo 9:** `gzip -t <pacote>` e `tar -xzOf <pacote> manifest.json` (o `manifest.json` vai para o stdout, com teto de 1 MiB, e nada é
   extraído para o disco). Qualquer falha nesses dois ou no esquema do manifesto ⇒ `E_BUNDLE_TAGS`, antes de qualquer `docker load`.
-  O id esperado de cada tag é `sha256:<digest do Config>` (`blobs/sha256/<hex>` do formato OCI ou `<hex>.json` do antigo), conferido
-  depois do load com `docker image inspect --format '{{json .Id}}'`. **Limite declarado:** com o *containerd image store* do Docker, o id
-  passa a ser o digest do manifesto, e a conferência recusa (`E_DOCKER_LOAD`). No primeiro deploy de homologação, o responsável
-  confirma o armazenamento clássico (junto do P9-H06/P9-H07).
+  O `Config` de cada imagem tem de estar num dos dois caminhos (`^blobs/sha256/[0-9a-f]{64}$` do formato OCI, `^[0-9a-f]{64}\.json$` do
+  antigo). Depois do load, `docker image inspect --format '{{json .}}'` de cada tag confere a imagem nos **dois** armazenamentos do Docker
+  (revisão do PR #70: o Docker Engine 29 liga o *containerd image store* nas instalações novas, e a VPS pode usá-lo):
+  - **clássico:** o id é `sha256:<digest do Config>`, e basta isso;
+  - **containerd** (o id é o digest do manifesto, não o do `Config`; vale para todo id diferente do digest do `Config`): os `RepoTags`
+    são exatamente a tag esperada; o `Config` é lido do pacote pelo mesmo `tar -xzOf` (teto de 4 MiB, caminho do `manifest.json`) e tem
+    de ter o sha256 do próprio nome; os `RootFS.Layers` (diff_ids) da imagem carregada são exatamente os `rootfs.diff_ids` desse
+    `Config`, na mesma ordem.
+
+  Qualquer divergência ⇒ `E_DOCKER_LOAD`. O log local registra qual conferência valeu (`config-digest` ou `diff-ids`). No containerd,
+  o id do `OK DEPLOYED` é o que o Docker mostra (o digest do manifesto). **Limite declarado:** no containerd, a conferência pelos
+  diff_ids prova as camadas (o sistema de arquivos) e a tag, não os campos de execução do `Config` carregado (ambiente, comando). Isso
+  fica coberto pelo hash do pacote inteiro (passo 1, o mesmo que o job calculou) e pelo PD-06.
 - **Passos 10 e 11:** o ambiente dos dois `docker stack …` é o arquivo do host, mais `GMN_IMAGE_TAG`, a lista e o `PATH`; as consultas
   ao Docker recebem só o `PATH`. O stdout do `docker stack config` não vai nem ao log local (tem o ambiente renderizado, com e-mails de
   operador); o stderr vai.

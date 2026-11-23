@@ -8,7 +8,7 @@ import { ArtifactBuildError, type BuiltArtifact } from '../scripts/build-sign-ar
 import { buildReceiverArtifact, DEPLOY_RECEIVER_FILE_NAME, DEPLOY_RECEIVER_NODE_MODULES, RECEIVER_ARTIFACTS, RECEIVERS_HASH_FILE, receiverHashLine, versionedReceiverHashes } from '../scripts/build-receivers-artifact';
 import { parseReceiverArgs } from '../src/lib/deploy-receiver/args';
 import { registerCleanup, tmpDir } from './helpers/link-audit-evidence-fixtures';
-import { CONFIG_DIGEST_WEB, CONFIG_DIGEST_WORKER, DOCKER_NOISE, fp12, manifestFor, SENTINEL_EMAIL, SENTINEL_HOST, SENTINEL_URL, SHA40, sha256, testKey, trustFile, trustLine, validHostVars } from './helpers/deploy-receiver-fakes';
+import { bundleConfigs, classicImages, containerdImages, DOCKER_NOISE, fp12, manifestFor, SENTINEL_EMAIL, SENTINEL_HOST, SENTINEL_URL, SHA40, sha256, testKey, trustFile, trustLine, validHostVars } from './helpers/deploy-receiver-fakes';
 
 /*
  * P9.3a — o ARTEFATO ÚNICO do receptor de deploy e o wrapper do comando forçado (spec §5.6 "Instalação"; P9-O04 depende deste hash):
@@ -86,12 +86,16 @@ test('P9.3a artefato (mutação): módulo fora da lista do receptor (node:os, no
 /* ===================================================================================================================== processo real */
 
 /** O docker, o tar e o gzip falsos: um único script Node (shebang com o node ABSOLUTO deste processo), despachado pelo nome. */
-function fakeTools(dir: string, rootDir: string, tag: string): { readonly bin: string; readonly calls: () => Array<{ tool: string; args: string[]; envKeys: string[] }> } {
+type ImageStore = 'classic' | 'containerd';
+
+function fakeTools(dir: string, rootDir: string, tag: string, store: ImageStore): { readonly bin: string; readonly calls: () => Array<{ tool: string; args: string[]; envKeys: string[] }> } {
   const bin = path.join(dir, 'bin');
   fs.mkdirSync(bin);
   const stateFile = path.join(dir, 'state.json');
   const callsFile = path.join(dir, 'calls.jsonl');
-  fs.writeFileSync(stateFile, JSON.stringify({ deployed: false, env: {}, manifest: manifestFor(tag), tag, rootDir, ids: { [`gmn-web:${tag}`]: `sha256:${CONFIG_DIGEST_WEB}`, [`gmn-worker:${tag}`]: `sha256:${CONFIG_DIGEST_WORKER}` } }));
+  const images = Object.fromEntries(store === 'classic' ? classicImages(tag) : containerdImages(tag));
+  const configs = Object.fromEntries([...bundleConfigs()].map(([member, bytes]) => [member, bytes.toString('base64')]));
+  fs.writeFileSync(stateFile, JSON.stringify({ deployed: false, env: {}, manifest: manifestFor(tag), tag, rootDir, images, configs }));
   const source = `#!${process.execPath}
 'use strict';
 const fs = require('fs');
@@ -112,10 +116,19 @@ const service = (name) => {
 };
 const names = ['web', 'worker', 'redis'].map((kind) => state.stack + '_gmn-' + kind);
 if (tool === 'gzip') done(0, '', '');
-if (tool === 'tar') done(0, state.manifest, '');
+if (tool === 'tar') {
+  const member = args[2];
+  if (member === 'manifest.json') done(0, state.manifest, '');
+  if (state.configs[member]) { process.stdout.write(Buffer.from(state.configs[member], 'base64')); process.exit(0); }
+  done(2, '', 'tar: ' + member + ': Not found in archive ' + noise + '\\n');
+}
 const [a, b] = args;
 if (a === 'info') done(0, JSON.stringify(state.rootDir) + '\\n', '');
-if (a === 'image' && b === 'inspect') { const id = state.ids[args[args.length - 1]]; id ? done(0, JSON.stringify(id) + '\\n', '') : done(1, '', 'No such image ' + noise); }
+if (a === 'image' && b === 'inspect') {
+  const image = state.images[args[args.length - 1]];
+  if (!image) done(1, '', 'No such image ' + noise);
+  done(0, JSON.stringify({ Id: image.Id, RepoTags: image.RepoTags, RootFS: { Type: 'layers', Layers: image.Layers }, Config: { Env: ['NEXT_PUBLIC_SUPABASE_URL=' + ${JSON.stringify(SENTINEL_URL)}] } }) + '\\n', '');
+}
 if (a === 'load') done(0, 'Loaded image: ' + noise + '\\n', 'aviso ' + noise + '\\n');
 if (a === 'stack' && b === 'config') done(0, 'services: ' + noise + ' ' + (process.env.GMN_OPERATOR_EMAILS || '') + '\\n', '');
 if (a === 'stack' && b === 'deploy') { state.deployed = true; state.stack = args[args.length - 1]; state.env = { GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS: process.env.GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS, GMN_OPERATOR_EMAILS: process.env.GMN_OPERATOR_EMAILS }; state.tag = process.env.GMN_IMAGE_TAG; fs.writeFileSync(${JSON.stringify(stateFile)}, JSON.stringify(state)); done(0, 'Creating service ' + noise + '\\n', 'Since --detach=false was not specified ' + noise + '\\n'); }
@@ -152,7 +165,7 @@ interface ProcessWorld {
   readonly trust: Buffer;
 }
 
-function processWorld(): ProcessWorld {
+function processWorld(store: ImageStore = 'classic'): ProcessWorld {
   const root = realTmp('dra-proc-');
   const stateDir = path.join(root, 'state');
   fs.mkdirSync(stateDir, { mode: 0o711 });
@@ -167,7 +180,7 @@ function processWorld(): ProcessWorld {
   fs.writeFileSync(foldersCheck, '#!/bin/sh\necho "[verificar-pastas-fase6] OK $1"\nexit 0\n', { mode: 0o755 });
   const logFile = path.join(root, 'producao-deploy.log');
   fs.writeFileSync(logFile, '', { mode: 0o600 });
-  const tools = fakeTools(root, roomiestDir([root, REPO_ROOT]), `producao-${SHA40}`);
+  const tools = fakeTools(root, roomiestDir([root, REPO_ROOT]), `producao-${SHA40}`, store);
   const argv = ['--env', 'producao', '--stack-name', 'gmn', '--stack', stack, '--host-vars', hostVars, '--folders-check', foldersCheck, '--state', stateDir, '--log', logFile];
   return { dockerRoot: roomiestDir([root, REPO_ROOT]), argv, stateDir, logFile, bin: tools.bin, calls: tools.calls, stackSha256: sha256(fs.readFileSync(stack)), trust: trustFile([trustLine(testKey('chave-prod-a'))]) };
 }
@@ -185,9 +198,15 @@ function assertPublic(run: { stdout: string; stderr: string }): void {
   for (const forbidden of [DOCKER_NOISE, SENTINEL_URL, SENTINEL_EMAIL, SENTINEL_HOST, '/tmp', '/home', 'at ']) assert.ok(!text.includes(forbidden), `${forbidden} na saída pública`);
 }
 
-test('P9-D13 em processo REAL (env -i, node absoluto, docker/tar/gzip FALSOS no PATH que imprimem caminhos): upload e deploy completos; uma linha pública por execução, nada da saída dos falsos nem do arquivo de variáveis; log local 0600 com as saídas do Docker', { timeout: 120_000 }, async () => {
+test('P9-D13 em processo REAL (env -i, node absoluto, docker/tar/gzip FALSOS no PATH que imprimem caminhos), nos dois armazenamentos de imagens (clássico e containerd): upload e deploy completos; uma linha pública por execução, nada da saída dos falsos nem do arquivo de variáveis; log local 0600 com as saídas do Docker', { timeout: 180_000 }, async () => {
   const artifact = await built();
-  const w = processWorld();
+  for (const store of ['classic', 'containerd'] as const) await realProcessDeploy(artifact, store);
+});
+
+async function realProcessDeploy(artifact: BuiltArtifact, store: ImageStore): Promise<void> {
+  const w = processWorld(store);
+  const tag = `producao-${SHA40}`;
+  const images = store === 'classic' ? classicImages(tag) : containerdImages(tag);
   const bundle = Buffer.alloc(3 * 1024 * 1024 + 17, 0x5a);
   const upload = runArtifact(artifact.file, w, `upload ${SHA40} ${sha256(bundle)} ${bundle.length}`, bundle);
   assertPublic(upload);
@@ -200,7 +219,7 @@ test('P9-D13 em processo REAL (env -i, node absoluto, docker/tar/gzip FALSOS no 
   const free = freeBytes(w.dockerRoot);
   if (STRICT || free >= 10.5 * 1024 ** 3) {
     assert.equal(deployed.status, 0, deployed.stderr);
-    assert.match(deployed.stdout, new RegExp(`^OK DEPLOYED producao-${SHA40} sha256:${CONFIG_DIGEST_WEB} sha256:${CONFIG_DIGEST_WORKER} ${w.stackSha256} - ${sha256(w.trust)}\\n$`));
+    assert.equal(deployed.stdout, `OK DEPLOYED ${tag} ${images.get(`gmn-web:${tag}`)?.Id} ${images.get(`gmn-worker:${tag}`)?.Id} ${w.stackSha256} - ${sha256(w.trust)}\n`, store);
     assert.deepEqual(fs.readFileSync(path.join(w.stateDir, 'trust-keys.txt')), w.trust);
   } else {
     // sem 10 GiB livres em nenhuma pasta candidata (só fora do CI), o passo 8 recusa: também é o comportamento certo
@@ -214,7 +233,11 @@ test('P9-D13 em processo REAL (env -i, node absoluto, docker/tar/gzip FALSOS no 
   assert.ok(log.includes(DOCKER_NOISE), 'a saída do Docker fica no log local');
   for (const sentinel of [SENTINEL_URL, SENTINEL_EMAIL, SENTINEL_HOST]) assert.ok(!log.includes(sentinel), `${sentinel} no log local`);
   assert.ok(log.split('\n').filter(Boolean).every((line) => JSON.parse(line) !== null), 'uma linha JSON por evento');
-});
+  if (deployed.status === 0) {
+    const tarMembers = calls.filter((call) => call.tool === 'tar').map((call) => call.args[2]);
+    assert.deepEqual(tarMembers, store === 'classic' ? ['manifest.json'] : ['manifest.json', ...bundleConfigs().keys()], `${store}: o que o receptor leu do pacote`);
+  }
+}
 
 test('em processo REAL: fora da gramática ⇒ ERRO E_COMMAND (10); ambiente além de PATH e SSH_ORIGINAL_COMMAND ⇒ E_INTERNAL (29); lista com hash errado ⇒ E_TRUST_LIST_MISMATCH (14); stdin fechado cedo no upload ⇒ E_INPUT_TRUNCATED (12)', { timeout: 120_000 }, async () => {
   const artifact = await built();

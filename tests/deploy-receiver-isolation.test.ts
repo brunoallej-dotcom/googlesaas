@@ -38,7 +38,7 @@ const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   // a lista de confiança: o módulo da P9.2 (parser do arquivo, regra de ambiente e transição), sem reimplementar
   'trust.ts': new Set(['node:crypto', 'node:path', TRUST_LIST, './codes', './grammar', './input', './ports']),
   'docker.ts': new Set(['zod', './codes', './ports']),
-  'bundle.ts': new Set(['zod', './codes', './docker', './grammar', './ports']),
+  'bundle.ts': new Set(['node:crypto', 'zod', './codes', './docker', './grammar', './ports']),
   'converge.ts': new Set(['zod', './codes', './docker', './ports']),
   'postdeploy.ts': new Set(['zod', './codes', './converge', './docker', './grammar', './ports']),
   'deploy.ts': new Set(['node:crypto', 'node:path', './args', './bundle', './codes', './converge', './docker', './grammar', './host-vars', './ports', './postdeploy', './staging', './trust']),
