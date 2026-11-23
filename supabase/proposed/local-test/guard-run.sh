@@ -298,6 +298,9 @@ reapply_refused "UNIQUE com o mesmo nome e outras colunas" 'as restrições da t
   "alter table $T drop constraint ledger_heads_audit_ref_ledger_seq_key; alter table $T add constraint ledger_heads_audit_ref_ledger_seq_key unique (audit_ref, ledger_seq)"
 reapply_refused "coluna com outro tipo" 'a tabela ledger_heads existe com outras colunas' \
   "alter table $T alter column recorded_at type timestamp without time zone" "alter table $T alter column recorded_at type timestamp with time zone"
+reapply_refused "coluna com collation homônima (\"default\") de outro esquema" 'a tabela ledger_heads existe com outras colunas' \
+  "create schema gmn_coll_probe; create collation gmn_coll_probe.\"default\" from pg_catalog.\"C\"; alter table $T alter column audit_ref type text collate gmn_coll_probe.\"default\"" \
+  "alter table $T alter column audit_ref type text collate pg_catalog.\"default\"; drop schema gmn_coll_probe cascade"
 reapply_refused "coluna aceitando NULL" 'a tabela ledger_heads existe com outras colunas' \
   "alter table $T alter column key_id drop not null" "alter table $T alter column key_id set not null"
 reapply_refused "coluna com outro default" 'a tabela ledger_heads existe com outras colunas' \
@@ -313,7 +316,7 @@ reapply_refused "tabela UNLOGGED" 'não é uma tabela comum, registrada e heap' 
   "alter table $T set unlogged" "alter table $T set logged"
 eq "cabeças intactas depois das recusas da definição" "6" "$(rows)"
 as_postgres_file "$MIGRATION"
-ok "definição exata (revisão do PR #61): restrição ausente, CHECK mais permissivo ou NOT VALID com o mesmo nome, UNIQUE com outras colunas, coluna com outro tipo, NULL ou default, gatilho com um evento a menos, desligado ou ausente e tabela UNLOGGED ⇒ a reaplicação aborta e nada muda; desfeitos, a reaplicação volta a passar"
+ok "definição exata (revisão do PR #61): restrição ausente, CHECK mais permissivo ou NOT VALID com o mesmo nome, UNIQUE com outras colunas, coluna com outro tipo, NULL, default ou collation homônima de outro esquema, gatilho com um evento a menos, desligado ou ausente e tabela UNLOGGED ⇒ a reaplicação aborta e nada muda; desfeitos, a reaplicação volta a passar"
 
 admin -c "set role gmn_guard_owner" -c "grant select (sha256) on gmn_link_audit_guard.ledger_heads to anon"
 as_postgres_file "$MIGRATION"
