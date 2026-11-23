@@ -81,6 +81,15 @@ const FORBIDDEN: readonly ForbiddenTerm[] = [
   { sha256: 'f7f1cd46242003ae8b3206bc040b1b61598ce51c9116788ae3e1c618efe23999', kind: 'coordenada (longitude, sem sinal)' },
   // A regra do .gitignore que mantém a pasta privada de evidências fora do repositório precisa citar o nome dela.
   { sha256: 'b03ab0be748ebd8c8a882f1f596cdf657e537c7f8e23e0f7e00a740f5c2bf660', kind: 'pasta privada de evidências (três palavras)', allowedIn: ['.gitignore'] },
+  // Clientes de prospecção das Fases 3–5 (auditorias e PDFs históricos, lead da homologação): nome distintivo + segmento,
+  // nome + sobrenome, o slug do PDF e o domínio do site; cada palavra sozinha é comum e não é acusada.
+  { sha256: 'fdd9a1ea1be06c391ac60189dbdbe7538e98823c0d2902f3bdf9d42ef9cd689c', kind: 'cliente de prospecção D (duas palavras)' },
+  { sha256: 'bdf558a7a6743887ac0230458f7257b390e2da2b4b69c1dedc9676d0170632bf', kind: 'cliente de prospecção D (duas palavras, ordem inversa)' },
+  { sha256: '5d1707087c3a360bb48010d3d94e1e6351095fa8710c78c370894229895c9437', kind: 'cliente de prospecção E (duas palavras)' },
+  { sha256: '3ebc3e6e511cb172820cd24c648fdbf21f11b3a9a3f1fb0eb1c0c9b2b86e69f5', kind: 'cliente de prospecção F (duas palavras)' },
+  { sha256: '7b3e65a898ebfbf766e81fbd87ea30fde0c2a21e152c58030d35de126eb1f161', kind: 'cliente de prospecção F (slug do PDF, três palavras)' },
+  { sha256: 'd8f12f217fcd272288509dac6a7c29d8adf320d73eaebdd40d38b3babac4cc8b', kind: 'cliente de prospecção F (domínio do site)' },
+  { sha256: '082711b106b88a817ac6ee79205ae120cf83b845fe6f8569884c16976b23a63b', kind: 'cliente de prospecção G (duas palavras)' },
 ];
 
 const INDEX_BY_HASH = new Map(FORBIDDEN.map((term, index) => [term.sha256, index]));
@@ -276,6 +285,12 @@ const PHONE = decode('KzU1IDE5IDk5ODM2LTExOTc=');
 const LATITUDE = decode('LTIyLjM0NzE5NzE=');
 const LONGITUDE = decode('LTQ2Ljk0NjMwNTI=');
 const PRIVATE_PATH = decode('RDpcZ21uLWV2aWRlbmNpYXMtcHJpdmFkYXNcbGluay1hdWRpdA==');
+const PROSPECT_D = decode('R295YXogQmFyYmVhcmlh');
+const PROSPECT_E = decode('Q2zDrW5pY2EgZGUgRXN0w6l0aWNhIERyYS4gUmF5YW5lIEhhdmlsbGE=');
+const PROSPECT_F = decode('RHJhLiBBbm5hIFZpdMOzcmlh');
+const PROSPECT_F_PDF = decode('YXVkaXRvcmlhLWdtbi1kcmEtYW5uYS12aXQtcmlhLWRlbnRpc3RhLTg1OWI0MDIxLnBkZg==');
+const PROSPECT_F_SITE = decode('aHR0cHM6Ly93d3cuZHJhYW5uYXZpdG9yaWEuY29tLmJyLw==');
+const PROSPECT_G = decode('QmVsbyBSaXNv');
 
 const indexes = (text: string, file = 'docs/x.md'): number[] => [...new Set(scanText(text, file).map((f) => f.termIndex))].sort();
 
@@ -341,6 +356,20 @@ test('guardião: falha fechada para PDF, documento, pacote, imagem, link simból
   assert.deepEqual(parseIndex(`100644 ${'a'.repeat(40)} 0\tdocs/a b.md\0${MODE_SYMLINK} ${'b'.repeat(40)} 0\tlink\0`), [{ mode: '100644', file: 'docs/a b.md' }, { mode: MODE_SYMLINK, file: 'link' }]);
 });
 
+test('guardião: clientes de prospecção das Fases 3–5 (nome, nome invertido, slug do PDF, site); palavras soltas livres', () => {
+  assert.deepEqual(indexes(`| 4323da26 (${PROSPECT_D}) | 13.517 B |`), [13]);
+  assert.deepEqual(indexes(`shortBusinessName('${PROSPECT_D.split(' ').reverse().join(' ')}')`), [14]);
+  assert.deepEqual(indexes(`| 312ebf57 ${PROSPECT_E} | COMPLETED |`), [15]);
+  assert.deepEqual(indexes(`auditoria-gmn-${stripAccents(PROSPECT_E).toLowerCase().replace(/[^a-z0-9]+/g, '-')}-312ebf57.pdf`), [15]);
+  assert.deepEqual(indexes(`A ${PROSPECT_F} seria bloqueada`), [16]);
+  assert.deepEqual(indexes(`audits/859b4021…/${PROSPECT_F_PDF}`), [17]);
+  assert.deepEqual(indexes(`URL final ${PROSPECT_F_SITE}`), [18]);
+  assert.deepEqual(indexes(`**Lead:** *${PROSPECT_G}* (#16)`), [19]);
+  for (const name of [PROSPECT_D, PROSPECT_E, PROSPECT_F, PROSPECT_G]) {
+    for (const word of name.split(' ')) assert.deepEqual(scanText(`texto com ${word} solto`, 'docs/x.md'), [], 'palavra comum isolada');
+  }
+});
+
 test('guardião: nomes de outros clientes só contam como par; cada palavra sozinha é livre', () => {
   const words = [...CLIENT_B.split(' '), ...CLIENT_C.split(' ')];
   for (const word of words) assert.deepEqual(scanText(`texto com ${word} solto`, 'docs/x.md'), [], 'palavra comum isolada');
@@ -352,7 +381,7 @@ test('guardião: aponta arquivo:linha e índice, nunca o termo; a exceção por 
   assert.deepEqual(findings, [{ file: 'docs/exemplo.md', line: 2, termIndex: 0 }]);
   const message = formatFinding(findings[0]!);
   assert.equal(message, 'docs/exemplo.md:2: termo proibido #0 (nome da empresa)');
-  for (const term of [NAME, CID, FID_1, FID_2, PLACE, CITY, CLIENT_B, CLIENT_C, OTHER_PLACE, PHONE, LATITUDE, LONGITUDE, PRIVATE_PATH]) assert.ok(!message.toLowerCase().includes(term.toLowerCase()));
+  for (const term of [NAME, CID, FID_1, FID_2, PLACE, CITY, CLIENT_B, CLIENT_C, OTHER_PLACE, PHONE, LATITUDE, LONGITUDE, PRIVATE_PATH, PROSPECT_D, PROSPECT_E, PROSPECT_F, PROSPECT_G]) assert.ok(!message.toLowerCase().includes(term.toLowerCase()));
   assert.deepEqual(indexes(`"nome": "${CITY}"`, 'src/data/municipios.json'), [], 'lista pública de municípios');
   assert.deepEqual(indexes(`"nome": "${CITY}" ${NAME}`, 'src/data/municipios.json'), [0], 'a exceção não cobre outros termos');
 });
