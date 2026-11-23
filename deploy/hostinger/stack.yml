@@ -7,6 +7,9 @@
 #   docker stack deploy --resolve-image never -c stack.yml gmn
 #
 # Os segredos NÃO ficam aqui: são `docker secret` externos criados antes do deploy.
+# Fase 6 (G1.a; spec dos portões de produção §5.3): esta versão exige, ANTES do deploy, as seis pastas novas no host (marcadores
+# GMN_RAIZ_DADOS_*, sem caminho padrão) e os três secrets gmn_link_audit_* (ordem de ativação no GUIA-DE-IMPLANTACAO.md).
+# A stack só declara o que o código lê: os secrets da guarda externa entram com o código da G1.b.
 
 services:
   gmn-web:
@@ -24,15 +27,36 @@ services:
       GMN_OPERATOR_EMAILS: ${GMN_OPERATOR_EMAILS}
       SUPABASE_PRIVATE_AUDIT_BUCKET: ${SUPABASE_PRIVATE_AUDIT_BUCKET:-gmn-audit-pdfs-private}
       GMN_LINK_AUDIT_EVIDENCE_DIR: /data/evidence
+      # Fase 6: uma pasta por volume, nenhuma dentro de outra (o código recusa). Só o web as lê; o Worker não recebe nada da Fase 6.
+      GMN_LINK_AUDIT_DECISIONS_DIR: /data/decisions
+      GMN_LINK_AUDIT_DECISIONS_ANCHOR_DIR: /data/decision-anchors
+      GMN_LINK_AUDIT_RESULTS_DIR: /data/results
+      GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR: /data/result-anchors
+      GMN_LINK_AUDIT_DECISIONS_LEDGER_DIR: /data/decisions-ledger
+      GMN_LINK_AUDIT_EVIDENCE_SEALS_DIR: /data/evidence-seals
+      # Listas PÚBLICAS (só ids e chaves públicas, nenhum material secreto), do arquivo de variáveis da implantação. Vazio = nenhum id
+      # revogado / política de atestação FECHADA (nada finaliza).
+      GMN_LINK_AUDIT_ORIGIN_REVOKED_KEY_IDS: ${GMN_LINK_AUDIT_ORIGIN_REVOKED_KEY_IDS:-}
+      GMN_LINK_AUDIT_LEDGER_REVOKED_KEY_IDS: ${GMN_LINK_AUDIT_LEDGER_REVOKED_KEY_IDS:-}
+      GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS: ${GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS:-}
       SUPABASE_SERVICE_ROLE_KEY_FILE: /run/secrets/gmn_supabase_service_role
       NEXT_PUBLIC_SUPABASE_ANON_KEY_FILE: /run/secrets/gmn_supabase_anon
       SERPER_API_KEY_FILE: /run/secrets/gmn_serper_api_key
       REDIS_URL_FILE: /run/secrets/gmn_redis_url
+      # Chaves da Fase 6 por arquivo de secret (o entrypoint as carrega pela lista fixa; sem elas a aplicação falha fechada: 503).
+      # As chaves APOSENTADAS (GMN_LINK_AUDIT_ORIGIN_RETIRED_KEYS e GMN_LINK_AUDIT_LEDGER_RETIRED_KEYS) entram aqui SÓ durante
+      # uma rotação planejada, com *_FILE e secret próprios, e saem quando ela termina (PROVA-DE-ORIGEM-E-DE-COLETA.md §3).
+      GMN_LINK_AUDIT_ORIGIN_KEY_FILE: /run/secrets/gmn_link_audit_origin_key
+      GMN_LINK_AUDIT_LEDGER_KEY_FILE: /run/secrets/gmn_link_audit_ledger_key
+      GMN_LINK_AUDIT_LOG_KEY_FILE: /run/secrets/gmn_link_audit_log_key
     secrets:
       - gmn_supabase_service_role
       - gmn_supabase_anon
       - gmn_serper_api_key
       - gmn_redis_url
+      - gmn_link_audit_origin_key
+      - gmn_link_audit_ledger_key
+      - gmn_link_audit_log_key
     volumes:
       - type: bind
         source: ${GMN_DATA_ROOT:-/srv/gmn}/audits
@@ -43,6 +67,28 @@ services:
       - type: bind
         source: ${GMN_DATA_ROOT:-/srv/gmn}/evidence
         target: /data/evidence
+        read_only: true
+      # Fase 6: origem só por marcador obrigatório (o caminho real fica no arquivo de variáveis, fora do repositório). Os recibos e o
+      # livro ficam em disco/volume diferente dos dados que ancoram, cada um com backup próprio (PLANO-DE-BACKUP-E-RESTAURACAO.md).
+      - type: bind
+        source: ${GMN_RAIZ_DADOS_DECISOES:?defina GMN_RAIZ_DADOS_DECISOES}
+        target: /data/decisions
+      - type: bind
+        source: ${GMN_RAIZ_DADOS_RECIBOS_DECISOES:?defina GMN_RAIZ_DADOS_RECIBOS_DECISOES}
+        target: /data/decision-anchors
+      - type: bind
+        source: ${GMN_RAIZ_DADOS_RESULTADOS:?defina GMN_RAIZ_DADOS_RESULTADOS}
+        target: /data/results
+      - type: bind
+        source: ${GMN_RAIZ_DADOS_RECIBOS_RESULTADOS:?defina GMN_RAIZ_DADOS_RECIBOS_RESULTADOS}
+        target: /data/result-anchors
+      - type: bind
+        source: ${GMN_RAIZ_DADOS_LIVRO:?defina GMN_RAIZ_DADOS_LIVRO}
+        target: /data/decisions-ledger
+      # manifestos de coleta: SÓ LEITURA para o web; a escrita é só pelo canal do CI (D15.5)
+      - type: bind
+        source: ${GMN_RAIZ_DADOS_MANIFESTOS:?defina GMN_RAIZ_DADOS_MANIFESTOS}
+        target: /data/evidence-seals
         read_only: true
       # tmpfs em forma longa (a forma curta `tmpfs:` pode ser ignorada pelo Swarm); o Next grava cache em /app/.next/cache
       - type: tmpfs
@@ -84,8 +130,9 @@ services:
         condition: any
         delay: 10s
         window: 120s
+      # stop-first (R6-09): nunca dois processos web gravando nas pastas da Fase 6 durante a troca (custo: breve indisponibilidade).
       update_config:
-        order: start-first
+        order: stop-first
         parallelism: 1
         delay: 10s
         failure_action: rollback
@@ -261,4 +308,10 @@ secrets:
   gmn_redis_password:
     external: true
   gmn_redis_conf:
+    external: true
+  gmn_link_audit_origin_key:
+    external: true
+  gmn_link_audit_ledger_key:
+    external: true
+  gmn_link_audit_log_key:
     external: true

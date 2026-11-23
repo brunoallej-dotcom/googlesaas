@@ -3,7 +3,8 @@
 **Princípio:** voltar sem apagar dados. Volumes (`/srv/gmn/*`), segredos e as evidências **nunca** são removidos num rollback.
 
 ## 1. Atualização que falhou (automático e manual)
-- `update_config` do web usa `start-first` com `failure_action: rollback` e monitoramento de 60 s: se a nova tarefa não ficar saudável, o Swarm volta sozinho.
+- `update_config` do web usa `stop-first` (G1.a, R6-09: nunca dois processos web gravando nas pastas da Fase 6 durante a troca; custo: breve indisponibilidade) com `failure_action: rollback` e monitoramento de 60 s: se a nova tarefa não ficar saudável, o Swarm volta sozinho, também com `stop-first`.
+- **Fase 6:** depois do primeiro `ENROLL`, **não** voltar a uma imagem anterior ao livro de cabeças (ela grava decisões sem o livro: `UNLEDGERED_ENTRY`); rollback só para imagem posterior ao livro, sobre os mesmos volumes, sem apagar nada (checklist de produção §8; ensaio EN-04 da G2).
 - Manual: `docker service rollback gmn_gmn-web` (ou `gmn_gmn-worker`).
 - Por tag: carregar a imagem anterior (`docker load`), ajustar `GMN_IMAGE_TAG` e repetir `docker stack deploy --resolve-image never -c stack.yml gmn`. **Mantenha pelo menos a tag anterior carregada** na VPS (`docker image ls | grep ^gmn-`).
 

@@ -12,6 +12,10 @@ trap cleanup EXIT
 
 echo "== 1) stack.yml renderiza (compose e swarm)"
 export GMN_HOST=gmn.exemplo.invalid GMN_IMAGE_TAG="$TAG" GMN_NODE_HOSTNAME=no-teste NEXT_PUBLIC_SUPABASE_URL=https://exemplo.supabase.co GMN_OPERATOR_EMAILS=op@exemplo.invalid
+# pastas da Fase 6: marcadores com valores FICTÍCIOS (só para renderizar a stack; nada é montado aqui)
+export GMN_RAIZ_DADOS_DECISOES=/tmp/gmn-verify/decisions GMN_RAIZ_DADOS_RECIBOS_DECISOES=/tmp/gmn-verify/decision-anchors \
+  GMN_RAIZ_DADOS_RESULTADOS=/tmp/gmn-verify/results GMN_RAIZ_DADOS_RECIBOS_RESULTADOS=/tmp/gmn-verify/result-anchors \
+  GMN_RAIZ_DADOS_LIVRO=/tmp/gmn-verify/decisions-ledger GMN_RAIZ_DADOS_MANIFESTOS=/tmp/gmn-verify/evidence-seals
 docker compose -f deploy/hostinger/stack.yml config -q
 docker stack config -c deploy/hostinger/stack.yml >/dev/null
 
