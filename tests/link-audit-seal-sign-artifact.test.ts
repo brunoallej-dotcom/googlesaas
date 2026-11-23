@@ -11,7 +11,9 @@ import { config as zodConfig } from 'zod';
 import { createSealedEvidenceProvenance, parseTrustKeyring, type TrustKeyring } from '../src/lib/link-audit-evidence/provenance';
 import { nodeFsOps } from '../src/lib/link-audit/node-fs-ops';
 import { nodeKeyFileOps, type KeyFileOps } from '../src/lib/link-audit-attestation/sign-key';
+import { artifactGrantsRefusal } from '../src/lib/link-audit-attestation/sign-args';
 import { registerCleanup, tmpDir } from './helpers/link-audit-evidence-fixtures';
+import { chainOn, item, signer, writeReceipts } from './helpers/link-audit-seal-close-key-fixtures';
 import { AUD, cliWorld, CUSTODIAN, FakeTerminal, makeKeyFile, makePackage, type TestKeyFile } from './helpers/link-audit-seal-sign-cli-fixtures';
 import { CONFIRM_LENGTH, E1, writeStation } from './helpers/link-audit-seal-sign-disk-fixtures';
 
@@ -371,8 +373,10 @@ test('revisão independente da W4.6 (3): no artefato, --allow-fs-write só na ra
     const run = await closeWith(extra);
     assert.equal(codeOf(run), 'SIGN_RUNTIME_UNSAFE', `close-key ${JSON.stringify(extra)}`);
   }
+  // W5.2a: no close-key, _closures tem de existir antes (o Node só concede a subárvore de uma pasta que já existe; teste próprio abaixo)
+  fs.mkdirSync(path.join(seals, '_closures'));
   const closures = await closeWith([`--allow-fs-write=${path.join(seals, '_closures')}`, '--allow-fs-read=/home']);
-  assert.notEqual(codeOf(closures), 'SIGN_RUNTIME_UNSAFE', `close-key: escrita só em _closures passa (a leitura ampla é limite declarado até a W5): ${closures.out.join('\n')}`);
+  assert.notEqual(codeOf(closures), 'SIGN_RUNTIME_UNSAFE', `close-key: escrita só em _closures passa: ${closures.out.join('\n')}`);
 });
 
 test('confirmação da revisão da W4.6 (3): no artefato, cada grant é o próprio caminho real (existe e nenhum componente é link); a escrita é comparada com a raiz REAL de --seals-dir. Exceções que falham fechado: os caminhos fixos /proc/self/* e as raízes temporárias, e os .git da custódia, que podem não existir', async () => {
@@ -448,6 +452,139 @@ test('segunda confirmação da revisão da W4.6 (a): no artefato, --seals-dir nu
   const world = homeWorld();
   const okRun = await runAsArtifact('sign', file, world.argv(), { typed: world.typed(), nodeOptions: [...base, `--allow-fs-write=${world.sealsDir}`] });
   assert.equal(okRun.code, 0, `pasta de manifestos fora das temporárias assina: ${okRun.err.join('\n')}`);
+});
+
+/* =============================================================================================================== close-key sob --permission (W5.2a) */
+
+/** As recusas dos grants, pela mensagem (o código é sempre SIGN_RUNTIME_UNSAFE): cada mutação da W5.2a cai numa recusa DIFERENTE da esperada. */
+const GRANT_MESSAGES = {
+  shape: /caminho absoluto, normalizado/,
+  rootNotAlone: /--allow-fs-read=\/ só vale como o ÚNICO grant de leitura/,
+  writeOutside: /--allow-fs-write só na raiz real de --seals-dir/,
+  readShallow: /leitura com pelo menos dois componentes/,
+  closuresAbsent: /_closures tem de existir antes/,
+} as const;
+type GrantMessage = keyof typeof GRANT_MESSAGES;
+
+/** `artifactGrantsRefusal` direto, com os grants iguais em `execArgv` e na linha original (ou diferentes, em `original`), e o disco real. */
+function grantsVerdict(subcommand: 'sign' | 'close-key', sealsDir: string, options: readonly string[], original: readonly string[] = options) {
+  return artifactGrantsRefusal({
+    subcommand,
+    sealsDir,
+    execArgv: [...RUNBOOK_FLAGS, ...options],
+    execBlock: { cmdline: async () => block(['/usr/bin/node', ...RUNBOOK_FLAGS, ...original, '/estacao/artefato/link-audit-sign.cjs', subcommand]), environ: async () => block([]) },
+    realpath: (target) => fs.promises.realpath(target),
+    tempRoots: ['/tmp', '/var/tmp', '/dev/shm'],
+  });
+}
+async function assertGrants(subcommand: 'sign' | 'close-key', sealsDir: string, options: readonly string[], expected: GrantMessage | null, original?: readonly string[]): Promise<void> {
+  const label = `${subcommand} ${JSON.stringify(options)}${original ? ` (original ${JSON.stringify(original)})` : ''}`;
+  const refusal = await grantsVerdict(subcommand, sealsDir, options, original);
+  if (expected === null) {
+    assert.equal(refusal, null, `${label}: passa (${refusal?.message ?? ''})`);
+    return;
+  }
+  assert.ok(refusal !== null, `${label}: esperava recusa ${expected}`);
+  assert.equal(refusal.code, 'SIGN_RUNTIME_UNSAFE', label);
+  assert.match(refusal.message, GRANT_MESSAGES[expected], `${label}: ${refusal.message}`);
+}
+
+test('W5.2a (decisão do manager sob a D15): no artefato, --allow-fs-read=/ é aceito SÓ no close-key e SÓ como o único grant de leitura; / com outro grant de leitura, / como grant de escrita ou / no sign ⇒ SIGN_RUNTIME_UNSAFE, como antes', async () => {
+  const seals = homeSealsDir();
+  const closures = path.join(seals, '_closures');
+  fs.mkdirSync(closures);
+  const other = homeSealsDir();
+  const write = `--allow-fs-write=${closures}`;
+  // aceito: a linha decidida (leitura só /, escrita só em _closures); o mesmo grant repetido continua sendo um só
+  await assertGrants('close-key', seals, ['--allow-fs-read=/', write], null);
+  await assertGrants('close-key', seals, ['--allow-fs-read=/', '--allow-fs-read=/', write], null);
+  await assertGrants('close-key', seals, ['--allow-fs-read=/'], null);
+  // / junto de qualquer outro grant de leitura (o / é prefixo de texto de todos; o Node nega o mais curto)
+  for (const extra of [other, seals, '/tmp', '/var/tmp', '/dev/shm', '/proc/self/fd', '/proc/self/cmdline', '/.git', path.join(path.dirname(seals), '.git')]) {
+    await assertGrants('close-key', seals, ['--allow-fs-read=/', `--allow-fs-read=${extra}`, write], 'rootNotAlone');
+    await assertGrants('close-key', seals, [`--allow-fs-read=${extra}`, '--allow-fs-read=/', write], 'rootNotAlone');
+  }
+  // a linha original do exec e execArgv contam juntas: / num e outra leitura no outro também é mistura
+  await assertGrants('close-key', seals, ['--allow-fs-read=/', write], 'rootNotAlone', [`--allow-fs-read=${other}`, write]);
+  await assertGrants('close-key', seals, [`--allow-fs-read=${other}`, write], 'rootNotAlone', ['--allow-fs-read=/', write]);
+  // / como grant de escrita: recusa de forma, com ou sem a leitura / (nunca a de "escrita fora", que viria depois)
+  await assertGrants('close-key', seals, ['--allow-fs-read=/', '--allow-fs-write=/'], 'shape');
+  await assertGrants('close-key', seals, ['--allow-fs-read=/', write, '--allow-fs-write=/'], 'shape');
+  await assertGrants('close-key', seals, [`--allow-fs-read=${other}`, '--allow-fs-write=/'], 'shape');
+  await assertGrants('close-key', seals, ['--allow-fs-read=/', '--allow-fs-read=*', write], 'shape');
+  // a leitura larga não amplia a escrita: só em _closures
+  await assertGrants('close-key', seals, ['--allow-fs-read=/', `--allow-fs-write=${seals}`], 'writeOutside');
+  await assertGrants('close-key', seals, ['--allow-fs-read=/', `--allow-fs-write=${other}`], 'writeOutside');
+  // no sign, / continua recusado pela forma, sozinho ou com outros grants (nunca chega à recusa de leitura rasa)
+  await assertGrants('sign', seals, ['--allow-fs-read=/', `--allow-fs-write=${seals}`], 'shape');
+  await assertGrants('sign', seals, ['--allow-fs-read=/'], 'shape');
+  await assertGrants('sign', seals, ['--allow-fs-read=/', `--allow-fs-read=${other}`, `--allow-fs-write=${seals}`], 'shape');
+  // controles: no sign, a leitura rasa continua com a recusa própria; o close-key com leituras estreitas continua aceito
+  await assertGrants('sign', seals, ['--allow-fs-read=/home', `--allow-fs-write=${seals}`], 'readShallow');
+  await assertGrants('close-key', seals, [`--allow-fs-read=${other}`, `--allow-fs-read=${seals}`, write], null);
+});
+
+test('W5.2a: no artefato, o grant de escrita do close-key tem de EXISTIR (_closures criada antes, mkdir -p da linha do runbook): o Node só concede a subárvore de uma pasta que já existe; ausente ⇒ SIGN_RUNTIME_UNSAFE antes de ler qualquer entrada', async () => {
+  const seals = homeSealsDir();
+  const closures = path.join(seals, '_closures');
+  await assertGrants('close-key', seals, ['--allow-fs-read=/', `--allow-fs-write=${closures}`], 'closuresAbsent');
+  await assertGrants('close-key', seals, [`--allow-fs-read=${seals}`, `--allow-fs-write=${closures}`], 'closuresAbsent');
+  await assertGrants('close-key', seals, ['--allow-fs-read=/', `--allow-fs-write=${path.join(closures, 'sub')}`], 'closuresAbsent');
+  fs.mkdirSync(closures);
+  await assertGrants('close-key', seals, ['--allow-fs-read=/', `--allow-fs-write=${closures}`], null);
+  // o sign não muda (a subpasta da auditoria ainda inexistente continua aceita; fora do escopo da W5.2a)
+  await assertGrants('sign', seals, [`--allow-fs-read=${seals}`, `--allow-fs-write=${path.join(seals, AUD)}`], null);
+});
+
+/** X com duas posições de R, recibadas; a cópia do servidor no HOME (fora das temporárias) e S gravada CIFRADA (custódia K1). */
+const CLOSE_AUDIT = 'auditoria-artefato-fecho-x1';
+function closeStation(layout: { readonly seals: string; readonly receipts: string; readonly keyDir?: string }) {
+  const retired = signer('ek-art-fecho-r');
+  const key = makeKeyFile({ keyId: 'ek-art-fecho-s', ...(layout.keyDir ? { dir: layout.keyDir } : {}) });
+  const chain = chainOn(layout.seals, CLOSE_AUDIT, [retired, retired]);
+  writeReceipts(layout.receipts, chain);
+  fs.chmodSync(layout.receipts, 0o700);
+  for (const name of fs.readdirSync(layout.receipts)) fs.chmodSync(path.join(layout.receipts, name), 0o600);
+  const trustKeys = `${item(retired)},${key.ring}`;
+  const argv = ['--retired-key-id', retired.keyId, '--seals-dir', layout.seals, '--receipts-dir', layout.receipts, '--key-id', key.keyId, '--key-source', `file:${key.keyPath}`, '--custodian', CUSTODIAN, '--trust-keys', trustKeys];
+  return { retired, key, chain, trustKeys, argv, typed: [`${retired.keyId}\r`, `${key.passphrase}\r`] };
+}
+
+/** O fecho gravado confere com o objeto --json e faz a cadeia de X autenticar com R `retired:<closureSha256>` (o item que o runbook fixa). */
+async function assertClosure(seals: string, station: ReturnType<typeof closeStation>, receipt: Record<string, unknown>): Promise<void> {
+  const fileName = `${station.retired.keyId}.json`;
+  assert.deepEqual(fs.readdirSync(path.join(seals, '_closures')), [fileName], 'só o fecho em _closures (nenhum temporário)');
+  assert.deepEqual(fs.readdirSync(seals).sort(), ['_closures', CLOSE_AUDIT], 'nada gravado fora de _closures');
+  const closureSha256 = sha256Of(fs.readFileSync(path.join(seals, '_closures', fileName)));
+  assert.equal(receipt.ok, true);
+  assert.equal(receipt.closureSha256, closureSha256, 'o closureSha256 do --json é o dos bytes gravados');
+  assert.equal(receipt.fileName, `_closures/${fileName}`);
+  assert.equal(receipt.pinnedTrustKey, `${station.retired.keyId}:${station.retired.publicRaw}:retired:${closureSha256}`);
+  const ring = parseTrustKeyring(`${receipt.pinnedTrustKey as string},${station.key.ring}`) as TrustKeyring;
+  const last = station.chain[station.chain.length - 1];
+  const verdict = await createSealedEvidenceProvenance({ sealsDir: seals, keyring: ring, acceptedVersions: [2] }).classify(CLOSE_AUDIT, (last?.entries ?? []).map(({ ref, contentSha256 }) => ({ ref, contentSha256, legacy: false })));
+  assert.equal(verdict.status, 'AUTHENTICATED', JSON.stringify(verdict));
+}
+
+test('W5.2a: em processo, o close-key do artefato com a linha decidida (--allow-fs-read=/ como único grant de leitura, escrita só em _closures) completa: fecho gravado, --json conferido e a cadeia coberta autentica com R aposentada pelo fecho', async () => {
+  const file = await custodiedCopy();
+  const seals = homeSealsDir();
+  const receipts = tmpDir('lasa-recibos-');
+  const station = closeStation({ seals, receipts });
+  const closures = path.join(seals, '_closures');
+  const line = [...RUNBOOK_FLAGS, '--allow-fs-read=/', `--allow-fs-write=${closures}`];
+  // sem _closures: recusa dos grants antes de ler qualquer entrada (nem confirmação, nem chave)
+  const absent = await runAsArtifact('close-key', file, station.argv, { typed: station.typed, nodeOptions: line });
+  assert.equal(absent.code, 3, absent.err.join('\n'));
+  assert.equal(codeOf(absent), 'SIGN_RUNTIME_UNSAFE');
+  assert.match(String((JSON.parse(absent.out[0] ?? '{}') as Record<string, unknown>).message), GRANT_MESSAGES.closuresAbsent);
+  assert.ok(!absent.err.some((text) => /chave a aposentar|Frase-senha/i.test(text)), 'nem confirmação nem frase');
+  assert.ok(!fs.existsSync(closures), 'nada criado');
+  fs.mkdirSync(closures);
+  const run = await runAsArtifact('close-key', file, station.argv, { typed: station.typed, nodeOptions: line });
+  assert.equal(run.code, 0, run.err.join('\n'));
+  await assertClosure(seals, station, JSON.parse(run.out[0] ?? '{}') as Record<string, unknown>);
+  assert.ok(run.err.some((text) => text.includes(`artifactSha256 ${sha256Of(fs.readFileSync(file))}`)), 'a saída de erro mostra o hash do artefato');
 });
 
 /* =============================================================================================================== processo REAL (env -i, --permission) */
@@ -606,8 +743,12 @@ function permissionFsync(): 'allowed' | 'denied' {
   return assert.fail(`a sonda de fsync sob --permission quebrou (${process.version}; status ${String(result.status)}, sinal ${String(result.signal)}): ${result.stderr}${result.stdout}`);
 }
 
+/** Pedido da confirmação do `sign` (12 caracteres do dossiê); o `close-key` pede o id da chave a aposentar. */
+const SIGN_CONFIRM_PROMPT = /12 primeiros caracteres/;
+const CLOSE_CONFIRM_PROMPT = /chave a aposentar/;
+
 /** Roda a linha no pseudo-terminal e digita a confirmação e a frase quando os pedidos aparecem (como o teste PTY da W4.4). */
-function runInPty(command: readonly string[], confirmation: string, passphrase: string): Promise<{ readonly code: number | null; readonly screen: string }> {
+function runInPty(command: readonly string[], confirmation: string, passphrase: string, confirmPrompt: RegExp = SIGN_CONFIRM_PROMPT): Promise<{ readonly code: number | null; readonly screen: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn('script', ['-q', '-e', '-c', command.map(quote).join(' '), '/dev/null'], { env: { PATH: process.env.PATH ?? '/usr/bin:/bin', LANG: 'C.UTF-8' } as unknown as NodeJS.ProcessEnv, stdio: ['pipe', 'pipe', 'pipe'] });
     let screen = '';
@@ -618,7 +759,7 @@ function runInPty(command: readonly string[], confirmation: string, passphrase: 
     }, LIMIT_MS);
     const onOutput = (chunk: Buffer): void => {
       screen += chunk.toString('utf8');
-      if (step === 0 && /12 primeiros caracteres/.test(screen)) {
+      if (step === 0 && confirmPrompt.test(screen)) {
         step = 1;
         child.stdin.write(`${confirmation}\r`);
       } else if (step === 1 && /Frase-senha/.test(screen)) {
@@ -678,5 +819,55 @@ test('critério i, assinatura completa: env -i + node absoluto + --permission co
     assert.equal(verdict.status, 'AUTHENTICATED', JSON.stringify(verdict));
   } finally {
     fs.rmSync(station, { recursive: true, force: true });
+  }
+});
+
+/* =============================================================================================================== close-key completo (PTY, W5.2a) */
+
+test('W5.2a, close-key completo em processo REAL: env -i + node absoluto + --disable-sigusr1 + --permission com --allow-fs-read=/ como ÚNICO grant de leitura e escrita só em _closures (criada antes, mkdir -p do runbook), num pseudo-terminal: fecho gravado com fsync, --json conferido e a cadeia coberta AUTENTICADA com R aposentada pelo fecho', { timeout: LIMIT_MS + 30_000 }, async (t) => {
+  if (!hasScript) return t.skip(skipOrFail('script (util-linux) indisponível') || undefined);
+  const root = stationDir();
+  if (root === null) return t.skip(skipOrFail('sem pasta de estação possível (HOME ausente, temporário ou dentro de uma árvore com .git)') || undefined);
+  try {
+    const artifact = await built();
+    const layout = { artifactDir: path.join(root, 'artefato'), seals: path.join(root, 'manifestos'), receipts: path.join(root, 'recibos'), keyDir: path.join(root, 'chave'), out: path.join(root, 'saida') };
+    for (const dir of [layout.artifactDir, layout.seals, layout.receipts, layout.out]) fs.mkdirSync(dir, { recursive: true });
+    const artifactFile = path.join(layout.artifactDir, ARTIFACT_FILE_NAME);
+    fs.copyFileSync(artifact.file, artifactFile);
+    fs.chmodSync(artifactFile, 0o444);
+    const station = closeStation(layout);
+    const closures = path.join(layout.seals, '_closures');
+    const decided = [...RUNBOOK_FLAGS, '--allow-fs-read=/', `--allow-fs-write=${closures}`];
+    // sem --json: as recusas saem na saída de erro (com --json, o objeto da recusa sai na saída padrão)
+    const args = ['close-key', ...station.argv];
+    // sob o modelo de permissões REAL: _closures ausente, / com outra leitura e / no sign ⇒ recusa dos grants antes de qualquer entrada
+    refusedBarrier(viaEnvI(decided, artifactFile, args), '_closures ausente', /_closures tem de existir antes/);
+    assert.ok(!fs.existsSync(closures), '_closures ausente: nada criado');
+    fs.mkdirSync(closures);
+    refusedBarrier(viaEnvI([...decided, `--allow-fs-read=${layout.artifactDir}`], artifactFile, args), '/ com outro grant de leitura', /só vale como o ÚNICO grant de leitura/);
+    const missing = path.join(layout.out, 'nao-existe.json');
+    const signArgs = ['sign', '--audit', AUD, '--package', missing, '--approval', missing, '--dossier', missing, '--seals-dir', layout.seals, '--expect-seq', '1', '--first', '--key-id', station.key.keyId, '--key-source', `file:${station.key.keyPath}`, '--custodian', CUSTODIAN, '--trust-keys', station.key.ring];
+    refusedBarrier(viaEnvI([...RUNBOOK_FLAGS, '--allow-fs-read=/', `--allow-fs-write=${layout.seals}`], artifactFile, signArgs), '/ no sign', /caminho absoluto, normalizado/);
+    const fsyncUnderPermission = permissionFsync();
+    const run = await runInPty(['env', '-i', process.execPath, ...decided, artifactFile, ...args, '--json'], station.retired.keyId, station.key.passphrase, CLOSE_CONFIRM_PROMPT);
+    for (const sentinel of station.key.sentinels) assert.ok(!run.screen.includes(sentinel), 'a frase (ou a chave) apareceu na tela');
+    if (fsyncUnderPermission === 'denied') {
+      // decisão 3 da W4.6: a sondagem antecipada recusa ANTES de ler os recibos, da confirmação, da custódia e da frase; nada gravado
+      assert.equal(run.code, 3, run.screen);
+      assert.match(run.screen, /Código: SIGN_RUNTIME_NO_FSYNC/);
+      assert.ok(!/chave a aposentar|Frase-senha|Chave aberta/.test(run.screen), 'nem confirmação, nem frase, nem chave');
+      assert.deepEqual(fs.readdirSync(closures), [], 'nada gravado em _closures');
+      if (STRICT) assert.fail(`LINK_AUDIT_ARTIFACT_STRICT=1: o node ${process.version} bloqueia fsync sob --permission (nodejs/node#65431); a estação e o CI usam a linha 22 (notas da W4.6)`);
+      return;
+    }
+    assert.equal(run.code, 0, run.screen);
+    const receiptText = /(\{"ok":true,"retiredKeyId"[^\r\n]*\})/.exec(run.screen)?.[1];
+    assert.ok(receiptText, `objeto --json na tela: ${run.screen}`);
+    // o fecho só sai com sucesso depois do fsync do temporário e da pasta _closures (sign-run.ts, commitFile): falha ⇒ SIGN_WRITE_FAILED/UNCONFIRMED
+    assert.ok(!/SIGN_WRITE_(FAILED|UNCONFIRMED)/.test(run.screen), run.screen);
+    assert.ok(run.screen.includes(`artifactSha256 ${artifact.sha256}`), 'a saída de erro mostra o hash do artefato executado');
+    await assertClosure(layout.seals, station, JSON.parse(receiptText as string) as Record<string, unknown>);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
