@@ -1006,14 +1006,18 @@ autorização escrita da implantação (checklist §0).
 | D-7 | Receptor de manifestos com "publicação exclusiva" (CE-3 diz que o `publishExclusive` não serve) | Reaproveita `linkExclusive`/`commitFile` do `sign`, que já reportam a falha do `fsync` da pasta | `sign-run.ts:242-262` (`SIGN_WRITE_UNCONFIRMED`), revisado na W4.3/W4.6; extrair para módulo compartilhado muda o hash do artefato do `sign` |
 | D-8 | Fatia única "receptores + testes" | Duas fatias: P9.3a (deploy) e P9.3b (manifestos), as duas depois da P9.2 | Os dois receptores reusam o módulo da lista da P9.2 (parser do arquivo, regras de ambiente e de transição); o de manifestos também usa o núcleo do canal e entra no pipeline de artefatos criado pela P9.3a |
 
-### 11.2 Questões para o responsável
+### 11.2 Questões para o responsável (respondidas em 23/11/2026)
 
-| # | Questão | Recomendação |
-|---|---|---|
-| Q-1 | Recursos da VPS e custo zero para a segunda pilha (web 1 CPU/1 GiB, Redis 0,5/512 MiB) e para o laboratório Supabase no plano gratuito | Confirmar antes do H-01; sem custo novo sem aprovação própria (D-G0-12) |
-| Q-2 | A porta SSH da VPS precisa aceitar os runners do GitHub, que saem de faixas grandes e variáveis. Se hoje há restrição por IP, aceitar abrir a porta (só chave, sem senha, com `fail2ban`), ou recusar e ficar sem deploy pelo CI | Abrir só com autenticação por chave e os quatro usuários restritos |
-| Q-3 | Instalar o Node 22 oficial **no host** (fora de contêiner), só para os receptores | Aceitar. A alternativa (receptor de manifestos em contêiner) exigiria o grupo `docker` para a chave de manifestos e desfaria o RC-09 |
-| Q-4 | Aceite de que a mesma pessoa dispara e aprova as próprias execuções (sem "impedir autoaprovação"), enquanto não houver segunda pessoa (como na D-G0-6) | Aceitar por escrito; rever quando houver segunda pessoa |
+> **Respondidas pelo responsável em 23/11/2026**, por escrito: "Q1 OK, Q2 OK, Q3 OK, Q4 OK". As quatro seguem a recomendação
+> abaixo. O H-01 (§10.1) continua sendo conferir os recursos na hora de criar a pilha; qualquer custo novo que aparecer
+> ainda depende de aprovação própria (D-G0-12).
+
+| # | Questão | Recomendação | Decisão (23/11/2026) |
+|---|---|---|---|
+| Q-1 | Recursos da VPS e custo zero para a segunda pilha (web 1 CPU/1 GiB, Redis 0,5/512 MiB) e para o laboratório Supabase no plano gratuito | Confirmar antes do H-01; sem custo novo sem aprovação própria (D-G0-12) | **Confirmado**: a VPS comporta a segunda pilha e o laboratório fica no plano gratuito, sem custo novo |
+| Q-2 | A porta SSH da VPS precisa aceitar os runners do GitHub, que saem de faixas grandes e variáveis. Se hoje há restrição por IP, aceitar abrir a porta (só chave, sem senha, com `fail2ban`), ou recusar e ficar sem deploy pelo CI | Abrir só com autenticação por chave e os quatro usuários restritos | **Aceita**: porta aberta aos runners, só chave, sem senha, com `fail2ban`, só os quatro usuários restritos |
+| Q-3 | Instalar o Node 22 oficial **no host** (fora de contêiner), só para os receptores | Aceitar. A alternativa (receptor de manifestos em contêiner) exigiria o grupo `docker` para a chave de manifestos e desfaria o RC-09 | **Aceita**: Node 22 oficial no host, só para os receptores |
+| Q-4 | Aceite de que a mesma pessoa dispara e aprova as próprias execuções (sem "impedir autoaprovação"), enquanto não houver segunda pessoa (como na D-G0-6) | Aceitar por escrito; rever quando houver segunda pessoa | **Aceita** por escrito; rever quando houver segunda pessoa |
 
 ### 11.3 Emendas a outros documentos (feitas nas fatias indicadas, não neste PR)
 

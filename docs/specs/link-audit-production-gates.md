@@ -518,6 +518,11 @@ mudança formal de política, decisão do responsável.
 >
 > **Decidido pelo responsável em 20/11/2026 (D-G0-6, §11): opção (3) no piloto**, com o aceite formal escrito da §10.2
 > (condição 4). As opções (1) e (2) ficam nas condições acima, para o futuro. A Q7 não se aplica (D-G0-7).
+>
+> **Aceite formal da G1.c, dado pelo responsável em 23/11/2026, por escrito ("G1.C aceito"), sobre o texto proposto pelo
+> manager:** "Aceito manter as ações administrativas da Auditoria por Link em 403 no piloto (Q6 = 3, D-G0-6). Sem o papel administrativo, uma auditoria congelada não é recuperada pela aplicação: ela é abandonada, a evidência é preservada e abre-se uma auditoria nova." O aceite específico do
+> piloto (§10.2, condição 4: todo resultado INCONCLUSIVO, prazo e escopo) é outro e continua sendo dado na hora, antes do
+> deploy do piloto.
 
 #### 5.2.5 Entregas (só se Q6 = 1 ou 2; com a D-G0-6, nenhuma de código)
 
@@ -909,7 +914,7 @@ própria). Como aquela Q4 continua aberta, a escolha entre os dois foi do **mana
 | D-G0-3 | Q3 Indisponibilidade | **Falha fechada também na leitura** (o comportamento de hoje, `src/lib/link-audit-ledger/model.ts:495` em `3899a67`). Prazo de resposta de **3 s** por chamada à guarda, a confirmar na G1 pela latência medida. **Nada de modo degradado** | Responsável | §5.1.4 regra 5; §5.1.7 |
 | D-G0-4 | Q4 Atraso máximo | `L_max` = a contagem do protocolo, travada em teste. Alarme se `BEHIND` durar mais de **`T` = 15 min**. A contagem do manager dá **`L_max` = 5** (§5.1.7), a travar na G1.b (PG-G02) | Responsável (regra); manager (contagem) | §5.1.4 regra 3; §5.1.7 |
 | D-G0-5 | Q5 `auditId` na guarda | **Pseudonimizado por HMAC-SHA-256** com chave própria da guarda, **`GMN_LINK_AUDIT_GUARD_KEY`** (formato `<id>:<64 hex>`, distinta das chaves de origem, do livro e de log). Motivo: o "em claro" ficaria condicionado à Q4 da observabilidade, ainda aberta; o `auditId` nasce do id da autorização escrito pelo responsável (`src/lib/link-audit-runtime/run.ts:181`) e, no único caso real registrado no `NOTES.md`, começa pelo nome da empresa. Rotação: §5.1.7 | Manager (lado fechado), dentro da recomendação aprovada | §5.1.4 regra 8; §5.1.7; §5.3.1 |
-| D-G0-6 | Q6 Papel administrativo | Opção **(3), manter o 403 no piloto**, com o aceite formal escrito (§10.2, condição 4). Opção (1) quando houver segunda pessoa, com a emenda "quatro olhos" decidida junto. Opção (2) só sob necessidade real, com chave administrativa própria (não a K1) e canal de aviso fora da VPS | Responsável | §5.2; G1.c (só o aceite); G-2 |
+| D-G0-6 | Q6 Papel administrativo | Opção **(3), manter o 403 no piloto**, com o aceite formal escrito (§10.2, condição 4). Opção (1) quando houver segunda pessoa, com a emenda "quatro olhos" decidida junto. Opção (2) só sob necessidade real, com chave administrativa própria (não a K1) e canal de aviso fora da VPS. **Aceite formal da G1.c dado em 23/11/2026** (§5.2.4) | Responsável | §5.2; G1.c (só o aceite); G-2 |
 | D-G0-7 | Q7 Espera e canal da opção (2) | **Não se aplica**, porque a D-G0-6 é a opção (3). Recomendação registrada para o futuro: espera de 72 h e aviso pelo destino externo dos logs e alertas (D-G0-8 e um canal de alerta); sem esse canal funcionando, a opção (2) não é adotada | Responsável | §5.2.4 |
 | D-G0-8 | Q8 Logs fora da VPS | **Sem ferramenta paga.** Exportação **diária e cifrada** do log do contêiner para o **mesmo destino independente dos backups**, com **expurgo aos 90 dias**. Fecha o "onde" da Q3 da spec de observabilidade | Responsável | §5.3.4; G1.a; G-4 |
 | D-G0-9 | Q9 Backups dos recibos e do livro | **Um destino independente para cada volume de recibos e para o livro**, fora do disco dos dados; **cópia diária**; **ensaio de restauração na G2 e a cada trimestre** | Responsável | VC-E6; G1.a; G2; G-3 |
