@@ -141,12 +141,13 @@ begin
     raise exception 'GUARDA abortada (%): a tabela ledger_heads não é uma tabela comum, registrada e heap; %.', p_fase, v_fim;
   end if;
   if (select pg_catalog.array_agg(pg_catalog.format('%s|%s|%s|%s|%s|%s|%s', a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod), a.attnotnull,
-                                  coalesce(pg_catalog.pg_get_expr(d.adbin, d.adrelid), ''), coalesce(co.collname, ''), a.attidentity, a.attgenerated) order by a.attnum)
+                                  coalesce(pg_catalog.pg_get_expr(d.adbin, d.adrelid), ''), coalesce(cn.nspname || '.' || co.collname, ''), a.attidentity, a.attgenerated) order by a.attnum)
         from pg_catalog.pg_attribute a
         left join pg_catalog.pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
         left join pg_catalog.pg_collation co on co.oid = a.attcollation and a.attcollation <> 0
+        left join pg_catalog.pg_namespace cn on cn.oid = co.collnamespace -- collation pelo ESQUEMA e nome: uma "default" de outro esquema não passa
        where a.attrelid = v_table and a.attnum > 0 and not a.attisdropped)
-     is distinct from array['audit_ref|text|t||default||', 'key_id|text|t||default||', 'ledger_seq|integer|t||||', 'sha256|text|t||default||',
+     is distinct from array['audit_ref|text|t||pg_catalog.default||', 'key_id|text|t||pg_catalog.default||', 'ledger_seq|integer|t||||', 'sha256|text|t||pg_catalog.default||',
                             'recorded_at|timestamp with time zone|t|now()|||']::text[] then
     raise exception 'GUARDA abortada (%): a tabela ledger_heads existe com outras colunas (nome, tipo, NULL, default, collation ou ordem); %.', p_fase, v_fim;
   end if;
