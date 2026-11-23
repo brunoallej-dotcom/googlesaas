@@ -1,7 +1,8 @@
 # Spec: deploy pelo CI e entrega dos manifestos selados (P-9)
 
-> **Status:** PROPOSTA, fatia **P9.1** (só documentação, 23/11/2026). Nada disto existe ainda: não há `deploy.yml`, receptor,
-> usuário de host, ambiente do GitHub nem pasta `link-audit-seals/`. O código vem nas fatias P9.2 a P9.5
+> **Status:** PROPOSTA, fatia **P9.1** (só documentação, 23/11/2026). **P9.2 implementada** (verificação antes do merge, job `seals`,
+> lista versionada e pasta `link-audit-seals/`; critérios marcados no §6 com o teste). Ainda não há `deploy.yml`, receptor,
+> usuário de host nem ambiente do GitHub. O código restante vem nas fatias P9.3a a P9.5
 > (`docs/plan/implementation-waves.md`, seção "Deploy pelo CI (P-9)"). Nenhuma fatia faz deploy: o primeiro deploy é do
 > responsável, pelo workflow, depois das ações do §10.1.
 >
@@ -260,6 +261,55 @@ empacotado no receptor de manifestos (P9.3b).
 As cadeias que o PR não toca **não** são reverificadas. Uma revogação legítima deixa cadeias antigas `SEAL_KEY_REVOKED`, e isso não
 pode travar o CI para sempre. Quando a lista muda, o resumo traz, só como informação, o veredito de cada cadeia do ambiente sob a
 lista nova.
+
+**Implementação (P9.2) e pontos que esta spec deixava em aberto.** O núcleo está em `src/lib/link-audit-seals-channel/` (gramática,
+lista, regras S-01 a S-13, resumo e comando), o passo de preparo do job em `.github/scripts/seals-prepare.sh` e o comando em
+`scripts/link-audit-seals-check.ts`. Decisões tomadas na fatia, todas de falha fechada:
+
+- **O código que verifica não vem do PR verificado** (revisão do PR #68). O job resolve a revisão base (`HEAD^1` do commit de merge no
+  `pull_request`, `github.event.before` no `push`), cria uma `git worktree` dela em `$RUNNER_TEMP/seals-base` e roda de lá o
+  `seals-prepare.sh`, o `npm ci` e o comando; o checkout do PR entra só como dado (`--repo`, e o git lê dele a mudança e os modos). Se a
+  base ainda não tem o verificador (`.github/scripts/seals-prepare.sh` e `scripts/link-audit-seals-check.ts`), o job usa o do próprio
+  PR e escreve no resumo o aviso fixo `SEALS_BOOTSTRAP`. Isso só acontece até a P9.2 estar na `main`. O atalho "nada mudou ⇒ verde sem
+  instalar nada" é calculado pelo preparo da base. Como o próprio workflow vem do PR no `pull_request`, o CODEOWNERS do responsável
+  (P9-O02) tem de cobrir também `.github/workflows/ci.yml`, `.github/scripts/seals-prepare.sh`, `src/lib/link-audit-seals-channel/**`
+  e `scripts/link-audit-seals-check.ts`.
+- **Sem base utilizável** (push com `before` todo zero de um branch novo, `before` fora do histórico, evento que não é
+  `pull_request` nem `push`): o passo da base sai com `ERRO SEALS_NO_BASE` (código 2) e o job fica vermelho. Nada é dado como "sem
+  mudança".
+- **Submódulos sempre visíveis:** o preparo lê o PR com `git diff --ignore-submodules=none --no-ext-diff --no-textconv` e
+  `-c diff.ignoreSubmodules=none`. Sem isso, um `.gitmodules` com `ignore = all` no próprio PR esconderia do diff um gitlink sob
+  `link-audit-seals/` (verificado em teste). O gitlink aparece com modo `160000` e o comando recusa (`SEALS_BAD_MODE`).
+- **Saída do comando:** o resumo público em Markdown no stdout (o job o acrescenta a `$GITHUB_STEP_SUMMARY`) e, na recusa, uma linha
+  `ERRO <CÓDIGO>` no stderr. Códigos de saída: `0` nada recusado (ou nada sob `link-audit-seals/`), `1` recusa (código da primeira, na
+  ordem das regras), `2` uso ou entrada ilegível (`SEALS_USAGE`, `SEALS_INPUT_INVALID`), `3` falha inesperada sem nenhuma recusa
+  (`SEALS_INTERNAL`). Uma etapa que falha de forma inesperada não apaga as recusas já coletadas: a execução fica "incompleta" (aviso no
+  resumo) e sai com `1` e a primeira recusa; sem nenhuma, com `3`. Os modos vêm de `git ls-tree -r -z HEAD -- link-audit-seals` (com
+  `-z`, como a lista de mudanças).
+- **Pastas:** `<amb>/seals` e a pasta de cada auditoria são conferidas por `lstat` antes de qualquer listagem; uma que existe e não é
+  diretório real (arquivo, link) dá `SEALS_UNEXPECTED_PATH` (detalhe `<amb>/seals` ou `<amb>/seals/<auditId>`) e nunca é listada.
+- **Tetos de leitura:** além dos tetos do S-05 (256 KiB por arquivo, 200 arquivos e 16 MiB de arquivos novos, conferidos pelo tamanho
+  antes de ler), toda leitura de uma execução passa por um teto **único** de 64 MiB (`MAX_RUN_READ_BYTES`): os arquivos novos, a
+  releitura de cada cadeia tocada pelo verificador no S-10 (que ainda tem o próprio teto de 16 MiB por cadeia, `MAX_CLASSIFY_BYTES`), as
+  cabeças dos fechos no S-11, os fechos das fixações no S-12 e as listas do commit. Esgotado, nada mais é lido e a execução recusa com
+  `SEALS_TOO_MANY` (detalhe `READ_BUDGET`). O veredito informativo das cadeias sob a lista nova tem um teto próprio do mesmo tamanho e
+  só trunca a informação (aviso no resumo), nunca recusa. A lista do commit-base tem o tamanho do blob conferido com `git cat-file -s`
+  antes de ser materializada: acima de 8 KiB, o preparo sai com `ERRO SEALS_TOO_LARGE`.
+- **Fecho:** formato fora do esquema ⇒ `CLOSURE_FORMAT` (S-11); nome ≠ `retiredKeyId` ⇒ `SEAL_NAME_MISMATCH` (S-08, a regra da
+  tabela; o P9-S09 cita `CLOSURE_<MOTIVO>` de modo genérico). Os motivos do S-11 são `CLOSURE_SIGNER_NOT_LISTED`,
+  `CLOSURE_SIGNATURE_INVALID`, `CLOSURE_RETIRED_NOT_LISTED` e `CLOSURE_HEAD_NOT_IN_REPO`.
+- **S-10 junto com o S-09:** a cadeia é verificada sempre que os arquivos novos da auditoria passaram do S-04 ao S-08, mesmo com o
+  S-09 recusado, para o resumo listar as duas recusas (o código continua o da primeira). Leitura da cadeia do repositório que não é
+  uma das razões de `EvidenceTrustReason` (pasta ilegível, nome em outra caixa) ⇒ `SEAL_V2_VERIFICATION_ERROR`.
+- **S-13:** "manifestos" são todos os arquivos novos sob `<amb>/seals/` (manifestos e fechos).
+- **S-12:** a lista tem teto de 8 KiB (o do stdin do receptor de deploy), acima disso `SEALS_TOO_LARGE`. Um item **novo** já fixado
+  (`retired:<sha256>`) exige a mesma prova do fecho no commit-base; um item novo `revoked` passa ("qualquer → revoked"). Lista do
+  commit-base ilegível com a lista alterada ⇒ `TRUST_LIST_TRANSITION` (detalhe `BASE_UNREADABLE`). Cada violação de transição sai
+  com o detalhe `<id> <MOTIVO>` (`ITEM_REMOVED`, `PUBLIC_KEY_CHANGED`, `KEY_ID_CHANGED`, `REVOKED_CHANGED`, `RETIRED_REACTIVATED`,
+  `PIN_CHANGED`, `PIN_REMOVED`, `PIN_UNPROVEN`). A função de transição (`trustListTransition`) é a que o receptor de deploy (P9.3a)
+  aplica contra a lista instalada, ignorando as fixações novas (`newPins`), que só o CI pode provar.
+- **Resumo:** uma tabela por tipo e por ambiente; o caminho é relativo à pasta de manifestos do ambiente, como no §5.9. Caminho fora
+  da gramática e `auditId` de cabeça fora do padrão opaco nunca são ecoados (só o código). O job não restaura cache do npm.
 
 **O que o CI verifica e o que não pode verificar.** As evidências não estão no repositório (têm dado de cliente). Por isso:
 
@@ -726,37 +776,38 @@ relatório indicado.
 
 **Verificação antes do merge (P9.2):**
 
-- [ ] **P9-S01** PR com `M`, `D`, `R` ou `T` sob `<amb>/seals/` ⇒ `SEALS_NOT_APPEND_ONLY`; só `A` passa.
-- [ ] **P9-S02** caminho fora da tabela do §5.2 (inclusive `auditId` fora de `^aud-[0-9a-f]{16}$`, `seal-0000`, `seal-0257`, caixa
-  diferente) ⇒ `SEALS_UNEXPECTED_PATH`.
-- [ ] **P9-S03** link simbólico, executável ou submódulo ⇒ `SEALS_BAD_MODE`.
-- [ ] **P9-S04** arquivo acima de 256 KiB é recusado **sem** ser lido inteiro; acima do teto de quantidade ⇒ `SEALS_TOO_MANY`.
-- [ ] **P9-S05** manifesto `v1`, com BOM, com `\`, com chave repetida ou com campo extra ⇒ `SEAL_FORMAT`.
-- [ ] **P9-S06** manifesto válido com espaços, outra ordem de chaves, CRLF ou sem `\n` final ⇒ `SEAL_NOT_CANONICAL`.
-- [ ] **P9-S07** `auditId`/`seq` do corpo diferente do caminho ⇒ `SEAL_NAME_MISMATCH`.
-- [ ] **P9-S08** cadeia com buraco, `prevSealSha256` errado, não cumulativa, chave fora da lista, chave revogada ou aposentada sem
-  fecho ⇒ `SEAL_V2_<RAZÃO>` correspondente; cadeia correta ⇒ verde com `headSeq` = último novo.
-- [ ] **P9-S09** fecho novo com signatário fora da lista, assinatura inválida, nome ≠ `retiredKeyId` ou cabeça ausente da cadeia do
-  repositório ⇒ `CLOSURE_<MOTIVO>`.
-- [ ] **P9-S10** PR sem nada sob `link-audit-seals/` ⇒ job verde sem `npm ci` (teste estático do workflow).
-- [ ] **P9-S11** o resumo traz uma linha por arquivo novo, por tipo: manifesto com `sha256sum`, `seq` e `sealSha256`; fecho
-  com `sha256sum`, `retiredKeyId`, `signerKeyId` e as cabeças `auditId:seq:<12 hex>`. Nenhum conteúdo de arquivo além disso.
-- [ ] **P9-S12** cadeias não tocadas não são reverificadas: uma revogação na lista não deixa vermelho um PR que só mexe em outra
-  auditoria.
+- [x] **P9-S01** PR com `M`, `D`, `R` ou `T` sob `<amb>/seals/` ⇒ `SEALS_NOT_APPEND_ONLY`; só `A` passa. Teste: `tests/link-audit-seals-check.test.ts` (P9.2).
+- [x] **P9-S02** caminho fora da tabela do §5.2 (inclusive `auditId` fora de `^aud-[0-9a-f]{16}$`, `seal-0000`, `seal-0257`, caixa
+  diferente) ⇒ `SEALS_UNEXPECTED_PATH`. Teste: `tests/link-audit-seals-check.test.ts` (P9.2).
+- [x] **P9-S03** link simbólico, executável ou submódulo ⇒ `SEALS_BAD_MODE`. Teste: `tests/link-audit-seals-check.test.ts` (P9.2).
+- [x] **P9-S04** arquivo acima de 256 KiB é recusado **sem** ser lido inteiro; acima do teto de quantidade ⇒ `SEALS_TOO_MANY`. Teste: `tests/link-audit-seals-check.test.ts` (P9.2).
+- [x] **P9-S05** manifesto `v1`, com BOM, com `\`, com chave repetida ou com campo extra ⇒ `SEAL_FORMAT`. Teste: `tests/link-audit-seals-check.test.ts` (P9.2).
+- [x] **P9-S06** manifesto válido com espaços, outra ordem de chaves, CRLF ou sem `\n` final ⇒ `SEAL_NOT_CANONICAL`. Teste: `tests/link-audit-seals-check.test.ts` (P9.2).
+- [x] **P9-S07** `auditId`/`seq` do corpo diferente do caminho ⇒ `SEAL_NAME_MISMATCH`. Teste: `tests/link-audit-seals-check.test.ts` (P9.2).
+- [x] **P9-S08** cadeia com buraco, `prevSealSha256` errado, não cumulativa, chave fora da lista, chave revogada ou aposentada sem
+  fecho ⇒ `SEAL_V2_<RAZÃO>` correspondente; cadeia correta ⇒ verde com `headSeq` = último novo. Teste: `tests/link-audit-seals-check.test.ts` (P9.2).
+- [x] **P9-S09** fecho novo com signatário fora da lista, assinatura inválida, nome ≠ `retiredKeyId` ou cabeça ausente da cadeia do
+  repositório ⇒ `CLOSURE_<MOTIVO>`. Nome ≠ `retiredKeyId` sai como `SEAL_NAME_MISMATCH` (S-08; §5.4, "Implementação"). Teste:
+  `tests/link-audit-seals-check.test.ts` (P9.2).
+- [x] **P9-S10** PR sem nada sob `link-audit-seals/` ⇒ job verde sem `npm ci` (teste estático do workflow). Teste: `tests/link-audit-seals-workflow.test.ts` (P9.2).
+- [x] **P9-S11** o resumo traz uma linha por arquivo novo, por tipo: manifesto com `sha256sum`, `seq` e `sealSha256`; fecho
+  com `sha256sum`, `retiredKeyId`, `signerKeyId` e as cabeças `auditId:seq:<12 hex>`. Nenhum conteúdo de arquivo além disso. Teste: `tests/link-audit-seals-check.test.ts` (P9.2).
+- [x] **P9-S12** cadeias não tocadas não são reverificadas: uma revogação na lista não deixa vermelho um PR que só mexe em outra
+  auditoria. Teste: `tests/link-audit-seals-check.test.ts` (P9.2).
 
 **Lista de confiança (P9.2):**
 
-- [ ] **P9-T01** arquivo fora da gramática, com linha vazia, espaço, mais de 16 itens, mais de 2 `active`, id ou chave repetidos
-  ⇒ `TRUST_LIST_FORMAT`; arquivo vazio ⇒ aceito (política fechada).
-- [ ] **P9-T02** `ensaio-` em produção, ou id sem `ensaio-` em homologação ⇒ `TRUST_LIST_ENV_PREFIX`.
-- [ ] **P9-T03** cada transição proibida do §5.3 ⇒ `TRUST_LIST_TRANSITION`; cada permitida passa.
-- [ ] **P9-T04** fixar `retired:<hash>` (vindo de `active` ou de `retired`) sem o fecho no commit-base, com outro hash ou com
-  um fecho que não passa no S-11 ⇒ recusa.
-- [ ] **P9-T05** lista e manifestos do mesmo ambiente no mesmo PR ⇒ `SEALS_AND_TRUST_LIST_TOGETHER`.
-- [ ] **P9-T07** `active → retired:<sha256>` com o fecho no commit-base, de sha256 igual e válido no S-11 ⇒ aceito; `active →
-  retired` sem hash ⇒ aceito, e o resumo avisa que as posições de R deixam de autenticar até a fixação.
-- [ ] **P9-T06** a junção das linhas por `,` é exatamente o que `parseTrustKeyring` aceita, e o servidor continua lendo a
-  variável (`scoring/shared.ts` inalterado; teste estático).
+- [x] **P9-T01** arquivo fora da gramática, com linha vazia, espaço, mais de 16 itens, mais de 2 `active`, id ou chave repetidos
+  ⇒ `TRUST_LIST_FORMAT`; arquivo vazio ⇒ aceito (política fechada). Teste: `tests/link-audit-seals-trust-list.test.ts` (P9.2).
+- [x] **P9-T02** `ensaio-` em produção, ou id sem `ensaio-` em homologação ⇒ `TRUST_LIST_ENV_PREFIX`. Teste: `tests/link-audit-seals-trust-list.test.ts` (P9.2).
+- [x] **P9-T03** cada transição proibida do §5.3 ⇒ `TRUST_LIST_TRANSITION`; cada permitida passa. Teste: `tests/link-audit-seals-trust-list.test.ts` (P9.2).
+- [x] **P9-T04** fixar `retired:<hash>` (vindo de `active` ou de `retired`) sem o fecho no commit-base, com outro hash ou com
+  um fecho que não passa no S-11 ⇒ recusa. Teste: `tests/link-audit-seals-trust-list.test.ts` (P9.2).
+- [x] **P9-T05** lista e manifestos do mesmo ambiente no mesmo PR ⇒ `SEALS_AND_TRUST_LIST_TOGETHER`. Teste: `tests/link-audit-seals-trust-list.test.ts` (P9.2).
+- [x] **P9-T07** `active → retired:<sha256>` com o fecho no commit-base, de sha256 igual e válido no S-11 ⇒ aceito; `active →
+  retired` sem hash ⇒ aceito, e o resumo avisa que as posições de R deixam de autenticar até a fixação. Teste: `tests/link-audit-seals-trust-list.test.ts` (P9.2).
+- [x] **P9-T06** a junção das linhas por `,` é exatamente o que `parseTrustKeyring` aceita, e o servidor continua lendo a
+  variável (`scoring/shared.ts` inalterado; teste estático). Teste: `tests/link-audit-seals-trust-list.test.ts` (P9.2).
 
 **Receptor de manifestos (P9.3b), sem rede, em pastas temporárias:**
 
@@ -826,7 +877,7 @@ relatório indicado.
   nem `accept-new`.
 - [x] **P9-W08** a chave só é escrita depois do passo de build, e há limpeza com `if: always()`.
 - [ ] **P9-W09** `seals-deliver` não roda `npm`, `node` nem `npx`.
-- [ ] **P9-W10** `ci.yml`: job `seals` sem filtro de caminho, sem segredo, `persist-credentials: false`, base = `HEAD^1` no PR.
+- [x] **P9-W10** `ci.yml`: job `seals` sem filtro de caminho, sem segredo, `persist-credentials: false`, base = `HEAD^1` no PR. Teste: `tests/link-audit-seals-workflow.test.ts` (P9.2).
 - [x] **P9-W11** *(P9.4: a leitura é pela API, `gh api …/git/ref/heads/main`, só leitura, no lugar do `git ls-remote`; §5.5.1,
   precisões)* o job `deploy` compara `github.sha` com `refs/heads/main` (pela API, só leitura) no início do job, antes do
   checkout e do build, e de novo imediatamente antes do comando `deploy` por SSH; diferença ⇒ `NOT_MAIN_HEAD` (teste estático da
@@ -846,7 +897,7 @@ relatório indicado.
   `/run/secrets/gmn_*` e a trava; relatório do ensaio W5.3 (pré-condição).
 - [ ] **P9-H07** **[doc]** *(P9.4: pré-conferido offline com o Docker CLI 29.10, §5.5.1, precisões)* `docker stack config -c stack.yml -c stack-hml.yml` no host funde os secrets de topo (registrado
   junto com o P9-H06).
-- [ ] **P9-H08** `.dockerignore` exclui `link-audit-seals`; `.gitattributes` tem `link-audit-seals/** -text`.
+- [x] **P9-H08** `.dockerignore` exclui `link-audit-seals`; `.gitattributes` tem `link-audit-seals/** -text`. Teste: `tests/link-audit-seals-workflow.test.ts` (P9.2).
 - [x] **P9-H09** a sobreposição não declara `networks` (nem no topo nem nos serviços) e dá `name: gmn-hml_*` a **todos** os secrets
   de topo do `stack.yml`: nenhum secret de homologação aponta para um nome de produção (teste estático que cruza as duas listas).
 
@@ -860,7 +911,9 @@ relatório indicado.
 - [ ] **P9-O01** ambientes `homologacao` e `producao` com revisor obrigatório, só `main`, sem contorno por administrador (captura
   da configuração no relatório).
 - [ ] **P9-O02** `seals (append-only, v2)` como check obrigatório da `main` e CODEOWNERS do responsável para `.github/workflows/`,
-  `deploy/hostinger/` e `link-audit-seals/**/trust-keys.txt`.
+  `deploy/hostinger/` e `link-audit-seals/**/trust-keys.txt`; desde a P9.2 (revisão do PR #68), também para
+  `.github/scripts/seals-prepare.sh`, `src/lib/link-audit-seals-channel/**` e `scripts/link-audit-seals-check.ts` (o código que
+  verifica, §5.4 "Implementação").
 - [ ] **P9-O03** quatro usuários criados, `authorized_keys` com `restrict,command=`, `sshd -T` com o `Match User`, e `ssh` com
   outro comando recusado (`E_COMMAND`).
 - [ ] **P9-O04** artefatos dos receptores e Node com `sha256sum -c` OK no host.
@@ -1028,16 +1081,18 @@ autorização escrita da implantação (checklist §0).
 ### 11.3 Emendas a outros documentos (feitas nas fatias indicadas, não neste PR)
 
 - **VC-E3** (spec dos portões §5.3.3): a lista de confiança sai do arquivo de variáveis do host e vem do repositório (P9.2/P9.3a).
+  **Feita na P9.2** (o texto; a recusa do arquivo de variáveis que ainda a defina é do receptor de deploy, P9.3a).
 - **P-7** (spec dos portões §10.1): "chave pública ativa na lista" passa a ser PR em `link-audit-seals/producao/trust-keys.txt` +
-  deploy (P9.2).
+  deploy (P9.2). **Feita na P9.2.**
 - **VC-E8, PG-V04, EN-12:** a pasta de manifestos é `gmn-seals:10001 2750` (P9.3b).
 - **Runbook de chaves §4** e **runbook do custodiante**: fixação por PR; ordem da aposentadoria (fecho → entrega → `active →
-  retired:<sha256>` → deploy, §5.3); `auditId` `aud-<16 hex>` gerado na autorização; entrega por PR (P9.2).
+  retired:<sha256>` → deploy, §5.3); `auditId` `aud-<16 hex>` gerado na autorização; entrega por PR (P9.2). **Feita na P9.2**
+  (`onda6c-runbook-chaves.md` §4, `p1-runbook-custodiante.md` §6, §6.1 e §9).
 - **`p1-canal-de-entrega-manifestos.md` §3:** procedimento final com o PR e o resumo do job (P9.5).
 - **`p1-livro-de-manifestos.md`** §5, item 5: comparar o sha256 da lista instalada (log do receptor de deploy e resumo do deploy)
   com o do `trust-keys.txt` no commit implantado. §2: juntar as tabelas de verificação e de entrega pelo id da execução, caminho
   e sha256 (P9.5).
-- **`docs/security/README.md`:** o exemplo `aud-002-autorizacao-01` não vale para auditorias atestadas (P9.2).
+- **`docs/security/README.md`:** o exemplo `aud-002-autorizacao-01` não vale para auditorias atestadas (P9.2). **Feita na P9.2.**
 - **`GUIA-DE-IMPLANTACAO.md`** §1–§2 (o build e a transferência passam ao workflow) e §3.4 (P9.4, **feita**), §3.3 (P9.3b);
   **`PLANO-DE-ROLLBACK.md`** (reversão por commit + workflow) e **`VERIFICACAO-POS-DEPLOY.md`** (nome da stack como parâmetro)
   (P9.4, **feitas**).

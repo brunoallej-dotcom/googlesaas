@@ -123,7 +123,9 @@ existia ou o `sha256sum -c` falhou). Com `noclobber`, o shell nunca sobrescreve 
   própria `<PASTA_DA_CHAVE>` já está dentro do grant dela). A custódia faz `lstat` desses caminhos (`sign-key.ts:167-178`); eles
   podem não existir, desde que a pasta-mãe seja caminho real.
 - `--expect-seq` vem do **livro de manifestos** (registro externo), nunca da pasta (§5.5 passo 7). `--trust-keys` é a lista
-  **pública** com estado, a mesma do servidor de destino, com `<KEY_ID>` como `active` (senão `SIGN_KEY_NOT_ACTIVE`).
+  **pública** com estado, a mesma do servidor de destino, com `<KEY_ID>` como `active` (senão `SIGN_KEY_NOT_ACTIVE`). Desde a
+  P9.2 ela é o arquivo versionado `link-audit-seals/<amb>/trust-keys.txt` do commit implantado (um item por linha): o valor é a
+  junção das linhas por vírgula (`paste -sd, <arquivo>`, feita fora da estação, que não tem clone) e chega por mídia.
 - A saída padrão vai para arquivo porque, com `--json`, ela é **um único objeto**: o recibo (sucesso) ou `{ok:false,…}`
   (recusa). As telas da confirmação e da frase saem na saída de erro (`sign-cli.ts:232,246`), e o terminal continua o mesmo.
   Com `--json`, a pública derivada (`<KEY_ID>:<pública>`) também sai na saída de erro.
@@ -331,7 +333,8 @@ coleta LIVE --json ─► export ─► conferência + dossiê A + approval.json
 ```
 
 1. **Coleta** (operador): a coleta autorizada roda com `--json`; o operador registra `source.capture.sha256` em canal separado,
-   antes de qualquer outra coisa (spec §3). Detalhe do comando e da autorização: `onda4b-integracao-provedores.md`.
+   antes de qualquer outra coisa (spec §3). Detalhe do comando e da autorização: `onda4b-integracao-provedores.md`. A autorização
+   de uma auditoria que vai ser atestada nasce com `auditId` opaco `aud-<16 hex>` (§6.1).
 2. **Export** (conferente, na máquina dele, com o repositório e sem rede; nunca na estação de assinatura, que não tem clone):
 
    ```
@@ -348,13 +351,47 @@ coleta LIVE --json ─► export ─► conferência + dossiê A + approval.json
    `approval.json` (§5.4 da spec).
 4. **Transporte para a estação:** pacote, `approval.json`, dossiê A e aceite de risco por mídia, para `<PASTA_DAS_ENTRADAS>`.
    Conferir `sha256sum` do arquivo do pacote contra o anotado no dossiê A.
-5. **Sign** (§3), **recibo** (§3.2), **entrega** (`p1-canal-de-entrega-manifestos.md`) e **verificação pós-entrega**: a prévia da
-   auditoria passa a mostrar a origem da coleta autenticada; o resultado anota no dossiê B.
+5. **Sign** (§3), **recibo** (§3.2), **entrega por PR** (§6.2; `p1-canal-de-entrega-manifestos.md`) e **verificação
+   pós-entrega**: a prévia da auditoria passa a mostrar a origem da coleta autenticada; o resultado anota no dossiê B.
 
 > **Nunca reexporte depois da conferência.** `gap.observedHours` está DENTRO do `packageSha256`, arredondado para cima à hora
 > (spec §5.3.2): duas exportações em horas diferentes dão hashes diferentes. O `sign` assina exatamente os bytes do pacote
 > aprovado e recusa um pacote que não é o aprovado (`SIGN_PACKAGE_MISMATCH`). Conferir, aprovar e assinar sempre os **mesmos
 > bytes**. Se o pacote se perder ou mudar: novo `export`, nova conferência, novo dossiê A, nova aprovação.
+
+### 6.1 `auditId` opaco, gerado na autorização (emenda P9.2)
+
+O repositório é público e o manifesto entra nele por PR. Por isso a autorização de toda auditoria que vai ser atestada (a W6
+inclusive) nasce com o id no padrão do canal, `^aud-[0-9a-f]{16}$` (spec `docs/specs/ci-deploy-and-seal-delivery.md` §5.2), gerado
+**no momento da autorização**, numa máquina qualquer:
+
+```
+echo "aud-$(openssl rand -hex 8)"
+```
+
+- O sufixo é aleatório e nunca deriva do nome da empresa, da cidade, de data ou de um contador. O CI só confere a forma; a
+  aleatoriedade é regra deste runbook.
+- Rótulos `AUD-xxx` e ids sequenciais (como o exemplo `aud-002-autorizacao-01` do `docs/security/README.md`) **nunca** entram no
+  canal: o CI recusa o caminho (`SEALS_UNEXPECTED_PATH`).
+- O vínculo `aud-<16 hex>` → rótulo `AUD-xxx` → cliente fica **só** no dossiê offline (`p1-modelo-dossie.md`), nunca em arquivo
+  versionado, PR, commit ou comentário.
+
+### 6.2 Entrega por PR (emenda P9.2)
+
+O manifesto chega à `main` por um PR com o arquivo **exato** saído da estação (nunca editado, reformatado ou convertido; o
+`.gitattributes` desliga a conversão de fim de linha em `link-audit-seals/**`):
+
+1. copiar `<PASTA_DE_MANIFESTOS>/<AUDITORIA>/seal-<NNNN>.json` para `link-audit-seals/<amb>/seals/<AUDITORIA>/seal-<NNNN>.json`
+   (`<amb>` = `producao` ou `homologacao`), modo `0644`, arquivo comum (nunca link);
+2. conferir `sha256sum` da cópia contra o anotado no livro; abrir o PR **só** com os manifestos (nunca junto com a lista de
+   confiança do mesmo ambiente);
+3. o check `seals (append-only, v2)` tem de ficar verde: só acréscimo, caminho na gramática, forma canônica do `sign`, nome = corpo,
+   `seq` logo depois do último da `main` e a cadeia inteira autenticada pelo verificador `v2` com a lista do commit. Cada recusa
+   sai com código fixo no resumo do job (spec §5.4);
+4. o conferente compara a linha do resumo do job (caminho, `sha256` dos bytes, `seq`, `sealSha256`) com o livro de manifestos antes
+   de aprovar; depois do merge, a entrega ao host é feita pelo workflow (P9.5) e a linha da entrega vai para o livro.
+
+O fecho de aposentadoria segue o mesmo caminho (`link-audit-seals/<amb>/seals/_closures/<R>.json`, §9).
 
 ## 7. Cópia da pasta de manifestos na estação
 
@@ -436,8 +473,11 @@ Depois do fecho (o resto é o `onda6c-runbook-chaves.md` §4, passos 4 a 6):
 
 1. conferir na saída: `heads` (as auditorias cobertas), `unknownSealsOnServer` e `receiptedHeadsNotOnServer`. Qualquer dúvida ⇒
    `revoked`, nunca `retired`;
-2. entregar `_closures/<R>.json` **byte a byte** pelo canal (`p1-canal-de-entrega-manifestos.md`);
-3. o responsável fixa `<R>:<pública>:retired:<closureSha256>` na lista do servidor (deploy dele);
+2. entregar `_closures/<R>.json` **byte a byte** pelo canal: PR só com `link-audit-seals/<amb>/seals/_closures/<R>.json` (§6.2; o
+   CI confere o fecho pelo S-11), merge e entrega, com `WRITTEN` ou `ALREADY_PRESENT` no resumo da entrega;
+3. só depois da entrega, o responsável fixa `<R>:<pública>:retired:<closureSha256>` por um PR **só da lista**
+   (`link-audit-seals/<amb>/trust-keys.txt`, `active → retired:<sha256>`; o CI exige o fecho já na `main` com esse SHA-256 dos
+   bytes) e faz o deploy pelo workflow (emenda P9.2; ordem completa no `onda6c-runbook-chaves.md` §4, passo 4);
 4. destruir **todas** as cópias da privada de `R`, inclusive as duas mídias (§5), e registrar no livro.
 
 ## 10. Destruição da chave do ensaio (com registro)

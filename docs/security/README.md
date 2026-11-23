@@ -37,6 +37,11 @@ voltem.
   rótulo → dado real fica só no dossiê offline do responsável; não escreva tabela de correspondência em nenhum arquivo.
 - **Ids novos de autorização e de auditoria são opacos** (ex.: `aud-002-autorizacao-01`), nunca derivados do nome da
   empresa, porque viram nomes de pasta, de arquivo e aparecem em logs e documentos.
+  **Auditoria que vai ser atestada** (P9.2; spec `docs/specs/ci-deploy-and-seal-delivery.md` §5.2): o exemplo sequencial acima
+  **não vale**. A autorização nasce com `aud-` + 16 hexadecimais aleatórios (`echo "aud-$(openssl rand -hex 8)"`, gerado no momento
+  da autorização), porque o manifesto entra por PR no repositório público em `link-audit-seals/<amb>/seals/<auditId>/` e o CI
+  recusa qualquer outro formato (`SEALS_UNEXPECTED_PATH`). Rótulos `AUD-xxx` e ids sequenciais nunca entram no canal; o vínculo com
+  o rótulo e com o cliente fica só no dossiê offline.
 - **Testes com a captura real** só a encontram por variáveis de ambiente definidas fora da árvore
   (`GMN_TEST_AUD001_BASE`, `GMN_TEST_AUD001_AUDIT`; ver `tests/helpers/link-audit-aud001-real-capture.ts`) e não fixam
   valores reais; sem a pasta, são ignorados.
