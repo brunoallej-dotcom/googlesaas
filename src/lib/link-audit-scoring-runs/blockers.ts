@@ -11,7 +11,7 @@ import type { BlockerCode, BlockerSeverity, MapperBlocker } from './types';
 export type PreviewBlockerCode = BlockerCode | ServiceBlockerCode;
 
 /** Códigos que o SERVIÇO emite (têm mensagem própria aqui); os demais vêm do mapeador com a mensagem dele. */
-export type ServiceBlockerCode = 'NO_STORED_CAPTURE' | 'DECISION_PENDING' | 'DECISION_NEEDS_SITE_SCOPE' | 'DECISION_CATEGORY_MISMATCH' | 'DECISION_BASIS_UNVERIFIABLE' | 'DECISION_NOT_SUPPORTED' | 'EVIDENCE_PROVENANCE_UNPROVEN' | 'DECISIONS_HISTORY_UNRESOLVED' | 'ENGINE_REJECTED_INPUT';
+export type ServiceBlockerCode = 'NO_STORED_CAPTURE' | 'DECISION_PENDING' | 'DECISION_NEEDS_SITE_SCOPE' | 'DECISION_CATEGORY_MISMATCH' | 'DECISION_BASIS_UNVERIFIABLE' | 'DECISION_NOT_SUPPORTED' | 'EVIDENCE_PROVENANCE_UNPROVEN' | 'DECISIONS_HISTORY_UNRESOLVED' | 'ENGINE_REJECTED_INPUT' | 'SIMULATED_EVIDENCE';
 
 export interface PreviewBlocker {
   readonly code: PreviewBlockerCode;
@@ -32,6 +32,8 @@ const SERVICE_MESSAGES: Readonly<Record<ServiceBlockerCode, string>> = {
   DECISIONS_HISTORY_UNRESOLVED: 'A integridade do histórico de decisões NÃO está resolvida: a testemunha independente (resultados já selados) ou o livro de cabeças mostram que falta uma posição do histórico ou que ela é outra, não é confiável, não pôde ser lida ou não está configurada — ou a auditoria ainda não está protegida pelo livro (a inscrever ou legada, em modo restrito). Nenhuma decisão humana foi enviada ao motor e nada pode ser finalizado. Não apague nem mova arquivos; restaure o par decisões + recibos do mesmo instante a partir do backup e avise a operação.',
   EVIDENCE_PROVENANCE_UNPROVEN: 'A origem da coleta NÃO foi comprovada por uma prova independente (manifesto assinado fora da pasta de evidências). O SHA-256 prova que o arquivo não mudou depois de selado, não que veio da coleta; por isso o resultado não pode ser finalizado. A prévia continua consultável.',
   ENGINE_REJECTED_INPUT: 'O motor recusou a entrada montada: não há resultado.',
+  // W5.2b (spec do P1 §5.7): BLOCKING sem a trava de homologação no servidor; WARNING com ela (a marca continua visível no ensaio)
+  SIMULATED_EVIDENCE: 'SIMULADA — ensaio: as evidências desta auditoria são SINTÉTICAS, gravadas pelo modo SIMULATED do coletor na homologação (nenhuma consulta foi feita; não descrevem empresa real). Fora da pilha de homologação nada sobre elas pode ser finalizado.',
 };
 
 const uniqueSorted = <T extends string>(values: readonly T[]): T[] => [...new Set(values)].sort();

@@ -6,6 +6,7 @@ import { AUDIT_ID_PATTERN, createDecisionService, type ResultsLedgerPort } from 
 import { createEvidenceReader, createProvenanceRecheck, EvidenceAccessError, type EvidenceActor, type ProvenanceRecheckPort } from '@/lib/link-audit-evidence';
 import { createScoringBasisReader } from '@/lib/link-audit-evidence/scoring-basis';
 import { evidenceProvenanceFromConfig } from '@/lib/link-audit-evidence/provenance';
+import { homologationLockFromProcess } from '@/lib/link-audit-evidence/simulated';
 import { originConfigFromEnv } from '@/lib/link-audit-origin';
 import { createResultsKnownHeads, createScoringPreviewService, createScoringResultsService, PREVIEW_HTTP_STATUS, PREVIEW_MESSAGE, RESULTS_HTTP_STATUS, RESULTS_MESSAGE, type PreviewFailure, type ResultsFailure, type ScoringResultsService } from '@/lib/link-audit-scoring-runs';
 import { SlidingWindowLimiter } from '@/lib/rate-limit';
@@ -114,7 +115,8 @@ async function prepare(request: Request, limiter: SlidingWindowLimiter, evidence
   const knownHeads = resultsDir && resultsAnchorDir ? createResultsKnownHeads({ baseDir: resultsDir, anchorDir: resultsAnchorDir, otherDirs: [decisionsDir, anchorDir, evidenceDir, ledgerDirOf()], ...(prepareOrigin.ok ? { origin: prepareOrigin.authenticator } : {}) }) : async () => ({ ok: false as const, reason: 'NOT_CONFIGURED' as const }); // sem as pastas de resultados: NÃO RESOLVIDO (falha fechada), nunca "sem inconsistência"
   // só LEITURA das decisões (sem escrita não há o que assinar), com a TESTEMUNHA dos resultados selados; o MESMO livro grava os RUN_* da finalização pela porta de escrita
   const decisions = createDecisionService({ baseDir: decisionsDir, anchorDir, evidence: reader, evidenceBaseDir: evidenceDir, knownHeads, ledger: ledgerForRoutes([decisionsDir, anchorDir, evidenceDir, resultsDir, resultsAnchorDir]) });
-  const preview = createScoringPreviewService({ basisReader, evidenceProvenance, decisions, clock: serverClock });
+  // W5.2b (spec do P1 §5.7): só a pilha de homologação liga GMN_LINK_AUDIT_HOMOLOGATION=1; sem ela, evidência SIMULADA bloqueia a finalização
+  const preview = createScoringPreviewService({ basisReader, evidenceProvenance, decisions, clock: serverClock, homologation: homologationLockFromProcess() });
   const provenanceRecheck = createProvenanceRecheck({ policy: evidenceProvenance, trustKeys });
   return { actor, preview, basisReader, dirs: { evidence: evidenceDir, decisions: decisionsDir, anchors: anchorDir }, resultsLedger: decisions.resultsLedger, provenanceRecheck };
 }

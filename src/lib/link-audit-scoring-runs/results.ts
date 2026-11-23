@@ -972,7 +972,8 @@ export function createScoringResultsService(deps: ResultsDeps) {
               const now = await deps.preview.evaluate(actor, auditId);
               if (!now.ok) return refuseConclusion({ ...failure(now.code, ...now.issues), ...(now.head !== undefined ? { head: now.head } : {}) });
               // (2b) a conclusão também DEPENDE das evidências e do histórico de decisões: sem prova de coleta, ou com a integridade do histórico NÃO resolvida, ninguém dá recibo (falha fechada)
-              if (now.value.payload.blockers.some((b) => b.code === 'EVIDENCE_PROVENANCE_UNPROVEN' || b.code === 'DECISIONS_HISTORY_UNRESOLVED')) return refuseConclusion({ ...failure('NOT_FINALIZABLE'), blockers: now.value.payload.blockers });
+              // W5.2b: evidência SIMULADA sem a trava de homologação (bloqueio BLOCKING) também nunca recebe recibo
+              if (now.value.payload.blockers.some((b) => b.code === 'EVIDENCE_PROVENANCE_UNPROVEN' || b.code === 'DECISIONS_HISTORY_UNRESOLVED' || (b.code === 'SIMULATED_EVIDENCE' && b.severity === 'BLOCKING'))) return refuseConclusion({ ...failure('NOT_FINALIZABLE'), blockers: now.value.payload.blockers });
               const problems = pendingEvidenceProblems(last, now.value);
               if (problems.length > 0) return refuseConclusion(failure('EVIDENCE_HASH_CHANGED', ...problems.slice(0, 10)));
               const gravado = last.decisions.head;

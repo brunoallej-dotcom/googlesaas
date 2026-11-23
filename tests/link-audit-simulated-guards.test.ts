@@ -11,7 +11,12 @@ import { StoredAuditDetail } from '../src/components/link-audit/stored-audit-det
 import { StoredAuditList } from '../src/components/link-audit/stored-audit-list';
 import { createEvidenceReader, toAuditDetailDto, toListItem } from '../src/lib/link-audit-evidence';
 import { SIMULATED_LABEL, SIMULATED_SOURCE_LABEL } from '../src/lib/link-audit-evidence/simulated';
+import { createScoringPreviewService } from '../src/lib/link-audit-scoring-runs';
+import { TRUSTING_EVIDENCE_POLICY } from './helpers/link-audit-evidence-provenance-fixtures';
+import { fakeList } from './helpers/link-audit-preview-fixtures';
+import { makeService, OP_A, resultsEnv, treeOf } from './helpers/link-audit-results-fixtures';
 import { canonicalJson, sha256Hex } from '../src/lib/link-audit/canonical';
+import { nodeFsOps } from '../src/lib/link-audit/snapshot-store';
 import { createScoringBasisReader } from '../src/lib/link-audit-evidence/scoring-basis';
 import { registerCleanup, tmpDir } from './helpers/link-audit-evidence-fixtures';
 import { at, HOUR, jsonOf, makeAudit, newOut, readJsonFile, runCli as runSeal, exportArgs } from './helpers/link-audit-seal-export-fixtures';
@@ -179,4 +184,108 @@ test('leitor e interface (2c): a coleta simulada aparece como "SIMULADA — ensa
 test('interface: o selo da tela é o mesmo rótulo do servidor (uma fonte só para "SIMULADA — ensaio")', () => {
   assert.equal(SIMULATED_BADGE, SIMULATED_LABEL);
   assert.ok(SIMULATED_SOURCE_LABEL.startsWith(SIMULATED_LABEL));
+});
+
+/* ------------------------------------------------------------------ prévia e finalização (2c) e configuração de produção */
+
+function simulatedPreview(evidence: string, homologation: boolean | undefined) {
+  return createScoringPreviewService({
+    basisReader: createScoringBasisReader({ baseDir: evidence, authorize: () => true }),
+    decisions: { list: async () => ({ ok: true as const, value: fakeList(SIM_AUDIT_ID, [], { head: null }) }) },
+    clock: () => '2026-11-22T12:00:00.000Z',
+    evidenceProvenance: TRUSTING_EVIDENCE_POLICY, // isola a trava da captura simulada: a prova de coleta (camada 1) tem testes próprios
+    ...(homologation === undefined ? {} : { homologation }),
+  });
+}
+
+test('prévia e finalização (2c): SEM a trava no servidor, base simulada ⇒ bloqueio SIMULATED_EVIDENCE (BLOCKING), nada finalizável, e a finalização responde NOT_FINALIZABLE sem gravar nada', async () => {
+  const evidence = tmpDir('lasim-pv-');
+  await collectSimulated(evidence);
+  for (const homologation of [undefined, false]) {
+    const preview = simulatedPreview(evidence, homologation);
+    const ev = await preview.evaluate(OP_A, SIM_AUDIT_ID);
+    assert.ok(ev.ok, JSON.stringify(ev).slice(0, 300));
+    const blocker = ev.value.payload.blockers.find((b) => b.code === 'SIMULATED_EVIDENCE');
+    assert.equal(blocker?.severity, 'BLOCKING');
+    assert.match(blocker?.message ?? '', /SIMULADA — ensaio/);
+    assert.equal(ev.value.payload.finalization.allowed, false);
+    const e = resultsEnv();
+    const done = await makeService(e, preview).finalize(OP_A, SIM_AUDIT_ID, { expectedHead: null, expectedInputSha256: ev.value.inputSha256 as string });
+    assert.ok(!done.ok);
+    assert.equal(done.code, 'NOT_FINALIZABLE');
+    assert.ok(done.blockers?.some((b) => b.code === 'SIMULATED_EVIDENCE' && b.severity === 'BLOCKING'));
+    const tree = treeOf(e);
+    assert.deepEqual([...(tree.runs ?? []), ...(tree.anchors ?? [])].filter((name) => name.endsWith('.json')), [], 'nenhum resultado nem recibo gravado');
+  }
+});
+
+test('prévia e finalização (2c): COM a trava no servidor (homologação), o mesmo bloqueio vira WARNING ("SIMULADA — ensaio" continua visível) e o S-13 finaliza', async () => {
+  const evidence = tmpDir('lasim-pv-');
+  await collectSimulated(evidence);
+  const preview = simulatedPreview(evidence, true);
+  const ev = await preview.evaluate(OP_A, SIM_AUDIT_ID);
+  assert.ok(ev.ok);
+  const blocker = ev.value.payload.blockers.find((b) => b.code === 'SIMULATED_EVIDENCE');
+  assert.equal(blocker?.severity, 'WARNING');
+  assert.equal(ev.value.payload.finalization.allowed, true, JSON.stringify(ev.value.payload.blockers));
+  const e = resultsEnv();
+  const done = await makeService(e, preview).finalize(OP_A, SIM_AUDIT_ID, { expectedHead: null, expectedInputSha256: ev.value.inputSha256 as string });
+  assert.ok(done.ok, JSON.stringify(done).slice(0, 400));
+  assert.deepEqual((treeOf(e).runs ?? []).filter((name) => name.endsWith('.json')).map((name) => path.basename(name)), ['s0001.json']);
+});
+
+test('prévia (2c): base REAL não ganha bloqueio nenhum, com ou sem a trava', async () => {
+  const real = await makeAudit();
+  for (const homologation of [false, true]) {
+    const preview = createScoringPreviewService({
+      basisReader: createScoringBasisReader({ baseDir: real.base, authorize: () => true }),
+      decisions: { list: async () => ({ ok: true as const, value: fakeList(real.auditId, [], { head: null }) }) },
+      clock: () => '2026-11-22T12:00:00.000Z',
+      evidenceProvenance: TRUSTING_EVIDENCE_POLICY,
+      homologation,
+    });
+    const ev = await preview.evaluate(OP_A, real.auditId);
+    assert.ok(ev.ok);
+    assert.ok(!ev.value.payload.blockers.some((b) => b.code === 'SIMULATED_EVIDENCE'));
+  }
+});
+
+test('servidor (2c): as rotas montam a prévia com a trava lida SÓ de GMN_LINK_AUDIT_HOMOLOGATION; a stack de PRODUÇÃO não declara a variável', () => {
+  const root = path.join(__dirname, '..');
+  const shared = fs.readFileSync(path.join(root, 'src/app/api/link-audit/scoring/shared.ts'), 'utf8');
+  assert.match(shared, /createScoringPreviewService\(\{[^}]*homologation: homologationLockFromProcess\(\)/);
+  const stack = fs.readFileSync(path.join(root, 'deploy/hostinger/stack.yml'), 'utf8');
+  assert.ok(!stack.includes('GMN_LINK_AUDIT_HOMOLOGATION'), 'produção nunca liga a trava de homologação');
+  for (const file of ['deploy/hostinger/Dockerfile', 'deploy/hostinger/docker-entrypoint.sh']) assert.ok(!fs.readFileSync(path.join(root, file), 'utf8').includes('GMN_LINK_AUDIT_HOMOLOGATION'), file);
+});
+
+test('conclusão (2c): pendente gravada na homologação sobre evidência simulada NÃO recebe recibo sem a trava; com a trava, o autor conclui', async () => {
+  const evidence = tmpDir('lasim-pd-');
+  await collectSimulated(evidence);
+  const homologated = simulatedPreview(evidence, true);
+  const ev = await homologated.evaluate(OP_A, SIM_AUDIT_ID);
+  assert.ok(ev.ok);
+  const body = { expectedHead: null, expectedInputSha256: ev.value.inputSha256 as string };
+  const e = resultsEnv();
+  const failingAnchors = makeService(e, homologated, {
+    fs: {
+      ...nodeFsOps,
+      async writeExclusive(target: string, data: string, mode?: number) {
+        if (target.startsWith(e.anchors)) throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
+        return nodeFsOps.writeExclusive(target, data, mode);
+      },
+    } as never,
+  });
+  const pending = await failingAnchors.finalize(OP_A, SIM_AUDIT_ID, body);
+  assert.ok(!pending.ok && pending.code === 'RESULT_ANCHOR_PENDING', JSON.stringify(pending).slice(0, 200));
+  const receipt = path.join(e.anchors, SIM_AUDIT_ID, 'a0001.json');
+
+  const refused = await makeService(e, simulatedPreview(evidence, false)).finalize(OP_A, SIM_AUDIT_ID, body);
+  assert.ok(!refused.ok && refused.code === 'NOT_FINALIZABLE', JSON.stringify(refused).slice(0, 300));
+  assert.ok(refused.blockers?.some((b) => b.code === 'SIMULATED_EVIDENCE' && b.severity === 'BLOCKING'));
+  assert.equal(fs.existsSync(receipt), false, 'nenhum recibo fora da homologação');
+
+  const concluded = await makeService(e, homologated).finalize(OP_A, SIM_AUDIT_ID, body);
+  assert.ok(concluded.ok && concluded.value.recoveredPending, JSON.stringify(concluded).slice(0, 300));
+  assert.equal(fs.existsSync(receipt), true);
 });

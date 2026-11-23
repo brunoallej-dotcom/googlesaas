@@ -105,6 +105,11 @@ export interface PreviewDeps {
    * `EVIDENCE_PROVENANCE_UNPROVEN` bloqueia a finalização). Integridade (SHA-256) NÃO substitui isto: quem escreve na pasta sela o que quiser.
    */
   readonly evidenceProvenance?: EvidenceProvenancePolicy;
+  /**
+   * Trava de homologação do SERVIDOR (W5.2b, spec do P1 §5.7): com ela, a base com evidência SIMULADA (marca da captura) só gera um aviso; sem ela
+   * (padrão, produção), o bloqueio `SIMULATED_EVIDENCE` impede a finalização. Nunca vem do cliente.
+   */
+  readonly homologation?: boolean;
 }
 
 export interface HeldDecision {
@@ -340,6 +345,8 @@ export function createScoringPreviewService(deps: PreviewDeps) {
     const trust = finalizationTrust(s.trust);
     const provenance = headProofOf(trust);
     if (trust === null || trust.status !== 'AUTHENTICATED') serviceBlockers.push(previewBlocker('EVIDENCE_PROVENANCE_UNPROVEN', 'BLOCKING', { reasonCode: trust?.status === 'UNAUTHENTICATED' ? trust.reason : 'VERIFICATION_ERROR' }));
+    // W5.2b: evidência SIMULADA (ensaio) nunca passa por real: fora da homologação, bloqueia a finalização; na homologação, fica o aviso
+    if (basis.evidences.some((evidence) => evidence.simulated === true)) serviceBlockers.push(previewBlocker('SIMULATED_EVIDENCE', deps.homologation === true ? 'WARNING' : 'BLOCKING'));
 
     /* decisões: aplicar ou RETER (campos estruturados; o alias nunca é usado para localizar nada) */
     const recordsById = new Map<string, OperatorRecord>(decisions.operatorRecords.map((record) => [record.id, record]));
