@@ -4,7 +4,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { nodeFsOps } from '../src/lib/link-audit/node-fs-ops';
+import { parseTrustKeyring } from '../src/lib/link-audit-evidence/provenance';
 import { runSealsCheckCli, SEALS_CHECK_EXIT } from '../src/lib/link-audit-seals-channel/cli';
+import { CHANNEL_ENVIRONMENTS } from '../src/lib/link-audit-seals-channel/paths';
+import { parseTrustListFile, trustListEnvironmentViolations } from '../src/lib/link-audit-seals-channel/trust-list';
 import { registerCleanup, tmpDir } from './helpers/link-audit-evidence-fixtures';
 import { signer } from './helpers/link-audit-seal-close-key-fixtures';
 import { AUD_A, canonicalText, listFile, listItem, nextSeal, sealRepoPath } from './helpers/link-audit-seals-fixtures';
@@ -94,7 +97,7 @@ test('P9-W10 `ci.yml`: job `seals (append-only, v2)` em todo pull_request e push
   assert.ok(!/curl|wget|ssh|npm|node|git (fetch|push|pull|clone)/.test(script.replace(/^\s*#.*$/gm, '')), 'o preparo não usa rede nem instala nada');
 });
 
-test('P9-H08 `.dockerignore` exclui link-audit-seals; `.gitattributes` tem `link-audit-seals/** -text` DEPOIS de toda regra de texto que casaria (a última vale); as duas listas existem vazias', () => {
+test('P9-H08 `.dockerignore` exclui link-audit-seals; `.gitattributes` tem `link-audit-seals/** -text` DEPOIS de toda regra de texto que casaria (a última vale); as duas listas existem, são arquivos comuns e válidas para o seu ambiente', () => {
   assert.ok(read('.dockerignore').split('\n').includes('link-audit-seals'));
   const lines = read('.gitattributes').split('\n');
   const at = lines.indexOf('link-audit-seals/** -text');
@@ -102,7 +105,17 @@ test('P9-H08 `.dockerignore` exclui link-audit-seals; `.gitattributes` tem `link
   const laterText = lines.slice(at + 1).filter((line) => /^\S+\s.*\btext\b/.test(line) && !line.startsWith('#'));
   assert.deepEqual(laterText, [], 'nenhuma regra de texto depois dela');
   assert.ok(lines.slice(0, at).some((line) => line.startsWith('*.json')) && lines.slice(0, at).some((line) => line.startsWith('*.txt')), 'vale sobre *.json e *.txt');
-  for (const env of ['producao', 'homologacao']) assert.equal(fs.statSync(path.join(ROOT, 'link-audit-seals', env, 'trust-keys.txt')).size, 0, `${env}: lista vazia (política fechada)`);
+  for (const env of CHANNEL_ENVIRONMENTS) {
+    const file = path.join(ROOT, 'link-audit-seals', env, 'trust-keys.txt');
+    const info = fs.lstatSync(file);
+    assert.ok(info.isFile() && !info.isSymbolicLink(), `${env}: arquivo comum`);
+    const parsed = parseTrustListFile(fs.readFileSync(file));
+    assert.ok(parsed.ok, `${env}: no formato do §5.3 (vazio = política fechada)`);
+    if (parsed.value !== '') assert.ok(parseTrustKeyring(parsed.value), `${env}: a junção por vírgula passa por parseTrustKeyring`);
+    assert.deepEqual(trustListEnvironmentViolations(env, parsed.items), [], `${env}: regra do prefixo ensaio-`);
+  }
+  // o caso da política fechada fica num exemplo fixo (o arquivo versionado pode ganhar chaves legítimas)
+  assert.deepEqual(parseTrustListFile(new Uint8Array(0)), { ok: true, items: [], value: '' });
 });
 
 /* ------------------------------------------------------------------------------------------------------------------- P9-S10 funcional */
