@@ -266,7 +266,8 @@ function fillWrapper(template: string, artifactBytes: Buffer, hash: string = sha
   return { file, artifact, record };
 }
 
-const runWrapper = (file: string, env: Record<string, string>) => spawnSync('/bin/sh', [file], { env, encoding: 'utf8', timeout: 30_000 });
+/** O ambiente EXATO do shell do wrapper (o tipo do Next exige NODE_ENV em ProcessEnv; o filho não o recebe). */
+const runWrapper = (file: string, env: Record<string, string>) => spawnSync('/bin/sh', [file], { env: env as NodeJS.ProcessEnv, encoding: 'utf8', timeout: 30_000 });
 
 test('wrapper (os dois modelos): só marcadores; set -eu; confere o sha256 do artefato antes de tudo; env -i com PATH fixo; node absoluto com --disable-sigusr1; parâmetros fixos iguais aos da spec e aceitos pelo receptor', () => {
   for (const template of [PROD_WRAPPER, HML_WRAPPER]) {
