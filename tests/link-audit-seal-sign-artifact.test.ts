@@ -495,6 +495,7 @@ function grantsVerdict(subcommand: 'sign' | 'close-key', sealsDir: string, optio
     execArgv: [...RUNBOOK_FLAGS, ...options],
     execBlock: { cmdline: async () => block(['/usr/bin/node', ...RUNBOOK_FLAGS, ...original, '/estacao/artefato/link-audit-sign.cjs', subcommand]), environ: async () => block([]) },
     realpath: (target) => fs.promises.realpath(target),
+    lstat: (target) => fs.promises.lstat(target),
     tempRoots: ['/tmp', '/var/tmp', '/dev/shm'],
   });
 }

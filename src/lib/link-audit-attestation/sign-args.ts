@@ -454,19 +454,40 @@ const TEMP_ROOTS_UNPROVEN = grantsRefusal('o caminho real das pastas temporária
 const overlaps = (a: string, b: string): boolean => isInside(a, b) || isInside(b, a);
 const errnoOf = (error: unknown): unknown => (typeof error === 'object' && error !== null ? (error as { readonly code?: unknown }).code : undefined);
 
+/** Portas de disco da conferência dos grants (injetáveis nos testes): `realpath` e `lstat` (metadados, sem seguir link). */
+interface GrantFs {
+  readonly realpath: (target: string) => Promise<string>;
+  readonly lstat: (target: string) => Promise<unknown>;
+}
+
+/**
+ * Revisão do PR #59 (wk2): o `.git` da custódia só conta como AUSENTE se o `lstat` dele também der ENOENT. O `realpath` de um link simbólico
+ * PENDENTE dá ENOENT como se nada existisse; o `lstat` mostra o link, e ele é recusado aqui (a custódia da chave o recusaria só depois de ler as
+ * entradas e da confirmação). Sob `--permission`, o `lstat` do próprio caminho concedido é permitido.
+ */
+async function gitTrulyAbsent(target: string, lstat: GrantFs['lstat']): Promise<boolean> {
+  try {
+    await lstat(target);
+    return false;
+  } catch (error) {
+    return errnoOf(error) === ABSENT;
+  }
+}
+
 /**
  * O grant é o próprio caminho real? Existe e `realpath` devolve o mesmo texto (nenhum componente é link). Caminho que não existe só passa (falha
- * fechada para todo o resto): na leitura, um `.git` da custódia (ela consulta a AUSÊNCIA); na escrita, um caminho cuja pasta existente mais próxima
- * acima seja o próprio caminho real (`ABSENT_WRITE`), que `artifactGrantsRefusal` recusa depois, nos dois subcomandos (W5.2a).
+ * fechada para todo o resto): na leitura, um `.git` da custódia (ela consulta a AUSÊNCIA) que nem como link pendente existe (`gitTrulyAbsent`); na
+ * escrita, um caminho cuja pasta existente mais próxima acima seja o próprio caminho real (`ABSENT_WRITE`), que `artifactGrantsRefusal` recusa
+ * depois, nos dois subcomandos (W5.2a).
  */
 type RealCheck = 'LITERAL' | 'VERIFIED' | 'ABSENT_GIT' | 'ABSENT_WRITE' | 'NOT_REAL';
-async function isOwnRealPath(grant: { readonly kind: 'read' | 'write'; readonly value: string }, realpath: (target: string) => Promise<string>): Promise<RealCheck> {
+async function isOwnRealPath(grant: { readonly kind: 'read' | 'write'; readonly value: string }, { realpath, lstat }: GrantFs): Promise<RealCheck> {
   if (grant.kind === 'read' && LITERAL_READ_GRANTS.has(grant.value)) return 'LITERAL';
   try {
     return (await realpath(grant.value)) === grant.value ? 'VERIFIED' : 'NOT_REAL';
   } catch (error) {
     if (errnoOf(error) !== ABSENT) return 'NOT_REAL';
-    if (grant.kind === 'read') return path.basename(grant.value) === GIT_NAME ? 'ABSENT_GIT' : 'NOT_REAL';
+    if (grant.kind === 'read') return path.basename(grant.value) === GIT_NAME && (await gitTrulyAbsent(grant.value, lstat)) ? 'ABSENT_GIT' : 'NOT_REAL';
   }
   for (let dir = path.dirname(grant.value); ; dir = path.dirname(dir)) {
     try {
@@ -522,7 +543,7 @@ function grantsShapeRefusal(subcommand: 'sign' | 'close-key', grants: readonly G
  * com pelo menos dois componentes, salvo `/tmp` (raiz temporária da custódia) e caminhos que terminam em `.git` (os `lstat` da custódia da chave).
  * Limite declarado (W5.2a, D15.3): a leitura larga do `close-key` não amplia a escrita; a estação é dedicada e sem rede.
  */
-export async function artifactGrantsRefusal(input: { readonly subcommand: 'sign' | 'close-key'; readonly sealsDir: string; readonly execArgv: readonly string[]; readonly execBlock: ExecBlockReader; readonly realpath: (target: string) => Promise<string>; readonly tempRoots: readonly string[] }): Promise<SignRefusal | null> {
+export async function artifactGrantsRefusal(input: { readonly subcommand: 'sign' | 'close-key'; readonly sealsDir: string; readonly execArgv: readonly string[]; readonly execBlock: ExecBlockReader; readonly realpath: (target: string) => Promise<string>; readonly lstat: (target: string) => Promise<unknown>; readonly tempRoots: readonly string[] }): Promise<SignRefusal | null> {
   const original = await originalExec(input.execBlock);
   if (original === null) return EXEC_BLOCK_UNREADABLE;
   const grants = [...input.execArgv, ...original.options].flatMap((token): Grant[] => {
@@ -545,7 +566,7 @@ export async function artifactGrantsRefusal(input: { readonly subcommand: 'sign'
   const absentGit: string[] = [];
   let absentWrite = false;
   for (const grant of grants) {
-    const check = await isOwnRealPath(grant, input.realpath);
+    const check = await isOwnRealPath(grant, input);
     if (check === 'NOT_REAL') return GRANT_NOT_REAL;
     if (check === 'VERIFIED') verified.push(grant.value);
     if (check === 'ABSENT_GIT') absentGit.push(grant.value);

@@ -188,7 +188,7 @@ const NO_FSYNC: SignRefusal = {
 async function grantsRefusal(subcommand: 'sign' | 'close-key', sealsDir: string, deps: SignCliDeps, env: Readonly<Record<string, string | undefined>>): Promise<SignRefusal | null> {
   if (deps.artifact === undefined) return null;
   // as raízes temporárias PADRÃO (nunca as injetadas da custódia): no artefato, manifesto nunca em pasta temporária
-  return artifactGrantsRefusal({ subcommand, sealsDir, execArgv: deps.execArgv ?? process.execArgv, execBlock: deps.execBlock ?? nodeExecBlock, realpath: (deps.keyFs ?? nodeKeyFileOps).realpath, tempRoots: defaultTempRoots(env) });
+  return artifactGrantsRefusal({ subcommand, sealsDir, execArgv: deps.execArgv ?? process.execArgv, execBlock: deps.execBlock ?? nodeExecBlock, realpath: (deps.keyFs ?? nodeKeyFileOps).realpath, lstat: (deps.keyFs ?? nodeKeyFileOps).lstat, tempRoots: defaultTempRoots(env) });
 }
 
 /**
