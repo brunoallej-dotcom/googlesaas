@@ -349,7 +349,12 @@ test('migração 004 ↔ adaptador: a função e a tabela que o SQL fixo usa exi
   assert.match(sql, new RegExp(`ledger_seq between 1 and ${MAX_LEDGER_RECORDS}\\)`), 'CHECK da tabela');
   assert.match(sql, new RegExp(`p_ledger_seq > ${MAX_LEDGER_RECORDS} then`), 'validação da função');
   assert.equal((sql.match(/create or replace function/g) ?? []).length, 3);
-  assert.equal((sql.match(/\n  set search_path = ''\n/g) ?? []).length, 3, 'as três funções com search_path vazio');
+  assert.equal((sql.match(/\n  set search_path = ''\n/g) ?? []).length, 4, 'as três funções da guarda e a do inventário (temporária) com search_path vazio');
+  // revisão do PR #61: inventário FECHADO do esquema (função temporária desta sessão), chamado na pré-validação e na conferência final, e removido antes do COMMIT
+  assert.match(sql, /create function pg_temp\.gmn_guard_inventory\(p_fase text\)/);
+  assert.match(sql, /perform pg_temp\.gmn_guard_inventory\('pré'\);[\s\S]+perform pg_temp\.gmn_guard_inventory\('final'\);[\s\S]+drop function pg_temp\.gmn_guard_inventory\(text\);\s+commit;/);
+  for (const catalog of ['pg_class', 'pg_proc', 'pg_type', 'pg_constraint', 'pg_operator', 'pg_default_acl', 'pg_policy', 'pg_rewrite', 'pg_inherits', 'pg_publication_rel', 'pg_publication_namespace']) assert.ok(sql.includes(`pg_catalog.${catalog}`), `inventário consulta ${catalog}`);
+  assert.match(sql, /m\.grantor = 10 and m\.admin_option and not m\.set_option and not m\.inherit_option/, 'só a associação administrativa do criador');
   assert.equal((sql.match(/security definer/g) ?? []).length, 1, 'só a publicação é SECURITY DEFINER');
   assert.ok(!/\bpublic\.|schema public\b/i.test(sql.replace(/from public,/g, '').replace(/revoke all on [^;]+ from public/g, '')), 'nenhum objeto em public');
   assert.match(sql, /^begin;$/m);
