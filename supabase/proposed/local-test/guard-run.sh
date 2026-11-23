@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Teste LOCAL da proposta 004_link_audit_guard.sql (guarda externa do livro, G1.b.2a) num PostgreSQL DESCARTÁVEL.
 #
-# Usa a imagem do Postgres do Supabase JÁ PRESENTE na máquina (`--pull never`: nada é baixado) num contêiner com
+# Usa a imagem do Postgres do Supabase JÁ PRESENTE na máquina (`--pull never`: este script nunca baixa nada) num contêiner com
 # `--network none` (sem rede alguma: nem externa, nem a do host; nenhuma porta publicada, nada na 6379). O contêiner é
 # criado com `--rm` e removido no fim. A imagem traz os papéis do Supabase (anon, authenticated, service_role,
 # authenticator, supabase_admin) e o `postgres` SEM superusuário, como no projeto real (PostgreSQL 17.11).
@@ -11,11 +11,16 @@
 # se confere é ajuste de papel (prazo do servidor, sessão somente leitura, NOLOGIN).
 #
 # Uso:  bash supabase/proposed/local-test/guard-run.sh [<imagem>]
+#   A imagem padrão é a do teste local, FIXADA POR DIGEST (a mesma do projeto: PostgreSQL 17.11). No CI, o workflow
+#   `.github/workflows/guard-migration.yml` a puxa por esse digest antes e chama este script (que continua sem baixar nada).
 # Saída: uma linha "OK …" por verificação e "TODOS OS N TESTES LOCAIS DA GUARDA APROVADOS"; qualquer falha ⇒ código ≠ 0.
+# PRÉ-REQUISITOS OBRIGATÓRIOS (faltando, FALHA — nunca pula etapa): a imagem já presente, o Node e o `pg` instalados (`npm ci`)
+# e o `openssl` (a etapa da reconciliação, G1.b.2b, gera a CA de teste na hora).
 # Não faz parte do `npm test` (precisa de Docker). Não lê nenhum arquivo de ambiente e não usa senha real.
 set -euo pipefail
 
-IMAGE="${1:-public.ecr.aws/supabase/postgres:17.11.0.018}"
+# public.ecr.aws/supabase/postgres:17.11.0.018 — digest conferido na imagem do teste local em 22/11/2026
+IMAGE="${1:-public.ecr.aws/supabase/postgres@sha256:7c31363a3f7434ff14945f1b8a4880e6eca8b362e197e88b87c476c77aa3cf8c}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
 MIGRATION="$HERE/../004_link_audit_guard.sql"
@@ -39,7 +44,10 @@ trap cleanup EXIT
 ok() { COUNT=$((COUNT + 1)); echo "OK    $1"; }
 fail() { echo "FALHOU: $1" >&2; exit 1; }
 
-docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "imagem $IMAGE ausente (o teste não baixa nada)"
+docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "imagem $IMAGE ausente (o teste não baixa nada: puxe-a antes, pelo digest)"
+command -v node >/dev/null 2>&1 || fail "node ausente (a etapa do adaptador real é obrigatória)"
+[ -f "$ROOT/node_modules/pg/package.json" ] || fail "node_modules/pg ausente (rode npm ci; a etapa do adaptador real é obrigatória)"
+command -v openssl >/dev/null 2>&1 || fail "openssl ausente (a etapa da reconciliação, obrigatória, gera a CA de teste na hora)"
 docker run -d --rm --pull never --network none --name "$NAME" -v "$SOCK:/var/run/postgresql" -e POSTGRES_PASSWORD=sentinela-local "$IMAGE" >/dev/null
 for _ in $(seq 1 90); do
   if docker exec "$NAME" psql -h /var/run/postgresql -U supabase_admin -d postgres -Atc 'select 1' >/dev/null 2>&1; then break; fi
@@ -98,6 +106,14 @@ refused "esquema ocupado por outro dono" 'já existe com outro dono' as_postgres
 eq "nada criado com o esquema ocupado" "0" "$(admin -c "select count(*) from pg_roles where rolname like 'gmn_guard%'")"
 admin -c "drop schema gmn_link_audit_guard"
 ok "pré-validação: esquema com o nome da guarda e outro dono ⇒ aborta, nenhum papel criado"
+
+admin -c "create role gmn_guard_owner nologin" -c "create schema gmn_link_audit_guard authorization gmn_guard_owner" -c "set role gmn_guard_owner" \
+  -c "create function gmn_link_audit_guard.intrusa() returns int language sql as 'select 1'"
+eq "o objeto extra tem EXECUTE para PUBLIC" "t" "$(admin -c "select has_function_privilege('anon', 'gmn_link_audit_guard.intrusa()', 'EXECUTE')")"
+refused "esquema preexistente com o dono certo e uma função extra" 'função não esperada no esquema: intrusa\(\)' as_postgres_file "$MIGRATION"
+eq "nada criado com o objeto extra" "0|true" "$(admin -c "select (select count(*) from pg_roles where rolname in ('gmn_guard_writer', 'gmn_guard_reader')) || '|' || (to_regclass('gmn_link_audit_guard.ledger_heads') is null)")"
+admin -c "drop schema gmn_link_audit_guard cascade" -c "drop role gmn_guard_owner" 2>/dev/null
+ok "pré-validação (revisão do PR #61): esquema preexistente com o dono gmn_guard_owner e um objeto NÃO esperado (função com EXECUTE para PUBLIC) ⇒ aborta e desfaz, nada criado"
 
 admin -c "grant pg_read_all_data to service_role"
 refused "service_role com leitura por papel predefinido" 'service_role tem (USAGE no esquema|SELECT na tabela)' as_postgres_file "$MIGRATION"
@@ -196,6 +212,12 @@ eq "recorded_at forçado pelo gatilho" "$(date -u +%Y)" "$(echo "$PROBE_OUT" | t
 refused "superusuário também não altera" 'registros imutáveis \(UPDATE' admin -c "update gmn_link_audit_guard.ledger_heads set sha256 = '$D'"
 eq "tudo intacto" "5" "$(rows)"
 ok "gatilhos com o privilégio concedido: UPDATE, DELETE, TRUNCATE, INSERT repetido, abaixo do maior e múltiplo fora de ordem ⇒ recusados; INSERT válido passa (limite declarado) com recorded_at do provedor; o superusuário também é barrado (sem session_replication_role)"
+eq "o trio já gravado existe" "1" "$(admin -c "select count(*) from gmn_link_audit_guard.ledger_heads where audit_ref = '$REF1' and key_id = 'gk-test-a' and ledger_seq = 3 and sha256 = '$C'")"
+refused "inserção DIRETA do mesmo trio" 'guarda: posição já gravada \(regra 7\)' admin -c "begin" -c "create role gmn_guard_probe nologin" -c "grant usage on schema gmn_link_audit_guard to gmn_guard_probe" \
+  -c "grant select, insert on gmn_link_audit_guard.ledger_heads to gmn_guard_probe" -c "set local role gmn_guard_probe" -c "insert into gmn_link_audit_guard.ledger_heads (audit_ref, key_id, ledger_seq, sha256) values ('$REF1', 'gk-test-a', 3, '$C')"
+eq "a função de publicação aceita o mesmo trio" "ALREADY_RECORDED" "$(publish "$REF1" gk-test-a 3 "$C")"
+eq "nenhuma linha nova" "5" "$(rows)"
+ok "exceção INTENCIONAL à regra 7 (revisão do PR #61): a inserção direta do MESMO trio já gravado é recusada pelo gatilho, enquanto a função de publicação responde ALREADY_RECORDED (o único caminho legítimo); nenhuma linha nova"
 
 # ---------------------------------------------------------------- 8. ajustes dos papéis (login real) e NOLOGIN do dono
 eq "prazo do servidor do writer" "3s|3s|read committed" "$(login gmn_guard_writer "select current_setting('statement_timeout') || '|' || current_setting('lock_timeout') || '|' || current_setting('transaction_isolation')")"
@@ -216,13 +238,97 @@ admin -c "grant gmn_guard_writer to authenticated"
 refused "reaplicar com associação herdada" 'authenticated tem USAGE no esquema' as_postgres_file "$MIGRATION"
 admin -c "revoke gmn_guard_writer from authenticated"
 admin -c "grant gmn_guard_writer to service_role with inherit false, set true"
-refused "reaplicar com associação só de SET" 'alguém pode assumir um papel da guarda \(service_role->gmn_guard_writer\)' as_postgres_file "$MIGRATION"
+refused "reaplicar com associação só de SET" 'associação não esperada a um papel da guarda \(service_role->gmn_guard_writer \(concedente supabase_admin, admin f, set t, inherit f\)\)' as_postgres_file "$MIGRATION"
 admin -c "revoke gmn_guard_writer from service_role"
 admin -c "grant anon to gmn_guard_writer"
 refused "reaplicar com o writer membro de anon" 'papel da guarda é membro de outro papel' as_postgres_file "$MIGRATION"
 admin -c "revoke anon from gmn_guard_writer"
 eq "cabeças intactas depois das recusas" "6" "$(rows)"
 ok "reaplicar com associação indevida feita por fora (authenticated herda o writer; service_role pode SET ROLE no writer; writer membro de anon) ⇒ a conferência aborta, nada muda"
+
+# revisão do PR #61: inventário FECHADO do esquema e ACL de todos os objetos, numa guarda já em uso (com cabeças)
+reapply_refused() { # <rótulo> <padrão do erro> <preparo> <desfazer>
+  admin -c "$3"
+  refused "$1" "$2" as_postgres_file "$MIGRATION"
+  admin -c "$4"
+}
+reapply_refused "função extra com EXECUTE para PUBLIC" 'função não esperada no esquema: intrusa\(\)' \
+  "set role gmn_guard_owner; create function gmn_link_audit_guard.intrusa() returns int language sql as 'select 1'" "drop function gmn_link_audit_guard.intrusa()"
+reapply_refused "procedimento extra" 'função não esperada no esquema: rotina\(\) \[p\]' \
+  "set role gmn_guard_owner; create procedure gmn_link_audit_guard.rotina() language sql as 'select 1'" "drop procedure gmn_link_audit_guard.rotina()"
+reapply_refused "view extra com SELECT para PUBLIC" 'objeto não esperado no esquema: espelho \(relkind v\)' \
+  "set role gmn_guard_owner; create view gmn_link_audit_guard.espelho as select * from gmn_link_audit_guard.ledger_heads; grant select on gmn_link_audit_guard.espelho to public" "drop view gmn_link_audit_guard.espelho"
+reapply_refused "sequência extra" 'objeto não esperado no esquema: contador \(relkind S\)' \
+  "set role gmn_guard_owner; create sequence gmn_link_audit_guard.contador" "drop sequence gmn_link_audit_guard.contador"
+reapply_refused "tipo extra" 'tipo não esperado no esquema: estado' \
+  "set role gmn_guard_owner; create type gmn_link_audit_guard.estado as enum ('a')" "drop type gmn_link_audit_guard.estado"
+reapply_refused "operador extra" 'operador, classe' \
+  "set role gmn_guard_owner; create operator gmn_link_audit_guard.=== (leftarg = int, rightarg = int, function = pg_catalog.int4eq)" "drop operator gmn_link_audit_guard.=== (int, int)"
+reapply_refused "índice extra" 'objeto não esperado no esquema: ledger_heads_extra \(relkind i\)' \
+  "set role gmn_guard_owner; create index ledger_heads_extra on gmn_link_audit_guard.ledger_heads (sha256)" "drop index gmn_link_audit_guard.ledger_heads_extra"
+reapply_refused "privilégio padrão no esquema" 'privilégio padrão no esquema ou do dono' \
+  "alter default privileges for role gmn_guard_owner in schema gmn_link_audit_guard grant select on tables to public" "alter default privileges for role gmn_guard_owner in schema gmn_link_audit_guard revoke select on tables from public"
+reapply_refused "privilégio padrão global do dono" 'privilégio padrão no esquema ou do dono' \
+  "alter default privileges for role gmn_guard_owner grant execute on functions to anon" "alter default privileges for role gmn_guard_owner revoke execute on functions from anon"
+reapply_refused "coluna com privilégio para outro papel" 'coluna com privilégio próprio \(sha256\)' \
+  "set role gmn_guard_owner; grant select (sha256) on gmn_link_audit_guard.ledger_heads to supabase_read_only_user" "set role gmn_guard_owner; revoke select (sha256) on gmn_link_audit_guard.ledger_heads from supabase_read_only_user"
+reapply_refused "política de leitura (esconderia cabeças)" 'regra, política/RLS ou herança' \
+  "set role gmn_guard_owner; create policy esconde on gmn_link_audit_guard.ledger_heads for select using (ledger_seq < 3)" "set role gmn_guard_owner; drop policy esconde on gmn_link_audit_guard.ledger_heads"
+reapply_refused "RLS ligado" 'regra, política/RLS ou herança' \
+  "alter table gmn_link_audit_guard.ledger_heads enable row level security" "alter table gmn_link_audit_guard.ledger_heads disable row level security"
+reapply_refused "gatilho extra" 'gatilho não esperado na tabela: extra' \
+  "set role gmn_guard_owner; create trigger extra after insert on gmn_link_audit_guard.ledger_heads for each row execute function gmn_link_audit_guard.refuse_change()" "drop trigger extra on gmn_link_audit_guard.ledger_heads"
+reapply_refused "tabela numa publicação" 'estão numa publicação' \
+  "create publication gmn_guard_probe for table gmn_link_audit_guard.ledger_heads" "drop publication gmn_guard_probe"
+reapply_refused "esquema numa publicação" 'estão numa publicação' \
+  "create publication gmn_guard_probe for tables in schema gmn_link_audit_guard" "drop publication gmn_guard_probe"
+eq "cabeças intactas depois das recusas do inventário" "6" "$(rows)"
+ok "inventário fechado (revisão do PR #61): função, procedimento, view, sequência, tipo, operador e índice extras, privilégio padrão (no esquema e global do dono), coluna com privilégio, política, RLS, gatilho extra e publicação (da tabela e do esquema) ⇒ a reaplicação aborta e nada muda"
+
+# revisão do PR #61: DEFINIÇÃO EXATA do que a reaplicação não recria (colunas, restrições, índice) e dos gatilhos — nome certo, semântica errada aborta
+T=gmn_link_audit_guard.ledger_heads
+reapply_refused "restrição ausente" 'as restrições da tabela ledger_heads não são exatamente as desta migração' \
+  "alter table $T drop constraint ledger_heads_sha256_format" "alter table $T add constraint ledger_heads_sha256_format check (sha256 ~ '^[0-9a-f]{64}\$')"
+reapply_refused "CHECK mais permissivo com o mesmo nome" 'as restrições da tabela ledger_heads não são exatamente as desta migração' \
+  "alter table $T drop constraint ledger_heads_ledger_seq_range; alter table $T add constraint ledger_heads_ledger_seq_range check (ledger_seq between 1 and 40000)" \
+  "alter table $T drop constraint ledger_heads_ledger_seq_range; alter table $T add constraint ledger_heads_ledger_seq_range check (ledger_seq between 1 and 4000)"
+reapply_refused "CHECK com o mesmo nome e NOT VALID" 'as restrições da tabela ledger_heads não são exatamente as desta migração' \
+  "alter table $T drop constraint ledger_heads_key_id_format; alter table $T add constraint ledger_heads_key_id_format check (key_id ~ '^[a-z0-9][a-z0-9-]{3,31}\$') not valid" \
+  "alter table $T drop constraint ledger_heads_key_id_format; alter table $T add constraint ledger_heads_key_id_format check (key_id ~ '^[a-z0-9][a-z0-9-]{3,31}\$')"
+reapply_refused "UNIQUE com o mesmo nome e outras colunas" 'as restrições da tabela ledger_heads não são exatamente as desta migração' \
+  "alter table $T drop constraint ledger_heads_audit_ref_ledger_seq_key; alter table $T add constraint ledger_heads_audit_ref_ledger_seq_key unique (audit_ref, ledger_seq, sha256)" \
+  "alter table $T drop constraint ledger_heads_audit_ref_ledger_seq_key; alter table $T add constraint ledger_heads_audit_ref_ledger_seq_key unique (audit_ref, ledger_seq)"
+reapply_refused "coluna com outro tipo" 'a tabela ledger_heads existe com outras colunas' \
+  "alter table $T alter column recorded_at type timestamp without time zone" "alter table $T alter column recorded_at type timestamp with time zone"
+reapply_refused "coluna aceitando NULL" 'a tabela ledger_heads existe com outras colunas' \
+  "alter table $T alter column key_id drop not null" "alter table $T alter column key_id set not null"
+reapply_refused "coluna com outro default" 'a tabela ledger_heads existe com outras colunas' \
+  "alter table $T alter column recorded_at set default '2000-01-01'" "alter table $T alter column recorded_at set default now()"
+reapply_refused "gatilho com um evento a menos" 'gatilho com definição diferente da desta migração \(ledger_heads_refuse_update_delete\)' \
+  "set role gmn_guard_owner; create or replace trigger ledger_heads_refuse_update_delete before update on $T for each row execute function gmn_link_audit_guard.refuse_change()" \
+  "set role gmn_guard_owner; create or replace trigger ledger_heads_refuse_update_delete before update or delete on $T for each row execute function gmn_link_audit_guard.refuse_change()"
+reapply_refused "gatilho desligado" 'gatilho com definição diferente da desta migração \(ledger_heads_refuse_truncate\)' \
+  "alter table $T disable trigger ledger_heads_refuse_truncate" "alter table $T enable trigger ledger_heads_refuse_truncate"
+reapply_refused "gatilho ausente" 'os três gatilhos da guarda não estão todos presentes' \
+  "drop trigger ledger_heads_publication_order on $T" "set role gmn_guard_owner; create trigger ledger_heads_publication_order before insert on $T for each row execute function gmn_link_audit_guard.enforce_publication_order()"
+reapply_refused "tabela UNLOGGED" 'não é uma tabela comum, registrada e heap' \
+  "alter table $T set unlogged" "alter table $T set logged"
+eq "cabeças intactas depois das recusas da definição" "6" "$(rows)"
+as_postgres_file "$MIGRATION"
+ok "definição exata (revisão do PR #61): restrição ausente, CHECK mais permissivo ou NOT VALID com o mesmo nome, UNIQUE com outras colunas, coluna com outro tipo, NULL ou default, gatilho com um evento a menos, desligado ou ausente e tabela UNLOGGED ⇒ a reaplicação aborta e nada muda; desfeitos, a reaplicação volta a passar"
+
+admin -c "set role gmn_guard_owner" -c "grant select (sha256) on gmn_link_audit_guard.ledger_heads to anon"
+as_postgres_file "$MIGRATION"
+eq "privilégio de coluna dos papéis da Data API revogado" "f" "$(admin -c "select has_column_privilege('anon', 'gmn_link_audit_guard.ledger_heads', 'sha256', 'SELECT')")"
+ok "privilégio de COLUNA concedido a anon por fora: o REVOKE da tabela o retira na reaplicação e a conferência passa"
+
+reapply_refused "ADMIN OPTION de terceiro no writer, sem SET nem INHERIT" 'associação não esperada a um papel da guarda \(authenticated->gmn_guard_writer \(concedente supabase_admin, admin t, set f, inherit f\)\)' \
+  "grant gmn_guard_writer to authenticated with admin option, inherit false, set false" "revoke gmn_guard_writer from authenticated"
+reapply_refused "ADMIN OPTION de terceiro no dono" 'associação não esperada a um papel da guarda \(service_role->gmn_guard_owner' \
+  "grant gmn_guard_owner to service_role with admin option, inherit false, set false" "revoke gmn_guard_owner from service_role"
+eq "só a associação administrativa do criador" "gmn_guard_owner>postgres:10:true:false:false,gmn_guard_reader>postgres:10:true:false:false,gmn_guard_writer>postgres:10:true:false:false" \
+  "$(admin -c "select string_agg(r.rolname || '>' || m.rolname || ':' || a.grantor::oid || ':' || a.admin_option || ':' || a.set_option || ':' || a.inherit_option, ',' order by r.rolname) from pg_auth_members a join pg_roles r on r.oid = a.roleid join pg_roles m on m.oid = a.member where r.rolname like 'gmn_guard%'")"
+ok "associações (revisão do PR #61): ADMIN OPTION dado por fora (sem SET nem INHERIT) ao writer ou ao dono ⇒ aborta; só fica a concessão administrativa que o CREATE ROLE dá ao executor (postgres, concedente de bootstrap, oid 10)"
 
 # ---------------------------------------------------------------- 10. rollback
 refused "rollback com cabeças sem confirmação" 'exige a confirmação do responsável' as_postgres_file "$ROLLBACK"
@@ -238,27 +344,25 @@ as_postgres_file "$ROLLBACK"
 eq "aplicar e reverter sem cabeças" "$BEFORE" "$(catalog_snapshot)"
 ok "laboratório recém-criado (sem cabeças): aplicar e reverter sem confirmação volta ao catálogo original"
 
-# ---------------------------------------------------------------- 11. o ADAPTADOR REAL (createPostgresGuard + pg) contra a migração aplicada
-if [ -d "$ROOT/node_modules/pg" ]; then
-  as_postgres_file "$MIGRATION"
-  ADAPTER_OUT="$(cd "$ROOT" && node --require ./tests/register-typescript.cjs supabase/proposed/local-test/guard-adapter-run.ts "$SOCK" 2>&1)" || fail "adaptador real: $ADAPTER_OUT"
-  echo "$ADAPTER_OUT" | grep '^OK' || true
-  COUNT=$((COUNT + $(echo "$ADAPTER_OUT" | grep -c '^OK')))
-  docker exec -i "$NAME" psql -h /var/run/postgresql -U postgres -d postgres -v ON_ERROR_STOP=1 -q -c "set gmn.guard_rollback_confirm = 'APAGAR-CABECAS-DA-GUARDA'" -f - < "$ROLLBACK"
-  eq "catálogo final" "$BEFORE" "$(catalog_snapshot)"
-  ok "depois da etapa do adaptador, o rollback confirmado volta ao catálogo original"
+# ---------------------------------------------------------------- 11. o ADAPTADOR REAL (createPostgresGuard + pg) contra a migração aplicada (obrigatória)
+as_postgres_file "$MIGRATION"
+ADAPTER_OUT="$(cd "$ROOT" && node --require ./tests/register-typescript.cjs supabase/proposed/local-test/guard-adapter-run.ts "$SOCK" 2>&1)" || fail "adaptador real: $ADAPTER_OUT"
+echo "$ADAPTER_OUT" | grep '^OK' || true
+[ "$(echo "$ADAPTER_OUT" | grep -c '^OK')" -ge 4 ] || fail "adaptador real: verificações a menos: $ADAPTER_OUT"
+COUNT=$((COUNT + $(echo "$ADAPTER_OUT" | grep -c '^OK')))
+docker exec -i "$NAME" psql -h /var/run/postgresql -U postgres -d postgres -v ON_ERROR_STOP=1 -q -c "set gmn.guard_rollback_confirm = 'APAGAR-CABECAS-DA-GUARDA'" -f - < "$ROLLBACK"
+eq "catálogo final" "$BEFORE" "$(catalog_snapshot)"
+ok "depois da etapa do adaptador, o rollback confirmado volta ao catálogo original"
 
-  # ---------------------------------------------------------------- 12. a RECONCILIAÇÃO externa de verdade (CLI + leitor) contra a migração aplicada (G1.b.2b)
-  as_postgres_file "$MIGRATION"
-  RECON_OUT="$(cd "$ROOT" && node --require ./tests/register-typescript.cjs supabase/proposed/local-test/guard-reconcile-run.ts "$SOCK" 2>&1)" || fail "reconciliação real: $RECON_OUT"
-  echo "$RECON_OUT" | grep '^OK' || true
-  COUNT=$((COUNT + $(echo "$RECON_OUT" | grep -c '^OK')))
-  docker exec -i "$NAME" psql -h /var/run/postgresql -U postgres -d postgres -v ON_ERROR_STOP=1 -q -c "set gmn.guard_rollback_confirm = 'APAGAR-CABECAS-DA-GUARDA'" -f - < "$ROLLBACK"
-  eq "catálogo final depois da reconciliação" "$BEFORE" "$(catalog_snapshot)"
-  ok "depois da etapa da reconciliação, o rollback confirmado volta ao catálogo original"
-else
-  echo "AVISO: node_modules/pg ausente; etapas do adaptador real e da reconciliação puladas (rode npm ci)"
-fi
+# ---------------------------------------------------------------- 12. a RECONCILIAÇÃO externa de verdade (CLI + leitor) contra a migração aplicada (G1.b.2b; obrigatória)
+as_postgres_file "$MIGRATION"
+RECON_OUT="$(cd "$ROOT" && node --require ./tests/register-typescript.cjs supabase/proposed/local-test/guard-reconcile-run.ts "$SOCK" 2>&1)" || fail "reconciliação real: $RECON_OUT"
+echo "$RECON_OUT" | grep '^OK' || true
+[ "$(echo "$RECON_OUT" | grep -c '^OK')" -ge 5 ] || fail "reconciliação real: verificações a menos: $RECON_OUT"
+COUNT=$((COUNT + $(echo "$RECON_OUT" | grep -c '^OK')))
+docker exec -i "$NAME" psql -h /var/run/postgresql -U postgres -d postgres -v ON_ERROR_STOP=1 -q -c "set gmn.guard_rollback_confirm = 'APAGAR-CABECAS-DA-GUARDA'" -f - < "$ROLLBACK"
+eq "catálogo final depois da reconciliação" "$BEFORE" "$(catalog_snapshot)"
+ok "depois da etapa da reconciliação, o rollback confirmado volta ao catálogo original"
 
 echo
 echo "TODOS OS $COUNT TESTES LOCAIS DA GUARDA APROVADOS"

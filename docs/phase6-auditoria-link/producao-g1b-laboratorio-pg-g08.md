@@ -2,7 +2,7 @@
 
 > Spec: `docs/specs/link-audit-production-gates.md` §5.1.6 (desenho mínimo da opção 1), §5.1.7 (números e "Nota da G1.b.2a"),
 > §6 (**PG-G08**) e §11.1 (o que fica a confirmar no laboratório); ADR-0003; migração `supabase/proposed/004_link_audit_guard.sql`
-> (testada localmente por `supabase/proposed/local-test/guard-run.sh`, 33 verificações, sem rede). Escrito na G1.b.2b (22/11/2026).
+> (testada por `supabase/proposed/local-test/guard-run.sh`, 39 verificações, sem rede, localmente e no CI pelo `guard-migration.yml`). Escrito na G1.b.2b (22/11/2026).
 >
 > **Quem executa: o RESPONSÁVEL**, num projeto Supabase de laboratório **descartável** (D-G0-12), e depois, com autorização própria e
 > separada, em produção. O manager não executa nada disto: é chamada externa real, criação de projeto e aplicação de migração.
@@ -24,6 +24,10 @@
 
 ## 1. Criar o laboratório e aplicar a 004 como `postgres`
 
+0. **Primeiro passo obrigatório (spec GE-E4):** anexar ao registro a saída **verde** do job `guard-migration`
+   (`.github/workflows/guard-migration.yml`) no **SHA exato** da 004 que será aplicada, e conferir o `sha256` do arquivo local contra o
+   resumo do job: `sha256sum supabase/proposed/004_link_audit_guard.sql supabase/proposed/004_link_audit_guard.rollback.sql`. Sem o job
+   verde nesse SHA, ou com hash diferente, **não aplique**.
 1. Criar o projeto de laboratório (plano decidido pelo responsável; anotar o plano e a região no registro local).
 2. Baixar a CA do banco no painel do projeto (configuração de SSL do banco) para `<ARQUIVO_CA>` e anotar a impressão digital:
    ```bash
@@ -206,6 +210,7 @@ Copiar para o registro local e, sanitizado, para o relatório do laboratório qu
 
 | Item | Resultado | Evidência (sanitizada) | Data |
 |---|---|---|---|
+| Job `guard-migration` verde no SHA exato da 004 e `sha256` conferido (§1, passo 0) | SIM / NÃO | SHA do commit e hashes | |
 | 004 aplicada como `postgres`, reaplicada sem alteração | PASSOU / FALHOU | `COMMIT` nas duas | |
 | Senhas definidas por `\password` (escritor e leitor distintos) | SIM / NÃO | — | |
 | Catálogo e privilégios (§2) | PASSOU / FALHOU | contagens esperadas | |

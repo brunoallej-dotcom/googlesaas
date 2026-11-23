@@ -29,7 +29,7 @@ Também cobertos: sessão (assinatura, adulteração, expiração, versão), all
 
 ## Validações fora da suíte (somente leitura, sem custo)
 1. **HTTP real** no servidor de produção local: tabela completa em `security-review.md` §2 (401 sem sessão; PDF servido idêntico ao oficial com sessão válida; 403 cross-origin; 404 em `/dev/*`).
-2. **Banco real**: `npm run db:check` ⇒ 6 auditorias, 80 leads, **nenhum problema** (place_id coerente, payloads completos, PDFs localizados). Dois PDFs históricos guardavam caminho do Windows (`D:\…`); a leitura agora os resolve pelo nome do arquivo dentro das pastas permitidas (sem mover nada).
+2. **Banco real**: `npm run db:check` ⇒ 6 auditorias, 80 leads, **nenhum problema** (place_id coerente, payloads completos, PDFs localizados). Dois PDFs históricos guardavam caminho do Windows (`<PASTA_PROJETO_V100>\…`); a leitura agora os resolve pelo nome do arquivo dentro das pastas permitidas (sem mover nada).
 3. **Saúde real**: `GET /api/system/health` ⇒ Redis OK, Supabase OK, fila `waiting 0 / active 0 / failed 0 / completed 3`, **Worker DOWN** (não estava rodando, como esperado).
 4. `npm run pdf:migrate-plan` (simulação): 3 PDFs, 0,28 MB, todos expostos publicamente.
 

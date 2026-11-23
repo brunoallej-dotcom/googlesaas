@@ -6,6 +6,7 @@
 - Se você já é `root` no terminal da Hostinger, omita o `sudo`.
 - **Proibido neste roteiro:** `docker system prune`, `docker volume prune`, `docker stack rm`, qualquer alteração em Traefik, n8n, Evolution, Portainer, PostgreSQL, VRA Worker ou na rede `automacaotrafegopagoredeinterna`.
 - O Worker permanece com **0 réplicas**. Nenhum passo consome Serper.
+- Marcadores como `<DOMINIO_PRODUCAO>`, `<DOMINIO_RAIZ>`, `<EVIDENCIAS_PRIVADAS_WSL>` e o rótulo `aud-001-autorizacao-01` substituem domínio, caminhos e nomes reais (repositório público): use os valores do dossiê offline do responsável só no terminal.
 - Nunca cole no chat: chaves, senhas, `.env.local`, saída de `docker service inspect` completa (pode ter variáveis), nem `docker secret` (não são legíveis mesmo).
 
 ---
@@ -13,7 +14,7 @@
 
 ### P0.1 Provar o estado do código e das imagens
 ```bash
-cd /mnt/d/gmn-intelligence-platform-corrigido/gmn-intelligence-platform
+cd <PASTA_PROJETO_V100>
 npm run typecheck && npm test 2>&1 | grep -E '^# (tests|pass|fail)'      # fail 0
 deploy/hostinger/verify-local.sh 2>&1 | tail -3                          # TUDO OK  (usa valores fictícios, sem rede externa)
 ```
@@ -21,7 +22,7 @@ deploy/hostinger/verify-local.sh 2>&1 | tail -3                          # TUDO 
 
 ### P0.2 Construir as imagens de produção (valores PÚBLICOS do Supabase; nunca a service role)
 ```bash
-cd /mnt/d/gmn-intelligence-platform-corrigido/gmn-intelligence-platform
+cd <PASTA_PROJETO_V100>
 export NEXT_PUBLIC_SUPABASE_URL="$(grep -E '^NEXT_PUBLIC_SUPABASE_URL=' .env.local | cut -d= -f2- | tr -d "\"' \r")"
 export NEXT_PUBLIC_SUPABASE_ANON_KEY="$(grep -E '^NEXT_PUBLIC_SUPABASE_ANON_KEY=' .env.local | cut -d= -f2- | tr -d "\"' \r")"
 echo "URL=${NEXT_PUBLIC_SUPABASE_URL}  anon=$([ -n "$NEXT_PUBLIC_SUPABASE_ANON_KEY" ] && echo definida || echo VAZIA)"
@@ -38,11 +39,11 @@ Esperado: `histórico limpo` e `sem .env na imagem`.
 
 ### P0.4 Pacote de evidências e backup independente (antes de copiar para a VPS)
 ```bash
-cd /mnt/d/gmn-evidencias-privadas/link-audit/tuvaplast-20261022-maps01
+cd <EVIDENCIAS_PRIVADAS_WSL>/link-audit/aud-001-autorizacao-01
 sha256sum -c SHA256SUMS | grep -vc ': OK$'                               # 0  (nenhuma linha fora de OK)
 find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum   # ANOTE este hash agregado
-mkdir -p /mnt/d/gmn-backups/tuvaplast-20261024 && rsync -a --checksum ./ /mnt/d/gmn-backups/tuvaplast-20261024/
-cd /mnt/d/gmn-backups/tuvaplast-20261024 && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum   # igual ao anterior
+mkdir -p <DESTINO_BACKUP_LOCAL>/aud-001-20261024 && rsync -a --checksum ./ <DESTINO_BACKUP_LOCAL>/aud-001-20261024/
+cd <DESTINO_BACKUP_LOCAL>/aud-001-20261024 && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum   # igual ao anterior
 ```
 O original **não é alterado**. **PARAR** se os dois hashes divergirem.
 
@@ -100,10 +101,10 @@ Confira e me envie:
 ### P1.6 DNS do domínio (nenhum registro é criado por este roteiro)
 ```bash
 IPV4="$(curl -4 -s --max-time 8 https://ifconfig.me || hostname -I | awk '{print $1}')"; echo "IP da VPS: $IPV4"
-for R in 1.1.1.1 8.8.8.8; do echo "== $R"; dig +short A gmn.somosvra.com.br @$R; dig +short AAAA gmn.somosvra.com.br @$R; dig +short CNAME gmn.somosvra.com.br @$R; done
-dig +short CAA somosvra.com.br
+for R in 1.1.1.1 8.8.8.8; do echo "== $R"; dig +short A <DOMINIO_PRODUCAO> @$R; dig +short AAAA <DOMINIO_PRODUCAO> @$R; dig +short CNAME <DOMINIO_PRODUCAO> @$R; done
+dig +short CAA <DOMINIO_RAIZ>
 ```
-Esperado: o registro **A de `gmn.somosvra.com.br` = IP da VPS** nos dois resolvedores; sem AAAA (ou AAAA que também aponte para a VPS); sem CNAME para outro lugar; CAA vazio ou que permita `letsencrypt.org`. **PARAR — não solicitar certificado** se o A não aparecer: crie o registro **somente `gmn`** no painel DNS (não altere os demais), aguarde propagar e repita este bloco.
+Esperado: o registro **A de `<DOMINIO_PRODUCAO>` = IP da VPS** nos dois resolvedores; sem AAAA (ou AAAA que também aponte para a VPS); sem CNAME para outro lugar; CAA vazio ou que permita `letsencrypt.org`. **PARAR — não solicitar certificado** se o A não aparecer: crie o registro **somente `gmn`** no painel DNS (não altere os demais), aguarde propagar e repita este bloco.
 
 ### P1.7 Portas já em uso
 ```bash
@@ -118,7 +119,7 @@ Esperado: 80/443 do Traefik; **3000 e 6379 livres no host** (a GMN não publica 
 
 ### P2.1 Transferir e conferir as imagens (da sua máquina)
 ```bash
-cd /mnt/d/gmn-intelligence-platform-corrigido/gmn-intelligence-platform/deploy/hostinger
+cd <PASTA_PROJETO_V100>/deploy/hostinger
 cat dist/gmn-images-1.0.0.tar.gz.sha256                                  # compare com o hash anotado no P0.2
 scp dist/gmn-images-1.0.0.tar.gz dist/gmn-images-1.0.0.tar.gz.sha256 USUARIO@IP_DA_VPS:/opt/gmn/
 ```
@@ -160,7 +161,7 @@ Esperado: 6 nomes. Guarde os valores num gerenciador de senhas (o Swarm não dev
 ### P2.5 Arquivos da stack
 Da sua máquina:
 ```bash
-cd /mnt/d/gmn-intelligence-platform-corrigido/gmn-intelligence-platform/deploy/hostinger
+cd <PASTA_PROJETO_V100>/deploy/hostinger
 sha256sum stack.yml .env.production.example
 scp stack.yml .env.production.example USUARIO@IP_DA_VPS:/opt/gmn/
 ```
@@ -168,7 +169,7 @@ Na VPS:
 ```bash
 cd /opt/gmn && sha256sum stack.yml .env.production.example               # iguais aos de cima
 install -m 0600 .env.production.example .env.production && rm .env.production.example
-nano .env.production    # GMN_HOST=gmn.somosvra.com.br  GMN_IMAGE_TAG=1.0.0  GMN_NODE_HOSTNAME=<P1.1>  NEXT_PUBLIC_SUPABASE_URL=<público>  GMN_OPERATOR_EMAILS=<operadores>  GMN_HTTP_ENTRYPOINT=<P1.5>  GMN_WORKER_REPLICAS=0
+nano .env.production    # GMN_HOST=<DOMINIO_PRODUCAO>  GMN_IMAGE_TAG=1.0.0  GMN_NODE_HOSTNAME=<P1.1>  NEXT_PUBLIC_SUPABASE_URL=<público>  GMN_OPERATOR_EMAILS=<operadores>  GMN_HTTP_ENTRYPOINT=<P1.5>  GMN_WORKER_REPLICAS=0
 ```
 **GMN_WORKER_REPLICAS deve ficar 0.** Sem nenhuma chave neste arquivo.
 
@@ -183,7 +184,7 @@ Confira: `gmn-worker` com `replicas: 0`; **nenhum** `ports:`/`published`; `traef
 ### P2.7 Lista de conferência antes de criar serviços (responda "ok" a cada)
 - [ ] Swarm manager (P1.1) · [ ] rede externa existe (P1.4) · [ ] RAM/disco (P1.2) · [ ] `stack config` ok (P2.6)
 - [ ] imagens carregadas e IDs conferidos (P2.2) · [ ] 6 secrets (P2.4) · [ ] diretórios (P2.3)
-- [ ] DNS do domínio aponta para a VPS (P1.6) · [ ] backup do TUVAPLAST verificado (P0.4)
+- [ ] DNS do domínio aponta para a VPS (P1.6) · [ ] backup do AUD-001 verificado (P0.4)
 - [ ] rollback lido (`PLANO-DE-ROLLBACK.md`): reverter = `docker service scale gmn_gmn-web=0 gmn_gmn-worker=0`; dados nunca são apagados
 - [ ] Worker em 0 e você ciente de que **não se deve enfileirar auditorias** enquanto estiver em 0
 
@@ -210,7 +211,7 @@ docker service logs --tail 30 gmn_gmn-web 2>&1 | grep -viE 'key|secret|token'
 Siga `VERIFICACAO-POS-DEPLOY.md` (seções 1–8) e `CHECKLIST-DE-SEGURANCA.md`. Os blocos principais:
 
 ```bash
-H=gmn.somosvra.com.br
+H=<DOMINIO_PRODUCAO>
 curl -sI https://$H/login | grep -iE '^(HTTP|strict-transport|x-frame|content-security-policy-report-only)'
 curl -sI http://$H/login | head -3                                          # redireciona para https
 for p in /api/prospect /api/audit/completed /api/system/health /api/link-audit/evidence /api/system/client-address; do printf '%s -> ' $p; curl -s -o /dev/null -w '%{http_code}\n' https://$H$p; done   # todos 401
@@ -218,10 +219,10 @@ curl -s -o /dev/null -w '%{http_code}\n' https://$H/dev/battlefield-preview   # 
 ss -ltn | grep -E ':(3000|6379)\b' || echo "3000/6379 não escutam no host"
 docker service ls | diff - /opt/gmn/antes-services.txt                      # só gmn_* a mais
 ```
-No navegador: entrar com um operador real; conferir cookie `HttpOnly; Secure; SameSite=Strict`; abrir `https://gmn.somosvra.com.br/api/system/client-address` (deve mostrar o **seu** IP público, `shared:false`, e ignorar cabeçalhos forjados).
+No navegador: entrar com um operador real; conferir cookie `HttpOnly; Secure; SameSite=Strict`; abrir `https://<DOMINIO_PRODUCAO>/api/system/client-address` (deve mostrar o **seu** IP público, `shared:false`, e ignorar cabeçalhos forjados).
 
-### P4.1 Migrar as evidências da TUVAPLAST
-Siga `PLANO-DE-MIGRACAO-DE-EVIDENCIAS.md` (rsync com `--checksum`, conferência SHA-256 nos dois lados, hash agregado igual ao do P0.4). Depois, em "Auditoria por Link → Auditorias armazenadas", `tuvaplast-20261022-maps01` deve aparecer com integridade OK.
+### P4.1 Migrar as evidências da AUD-001
+Siga `PLANO-DE-MIGRACAO-DE-EVIDENCIAS.md` (rsync com `--checksum`, conferência SHA-256 nos dois lados, hash agregado igual ao do P0.4). Depois, em "Auditoria por Link → Auditorias armazenadas", `aud-001-autorizacao-01` deve aparecer com integridade OK.
 
 ### P4.2 Nenhum Worker, nenhum crédito
 ```bash

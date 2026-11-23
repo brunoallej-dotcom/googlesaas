@@ -100,11 +100,13 @@ export const WRITER_IDENTITY: SimulatedIdentity = { role_name: 'gmn_guard_writer
 export function simulatedReaderDb(rows: SimulatedHeadRow[] = [], identity: SimulatedIdentity = READER_IDENTITY) {
   const queries: Array<{ readonly text: string; readonly values: readonly GuardDbValue[] }> = [];
   const state = { connects: 0, ends: 0, open: 0, failConnect: false, failOn: null as string | null, hangOn: null as string | null, rewrite: null as ((text: string, rows: readonly unknown[]) => readonly unknown[]) | null, inTransaction: false };
+  /** `… where h.ledger_seq = (select max(...) …) order by audit_ref limit $1`: TODAS as linhas na maior posição de cada pseudônimo. */
   const heads = (limit: number): SimulatedHeadRow[] => {
     const refs = [...new Set(rows.map((row) => row.audit_ref))].sort();
     return refs.flatMap((ref) => {
-      const top = rows.filter((row) => row.audit_ref === ref).sort((x, y) => y.ledger_seq - x.ledger_seq)[0];
-      return top ? [{ ...top }] : [];
+      const mine = rows.filter((row) => row.audit_ref === ref);
+      const top = Math.max(0, ...mine.map((row) => row.ledger_seq));
+      return mine.filter((row) => row.ledger_seq === top).map((row) => ({ ...row }));
     }).slice(0, limit);
   };
   const at = (refs: readonly string[], seqs: readonly string[]): SimulatedHeadRow[] =>

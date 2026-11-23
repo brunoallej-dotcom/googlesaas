@@ -254,6 +254,17 @@ test('G1.b.2b CLI: analisador estrito (subcomando, opção desconhecida, repetid
   assert.match(text, /reconcile-000001\.json/);
 });
 
+test('G1.b.2b CLI (coerência com a G1.b.2a): duas linhas na posição máxima de um pseudônimo ⇒ reconcile recusa (GUARD_DUPLICATE_HEAD, código 3, sem registro) e o portão fica não operante (código 2); nenhum hash escolhido', NEEDS_CA, async () => {
+  const w = await world();
+  const refA = PSEUDONYMS_A.current(A).auditRef;
+  w.writer.rows.push({ audit_ref: refA, key_id: 'gk-test-a', ledger_seq: 7, sha256: 'e'.repeat(64) }); // só possível sem a restrição única
+  const reconciled = await run(reconcileArgs(w, ['--first', '--json']), { reader: simulatedReaderDb(w.writer.rows) });
+  assert.deepEqual([reconciled.code, reconciled.json().code], [EXIT.REFUSED, 'GUARD_DUPLICATE_HEAD']);
+  assert.deepEqual(fs.readdirSync(w.recordsDir), []);
+  const gated = await run(['gate', '--backup', w.roundDir, '--json'], { reader: simulatedReaderDb(w.writer.rows) });
+  assert.deepEqual([gated.code, gated.json().code, gated.json().operational], [EXIT.FINDINGS, 'GUARD_DUPLICATE_HEAD', false]);
+});
+
 /* ============================================================================ portão G-1 */
 
 test('PG-G07 verificador do portão G-1: SEM configuração da guarda ⇒ NOT_CONFIGURED, não operante, código 2, sem conectar', async () => {

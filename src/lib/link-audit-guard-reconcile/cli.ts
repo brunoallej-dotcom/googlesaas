@@ -19,7 +19,8 @@ import { buildRecord, readRecords, writeRecord, type RecordsRefusal, type Stored
  *     compara guarda × backup × registro anterior; achado ⇒ código 2; grava `reconcile-NNNNNN.json` (também com achado: marca d'água).
  *   gate [--backup <rodada do livro>] [--json]
  *     portão G-1: configuração completa, leitor e TLS ok e TODA auditoria da rodada `CONSISTENT` ⇒ operante (código 0); senão código 2, com o motivo
- *     (`NOT_CONFIGURED`, `CONFIG_INVALID`, `GUARD_UNAVAILABLE`, `EXTERNAL_GUARD_NOT_VERIFIED`, `NO_AUDITS`, `STACK_NOT_PUBLISHING`, `NOT_CONSISTENT`).
+ *     (`NOT_CONFIGURED`, `CONFIG_INVALID`, `GUARD_UNAVAILABLE`, `GUARD_DUPLICATE_HEAD`, `EXTERNAL_GUARD_NOT_VERIFIED`, `NO_AUDITS`, `STACK_NOT_PUBLISHING`,
+ *     `NOT_CONSISTENT`).
  *     Não grava nada (nem registro).
  *
  * DECISÃO (G1.b.2b): o verificador do portão roda FORA da VPS, com o leitor. Motivos: a imagem do web é o `standalone` do Next (sem `tsx` nem
@@ -80,6 +81,7 @@ const MESSAGES: Readonly<Record<string, string>> = {
   GUARD_CONFIG_INVALID: 'Chaves do pseudônimo repetidas (mesmo id ou mesmo material).',
   GUARD_UNAVAILABLE: 'Guarda indisponível (conexão, TLS, autenticação, prazo ou erro de consulta). Nada foi concluído.',
   GUARD_RESPONSE_INVALID: 'A guarda respondeu fora do esquema esperado. Nada foi concluído.',
+  GUARD_DUPLICATE_HEAD: 'Duas linhas na mesma posição de um pseudônimo na guarda (restrição única ausente ou alterada no provedor): incidente no provedor, runbook da guarda §10. Nenhum hash foi escolhido; nada foi concluído.',
   TOO_MANY_GUARD_HEADS: 'A guarda tem pseudônimos demais para uma leitura só.',
   NOT_READER_ROLE: 'A sessão não é do papel gmn_guard_reader: credencial errada. Nada foi lido.',
   SESSION_NOT_READ_ONLY: 'A sessão não é somente leitura por padrão (o papel de leitura da migração 004 é). Nada foi lido.',
@@ -314,6 +316,7 @@ async function gate(args: ParsedArgs, env: Env, deps: GuardReconcileCliDeps): Pr
   if (args.backup !== null) state.backup = await backupOrRefuse(args.backup, deps);
   const read = await readGuard((deps.connectFor ?? pgGuardReaderConnector)(config.settings.target), [], deps.timer ? { timer: deps.timer } : {});
   if (!read.ok && GATE_MISUSE.has(read.code)) throw new Refusal(read.code);
+  if (!read.ok && read.code === 'GUARD_DUPLICATE_HEAD') return { ...state, code: 'GUARD_DUPLICATE_HEAD', connection: 'OK', reader: 'OK' };
   if (!read.ok) return { ...state, code: 'GUARD_UNAVAILABLE', connection: 'FAILED' };
   state.connection = 'OK';
   state.reader = 'OK';

@@ -185,6 +185,20 @@ test('PG-G06 (adaptador): resposta fora do esquema ⇒ indisponível — linhas 
   }
 });
 
+test('PG-G06 (adaptador, revisão do PR #61): duas linhas na MESMA posição máxima do mesmo pseudônimo (restrição única ausente ou errada no provedor) ⇒ indisponível, nunca um sha256 escolhido ao acaso; uma linha antiga duplicada abaixo da máxima não altera a cabeça', async () => {
+  const db = simulatedGuardDb();
+  const guard = guardOver(db);
+  await guard.publish({ auditId: AUD, ledgerSeq: 5, sha256: H('a') });
+  db.rows.push({ audit_ref: GOLDEN_A_07, key_id: 'gk-test-a', ledger_seq: 5, sha256: H('b') }); // o provedor sem a unicidade aceitou outra linha na posição 5
+  assert.deepEqual(await guard.latest(AUD), { ok: false });
+  const older = simulatedGuardDb();
+  const olderGuard = guardOver(older);
+  await olderGuard.publish({ auditId: AUD, ledgerSeq: 2, sha256: H('a') });
+  older.rows.push({ audit_ref: GOLDEN_A_07, key_id: 'gk-test-a', ledger_seq: 2, sha256: H('b') });
+  await olderGuard.publish({ auditId: AUD, ledgerSeq: 6, sha256: H('c') });
+  assert.deepEqual(await olderGuard.latest(AUD), { ok: true, head: { ledgerSeq: 6, sha256: H('c') } });
+});
+
 test('PG-G06 (adaptador): prazo de 3 s por chamada TAMBÉM no adaptador — consulta ou conexão penduradas ⇒ indisponível no prazo, e a conexão é encerrada (nunca fica aberta)', async () => {
   // consulta que nunca responde
   const hung = simulatedGuardDb();
@@ -349,11 +363,50 @@ test('migração 004 ↔ adaptador: a função e a tabela que o SQL fixo usa exi
   assert.match(sql, new RegExp(`ledger_seq between 1 and ${MAX_LEDGER_RECORDS}\\)`), 'CHECK da tabela');
   assert.match(sql, new RegExp(`p_ledger_seq > ${MAX_LEDGER_RECORDS} then`), 'validação da função');
   assert.equal((sql.match(/create or replace function/g) ?? []).length, 3);
-  assert.equal((sql.match(/\n  set search_path = ''\n/g) ?? []).length, 3, 'as três funções com search_path vazio');
+  assert.equal((sql.match(/\n  set search_path = ''\n/g) ?? []).length, 4, 'as três funções da guarda e a do inventário (temporária) com search_path vazio');
+  // revisão do PR #61: inventário FECHADO do esquema (função temporária desta sessão), chamado na pré-validação e na conferência final, e removido antes do COMMIT
+  assert.match(sql, /create function pg_temp\.gmn_guard_inventory\(p_fase text\)/);
+  assert.match(sql, /perform pg_temp\.gmn_guard_inventory\('pré'\);[\s\S]+perform pg_temp\.gmn_guard_inventory\('final'\);[\s\S]+drop function pg_temp\.gmn_guard_inventory\(text\);\s+commit;/);
+  for (const catalog of ['pg_class', 'pg_proc', 'pg_type', 'pg_constraint', 'pg_operator', 'pg_default_acl', 'pg_policy', 'pg_rewrite', 'pg_inherits', 'pg_publication_rel', 'pg_publication_namespace']) assert.ok(sql.includes(`pg_catalog.${catalog}`), `inventário consulta ${catalog}`);
+  assert.match(sql, /m\.grantor = 10 and m\.admin_option and not m\.set_option and not m\.inherit_option/, 'só a associação administrativa do criador');
+  // revisão do PR #61: a DEFINIÇÃO EXATA (não só o nome) de colunas, restrições, índice e gatilhos, pelo texto canônico do PostgreSQL
+  for (const fn of ['pg_get_constraintdef', 'pg_get_indexdef', 'pg_get_triggerdef', 'pg_get_expr', 'format_type']) assert.ok(sql.includes(`pg_catalog.${fn}(`), `confere ${fn}`);
+  assert.ok(sql.includes("'ledger_heads_audit_ref_ledger_seq_key UNIQUE (audit_ref, ledger_seq)'"), 'a UNIQUE pelas colunas');
+  assert.ok(sql.includes(`'ledger_heads_ledger_seq_range CHECK (((ledger_seq >= 1) AND (ledger_seq <= ${MAX_LEDGER_RECORDS})))'`), 'o CHECK da faixa pelo texto, com MAX_LEDGER_RECORDS');
+  assert.ok(sql.includes("'CREATE UNIQUE INDEX ledger_heads_audit_ref_ledger_seq_key ON gmn_link_audit_guard.ledger_heads USING btree (audit_ref, ledger_seq) valid=t ready=t live=t'"));
+  assert.ok(sql.includes('BEFORE DELETE OR UPDATE ON gmn_link_audit_guard.ledger_heads FOR EACH ROW EXECUTE FUNCTION gmn_link_audit_guard.refuse_change() enabled=O'));
+  assert.ok(!/distinct on/i.test(GUARD_LATEST_SQL), 'o latest devolve todas as linhas da posição máxima (duplicata ⇒ indisponível), nunca uma escolhida');
   assert.equal((sql.match(/security definer/g) ?? []).length, 1, 'só a publicação é SECURITY DEFINER');
   assert.ok(!/\bpublic\.|schema public\b/i.test(sql.replace(/from public,/g, '').replace(/revoke all on [^;]+ from public/g, '')), 'nenhum objeto em public');
   assert.match(sql, /^begin;$/m);
   assert.match(sql, /^commit;$/m);
   assert.match(rollback, /APAGAR-CABECAS-DA-GUARDA/);
   for (const text of [sql, rollback]) assert.ok(!/password\s+'|\bpassword\s+"|[0-9a-f]{32,}/i.test(text), 'nenhuma senha nem material no SQL');
+});
+
+test('CI da migração (revisão do PR #61): workflow próprio, fora do ci.yml, só nos caminhos da guarda, só leitura, sem secrets, ações fixadas pelos MESMOS SHAs do ci.yml e a imagem do Postgres por digest igual à padrão do guard-run.sh, que falha (não pula) sem pg', () => {
+  const read = (rel: string): string => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+  const workflow = read('.github/workflows/guard-migration.yml');
+  const ci = read('.github/workflows/ci.yml');
+  const harness = read('supabase/proposed/local-test/guard-run.sh');
+  for (const filter of ["'supabase/proposed/004*'", "'supabase/proposed/local-test/**'", "'src/lib/link-audit-ledger/guard-*'"]) {
+    assert.equal(workflow.split(`- ${filter}`).length - 1, 2, `${filter} em pull_request e em push`);
+  }
+  assert.match(workflow, /^permissions:\n {2}contents: read$/m);
+  assert.ok(!/secrets\.|GITHUB_TOKEN|pull_request_target|write/.test(workflow.replace(/^#.*$/gm, '')), 'sem secrets, sem escrita');
+  const uses = [...workflow.matchAll(/uses: (\S+@[0-9a-f]{40})/g)].map((m) => m[1]);
+  assert.deepEqual(uses.sort(), ['actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1', 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1']);
+  for (const action of uses) assert.ok(ci.includes(`uses: ${action}`), `${action} igual ao do ci.yml`);
+  assert.ok(!/uses: [^@\n]+@(?![0-9a-f]{40}\b)/.test(workflow), 'toda ação fixada por SHA');
+  assert.match(workflow, /node-version: '22'/);
+  assert.match(workflow, /run: npm ci/);
+  const image = /GUARD_PG_IMAGE: (public\.ecr\.aws\/supabase\/postgres@sha256:[0-9a-f]{64})/.exec(workflow)?.[1];
+  assert.ok(image, 'imagem por digest');
+  assert.ok(harness.includes(`IMAGE="\${1:-${image}}"`), 'o guard-run.sh usa o mesmo digest por padrão');
+  assert.match(workflow, /docker pull "\$GUARD_PG_IMAGE"/);
+  assert.match(workflow, /bash supabase\/proposed\/local-test\/guard-run\.sh "\$GUARD_PG_IMAGE"/);
+  assert.ok(!/guard-migration|guard-run/.test(ci), 'fora do ci.yml');
+  assert.match(harness, /--pull never --network none/);
+  assert.match(harness, /node_modules\/pg ausente \(rode npm ci; a etapa do adaptador real é obrigatória\)/);
+  assert.ok(!/AVISO: .*pulada|etapa do adaptador real pulada/.test(harness), 'nenhuma etapa pulada');
 });

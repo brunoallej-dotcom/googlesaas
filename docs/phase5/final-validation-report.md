@@ -21,7 +21,7 @@ Data: 16/10/2026. **Resultado: a GMN está segura e estável para a operação i
 ## Correções desta rodada
 1. **Regressão minha (mapa):** `Referrer-Policy: no-referrer` fazia o OpenStreetMap devolver "403 Access blocked" nos tiles da tela. Agora `strict-origin-when-cross-origin`, com teste.
 2. **Custo oculto:** "Retomar" aparecia para auditoria `FAILED` sem dados e refaria as 49 consultas. Agora só existe com o Campo de Batalha de 49 pontos gravado (409 `NOTHING_TO_RESUME` caso contrário).
-3. **Duplicação entre campanhas:** a trava olhava o `lead_id`; a mesma empresa vira um lead novo a cada campanha (ex.: *Belo Riso* tem 5 linhas). Agora casa por `place_id`.
+3. **Duplicação entre campanhas:** a trava olhava o `lead_id`; a mesma empresa vira um lead novo a cada campanha (ex.: *<CLIENTE_G>* tem 5 linhas). Agora casa por `place_id`.
 4. **PDFs históricos:** a leitura prefere a pasta privada e tem cadeia local → bucket privado → recomposição do banco.
 
 ## Checklist por subsistema

@@ -12,7 +12,9 @@ import type { GuardRow } from './model';
  *     `default_transaction_read_only` do papel, migração 004) e a sessão NÃO pode executar a função de publicação. Qualquer sinal de outra credencial
  *     (o escritor tem outro papel, sessão gravável e EXECUTE) ⇒ recusa, sem ler nada;
  *  2. `begin … read only` (repeatable read: cabeças e linhas antigas do MESMO instante; e a transação recusa escrita mesmo que o papel mudasse);
- *  3. as cabeças: a maior linha de CADA pseudônimo da tabela (todas as auditorias: a reconciliação também procura cabeça sem livro na cópia);
+ *  3. as cabeças: TODAS as linhas na maior posição de CADA pseudônimo da tabela (todas as auditorias: a reconciliação também procura cabeça sem livro
+ *     na cópia). Duas linhas na mesma posição máxima (restrição única ausente ou alterada) ⇒ `GUARD_DUPLICATE_HEAD`, como o adaptador, que responde
+ *     indisponível: nunca se escolhe um hash;
  *  4. as linhas do registro anterior, pela posição exata (pseudônimo + posição), para conferir que nada sumiu nem mudou (`rows from` com dois
  *     `unnest` qualificados: a forma `unnest(a, b)` de vários argumentos só existe sem o esquema, e o teste local contra o Postgres real acusou);
  *  5. `rollback`.
@@ -21,7 +23,12 @@ import type { GuardRow } from './model';
 export const READER_IDENTITY_SQL =
   "select current_user::text as role_name, pg_catalog.current_setting('default_transaction_read_only') as default_read_only, pg_catalog.has_function_privilege('gmn_link_audit_guard.publish_head(text, text, integer, text)', 'EXECUTE') as can_publish";
 export const READER_BEGIN_SQL = 'begin transaction isolation level repeatable read, read only';
-export const READER_HEADS_SQL = 'select distinct on (h.audit_ref) h.audit_ref, h.key_id, h.ledger_seq, h.sha256 from gmn_link_audit_guard.ledger_heads h order by h.audit_ref, h.ledger_seq desc limit $1';
+/**
+ * TODAS as linhas na MAIOR posição de cada pseudônimo, pelo MESMO predicado do `latest` do adaptador (`GUARD_LATEST_SQL`; revisão do PR #61): nunca
+ * `distinct on`, que escolheria um `sha256` se a restrição única do provedor faltasse ou fosse outra. Duas linhas na posição máxima ⇒ recusa.
+ */
+export const READER_HEADS_SQL =
+  'select h.audit_ref, h.key_id, h.ledger_seq, h.sha256 from gmn_link_audit_guard.ledger_heads h where h.ledger_seq = (select pg_catalog.max(m.ledger_seq) from gmn_link_audit_guard.ledger_heads m where m.audit_ref = h.audit_ref) order by h.audit_ref limit $1';
 export const READER_ROWS_SQL =
   'select h.audit_ref, h.key_id, h.ledger_seq, h.sha256 from gmn_link_audit_guard.ledger_heads h join rows from (pg_catalog.unnest($1::text[]), pg_catalog.unnest($2::text[])) as p(audit_ref, ledger_seq) on h.audit_ref = p.audit_ref and h.ledger_seq = p.ledger_seq::integer order by h.audit_ref, h.ledger_seq';
 export const READER_END_SQL = 'rollback';
@@ -32,7 +39,7 @@ export const MAX_GUARD_HEADS = 20_000;
 /** Prazo TOTAL da leitura (conectar, conferir, ler e encerrar). */
 export const READER_DEADLINE_MS = 60_000;
 
-export type ReaderRefusal = 'GUARD_UNAVAILABLE' | 'GUARD_RESPONSE_INVALID' | 'NOT_READER_ROLE' | 'SESSION_NOT_READ_ONLY' | 'READER_CAN_PUBLISH' | 'TOO_MANY_GUARD_HEADS';
+export type ReaderRefusal = 'GUARD_UNAVAILABLE' | 'GUARD_RESPONSE_INVALID' | 'GUARD_DUPLICATE_HEAD' | 'NOT_READER_ROLE' | 'SESSION_NOT_READ_ONLY' | 'READER_CAN_PUBLISH' | 'TOO_MANY_GUARD_HEADS';
 export interface GuardReading {
   readonly role: string;
   /** A maior linha de cada pseudônimo, em ordem de pseudônimo. */
@@ -73,7 +80,7 @@ async function checkIdentity(session: GuardDbSession): Promise<string> {
 async function readHeads(session: GuardDbSession): Promise<GuardRow[]> {
   const heads = asRows((await session.query(READER_HEADS_SQL, [MAX_GUARD_HEADS + 1])).rows);
   if (heads.length > MAX_GUARD_HEADS) throw new ReaderStop('TOO_MANY_GUARD_HEADS');
-  if (new Set(heads.map((row) => row.auditRef)).size !== heads.length) throw new ReaderStop('GUARD_RESPONSE_INVALID');
+  if (new Set(heads.map((row) => row.auditRef)).size !== heads.length) throw new ReaderStop('GUARD_DUPLICATE_HEAD'); // duas linhas na posição máxima
   return heads;
 }
 
@@ -84,7 +91,8 @@ async function readPrevious(session: GuardDbSession, previous: readonly Pick<Gua
   const seen = new Set<string>();
   for (const row of rows) {
     const key = `${row.auditRef}:${row.ledgerSeq}`;
-    if (!asked.has(key) || seen.has(key)) throw new ReaderStop('GUARD_RESPONSE_INVALID'); // linha não pedida ou repetida
+    if (!asked.has(key)) throw new ReaderStop('GUARD_RESPONSE_INVALID'); // linha não pedida
+    if (seen.has(key)) throw new ReaderStop('GUARD_DUPLICATE_HEAD'); // duas linhas na mesma posição do mesmo pseudônimo
     seen.add(key);
   }
   return rows;

@@ -19,6 +19,7 @@ import * as scoring from '../src/lib/link-audit/scoring';
 import { sha256OfCanonical } from '../src/lib/link-audit/scoring/fingerprint';
 import { NA_RULES, RULER_DATA, RULES, SUBCRITERIA, TIERS, VALIDATED_DETECTORS } from '../src/lib/link-audit/scoring/ruler';
 import { clone, evidence, obs, record, richInput, run, sub } from './helpers/link-audit-scoring-fixtures';
+import { AUD001_DIR, aud001CapturePresent } from './helpers/link-audit-aud001-real-capture';
 
 /** Hashes dourados: se a lógica mudar sem nova scoreModelVersion, estes testes falham (mudança silenciosa de resultado). */
 export const GOLDEN_RICH_RESULT_SHA256 = '436d788aaae1066416c6a48bf0f32aa3579426865dd06442c99ac1fd0d7f1f73';
@@ -426,25 +427,26 @@ test('checkResult detecta adulteração de qualquer parte derivada do resultado'
   }
 });
 
-/* ---------------------------------------------------------------- TUVAPLAST (somente leitura; sem publicar índice) */
+/* ---------------------------------------------------------------- AUD-001 (somente leitura; sem publicar índice) */
 
-const TUVA_DIR = process.env.GMN_TUVAPLAST_EVIDENCE_DIR ?? '/mnt/d/gmn-evidencias-privadas/link-audit/tuvaplast-20261022-maps01';
+/* Localização só por variáveis de ambiente (tests/helpers/link-audit-aud001-real-capture.ts); sem a pasta, o teste é ignorado. */
+const AUD001_CAPTURE_DIR = AUD001_DIR;
 const sha = (file: string): string => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
-test('TUVAPLAST (captura preservada, somente leitura): 28–30 pontos avaliáveis, índice indisponível, nenhuma nota', { skip: !fs.existsSync(path.join(TUVA_DIR, 'report.json')) }, () => {
-  const files = fs.readdirSync(TUVA_DIR).map((name) => path.join(TUVA_DIR, name)).filter((file) => fs.statSync(file).isFile());
+test('AUD-001 (captura preservada, somente leitura): 28–30 pontos avaliáveis, índice indisponível, nenhuma nota', { skip: !aud001CapturePresent('report.json') }, () => {
+  const files = fs.readdirSync(AUD001_CAPTURE_DIR).map((name) => path.join(AUD001_CAPTURE_DIR, name)).filter((file) => fs.statSync(file).isFile());
   const before = files.map((file) => sha(file));
-  const report = JSON.parse(fs.readFileSync(path.join(TUVA_DIR, 'report.json'), 'utf8')) as {
+  const report = JSON.parse(fs.readFileSync(path.join(AUD001_CAPTURE_DIR, 'report.json'), 'utf8')) as {
     data: { googleMaps: { name: string; address: string; phone: string; website: string; category: string; rating: number; ratingCount: number; openingHours: unknown[] } };
     evidences: Array<{ id: string; status: string }>;
   };
   const maps = report.data.googleMaps;
   const verified = new Set(report.evidences.filter((e) => e.status === 'VERIFIED').map((e) => e.id));
   assert.equal(verified.size, 8);
-  const captureSha = sha(path.join(TUVA_DIR, 'serper-body.json'));
+  const captureSha = sha(path.join(AUD001_CAPTURE_DIR, 'serper-body.json'));
   const input: Mutable = {
     schemaVersion: 1,
-    auditId: 'tuvaplast-leitura-01',
+    auditId: 'aud-001-leitura-01',
     referenceDate: '2026-10-22',
     evidences: [{ id: 'maps', origin: 'GOOGLE_NATIVE', capture: 'STORED_CAPTURE', status: 'VERIFIED', observedAt: '2026-10-22T12:54:48.079Z', contentSha256: captureSha }],
     profile: {
@@ -465,11 +467,11 @@ test('TUVAPLAST (captura preservada, somente leitura): 28–30 pontos avaliávei
   assert.ok(outcome.ok, outcome.ok ? '' : outcome.issues.join(' | '));
   if (!outcome.ok) return;
   const r = outcome.result;
-  assert.equal(r.index, null, 'nenhum índice é publicado para a TUVAPLAST');
+  assert.equal(r.index, null, 'nenhum índice é publicado para a AUD-001');
   assert.equal(r.confidence, null);
   assert.equal(r.publication.status, 'INSUFFICIENT');
   assert.ok(r.totals.coveragePercent >= 28 && r.totals.coveragePercent <= 30, `cobertura ${r.totals.coveragePercent}`);
-  assert.equal(sub(r, 'R1').state, 'SCORED', '49 avaliações: nota elegível');
+  assert.equal(sub(r, 'R1').state, 'SCORED', '≥ 5 avaliações: nota elegível');
   assert.deepEqual(r.displayData.reviews, { ratingShown: String(maps.rating), reviewCount: maps.ratingCount });
   for (const id of ['N5', 'C2', 'C3', 'S5', 'V5', 'R3', 'P1', 'X2', 'X4', 'A1', 'L1', 'L3'] as const) {
     assert.notEqual(sub(r, id).state, 'SCORED', `${id} não pode pontuar sem evidência`);

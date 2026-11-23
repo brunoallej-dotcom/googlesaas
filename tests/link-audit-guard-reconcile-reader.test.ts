@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { GUARD_READER_ROLE } from '../src/lib/link-audit-ledger/config';
-import { GUARD_PUBLISH_SQL } from '../src/lib/link-audit-ledger/guard-postgres';
+import { GUARD_LATEST_SQL, GUARD_PUBLISH_SQL } from '../src/lib/link-audit-ledger/guard-postgres';
 import { MAX_GUARD_HEADS, READER_BEGIN_SQL, READER_END_SQL, READER_HEADS_SQL, READER_IDENTITY_SQL, READER_ROLE, READER_ROWS_SQL, readGuard } from '../src/lib/link-audit-guard-reconcile/reader';
 import type { GuardRow } from '../src/lib/link-audit-guard-reconcile/model';
 import { PSEUDONYMS_A, type SimulatedHeadRow } from './helpers/link-audit-guard-db-fixtures';
@@ -76,7 +76,6 @@ test('G1.b.2b leitor: conexão recusada, consulta com erro ou resposta fora do e
     assert.equal(db.state.open, 0);
   }
   const rewrites: Array<(text: string, rows: readonly unknown[]) => readonly unknown[]> = [
-    (text, rows) => (text === READER_HEADS_SQL ? [...rows, rows[0]] : rows), // pseudônimo repetido
     (text, rows) => (text === READER_HEADS_SQL ? rows.map((row) => ({ ...(row as object), ledger_seq: 0 })) : rows),
     (text, rows) => (text === READER_HEADS_SQL ? rows.map((row) => ({ ...(row as object), extra: 1 })) : rows),
     (text, rows) => (text === READER_IDENTITY_SQL ? [] : rows),
@@ -89,6 +88,19 @@ test('G1.b.2b leitor: conexão recusada, consulta com erro ou resposta fora do e
     assert.deepEqual(await readGuard(db.connect, [asRow(ROWS()[0] as SimulatedHeadRow)]), { ok: false, code: 'GUARD_RESPONSE_INVALID' });
     assert.equal(db.state.open, 0);
   }
+});
+
+test('G1.b.2b leitor (coerência com a G1.b.2a, revisão do PR #61): DUAS linhas na posição máxima do mesmo pseudônimo (restrição única ausente ou alterada no provedor) ⇒ GUARD_DUPLICATE_HEAD, nunca um hash escolhido; idem para a posição exata de uma linha do registro anterior', async () => {
+  const duplicated = [...ROWS(), { audit_ref: refA, key_id: 'gk-test-a', ledger_seq: 4, sha256: H('9') }];
+  const db = simulatedReaderDb(duplicated);
+  assert.deepEqual(await readGuard(db.connect, []), { ok: false, code: 'GUARD_DUPLICATE_HEAD' });
+  assert.equal(db.state.open, 0);
+  // a mesma linha repetida byte a byte também conta (o leitor não "deduplica")
+  const same = simulatedReaderDb([...ROWS(), { ...(ROWS()[1] as SimulatedHeadRow) }]);
+  assert.deepEqual(await readGuard(same.connect, []), { ok: false, code: 'GUARD_DUPLICATE_HEAD' });
+  // abaixo da posição máxima, a duplicata aparece na conferência do registro anterior
+  const below = simulatedReaderDb([...ROWS(), { audit_ref: refA, key_id: 'gk-test-a', ledger_seq: 1, sha256: H('8') }]);
+  assert.deepEqual(await readGuard(below.connect, [asRow(ROWS()[0] as SimulatedHeadRow)]), { ok: false, code: 'GUARD_DUPLICATE_HEAD' });
 });
 
 test(`G1.b.2b leitor: mais de ${MAX_GUARD_HEADS} pseudônimos ⇒ TOO_MANY_GUARD_HEADS (nunca uma leitura truncada em silêncio)`, async () => {
@@ -140,5 +152,22 @@ test('G1.b.2b leitor × migração 004 (estático): o SQL fixo do leitor cita s�
     assert.match(sql, /^select (distinct on \(h\.audit_ref\) )?h\.audit_ref, h\.key_id, h\.ledger_seq, h\.sha256 from /);
   }
   assert.ok(!/pg_catalog\.unnest\([^)]*,/.test(READER_ROWS_SQL), 'a forma unnest(a, b) só existe sem o esquema (o Postgres real recusa a qualificada)');
+  // coerência com a G1.b.2a (revisão do PR #61): TODAS as linhas na posição máxima, sem `distinct on`, pelo MESMO predicado do `latest` do adaptador
+  const maxPredicate = 'h.ledger_seq = (select pg_catalog.max(m.ledger_seq) from gmn_link_audit_guard.ledger_heads m where m.audit_ref = h.audit_ref)';
+  for (const sql of [READER_HEADS_SQL, GUARD_LATEST_SQL]) {
+    assert.ok(!/distinct on/i.test(sql), 'nunca distinct on (escolheria um hash)');
+    assert.ok(sql.includes(maxPredicate), sql);
+  }
+  assert.match(migration, /constraint ledger_heads_audit_ref_ledger_seq_key unique \(audit_ref, ledger_seq\)/);
+  // o teste local roda a reconciliação de verdade (obrigatória) e o workflow da migração dispara quando ela muda
+  const harness = fs.readFileSync(path.join(__dirname, '..', 'supabase', 'proposed', 'local-test', 'guard-run.sh'), 'utf8');
+  assert.match(harness, /guard-reconcile-run\.ts "\$SOCK"/);
+  assert.match(harness, /reconciliação real: verificações a menos/);
+  assert.ok(!/pulad/.test(harness), 'nenhuma etapa pulada');
+  const workflow = fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'guard-migration.yml'), 'utf8');
+  for (const filter of ["'src/lib/link-audit-guard-reconcile/**'", "'scripts/link-audit-guard-reconcile.ts'", "'src/lib/link-audit-ledger/config.ts'", "'tests/helpers/link-audit-guard-reconcile-fixtures.ts'"]) {
+    assert.equal(workflow.split(`- ${filter}`).length - 1, 2, `${filter} em pull_request e em push`);
+  }
+  assert.match(workflow, /supabase\/proposed\/local-test\/guard-reconcile-run\.ts/);
   assert.match(READER_ROWS_SQL, /rows from \(pg_catalog\.unnest\(\$1::text\[\]\), pg_catalog\.unnest\(\$2::text\[\]\)\)/);
 });

@@ -99,11 +99,11 @@ test('CADEIA REAL: layout LEGADO (réplica fictícia) ⇒ mesma política, hashe
 });
 
 test('CADEIA REAL: auditId com "_" ⇒ alias no motor, id real no rastro, referências de evidência inalteradas; a leitura não escreve nada', async () => {
-  const { base, auditId } = await versioned({ auditId: 'tuvaplast_20261022_maps01' });
+  const { base, auditId } = await versioned({ auditId: 'aud_001_autorizacao_01' });
   const before = treeState(base);
   const { out, result } = await chain(base, auditId);
-  assert.equal(out.traceability.auditId?.sourceAuditId, 'tuvaplast_20261022_maps01');
-  assert.match(out.input?.auditId ?? '', /^tuvaplast-20261022-maps01-ux[0-9a-f]{32}$/);
+  assert.equal(out.traceability.auditId?.sourceAuditId, 'aud_001_autorizacao_01');
+  assert.match(out.input?.auditId ?? '', /^aud-001-autorizacao-01-ux[0-9a-f]{32}$/);
   assert.equal(result.auditId, out.input?.auditId);
   assert.deepEqual(out.input?.evidences.map((e) => e.id), ['capture:c0001', 'report:c0001-r0001']);
   assert.deepEqual(treeState(base), before, 'leitor + mapeador são só leitura');
