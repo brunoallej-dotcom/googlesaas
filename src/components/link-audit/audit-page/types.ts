@@ -313,7 +313,16 @@ export interface RunSummary {
   readonly superseded: boolean;
   readonly stale: boolean | null;
   readonly decisionsChanged: boolean | null;
+  /** R2.2: proveniência reconferida nesta leitura (calculada pelo servidor; nunca ids de chave nem hashes). */
+  readonly provenanceState: ProvenanceState;
 }
+
+/**
+ * R2.2 — estado da proveniência de um resultado confirmado, recalculado a cada leitura: `VERIFIED` = a cadeia de manifestos e as chaves que o atestaram conferem hoje; `RECHECK` =
+ * "a reconferir" (chave revogada, cadeia trocada/removida ou verificação indisponível): exige revisão humana, mas NÃO é falha de integridade nem quer dizer que o resultado seja
+ * inválido; `NOT_RECORDED` = resultado gravado antes do registro da proveniência. Independente de `confirmation` (livro × recibo).
+ */
+export type ProvenanceState = 'VERIFIED' | 'RECHECK' | 'NOT_RECORDED';
 
 /** O que confirma os resultados (R1.5): `LEDGER` = o livro de cabeças, objeto a objeto; `RECEIPT_ONLY` = só o recibo, sem prova do livro (legado ou sem livro). */
 export type ResultsConfirmation = 'LEDGER' | 'RECEIPT_ONLY';
@@ -351,6 +360,8 @@ export interface RunDetailResponse {
   readonly stale: boolean | null;
   readonly decisionsChanged: boolean | null;
   readonly superseded: boolean;
+  /** R2.2: no topo da resposta (o registro `run` é a mesma projeção da finalização). */
+  readonly provenanceState: ProvenanceState;
   readonly run: RunDetail;
 }
 
