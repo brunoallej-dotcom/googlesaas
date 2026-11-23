@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { isYamlMap, parseYamlSubset, type YamlMap, type YamlValue } from './helpers/yaml-subset';
@@ -561,21 +563,20 @@ test('P9-H01 stack: produção nunca declara GMN_LINK_AUDIT_HOMOLOGATION; a trav
     }
   };
   walk(path.join(ROOT, 'deploy'));
-  assert.deepEqual(offenders, ['deploy/hostinger/stack-hml.yml'], 'nenhum outro arquivo de implantação liga a trava');
+  assert.deepEqual(offenders.sort(), ['deploy/hostinger/docker-entrypoint.sh', 'deploy/hostinger/stack-hml.yml'], 'nenhum outro arquivo de implantação cita a trava');
+  const entrypointReads = stripComments(entrypoint).match(/[^\n]*GMN_LINK_AUDIT_HOMOLOGATION[^\n]*/g);
+  assert.deepEqual(entrypointReads, ['if [ "${GMN_LINK_AUDIT_HOMOLOGATION:-}" = "1" ]; then'], 'o entrypoint só LÊ a trava (regra do Serper), nunca a liga');
   const webEnv = mapAt(mapAt(mapAt(overlayDoc.services, 'services')['gmn-web'], 'gmn-web').environment, 'environment');
   assert.equal(webEnv.GMN_LINK_AUDIT_HOMOLOGATION, '1');
 });
 
-test('P9-H02 stack-hml.yml: só a trava no web, Serper desligado no web e no Worker, Worker em 0 e os nomes dos secrets; nada de porta, bind, rede ou imagem', () => {
+test('P9-H02 stack-hml.yml: só a trava no web, Worker em 0 e os nomes dos secrets (o Serper sai pelo entrypoint); nada de porta, bind, rede ou imagem', () => {
   assert.deepEqual(Object.keys(overlayDoc).sort(), ['secrets', 'services']);
   assert.deepEqual(overlayDoc.services, {
-    'gmn-web': { environment: { GMN_LINK_AUDIT_HOMOLOGATION: '1', SERPER_API_KEY_FILE: '' } },
-    'gmn-worker': { environment: { SERPER_API_KEY_FILE: '' }, deploy: { replicas: 0 } },
+    'gmn-web': { environment: { GMN_LINK_AUDIT_HOMOLOGATION: '1' } },
+    'gmn-worker': { deploy: { replicas: 0 } },
   });
-  for (const service of ['gmn-web', 'gmn-worker']) {
-    const env = mapAt(mapAt(stackServices[service], service).environment, `${service}.environment`);
-    assert.equal(env.SERPER_API_KEY_FILE, '/run/secrets/gmn_serper_api_key', `${service}: a sobreposição sobrescreve uma variável existente`);
-  }
+  assert.ok(!stripComments(overlayText).includes('SERPER'), 'a fusão do Docker não aplica valor vazio: o Serper não se desliga por sobreposição');
   const code = stripComments(overlayText);
   for (const forbidden of [/^\s*ports:/m, /^\s*volumes:/m, /^\s*networks:/m, /^\s*image:/m, /^\s*build:/m, /type: bind/, /^\s*configs:/m, /^\s*labels:/m, /privileged|cap_add|pid:|network_mode|docker\.sock/]) {
     assert.ok(!forbidden.test(code), `a sobreposição não pode ter ${forbidden}`);
@@ -637,4 +638,61 @@ test('P9-H09 stack-hml.yml: nenhuma rede (topo ou serviço) e TODO secret de top
   });
   assert.equal(new Set(names).size, names.length);
   assert.ok(names.every((name) => !stackSecretNames.includes(name) && !name.startsWith('gmn_')), 'nenhum secret de homologação aponta para um nome de produção');
+});
+
+/*
+ * P9.4, Serper em homologação (decisão do manager, 23/11/2026; spec do deploy pelo CI §5.11): a sobreposição não consegue esvaziar
+ * SERPER_API_KEY_FILE (a fusão de dois -c do Docker ignora valor vazio), então o entrypoint, com GMN_LINK_AUDIT_HOMOLOGATION=1, apaga
+ * SERPER_API_KEY e SERPER_API_KEY_FILE ANTES de carregar os segredos. O script roda de verdade aqui, com arquivos falsos numa pasta
+ * temporária e um comando final que só mostra as variáveis (sem rede, sem Docker).
+ */
+const ENTRYPOINT_PATH = path.join(DEPLOY, 'docker-entrypoint.sh');
+const SERPER_SENTINEL = 'sentinela-serper-de-teste';
+const HOMOLOGATION_NOTICE = '[gmn-entrypoint] homologação: chave do Serper não carregada';
+
+function runEntrypoint(t: { after: (fn: () => void) => void }, extra: Record<string, string>): { status: number | null; stdout: string; stderr: string } {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gmn-entrypoint-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, 'serper'), `${SERPER_SENTINEL}\n`);
+  fs.writeFileSync(path.join(dir, 'redis-url'), 'redis://:senha-ficticia@gmn-redis:6379/0\n');
+  const env = {
+    PATH: '/usr/bin:/bin',
+    NODE_ENV: 'production',
+    GMN_ROLE: 'web',
+    SUPABASE_SERVICE_ROLE_KEY: 'service-ficticia',
+    NEXT_PUBLIC_SUPABASE_ANON_KEY: 'anon-ficticia',
+    NEXT_PUBLIC_SUPABASE_URL: 'https://laboratorio-ficticio.invalid',
+    GMN_OPERATOR_EMAILS: 'operador-ficticio',
+    REDIS_URL_FILE: path.join(dir, 'redis-url'),
+    SERPER_API_KEY_FILE: path.join(dir, 'serper'),
+    ...extra,
+  };
+  const show = 'printf "%s|%s|%s" "${SERPER_API_KEY-<ausente>}" "${SERPER_API_KEY_FILE-<ausente>}" "${REDIS_URL-<ausente>}"';
+  const result = spawnSync('sh', [ENTRYPOINT_PATH, 'sh', '-c', show], { env: env as unknown as NodeJS.ProcessEnv, encoding: 'utf8' });
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+}
+
+test('P9.4 entrypoint: com GMN_LINK_AUDIT_HOMOLOGATION=1 a chave do Serper nunca é carregada (nem por arquivo nem direto), com uma linha fixa sem valor; os outros segredos continuam', (t) => {
+  const result = runEntrypoint(t, { GMN_LINK_AUDIT_HOMOLOGATION: '1' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, '<ausente>|<ausente>|redis://:senha-ficticia@gmn-redis:6379/0');
+  assert.ok(result.stderr.split('\n').includes(HOMOLOGATION_NOTICE));
+  assert.ok(!`${result.stdout}${result.stderr}`.includes(SERPER_SENTINEL), 'o valor nunca aparece');
+  const direct = runEntrypoint(t, { GMN_LINK_AUDIT_HOMOLOGATION: '1', SERPER_API_KEY: SERPER_SENTINEL, SERPER_API_KEY_FILE: '/caminho/inexistente' });
+  assert.equal(direct.status, 0, 'arquivo do Serper ilegível não importa: a variável sai antes da carga');
+  assert.equal(direct.stdout.split('|').slice(0, 2).join('|'), '<ausente>|<ausente>');
+  assert.ok(!`${direct.stdout}${direct.stderr}`.includes(SERPER_SENTINEL));
+});
+
+test('P9.4 entrypoint: sem a trava (produção) ou com valor diferente de "1", a chave do Serper é carregada como antes', (t) => {
+  const variants: Array<Record<string, string>> = [{}, { GMN_LINK_AUDIT_HOMOLOGATION: '0' }, { GMN_LINK_AUDIT_HOMOLOGATION: 'true' }, { GMN_LINK_AUDIT_HOMOLOGATION: ' 1' }];
+  for (const extra of variants) {
+    const result = runEntrypoint(t, extra);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.split('|').slice(0, 2).join('|'), `${SERPER_SENTINEL}|<ausente>`, JSON.stringify(extra));
+    assert.ok(!result.stderr.includes(HOMOLOGATION_NOTICE));
+  }
+  const code = stripComments(entrypoint);
+  assert.ok(code.indexOf('GMN_LINK_AUDIT_HOMOLOGATION') < code.indexOf('for name in'), 'a regra roda antes da carga dos segredos');
+  assert.match(code, /unset SERPER_API_KEY SERPER_API_KEY_FILE/);
 });
