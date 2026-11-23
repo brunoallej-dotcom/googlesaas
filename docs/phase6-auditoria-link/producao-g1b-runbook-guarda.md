@@ -16,22 +16,33 @@
 | `GMN_LINK_AUDIT_GUARD_DB_CA` | Swarm secret `gmn_link_audit_guard_db_ca` | VPS e responsável | Pública, mas trocá-la permite interceptar: integridade |
 | `GMN_LINK_AUDIT_GUARD_KEY` (+ `…_RETIRED_KEYS` na rotação) | Swarm secret `gmn_link_audit_guard_key` | VPS e o cofre do responsável | Pseudônimo `audit_ref` (D-G0-5) |
 | `GMN_LINK_AUDIT_GUARD_READER_DB_URL` (papel `gmn_guard_reader`) e `…_READER_DB_CA` | **Só fora da VPS**, na máquina do responsável (valor ou arquivo `*_FILE`) | Responsável | **Nunca** na VPS (D-G0-2); nenhum arquivo de implantação a cita (teste) |
-| Registros da reconciliação `reconcile-NNNNNN.json` | Pasta do responsável fora da VPS e fora do repositório, com backup próprio | Responsável | Encadeados; nunca editar, renomear nem apagar |
+| Registros da reconciliação `reconcile-NNNNNN.json` | Pasta **dedicada** do responsável, fora da VPS e fora do repositório (caminho real), dona do usuário, `chmod 700`, com backup próprio | Responsável | Encadeados; só os registros na pasta; nunca editar, renomear nem apagar |
 | CLI `npm run link-audit:guard-reconcile -- reconcile\|gate` | Máquina do responsável (este repositório) | — | Recusa rodar com `GMN_ROLE` (dentro da pilha) e com a credencial de escrita no ambiente |
 
-**Ambiente da reconciliação** (sessão do terminal do responsável; nada em arquivo de ambiente versionado):
+**Ambiente da reconciliação** (um shell só para isto, `bash --norc --noprofile`; nada em arquivo de ambiente versionado). Nenhum segredo
+em argumento, URL de comando, histórico ou log (revisão do PR #64): os valores são digitados sem eco e vão para arquivos `0600` de uma
+pasta temporária da sessão, que o CLI lê pelas variáveis `*_FILE`:
 
 ```bash
 set +x
+umask 077
+SESSAO="$(mktemp -d)"; trap 'rm -rf -- "$SESSAO"' EXIT
 read -rsp 'URL do leitor (postgresql://gmn_guard_reader[.<REF>]:<senha com escape>@<HOST>:<PORTA>/postgres?sslmode=verify-full): ' V; echo
-export GMN_LINK_AUDIT_GUARD_READER_DB_URL="$V"; unset V
+printf '%s' "$V" > "$SESSAO/reader-url"; unset V
+read -rsp 'chave ATUAL do pseudônimo (<id>:<64 hex>): ' K; echo
+printf '%s' "$K" > "$SESSAO/guard-key"; unset K
+export GMN_LINK_AUDIT_GUARD_READER_DB_URL_FILE="$SESSAO/reader-url" GMN_LINK_AUDIT_GUARD_KEY_FILE="$SESSAO/guard-key"
 export GMN_LINK_AUDIT_GUARD_READER_DB_CA_FILE=<ARQUIVO_CA_DO_PROJETO>
-read -rsp 'chave ATUAL do pseudônimo (<id>:<64 hex>): ' K; echo; export GMN_LINK_AUDIT_GUARD_KEY="$K"; unset K
 # só depois de uma rotação da chave do pseudônimo: TODA chave já usada, separadas por vírgula (a lista da reconciliação nunca encolhe)
-read -rsp 'chaves aposentadas (ou Enter): ' R; echo; [ -n "$R" ] && export GMN_LINK_AUDIT_GUARD_RETIRED_KEYS="$R"; unset R
+read -rsp 'chaves aposentadas (ou Enter): ' R; echo
+if [ -n "$R" ]; then printf '%s' "$R" > "$SESSAO/retired-keys"; export GMN_LINK_AUDIT_GUARD_RETIRED_KEYS_FILE="$SESSAO/retired-keys"; fi; unset R
 ```
 
-Ao terminar a sessão: `unset GMN_LINK_AUDIT_GUARD_READER_DB_URL GMN_LINK_AUDIT_GUARD_KEY GMN_LINK_AUDIT_GUARD_RETIRED_KEYS`.
+Ao terminar: `exit` (o `trap` apaga os arquivos da sessão).
+
+**Conexões `psql` deste runbook** (`\password` nos §4 e §5, conferências): a mesma sessão segura do roteiro do laboratório
+(`producao-g1b-laboratorio-pg-g08.md` §0.1) — `PGSSLMODE=verify-full` e `PGSSLROOTCERT=<ARQUIVO_CA_DO_PROJETO>` obrigatórios, senha só
+num `PGPASSFILE` `0600` temporário (função `pg_como`) ou no prompt do `psql`, **nunca** uma URL com senha no comando.
 
 ## 1. Ativação (antes do primeiro `ENROLL` — regra 1)
 
@@ -65,8 +76,15 @@ Sempre **fora da VPS**, sobre a pasta da rodada do livro (`<DESTINO_BACKUP_LIVRO
 rodada** (a rodada é tirada com o web parado; uma escrita entre a rodada e a reconciliação põe a guarda à frente da cópia e aparece como
 `GUARD_HEAD_NOT_IN_BACKUP`):
 
+**A pasta dos registros** é dedicada e estrita (revisão do PR #64): fora do repositório pelo caminho real (o repositório é público),
+dona do seu usuário e sem escrita para grupo ou outros (`mkdir -m 700 <PASTA_DOS_REGISTROS>`); senão `RECORDS_DIR_UNSAFE`. Dentro dela só
+cabem os `reconcile-NNNNNN.json` e, depois de uma execução interrompida, o temporário órfão do gravador (`.tmp-reconcile-NNNNNN-<16
+hex>.json`, que não conta como registro). **Qualquer outro nome** — um LEIA-ME, um registro renomeado — é recusado (`RECORDS_INVALID`):
+anotações ficam em outra pasta. A primeira reconciliação (`--first`) só é aceita com a pasta **totalmente vazia**
+(`RECORDS_DIR_NOT_EMPTY`), para que renomear os registros nunca faça a cadeia recomeçar.
+
 ```bash
-# primeira vez (pasta de registros vazia)
+# primeira vez (pasta de registros TOTALMENTE vazia)
 npm run -s link-audit:guard-reconcile -- reconcile --backup <DESTINO_BACKUP_LIVRO>/<RODADA> --records-dir <PASTA_DOS_REGISTROS> --first
 # todas as seguintes (o registro anterior é obrigatório; sem --first)
 npm run -s link-audit:guard-reconcile -- reconcile --backup <DESTINO_BACKUP_LIVRO>/<RODADA> --records-dir <PASTA_DOS_REGISTROS>
@@ -80,7 +98,9 @@ grava `reconcile-NNNNNN.json` novo (criação exclusiva; nunca sobrescreve). `--
 |---|---|---|
 | 0 | Sem divergência (`CONSISTENT`, `BEHIND` até `L_max` = 5, ou `NO_HEAD` com 1 registro) | Arquivar a saída junto do registro |
 | 2 | Divergência (`findings`), registro novo gravado | §10, achado a achado |
-| 3 | Recusa: rodada inválida, sem configuração, sem registro anterior (ou `--first` indevido), chave retirada da lista (`GUARD_KEY_DROPPED`), credencial que não é do leitor, guarda indisponível, registro não gravado | Corrigir a entrada; guarda indisponível ⇒ §8 |
+| 3 | Recusa da rodada de backup (`BACKUP_NOT_A_ROUND`, `BACKUP_ROUND_NOT_VALID`, `BACKUP_MANIFEST_INVALID`, `BACKUP_MANIFEST_MISMATCH`, `BACKUP_UNEXPECTED_ENTRY`) | Apontar a pasta `<DESTINO_BACKUP_LIVRO>/<RODADA>` certa; rodada sem `RODADA-VALIDA`, com `RODADA-INCOMPLETA` ou que não confere com o `SHA256SUMS` não serve: usar outra rodada válida e investigar o destino (plano de backup) |
+| 3 | Recusa da pasta dos registros: `RECORDS_DIR_INVALID` (não existe, não é diretório comum), `RECORDS_DIR_UNSAFE` (dentro do repositório, de outro dono ou com escrita de grupo/outros), `RECORDS_INVALID` (lacuna, encadeamento quebrado, registro alterado ou nome fora do padrão), `NO_PREVIOUS_RECORD`, `PREVIOUS_RECORD_EXISTS` ou `RECORDS_DIR_NOT_EMPTY` (`--first` indevido), `RECORD_EXISTS` / `RECORD_WRITE_FAILED` | Usar a pasta dedicada certa (`chmod 700`, fora do repositório); nome estranho: tirá-lo da pasta (sem apagar registro); registro renomeado: devolver o nome original; cadeia quebrada: restaurar a pasta do backup dela; `RECORD_EXISTS`: rodar de novo |
+| 3 | Demais recusas: sem configuração (`NOT_CONFIGURED`), chave retirada da lista (`GUARD_KEY_DROPPED`), credencial que não é do leitor, guarda indisponível ou duplicata na posição máxima (`GUARD_DUPLICATE_HEAD`) | Corrigir a entrada; guarda indisponível ⇒ §8; duplicata ⇒ §10 (incidente no provedor) |
 | 1 / 4 | Uso errado / falha inesperada | Repetir com a sintaxe certa; persistindo, levar ao manager |
 
 - A saída lista o **pseudônimo** e, só quando a rodada tem a auditoria, o **`auditId`** (o necessário para agir). Auditoria sem
@@ -88,8 +108,9 @@ grava `reconcile-NNNNNN.json` novo (criação exclusiva; nunca sobrescreve). `--
 - Uma regressão da guarda **continua** acusada em toda rodada seguinte (o registro guarda a marca d'água); uma auditoria congelada e
   abandonada (§10) também continua aparecendo: anote no registro local que é a mesma, conhecida.
 - A pasta dos registros é a cópia própria das cabeças (spec §5.1.5): faça backup dela fora da VPS; **nunca** edite, renomeie ou apague
-  um registro (a cadeia quebrada é recusada: `RECORDS_INVALID`). Um temporário `.tmp-reconcile-*` que sobrar de uma execução
-  interrompida pode ser removido.
+  um registro (a cadeia quebrada, o nome trocado e o arquivo estranho são recusados: `RECORDS_INVALID`). O temporário órfão do
+  gravador (`.tmp-reconcile-NNNNNN-<16 hex>.json`, de uma execução interrompida) não conta como registro e pode ser removido; até lá ele
+  só impede um `--first` (`RECORDS_DIR_NOT_EMPTY`).
 
 ## 3. Verificador do portão G-1 (PG-G07)
 
@@ -102,13 +123,18 @@ a credencial de escrita não sai da VPS e o resultado que vale é o de fora.
 | `NOT_CONFIGURED` | Sem configuração do leitor neste ambiente |
 | `CONFIG_INVALID` | Configuração do leitor inválida (`checks.configurationCode` diz o motivo) |
 | `GUARD_UNAVAILABLE` | Conexão, TLS, senha ou prazo |
+| `GUARD_DUPLICATE_HEAD` | Duas linhas na posição máxima de um pseudônimo (restrição única ausente ou alterada): incidente no provedor (§10) |
 | `EXTERNAL_GUARD_NOT_VERIFIED` | Sem `--backup`: TLS e leitor ok, auditorias não conferidas |
 | `NO_AUDITS` | A rodada não tem auditoria (o portão exige ao menos uma) |
 | `STACK_NOT_PUBLISHING` | Nenhuma auditoria da rodada tem cabeça sob a chave de custódia: a pilha está sem a guarda, publica com outra chave do pseudônimo ou não consegue publicar |
 | `NOT_CONSISTENT` | Alguma auditoria não está `CONSISTENT` (listadas em `notConsistent`) ou há achado |
 
-Código 0 = `operational: true`. Código 3 = mau uso do verificador (credencial de escrita no ambiente, URL de outro papel, sessão que
-não é do leitor).
+Código 0 = `operational: true`. Código 3 = recusa de entrada do verificador, em duas categorias:
+
+| Código 3 | Ação |
+|---|---|
+| Mau uso: credencial de escrita no ambiente (`GUARD_WRITER_CREDENTIAL_PRESENT`), URL de outro papel (`GUARD_READER_ROLE_REQUIRED`), sessão que não é do leitor (`NOT_READER_ROLE`, `SESSION_NOT_READ_ONLY`, `READER_CAN_PUBLISH`), dentro da pilha (`INSIDE_THE_STACK`), variável e arquivo juntos (`READER_ENV_INVALID`) | Refazer o ambiente da reconciliação (§0) só com a credencial do leitor, fora da VPS |
+| Rodada de backup recusada (`--backup`): `BACKUP_NOT_A_ROUND`, `BACKUP_ROUND_NOT_VALID`, `BACKUP_MANIFEST_INVALID`, `BACKUP_MANIFEST_MISMATCH`, `BACKUP_UNEXPECTED_ENTRY` | Apontar a pasta `<DESTINO_BACKUP_LIVRO>/<RODADA>` de uma rodada **válida** (com `RODADA-VALIDA`, sem `RODADA-INCOMPLETA`, conferindo com o `SHA256SUMS`); se nenhuma serve, tirar uma rodada nova pelo plano de backup e investigar o destino |
 
 ## 4. Rotação da credencial do ESCRITOR (`gmn_guard_writer`)
 
@@ -117,7 +143,8 @@ Planejada ou por suspeita. A troca da senha vale na hora e o secret do Swarm é 
 
 1. Avisar quem opera; conferir que não há operação aberta na tela.
 2. `docker service scale gmn_gmn-web=0` (a mesma mecânica do `PROVA-DE-ORIGEM-E-DE-COLETA.md` §3 item 5).
-3. No `psql` como `postgres`: `\password gmn_guard_writer` (senha nova do cofre, gerada na hora).
+3. No `psql` como `postgres`, pela sessão segura (§0: `verify-full`, senha do `PGPASSFILE` temporário ou do prompt, nunca URL com
+   senha no comando): `\password gmn_guard_writer` (senha nova do cofre, gerada na hora).
 4. Recriar o secret `gmn_link_audit_guard_db_url` com a URL nova, a partir do cofre (`read -rs`, `set +x`), e implantar pelo CI.
 5. Com o web de volta: a tela mostra `externalGuard` sem `UNAVAILABLE`; nenhum `link_audit.guard.unavailable` no log.
 6. **Por suspeita de vazamento:** reconciliar logo depois (§2). Quem tinha a credencial antiga só consegue **congelar** (sequência falsa
@@ -126,8 +153,8 @@ Planejada ou por suspeita. A troca da senha vale na hora e o secret do Swarm é 
 
 ## 5. Rotação da credencial do LEITOR (`gmn_guard_reader`)
 
-Só fora da VPS, sem parar nada: `\password gmn_guard_reader` como `postgres`, atualizar o cofre, rodar `gate --json` (esperado
-`connection: OK`). O leitor só lê (pseudônimos e frequência de atividade): vazamento é de confidencialidade, não de integridade.
+Só fora da VPS, sem parar nada: `\password gmn_guard_reader` como `postgres` pela sessão segura (§0: `verify-full`, sem URL com senha
+no comando), atualizar o cofre e o arquivo `*_FILE` da sessão da reconciliação, rodar `gate --json` (esperado `connection: OK`). O leitor só lê (pseudônimos e frequência de atividade): vazamento é de confidencialidade, não de integridade.
 
 ## 6. Rotação da chave do PSEUDÔNIMO (`GMN_LINK_AUDIT_GUARD_KEY`; spec §5.1.7)
 
