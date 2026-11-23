@@ -26,7 +26,14 @@ COUNT=0
 SOCK="$(mktemp -d)"
 chmod 0777 "$SOCK"
 
-cleanup() { docker rm -f "$NAME" >/dev/null 2>&1 || true; rm -rf "$SOCK" 2>/dev/null || true; }
+# A imagem troca o dono da pasta do soquete para o usuário do Postgres dela: antes de remover o contêiner, a pasta volta a quem rodou
+# o teste (de dentro do contêiner, onde o dono atual tem permissão), já sem os arquivos do soquete; só então ela é apagada aqui fora.
+cleanup() {
+  docker exec "$NAME" find /var/run/postgresql -maxdepth 1 -name '.s.PGSQL.*' -delete >/dev/null 2>&1 || true
+  docker exec "$NAME" chown "$(id -u):$(id -g)" /var/run/postgresql >/dev/null 2>&1 || true
+  docker rm -f "$NAME" >/dev/null 2>&1 || true
+  case "$SOCK" in /tmp/tmp.*) rmdir "$SOCK" 2>/dev/null || true ;; esac
+}
 trap cleanup EXIT
 
 ok() { COUNT=$((COUNT + 1)); echo "OK    $1"; }
