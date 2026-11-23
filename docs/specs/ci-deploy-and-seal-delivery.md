@@ -6,9 +6,11 @@
 > `deploy/hostinger/receivers.sha256`, modelos de *wrapper* e job `receivers artifact (build, hash)`; §5.6 "Implementação (P9.3a)";
 > P9-D01 a P9-D14 marcados no §6). **P9.3b implementada** (receptor de manifestos `gmn-seal-receiver.cjs`, gravação exclusiva do `sign`
 > extraída para `exclusive-write.ts`, modelos de *wrapper* `gmn-seals`/`gmn-hml-seals` e a regra `2750` da pasta de manifestos; §5.7
-> "Implementação (P9.3b)"; P9-R01 a P9-R13 e P9-F01 marcados no §6). Ainda não há usuário de host nem ambiente do GitHub. O código restante
-> vem na fatia P9.5 (`docs/plan/implementation-waves.md`, seção "Deploy pelo CI (P-9)"). Nenhuma fatia faz deploy: o primeiro deploy é do
-> responsável, pelo workflow, depois das ações do §10.1.
+> "Implementação (P9.3b)"; P9-R01 a P9-R13 e P9-F01 marcados no §6). **P9.5 implementada** (jobs `seals-verify` e `seals-deliver` no
+> `deploy.yml`, gatilho `push` no caminho dos manifestos, modo árvore do `seals-check`, registro RC-08 da entrega; §5.5.2 "Implementação
+> (P9.5)"; P9-W01 e P9-W09 marcados no §6). **Com a P9.5, o código do P-9 está completo.** Ainda não há usuário de host nem ambiente do
+> GitHub. Nenhuma fatia faz deploy nem entrega: o primeiro deploy e a primeira entrega são do responsável, pelo workflow, depois das ações do
+> §10.1 (runbook `deploy/hostinger/RUNBOOK-DEPLOY-PELO-CI.md`, §2 e §8).
 >
 > **Decisão do responsável (23/11/2026), registrada aqui e não rediscutida:** aceita a recomendação do manager de
 > `docs/phase6-auditoria-link/p1-canal-de-entrega-manifestos.md` §6.3. Um único pipeline de deploy pelo CI, com um job de
@@ -477,7 +479,8 @@ dispara e aprova as próprias execuções (risco aceito, §11.2).
   se o `curl` sair com 0 (um código impresso antes de um erro, como o 28 de prazo, conta como `000`).
 - **Pacote:** `gzip -n` só estabiliza o cabeçalho do gzip (sem nome nem data). O sha256 do pacote é a **integridade** do pacote daquela
   execução, conferida pelo receptor; não é prova de build reprodutível entre execuções.
-- Até a P9.5, `acao = entregar-selos` não roda nenhum job, e o gatilho `push` no caminho dos manifestos ainda não existe.
+- Até a P9.5, `acao = entregar-selos` não rodava nenhum job, e o gatilho `push` no caminho dos manifestos não existia (os dois chegam na
+  P9.5, §5.5.2 "Implementação (P9.5)").
 - **Fusão da sobreposição (conferida offline com o `docker stack config` do Docker CLI 29.10):** os 12 `name: gmn-hml_*`, o `target`
   `gmn_*` e o `replicas: 0` do Worker valem; um `SERPER_API_KEY_FILE: ""` **não** sobrescreveria a variável (a fusão ignora valor
   vazio). Por isso o Serper de homologação sai pelo entrypoint (§5.11, decisão do manager de 23/11/2026), e a sobreposição não mexe
@@ -493,6 +496,65 @@ dispara e aprova as próprias execuções (risco aceito, §11.2).
    cancelada. Teto de 1000 arquivos por execução (`SEALS_TOO_MANY`).
 4. Para no primeiro erro (RC-10): execução vermelha, código do receptor no resumo.
 5. `if: always()`: apaga a chave e escreve o resumo (RC-08).
+
+**Implementação (P9.5)** (`.github/workflows/deploy.yml`, scripts `deploy/ci/seals-verify.sh`, `seals-files.sh`, `seals-deliver.sh` e
+`seals-summary.sh`, `ssh-setup.sh` parametrizado; modo árvore do comando em `src/lib/link-audit-seals-channel/tree.ts`; testes
+`tests/deploy-workflow.test.ts`, `tests/deploy-seals-delivery.test.ts` e `tests/link-audit-seals-tree.test.ts`). Decisões tomadas na fatia,
+todas de falha fechada:
+
+- **`seals-verify` roda o código do próprio commit**, que já está na `main` (revisado e mesclado com o check `seals` verde); no `ci.yml` o
+  código vem da base porque o PR não é confiável, aqui o commit já é. No **push**, o mesmo preparo do `ci.yml`
+  (`.github/scripts/seals-prepare.sh`, base = `github.event.before`; `before` todo zero ou fora do histórico ⇒ `SEALS_NO_BASE`) alimenta o
+  modo de mudanças (S-01 a S-14, com o S-10 nas auditorias tocadas) e, em cada ambiente com arquivo **acrescentado** sob `<amb>/seals/`, o
+  modo árvore. No **dispatch**, só o modo árvore do ambiente escolhido.
+- **Modo árvore** do comando: `npm run link-audit:seals-check -- --tree <amb> --modes <arquivo> --repo <raiz>` (as mesmas peças do job
+  `seals`). S-03 a S-08 em **todos** os arquivos de `link-audit-seals/<amb>/` do commit (a lista de confiança só pelo S-04 e pelo S-05; o
+  formato dela é do S-12, do PR); sem S-09/S-10. Teto de 1000 manifestos e fechos (o da entrega), conferido antes de ler (`SEALS_TOO_MANY`);
+  a soma dos tamanhos e toda leitura contam no teto único de 64 MiB (`SEALS_TOO_MANY`, `READ_BUDGET`). O resumo traz uma linha por arquivo
+  (caminho, `sha256sum`, `seq`, `sealSha256`; fecho com as cabeças), que o livro junta à da entrega da mesma execução.
+- **Matriz de ambientes.** "Ambientes com arquivos" (tabela do §5.5) foi lido assim: no push, os ambientes com arquivo **acrescentado** sob
+  `<amb>/seals/` pelo push (um push que só toca homologação não pede aprovação de produção à toa); no dispatch, o ambiente escolhido. Em
+  qualquer caso, só entra o ambiente que tem pelo menos um arquivo sob `<amb>/seals/` (dispatch de um ambiente vazio ⇒ `[]`, "nada a
+  entregar"). A saída é um JSON de um conjunto **fechado** (`[]`, `["homologacao"]`, `["producao"]`, `["homologacao","producao"]`), montado
+  só de literais e conferido pelo script que o escreve **e** pela condição do `seals-deliver` (um nome fora da lista criaria um ambiente
+  sem proteção). `fail-fast: false`: um ambiente que falha não cancela o outro.
+- **`NOT_MAIN_HEAD` no `seals-deliver` (a spec era omissa; decisão da P9.5):** imediatamente antes do primeiro `put`, o mesmo passo do
+  `deploy` (mesmo texto, teste), pela API, com `contents: read`. Uma entrega aprovada depois que a `main` andou (até por um commit que não
+  toca manifestos) falha sem enviar nada; o remédio é um dispatch `acao = entregar-selos` da cabeça atual, que manda tudo de forma
+  idempotente. Defesa em profundidade: o receptor já recusa uma lista de confiança antiga (`E_TRUST_LIST_MISMATCH`).
+- **Lista do passo 1 (`seals-files.sh`):** só `git` e `sha256sum`. `git ls-tree -r -z HEAD -- link-audit-seals/<amb>/seals/`, com o teto de
+  1000 conferido **antes** de olhar qualquer arquivo (`SEALS_TOO_MANY`); ambiente sem arquivo ⇒ `SEALS_EMPTY`. Cada arquivo: caminho na
+  gramática do receptor (§5.7; senão `SEALS_UNEXPECTED_PATH`, sem eco), modo `100644 blob` e arquivo comum no checkout (`SEALS_BAD_MODE`), até
+  256 KiB (`SEALS_TOO_LARGE`) e bytes do checkout = blob do commit (`git hash-object --no-filters`; senão `CHECKOUT_MISMATCH`). Ordem: a dos
+  bytes do caminho (`LC_ALL=C sort`), primeiro os manifestos (largura fixa: `auditId`, depois `seq`) e depois os fechos (por nome); o `_` dos
+  fechos ordenaria antes de `aud-`, por isso os dois grupos são ordenados à parte. A lista de confiança: arquivo comum, até 8 KiB
+  (`HASH_INPUT_MISSING`, `TRUST_LIST_TOO_LARGE`).
+- **Chave:** `ssh-setup.sh seals` (o papel é um literal fixo do workflow): `GMN_SEALS_SSH_KEY` em `id_seals`, apelido `gmn-seal-receiver`,
+  usuário `gmn-seals` / `gmn-hml-seals`, as mesmas opções fixas do §5.5.1 passo 7. A chave de deploy nunca entra no job de entrega, nem a de
+  manifestos no `deploy` (teste). A única chamada `ssh` dos dois jobs fica em `deploy/ci/lib.sh` (`gmn_receiver_ssh`).
+- **Resposta do receptor** (conjunto fechado de `src/lib/seal-receiver/codes.ts`, conferido por teste de paridade): sucesso só com saída 0
+  e exatamente uma linha `OK WRITTEN|ALREADY_PRESENT <relpath> <sha256>` que ecoa o pedido (senão `RECEIVER_BAD_OUTPUT put`); recusa só com
+  o código da tabela do §5.8 e a saída numérica dele, detalhe só no `E_V2_REFUSED` (razões do verificador e `HEAD_MISMATCH`) e no
+  `E_CLOSURE_REFUSED` (motivos do S-11), linha pública remontada pelo job; saída 29 sem **nenhum** texto (stdout ou stderr do receptor
+  fechados) ⇒ `E_INTERNAL`; qualquer outra coisa ⇒ `RECEIVER_UNKNOWN_ERROR EXIT_<n>`; conexão que falha (255) ⇒ `SSH_CONNECT_FAILED
+  HOST_KEY|AUTH|OTHER`. O stderr do ssh e do receptor nunca vai ao log. Um arquivo que mudou entre o passo 1 e o `put` ⇒
+  `SEALS_FILE_CHANGED`; lista do passo 1 ausente ou fora da forma ⇒ `SEALS_LIST_MISSING` / `SEALS_LIST_INVALID`.
+- **Para no primeiro erro** (RC-10): o arquivo recusado fica `FALHOU` com o código e os seguintes não são enviados.
+- **Resumo** (§5.9): uma tabela do ambiente, uma linha por arquivo da lista, na ordem de envio: `WRITTEN` = "gravado (verificado no host)";
+  `ALREADY_PRESENT` = "conteúdo idêntico já presente" (nunca "verificado no host", teste); `FALHOU` com o código; "não enviado" nos arquivos
+  depois da parada ou quando o job falhou antes da entrega. O resultado da execução é o código do primeiro passo que falhou. O resumo também
+  traz o sha256 da lista de confiança do commit (público; o livro o compara no §5, item 5). A lista e os resultados ficam em
+  `$RUNNER_TEMP/gmn-seals` (`0600`, só campos públicos), apagados no fim (`if: always()`); a chave é apagada logo depois da entrega.
+- **Códigos do lado do workflow** nos jobs de manifestos, além dos do §5.8: `seals-verify`: `INPUT_INVALID`, `CHECKOUT_MISMATCH`,
+  `SEALS_NO_BASE`, `SEALS_PREPARE_FAILED`, `SEALS_REFUSED` (o código da recusa vem antes, na linha `ERRO` do comando e no resumo);
+  `seals-deliver`: `INPUT_INVALID`, `CHECKOUT_MISMATCH`, `HASH_INPUT_MISSING`, `TRUST_LIST_TOO_LARGE`, `SEALS_TOO_MANY`, `SEALS_EMPTY`,
+  `SEALS_UNEXPECTED_PATH`, `SEALS_BAD_MODE`, `SEALS_TOO_LARGE`, `SSH_CONFIG_MISSING`, `SSH_CONFIG_INVALID`, `NOT_MAIN_HEAD`,
+  `SEALS_LIST_MISSING`, `SEALS_LIST_INVALID`, `SEALS_FILE_CHANGED`, `SSH_CONNECT_FAILED`, `RECEIVER_UNKNOWN_ERROR`, `RECEIVER_BAD_OUTPUT` (o
+  que fazer em cada um: runbook §8).
+- **Limite declarado:** uma conexão SSH por `put`, sem multiplexação (o `ControlMaster` deixaria um processo e um soquete vivos no runner
+  entre os passos). Com o teto de 1000 arquivos, o handshake de cada `put` pode passar dos 20 min do job; o volume esperado do canal é de
+  dezenas de arquivos. Uma execução que estoura o prazo é cancelada; o que já foi gravado fica (só acréscimo), e a seguinte acha esses
+  arquivos como `ALREADY_PRESENT`.
 
 ### 5.6 Receptor de deploy
 
@@ -929,6 +991,10 @@ O resumo (`$GITHUB_STEP_SUMMARY`) é público e só tem campos públicos. O cust
 `ALREADY_PRESENT` (revisão do PR #72): o host já tinha um arquivo com os MESMOS bytes, e o receptor não o verificou de novo. O resumo o mostra
 como "conteúdo idêntico já presente", nunca como "verificado no host"; a verificação `v2` do host só vale para `WRITTEN`.
 
+*(P9.5)* A coluna "resultado" mostra `WRITTEN`: gravado (verificado no host), `ALREADY_PRESENT`: conteúdo idêntico já presente, `FALHOU` ou
+"não enviado" (arquivo depois da parada no primeiro erro, ou job que falhou antes da entrega); a coluna "código", `OK`, o código da recusa ou
+`-`. Acima da tabela, o resultado da execução e o sha256 da lista de confiança do commit (§5.5.2, "Implementação (P9.5)").
+
 O `seals-deliver` não roda código do repositório e não interpreta o JSON. O livro junta as duas tabelas da mesma execução pelo
 caminho e pelo sha256.
 
@@ -1102,23 +1168,24 @@ relatório indicado.
 
 **Workflows, teste estático (P9.4 e P9.5):**
 
-- [ ] **P9-W01** *(P9.4: entradas do dispatch, permissões efetivas por job e nenhum `write` testados em
-  `tests/deploy-workflow.test.ts`; o gatilho `push` e os jobs `seals-*` entram na P9.5, que fecha o critério)* `deploy.yml`: gatilhos e
+- [x] **P9-W01** `deploy.yml`: gatilhos e
   entradas exatamente os do §5.5. **Permissões efetivas por job**: todo job declara
   `permissions`; `deploy` = exatamente `{contents: read, actions: read}`; `seals-verify` e `seals-deliver` = exatamente
-  `{contents: read}`; nenhum `write` em lugar nenhum; topo = `contents: read`.
+  `{contents: read}`; nenhum `write` em lugar nenhum; topo = `contents: read`. Teste: `tests/deploy-workflow.test.ts` (P9.4; fechado na
+  P9.5 com o gatilho `push` e os jobs `seals-*`).
 - [x] **P9-W02** `deploy` só com `github.ref == 'refs/heads/main'`; `environment` = a entrada; `seals-deliver` com `environment` da
-  matriz.
+  matriz. Teste: `tests/deploy-workflow.test.ts` (P9.4; o `seals-deliver` na P9.5, com a matriz só do conjunto fechado).
 - [x] **P9-W03** toda `uses:` fixada por SHA de 40 hex e só entre as actions já usadas no `ci.yml`.
 - [x] **P9-W04** nenhum `upload-artifact`, `docker push`, `docker login`, `actions/cache`, `cache:` do `setup-node` ou `type=gha`
   em `deploy.yml`.
 - [x] **P9-W05** nenhum `${{ secrets.` e nenhum `${{ inputs.` dentro de `run:`; nenhum `set -x` nem `ssh -v`.
 - [x] **P9-W06** `concurrency` por operação e ambiente: `gmn-<amb>-deploy` no `deploy` e `gmn-<amb>-seals` no `seals-deliver`;
-  nenhum grupo comum às duas operações; nenhum `cancel-in-progress: true`.
+  nenhum grupo comum às duas operações; nenhum `cancel-in-progress: true`. Teste: `tests/deploy-workflow.test.ts` (P9.4 e P9.5).
 - [x] **P9-W07** *(P9.4: na configuração privada do `ssh -F`, §5.5.1, precisões)* `StrictHostKeyChecking=yes` e `UserKnownHostsFile` explícito em todo `ssh`; nenhum `StrictHostKeyChecking=no`
   nem `accept-new`.
 - [x] **P9-W08** a chave só é escrita depois do passo de build, e há limpeza com `if: always()`.
-- [ ] **P9-W09** `seals-deliver` não roda `npm`, `node` nem `npx`.
+- [x] **P9-W09** `seals-deliver` não roda `npm`, `node` nem `npx`. Teste: `tests/deploy-workflow.test.ts` (P9.5: nem no workflow, sem
+  `setup-node`, nem nos scripts que ele chama); a execução dos scripts com `git` real e `ssh` falso em `tests/deploy-seals-delivery.test.ts`.
 - [x] **P9-W10** `ci.yml`: job `seals` sem filtro de caminho, sem segredo, `persist-credentials: false`, base = `HEAD^1` no PR. Teste: `tests/link-audit-seals-workflow.test.ts` (P9.2).
 - [x] **P9-W11** *(P9.4: a leitura é pela API, `gh api …/git/ref/heads/main`, só leitura, no lugar do `git ls-remote`; §5.5.1,
   precisões)* o job `deploy` compara `github.sha` com `refs/heads/main` (pela API, só leitura) no início do job, antes do
@@ -1331,10 +1398,11 @@ autorização escrita da implantação (checklist §0).
 - **Runbook de chaves §4** e **runbook do custodiante**: fixação por PR; ordem da aposentadoria (fecho → entrega → `active →
   retired:<sha256>` → deploy, §5.3); `auditId` `aud-<16 hex>` gerado na autorização; entrega por PR (P9.2). **Feita na P9.2**
   (`onda6c-runbook-chaves.md` §4, `p1-runbook-custodiante.md` §6, §6.1 e §9).
-- **`p1-canal-de-entrega-manifestos.md` §3:** procedimento final com o PR e o resumo do job (P9.5).
+- **`p1-canal-de-entrega-manifestos.md` §3:** procedimento final com o PR e o resumo do job (P9.5). **Feita na P9.5** (também o §5: CE-1 a
+  CE-5 resolvidos).
 - **`p1-livro-de-manifestos.md`** §5, item 5: comparar o sha256 da lista instalada (log do receptor de deploy e resumo do deploy)
   com o do `trust-keys.txt` no commit implantado. §2: juntar as tabelas de verificação e de entrega pelo id da execução, caminho
-  e sha256 (P9.5).
+  e sha256 (P9.5). **Feita na P9.5.**
 - **`docs/security/README.md`:** o exemplo `aud-002-autorizacao-01` não vale para auditorias atestadas (P9.2). **Feita na P9.2.**
 - **`GUIA-DE-IMPLANTACAO.md`** §1–§2 (o build e a transferência passam ao workflow) e §3.4 (P9.4, **feita**), §3.3 (P9.3b, **feita**);
   **`PLANO-DE-ROLLBACK.md`** (reversão por commit + workflow) e **`VERIFICACAO-POS-DEPLOY.md`** (nome da stack como parâmetro)

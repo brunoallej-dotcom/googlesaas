@@ -432,6 +432,31 @@ test('P9.4 runbook (revisão do PR #69): blocos privilegiados param no erro, o a
   assert.match(rollback, /docker service update --no-resolve-image --image/);
 });
 
+test('P9.5 runbook §8 e emendas do canal e do livro: primeira entrega em homologação com GMN_SEALS_SSH_KEY, códigos da entrega, incidentes E_WRITE_UNCONFIRMED e E_EXISTS_DIFFERENT; procedimento final do p1-canal §3; junção verificação × entrega e hash da lista no livro', () => {
+  const runbook = runbookText();
+  const section8 = runbook.slice(runbook.indexOf('## 8. Entrega de manifestos pelo CI'));
+  assert.ok(section8.startsWith('## 8. Entrega de manifestos pelo CI (P9.5)'), 'seção 8 no fim do runbook');
+  for (const sub of ['### 8.1 O que precisa existir antes', '### 8.2 Primeira entrega em homologação (G2, P9-O06)', '### 8.3 Códigos da entrega', '### 8.4 Incidentes da entrega']) assert.ok(section8.includes(sub), sub);
+  for (const code of ['GMN_SEALS_SSH_KEY', 'NOT_MAIN_HEAD', 'E_TRUST_LIST_MISMATCH', 'E_WRITE_UNCONFIRMED', 'E_EXISTS_DIFFERENT', 'E_POSTWRITE_VERIFY', 'SEALS_REFUSED', 'SEALS_NO_BASE', 'RECEIVER_UNKNOWN_ERROR EXIT_<n>']) assert.ok(section8.includes(code), code);
+  assert.match(section8, /gh workflow run deploy\.yml --repo <DONO>\/<REPO> --ref main -f ambiente=homologacao -f acao=entregar-selos/);
+  assert.match(section8, /conteúdo idêntico já presente/);
+  assert.match(section8, /\*\*sem\*\* o passo 7 \(nunca se escreve à mão na pasta de\nmanifestos de produção\)/);
+  assert.ok(!/ALREADY_PRESENT[^\n]*verificado no host/.test(section8.replace(/\*\*não\*\* é uma verificação no host/g, '')), 'ALREADY_PRESENT nunca como verificado no host');
+  assert.ok(!runbook.includes('O que ainda não existe'), 'o cabeçalho não diz mais que a entrega não existe');
+  const canal = read('docs/phase6-auditoria-link/p1-canal-de-entrega-manifestos.md');
+  const procedure = canal.slice(canal.indexOf('## 3. Procedimento (final, P9.5)'), canal.indexOf('## 4.'));
+  const order = ['**PR:**', 'job `seals` do `ci.yml`', '**Merge**', '**`seals-verify`**', '**Aprovação do `seals-deliver`**', '**Resumo do job (RC-08):**', '**Livro:**'];
+  const positions = order.map((item) => procedure.indexOf(item));
+  assert.ok(positions.every((at) => at >= 0), `procedimento final: ${JSON.stringify(positions)}`);
+  assert.deepEqual([...positions].sort((a, b) => a - b), positions, 'PR → check → merge → seals-verify → aprovação → resumo → livro');
+  assert.match(canal, /## 5\. Pendências de código \(W5\.2\) — resolvidas na P-9/);
+  const livro = read('docs/phase6-auditoria-link/p1-livro-de-manifestos.md');
+  assert.match(livro, /### 2\.1 Verificação e entrega pelo canal \(P9\.5\)/);
+  assert.match(livro, /\*\*pela execução, pelo caminho e pelo `sha256sum`\*\*/);
+  assert.match(livro, /\| data \| execução \(`run_id`\) \| tentativa \| commit \| ambiente \| caminho relativo \|/);
+  assert.match(livro, /\*\*sha256 da lista instalada\*\*[\s\S]*\*\*sha256 do `trust-keys\.txt` no commit implantado\*\*/);
+});
+
 test('P9.4 emendas: guia, plano de rollback, verificação pós-deploy e CLAUDE.md apontam para o deploy.yml (homologacao/producao) e o caminho manual é só histórico', () => {
   const guide = read('deploy/hostinger/GUIA-DE-IMPLANTACAO.md');
   assert.match(guide, /\.github\/workflows\/deploy\.yml/);

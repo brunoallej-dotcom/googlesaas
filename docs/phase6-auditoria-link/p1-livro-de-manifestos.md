@@ -40,6 +40,26 @@ O **próximo `--expect-seq`** de uma auditoria é o maior `seq` desta tabela par
 linha). O `sealSha256` (forma canônica) vem do recibo; o `sha256sum` do arquivo serve para a conferência sem ferramenta do §5,
 porque a entrega é byte a byte.
 
+### 2.1 Verificação e entrega pelo canal (P9.5)
+
+A entrega é pelo canal do CI (`p1-canal-de-entrega-manifestos.md` §3). Uma execução do workflow `deploy.yml` tem duas tabelas no resumo
+(spec `docs/specs/ci-deploy-and-seal-delivery.md` §5.9): a da **verificação** (`seals-verify`: caminho, `sha256sum`, `seq`, `sealSha256`;
+fecho com `retiredKeyId`, `signerKeyId` e as cabeças) e a da **entrega** (`seals-deliver`: execução, tentativa, commit, ambiente, caminho,
+`sha256sum`, resultado, código). O custodiante junta as duas **pela execução, pelo caminho e pelo `sha256sum`**, e só então preenche as
+colunas "entrega" e "verificação pós-entrega" da linha do §2:
+
+| data | execução (`run_id`) | tentativa | commit | ambiente | caminho relativo | `sha256sum` (verificação = entrega = §2) | `seq` / `sealSha256` (verificação) | resultado da entrega | lista de confiança do commit (sha256) | quem (rótulo) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `<DATA>` | `<RUN_ID>` | `<N>` | `<SHA40>` | `homologacao` / `producao` | `aud-…/seal-NNNN.json` | `<HASH>` | `<N>` / `<HASH>` | `WRITTEN` / `ALREADY_PRESENT` / `FALHOU <CÓDIGO>` | `<HASH>` | `CUST-01` |
+
+- O `sha256sum` tem de ser o **mesmo** nas três fontes (o anotado no §2, o da verificação e o da entrega). Diferença é incidente (§8).
+- `WRITTEN` = verificado no host e gravado. `ALREADY_PRESENT` = **conteúdo idêntico já presente**: o host já tinha os mesmos bytes, e o
+  receptor só os comparou (nunca é "verificado no host"). Para a verificação no host desse arquivo vale a linha `WRITTEN` de uma execução
+  anterior, ou a verificação pós-entrega (a prévia).
+- `FALHOU` com código: o arquivo e os seguintes **não** foram gravados por aquela execução; registra-se a linha e, depois da correção, a
+  linha da execução que entregou. Uma execução nunca "corrige" a anterior: as duas linhas ficam.
+- Um fecho entra com o caminho `_closures/<R>.json`; o `closureSha256` fixado depois (§1) tem de ser o `sha256sum` desta linha.
+
 ## 3. Sessões de assinatura (D15.3)
 
 | data | estação (rótulo) | E1–E8 do runbook do custodiante conferidos | `<NODE22> --version` | hash do artefato (`sha256sum -c` OK) | commit do artefato | sem rede conferido | manifestos assinados | observações |
@@ -69,7 +89,13 @@ de chaves em uso:
 3. nenhum manifesto do livro ausente do servidor (apagado ou recuado: incidente; a reversão a um estado antigo autêntico é
    atualidade, não autenticidade, e só o livro a mostra);
 4. cada `_closures/<R>.json` com `sha256sum` igual ao `closureSha256` fixado (§1);
-5. a lista de chaves do servidor igual à esperada (§1), item a item, inclusive estados e hashes de fecho.
+5. a lista de chaves do servidor igual à esperada (§1), item a item, inclusive estados e hashes de fecho. Desde a P-9, a lista do
+   servidor é a do arquivo versionado `link-audit-seals/<ambiente>/trust-keys.txt` instalada pelo receptor de deploy: compara-se o
+   **sha256 da lista instalada** (o `lista instalada sha256` do resumo do deploy, devolvido no `OK DEPLOYED`, e o log local do receptor de
+   deploy) com o **sha256 do `trust-keys.txt` no commit implantado** (`git show <commit>:link-audit-seals/<ambiente>/trust-keys.txt |
+   sha256sum`): têm de ser iguais. As entregas feitas depois desse deploy trazem o mesmo hash na coluna "lista de confiança do commit"
+   (§2.1), porque o receptor de manifestos recusa outra lista (`E_TRUST_LIST_MISMATCH`). Diferença é incidente (§8; ameaça DC-19). A
+   comparação item a item contra o §1 continua, sobre o arquivo do commit.
 
 | data | escopo (auditorias, fechos, lista) | divergências | ação / incidente | quem (rótulo) |
 |---|---|---|---|---|
