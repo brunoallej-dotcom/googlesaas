@@ -27,7 +27,7 @@
 | # | Pré-condição | Situação | Evidência |
 |---|---|---|---|
 | PC-1 | Pilha de homologação isolada pronta, sem dados reais nem Serper, com as pastas da Fase 6 e o volume de manifestos `:ro` no web | `<SIM/NÃO>` | `<…>` |
-| PC-2 | Fatia W5.2 na `main`: canal de entrega (CE-1 a CE-3), `close-key` sob `--permission` com a linha larga, D15.6(d) e a forma da coleta sintética | `<SIM/NÃO>` | `<PR>` |
+| PC-2 | Fatia W5.2 na `main`: D15.6(d), a forma da coleta sintética e, para o S-16, o `close-key` sob `--permission` com a linha larga. O canal de entrega pelo CI **não** é pré-condição: o ensaio usa entrega manual (§5, desvio D-01) | `<SIM/NÃO>` | `<PR>` |
 | PC-3 | Estação conforme o runbook do custodiante §1 (E1–E8), sem rede durante a assinatura | `<SIM/NÃO>` | linha da sessão no livro |
 | PC-4 | Nenhum ensaio da G2 rodando na mesma pilha | `<SIM/NÃO>` | `<…>` |
 
@@ -67,12 +67,12 @@ hash, campo da vista). Um passo que falha para o ensaio; a falha e a correção 
 | S-08 | Lista de chaves da homologação com a chave do ensaio `active` e deploy da homologação | `onda6c-runbook-chaves.md` §4 | `<KEY_ID_ENSAIO>:<PUBLICA>:active` na pilha | `<…>` | `<…>` |
 | S-09 | Artefato conferido | custodiante §2 (`namei -m`, `stat`, `sha256sum -c`) | `link-audit-sign.cjs: OK`; `444`; nenhuma pasta com escrita de terceiros | `<…>` | `<…>` |
 | S-10 | `sign` pelo artefato, sem rede | custodiante §3 (linha exata) | saída 0; recibo `{"ok":true…}` com `seq` 1, `roleException: true`, `requiresLaterReview: true`, `artifactSha256` = o conferido | `<…>` | `<SEAL_SHA256>` |
-| S-11 | Entrega pelo canal do CI | `p1-canal-de-entrega-manifestos.md` §3 | execução verde; `sha256sum` gravado igual ao do livro; nenhuma cópia manual | `<…>` | `<ID_DA_EXECUCAO>` |
+| S-11 | Entrega **manual** na homologação (desvio declarado D-01) | `p1-canal-de-entrega-manifestos.md` §6 item 1 | só os bytes do manifesto, criação exclusiva no volume da pilha (nada sobrescrito), `sha256sum` antes e depois iguais ao do livro; quem fez e quando | `<…>` | `<SHA256 antes/depois>` |
 | S-12 | Verificador `v2` no servidor | prévia: `GET /api/link-audit/scoring/{auditId}`, proveniência | status `AUTHENTICATED` (lista da pilha, `[2]`) | `<…>` | `<…>` |
 | S-13 | Finalização | interface (I5) ou `POST /api/link-audit/scoring/{auditId}/finalize` com `{expectedHead, expectedInputSha256}` da prévia | resultado gravado (o mapeador real dá INCONCLUSIVO, D-G0-10) | `<…>` | `<runSeq>` |
 | S-14 | Resultado confirmado pelo livro (`RUN_CONFIRMED`) | `GET /api/link-audit/scoring/{auditId}/results` e `GET /api/link-audit/decisions/{auditId}` | leitura pelo livro (`confirmation: "LEDGER"`), o resultado entre os **confirmados** e nenhum pendente (na leitura pelo livro, confirmado = hash conferido contra o `RUN_CONFIRMED`, `src/lib/link-audit-scoring-runs/results.ts:493`) e `ledger.runs.open: null` | `<…>` | `<…>` |
 | S-15 | Proveniência gravada no resultado (R2.1) | leitura só do arquivo `s<runSeq>.json` do resultado | `evidenceProvenance` = `{headSeq: 1, headSealSha256: <SEAL_SHA256>, keyIds: [<KEY_ID_ENSAIO>]}` | `<…>` | `<…>` |
-| S-16 | (opcional, só com a W5.2) `close-key` pelo artefato com a linha larga, usando uma segunda chave descartável `S` | custodiante §9 | fecho gravado em `_closures/<R>.json`, entregue pelo canal; `<R>:<pública>:retired:<closureSha256>` fixado na pilha; prévia continua `AUTHENTICATED` | `<…>` | `<CLOSURE_SHA256>` |
+| S-16 | (opcional, só com a W5.2) `close-key` pelo artefato com a linha larga, usando uma segunda chave descartável `S` | custodiante §9 | fecho gravado em `_closures/<R>.json`, entregue como no S-11; `<R>:<pública>:retired:<closureSha256>` fixado na pilha; prévia continua `AUTHENTICATED` | `<…>` | `<CLOSURE_SHA256>` |
 | S-17 | Destruição da(s) chave(s) do ensaio | custodiante §10 | `revoked` na lista da pilha; arquivo e frase destruídos; linha no livro | `<…>` | `<data, método>` |
 
 ## 4. Atestações
@@ -81,15 +81,17 @@ hash, campo da vista). Um passo que falha para o ensaio; a falha e a correção 
 |---|---|---|---|
 | AT-W5-01 | Nada em produção: nenhum deploy, secret, lista de chaves, volume ou dado de produção foi tocado | `<…>` | `<…>` |
 | AT-W5-02 | A chave do ensaio foi destruída e o fato está registrado no livro (data, método, estado `revoked` na pilha) | `<…>` | `<…>` |
-| AT-W5-03 | O fluxo `export` → aprovação → `sign` → entrega → verificador `v2` `AUTHENTICATED` → resultado confirmado com `RUN_CONFIRMED` foi observado de ponta a ponta (S-03 a S-14) | `<…>` | `<…>` |
+| AT-W5-03 | O fluxo `export` → aprovação → `sign` → entrega → verificador `v2` `AUTHENTICATED` → resultado confirmado com `RUN_CONFIRMED` foi observado de ponta a ponta (S-03 a S-14), com a entrega manual do desvio D-01 | `<…>` | `<…>` |
 | AT-W5-04 | Verificação de entrada da nota 6 da R2.1 feita e registrada (§2) | `<…>` | `<…>` |
 | AT-W5-05 | Conferido e assinado sempre os mesmos bytes (nenhum reexport depois da conferência) | `<…>` | `<…>` |
 | AT-W5-06 | Nenhuma consulta paga e nenhum dado real usado | `<…>` | `<…>` |
+| AT-W5-07 | A entrega manual (D-01) aconteceu só na pilha de homologação, byte a byte, sem sobrescrever, com os hashes registrados | `<…>` | `<…>` |
 
 ## 5. Desvios, incidentes e correções do runbook
 
 | # | O que divergiu do roteiro | Impacto | Correção (runbook, código ou decisão) |
 |---|---|---|---|
+| D-01 | **Desvio declarado da D15.5:** a entrega do manifesto foi manual na homologação, não pelo canal do CI (decisão do manager sob a delegação D15, 22/11/2026) | o canal do CI não foi ensaiado aqui | a entrega pelo canal do CI é ensaiada de novo na G2, antes de produção (critério de entrada da produção); nunca há entrega manual em produção |
 
 ## 6. Conclusão
 
