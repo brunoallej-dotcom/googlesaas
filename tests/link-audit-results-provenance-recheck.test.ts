@@ -453,7 +453,7 @@ test('R2.2 a porta recebe a base GRAVADA completa (ref, hash e legacy), nunca a 
   assert.equal(listed.value.results[0]?.stale, true, 'a base de hoje é outra (o resultado está desatualizado)');
   const recordedBasis = basisOf(run);
   assert.deepEqual(spy.calls, [recordedBasis, recordedBasis], 'lista e detalhe reconferem a base GRAVADA');
-  const today = (evaluator.current as { mapped: { traceability: { evidences: Array<{ ref: string; contentSha256: string }> } } }).mapped.traceability.evidences;
+  const today = (evaluator.current as unknown as { mapped: { traceability: { evidences: ReadonlyArray<{ ref: string; contentSha256: string }> } } }).mapped.traceability.evidences;
   assert.ok(today.some((item) => !recordedBasis.some((rec) => rec.ref === item.ref && rec.contentSha256 === item.contentSha256)), 'controle: a base de hoje difere da gravada');
 });
 

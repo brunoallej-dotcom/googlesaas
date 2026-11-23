@@ -6,7 +6,7 @@ import { previewBlocker, type PreviewBlocker } from './blockers';
 import { MINIMUM_COVERAGE_PERCENT } from './outcome';
 import { PREVIEW_HTTP_STATUS, PREVIEW_MESSAGE, type DurabilityExpectation, type DurabilityOutcome, type Evaluation, type LedgerReason, type LedgerRunReissueStep, type LedgerView, type PreviewActor, type PreviewFailure, type PreviewFailureCode, type ResultsLedgerPort, type ResultsLedgerRead, type RunDraft, type RunRefusal, type RunStep } from './preview';
 import { appendRun, assertResultsBase, isDurabilityUnknown, nodeFsOps, probeDirectory, readRunLog, reissueRunReceipt, type FsOps, type RunAnchorSummary, type RunLedgerContextGate, type RunLedgerGate, type RunLedgerHooks, type RunLog, type RunReissueGate, type StoreErrorCode } from './results-store';
-import { finalizeBodySchema, INTEGRITY_NOTE, reissueBodySchema, RUN_FILE_KIND, RUN_SCHEMA_VERSION, RUN_SCHEMA_VERSION_LEDGER, type EvidenceProvenanceRecord, type RunHead as Head, type ScoreRun, type ScoreRunDraft } from './results-types';
+import { evidenceProvenanceSchema, finalizeBodySchema, INTEGRITY_NOTE, reissueBodySchema, RUN_FILE_KIND, RUN_SCHEMA_VERSION, RUN_SCHEMA_VERSION_LEDGER, type EvidenceProvenanceRecord, type RunHead as Head, type ScoreRun, type ScoreRunDraft } from './results-types';
 import { toPublicRun, verifyRunRecord } from './results-verify';
 import { MAPPER_VERSION } from './types';
 
@@ -336,10 +336,24 @@ const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
 const isTextList = (value: unknown): value is readonly string[] => Array.isArray(value) && value.every((item) => typeof item === 'string');
 
 /**
+ * A prova de uma resposta `AUTHENTICATED` da porta, validada com o MESMO esquema estrito do registro (`evidenceProvenanceSchema`: cabeça inteira em 1..256, hash hex minúsculo de
+ * 64, `keyIds` de 1 a 16 ids distintos, em ordem estrita e no padrão da lista de chaves, nenhum campo além de `status`). `NO_HEAD` = só `{status}` (resposta do caminho v1, sem
+ * cabeça); `MALFORMED` = qualquer outra forma (lista vazia, repetida, fora de ordem, id fora do padrão, cabeça ou hash inválidos, tipo errado, campo extra). Nada é "consertado".
+ */
+function headProofOfTrust(trust: Readonly<Record<string, unknown>>): EvidenceProvenanceRecord | 'NO_HEAD' | 'MALFORMED' {
+  const { status, ...proof } = trust;
+  void status;
+  if (Object.keys(proof).length === 0) return 'NO_HEAD';
+  const parsed = evidenceProvenanceSchema.safeParse(proof);
+  return parsed.success ? parsed.data : 'MALFORMED';
+}
+
+/**
  * Veredito PURO da reconferência de UM resultado: o registro gravado (`evidenceProvenance`, já validado pelo esquema) × a resposta da porta (ou `PORT_ERROR`). Falha fechada: forma
- * inesperada da porta ⇒ `RECHECK`, nunca `VERIFIED`. A revogação é conferida ANTES do `classify` (com a pasta de manifestos apagada nada é lido e o verificador não dá o sinal; a
- * interseção com os `keyIds` GRAVADOS dá), e também contra os `keyIds` do `classify` de hoje (signatário de um fecho de aposentadoria assinado depois da finalização, contrato §6).
- * `VERIFIED` exige a MESMA cabeça (número e hash): o verificador não diz se a cabeça gravada é ancestral da de hoje, então cadeia trocada ou estendida vai para revisão.
+ * inesperada da porta (inclusive a prova de `AUTHENTICATED` fora do esquema do registro) ⇒ `RECHECK`, nunca `VERIFIED`. A revogação é conferida ANTES do `classify` (com a pasta de
+ * manifestos apagada nada é lido e o verificador não dá o sinal; a interseção com os `keyIds` GRAVADOS dá), e também contra os `keyIds` (válidos) do `classify` de hoje (signatário
+ * de um fecho de aposentadoria assinado depois da finalização, contrato §6). `VERIFIED` exige a MESMA cabeça (número e hash): o verificador não diz se a cabeça gravada é ancestral
+ * da de hoje, então cadeia trocada ou estendida vai para revisão.
  */
 export function provenanceVerdictOf(recorded: EvidenceProvenanceRecord | undefined, outcome: ProvenanceRecheckOutcome | 'PORT_ERROR'): ProvenanceVerdict {
   if (recorded === undefined) return { state: 'NOT_RECORDED', cause: null };
@@ -349,12 +363,13 @@ export function provenanceVerdictOf(recorded: EvidenceProvenanceRecord | undefin
   if (outcome.kind !== 'CHECKED' || !isTextList(outcome.revokedKeyIds) || !isRecord(outcome.trust)) return recheck('PORT_ERROR');
   const trust = outcome.trust as Readonly<Record<string, unknown>>;
   const authenticated = trust.status === 'AUTHENTICATED';
-  if (authenticated && trust.keyIds !== undefined && !isTextList(trust.keyIds)) return recheck('PORT_ERROR');
+  const proof = authenticated ? headProofOfTrust(trust) : 'NO_HEAD';
   const revoked = new Set(outcome.revokedKeyIds);
-  const current = authenticated && isTextList(trust.keyIds) ? trust.keyIds : [];
+  const current = typeof proof === 'object' ? proof.keyIds : [];
   if ([...recorded.keyIds, ...current].some((id) => revoked.has(id))) return recheck('KEY_REVOKED');
+  if (proof === 'MALFORMED') return recheck('PORT_ERROR');
   if (!authenticated) return recheck('UNAUTHENTICATED');
-  if (trust.headSeq !== recorded.headSeq || trust.headSealSha256 !== recorded.headSealSha256 || !isTextList(trust.keyIds)) return recheck('CHAIN_CHANGED');
+  if (proof === 'NO_HEAD' || proof.headSeq !== recorded.headSeq || proof.headSealSha256 !== recorded.headSealSha256) return recheck('CHAIN_CHANGED');
   return { state: 'VERIFIED', cause: null };
 }
 
