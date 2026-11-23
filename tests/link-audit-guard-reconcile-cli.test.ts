@@ -95,7 +95,7 @@ test('PG-G09 CLI reconcile limpo: código 0, --json estável e versionado, sem a
     reader: { role: 'gmn_guard_reader', readOnly: true },
     keys: { current: 'gk-test-a', all: ['gk-test-a'] },
     lMax: 5,
-    summary: { audits: 2, consistent: 1, behind: 1, noHead: 0, divergent: 0, guardHeads: 2, findings: 0 },
+    summary: { audits: 2, consistent: 1, behind: 1, noHead: 0, divergent: 0, headsOnRetiredKey: 0, guardHeads: 2, findings: 0 },
     findings: [],
     record: { file: recordFileName(1), sequence: 1, sha256: (json.record as { sha256: string }).sha256, previous: null },
   });
@@ -161,6 +161,7 @@ test('G1.b.2b CLI reconcile: rotação da chave do pseudônimo — com a aposent
   const first = await run(reconcileArgs(w, ['--first', '--json']), { reader: simulatedReaderDb(w.writer.rows), env });
   assert.equal(first.code, EXIT.OK, JSON.stringify(first.json()));
   assert.deepEqual(first.json().keys, { current: 'gk-test-b', all: ['gk-test-b', 'gk-test-a'] });
+  assert.equal((first.json().summary as { headsOnRetiredKey: number }).headsOnRetiredKey, 1, 'B ainda só tem cabeça sob a aposentada');
   const dropped = await run(reconcileArgs(w, ['--json']), { reader: simulatedReaderDb(w.writer.rows), env: ENV({ [GUARD_KEY_ENV]: KEY_B }) });
   assert.equal(dropped.code, EXIT.REFUSED);
   assert.equal(dropped.json().code, 'GUARD_KEY_DROPPED');

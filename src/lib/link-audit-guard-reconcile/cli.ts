@@ -280,6 +280,7 @@ function reconcileOutput(context: ReconcileContext, json: boolean, out: Line): n
       `Rodada do backup: ${backup.round} · auditorias no backup: ${summary.audits} · cabeças na guarda: ${summary.guardHeads}`,
       `Leitor: ${reading.role}, sessão somente leitura · chave atual do pseudônimo: ${settings.pseudonyms.currentKeyId} (${settings.pseudonyms.keyIds.length} no total)`,
       `Situação: CONSISTENT ${summary.consistent} · BEHIND ${summary.behind} (até L_max = ${GUARD_MAX_LAG}) · NO_HEAD ${summary.noHead} · DIVERGENT ${summary.divergent}`,
+      `Auditorias com a maior cabeça só sob chave aposentada: ${summary.headsOnRetiredKey}${summary.headsOnRetiredKey === 0 ? '' : ' (a aposentada NÃO pode sair da lista do web)'}`,
       ...(clean ? ['Divergências: nenhuma'] : [`DIVERGÊNCIAS (${analysis.findings.length}):`, ...analysis.findings.map(findingLine)]),
       `Registro novo: ${record.fileName} (sha256 ${record.sha256})${previous ? `, anterior ${previous.fileName}` : ', primeiro registro'}`,
       clean ? 'Resultado: SEM DIVERGÊNCIA' : `Resultado: DIVERGÊNCIA ENCONTRADA (código de saída ${EXIT.FINDINGS}); siga o runbook da guarda`,

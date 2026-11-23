@@ -94,7 +94,7 @@ async function main(): Promise<void> {
 
   const first = await cli(['reconcile', '--backup', round, '--records-dir', records, '--first'], ROLES.reader);
   assert.equal(first.code, 0, JSON.stringify(first.json));
-  assert.deepEqual(first.json.summary, { audits: 2, consistent: 2, behind: 0, noHead: 0, divergent: 0, guardHeads: 2, findings: 0 });
+  assert.deepEqual(first.json.summary, { audits: 2, consistent: 2, behind: 0, noHead: 0, divergent: 0, headsOnRetiredKey: 0, guardHeads: 2, findings: 0 });
   assert.deepEqual(first.json.reader, { role: 'gmn_guard_reader', readOnly: true });
   assert.ok([...new Set(sent)].every((text) => READER_SQL.has(text)), 'só o SQL fixo do leitor');
   ok('o CLI lê como gmn_guard_reader (identidade, transação read only, cabeças) e concilia as cabeças publicadas pelo adaptador real com a rodada: 2 CONSISTENT, código 0, registro 1');

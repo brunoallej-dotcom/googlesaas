@@ -22,7 +22,7 @@ const analysis = (over: Partial<Analysis> = {}): Analysis => ({
   audits: [],
   findings: [],
   witness: [ROW],
-  summary: { audits: 1, consistent: 1, behind: 0, noHead: 0, divergent: 0, guardHeads: 1, findings: 0 },
+  summary: { audits: 1, consistent: 1, behind: 0, noHead: 0, divergent: 0, headsOnRetiredKey: 0, guardHeads: 1, findings: 0 },
   ...over,
 });
 const recordFor = (previous: { readonly record: ReconcileRecord; readonly sha256: string } | null, over: Partial<Analysis> = {}): ReconcileRecord =>

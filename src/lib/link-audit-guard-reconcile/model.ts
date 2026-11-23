@@ -60,6 +60,8 @@ export interface AuditOutcome {
   readonly backupSeq: number | null;
   readonly guardSeq: number | null;
   readonly lag: number | null;
+  /** A maior cabeça só existe sob uma chave APOSENTADA (a atual não a tem): a aposentada ainda não pode sair da lista do web. */
+  readonly onRetiredKey: boolean;
 }
 export interface AnalysisSummary {
   readonly audits: number;
@@ -67,6 +69,8 @@ export interface AnalysisSummary {
   readonly behind: number;
   readonly noHead: number;
   readonly divergent: number;
+  /** Auditorias cuja maior cabeça só existe sob chave aposentada (spec §5.1.7: a aposentada sai do web só com 0). */
+  readonly headsOnRetiredKey: number;
   readonly guardHeads: number;
   readonly findings: number;
 }
@@ -100,11 +104,18 @@ function compareFindings(x: Finding, y: Finding): number {
   return x.auditRef === y.auditRef ? (x.guardSeq ?? 0) - (y.guardSeq ?? 0) : x.auditRef < y.auditRef ? -1 : 1;
 }
 
+const topOf = (rows: readonly GuardRow[]): number | null => (rows.length === 0 ? null : Math.max(...rows.map((row) => row.ledgerSeq)));
+/** A maior posição não aparece sob o pseudônimo da chave atual. */
+const onRetiredKey = (rows: readonly GuardRow[], currentRef: string): boolean => {
+  const top = topOf(rows);
+  return top !== null && !rows.some((row) => row.auditRef === currentRef && row.ledgerSeq === top);
+};
+
 /** Situação de UM livro da cópia diante das cabeças da guarda que lhe pertencem (sob qualquer chave). */
 function auditOutcome(auditId: string, shas: readonly string[], rows: readonly GuardRow[], currentRef: string): { readonly outcome: AuditOutcome; readonly findings: readonly Finding[] } {
   const n = shas.length;
-  const top = rows.length === 0 ? null : Math.max(...rows.map((row) => row.ledgerSeq));
-  const base = { auditId, auditRef: currentRef, backupSeq: n, guardSeq: top };
+  const top = topOf(rows);
+  const base = { auditId, auditRef: currentRef, backupSeq: n, guardSeq: top, onRetiredKey: onRetiredKey(rows, currentRef) };
   const found: Finding[] = [];
   for (const row of rows) {
     if (row.ledgerSeq > n) found.push(finding('GUARD_HEAD_NOT_IN_BACKUP', currentRef, { auditId, backupSeq: n, guardSeq: row.ledgerSeq }));
@@ -146,9 +157,9 @@ export function analyzeReconciliation(input: AnalysisInput): Analysis {
     const currentRef = input.pseudonyms.current(ledger.auditId).auditRef;
     const rows = rowsOf.get(ledger.auditId) ?? [];
     if (ledger.status === 'UNREADABLE') {
-      const top = rows.length === 0 ? null : Math.max(...rows.map((row) => row.ledgerSeq));
+      const top = topOf(rows);
       findings.push(finding('BACKUP_LEDGER_UNREADABLE', currentRef, { auditId: ledger.auditId, guardSeq: top }));
-      outcomes.set(ledger.auditId, { auditId: ledger.auditId, auditRef: currentRef, status: 'DIVERGENT', backupSeq: null, guardSeq: top, lag: null });
+      outcomes.set(ledger.auditId, { auditId: ledger.auditId, auditRef: currentRef, status: 'DIVERGENT', backupSeq: null, guardSeq: top, lag: null, onRetiredKey: onRetiredKey(rows, currentRef) });
       continue;
     }
     const result = auditOutcome(ledger.auditId, ledger.shas, rows, currentRef);
@@ -171,7 +182,7 @@ export function analyzeReconciliation(input: AnalysisInput): Analysis {
     audits,
     findings: findings.sort(compareFindings),
     witness: [...witness.values()].sort(byRefAndSeq),
-    summary: { audits: audits.length, consistent: count('CONSISTENT'), behind: count('BEHIND'), noHead: count('NO_HEAD'), divergent: count('DIVERGENT'), guardHeads: input.guardHeads.length, findings: findings.length },
+    summary: { audits: audits.length, consistent: count('CONSISTENT'), behind: count('BEHIND'), noHead: count('NO_HEAD'), divergent: count('DIVERGENT'), headsOnRetiredKey: audits.filter((audit) => audit.onRetiredKey).length, guardHeads: input.guardHeads.length, findings: findings.length },
   };
 }
 

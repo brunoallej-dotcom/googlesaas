@@ -47,7 +47,7 @@ test('G1.b.2b reconciliação limpa: CONSISTENT (cabeça = cauda), BEHIND (atras
     [B, 'NO_HEAD', 1, null, null],
     [C, 'BEHIND', 9, 6, 3],
   ]);
-  assert.deepEqual(analysis.summary, { audits: 3, consistent: 1, behind: 1, noHead: 1, divergent: 0, guardHeads: 2, findings: 0 });
+  assert.deepEqual(analysis.summary, { audits: 3, consistent: 1, behind: 1, noHead: 1, divergent: 0, headsOnRetiredKey: 0, guardHeads: 2, findings: 0 });
   assert.deepEqual(analysis.witness, [rowOf(A, 7), rowOf(C, 6)].sort((x, y) => x.auditRef.localeCompare(y.auditRef)));
   for (const audit of analysis.audits) assert.equal(audit.auditRef, PSEUDONYMS_A.current(audit.auditId).auditRef, 'o pseudônimo listado é o da chave ATUAL');
 });
@@ -129,10 +129,15 @@ test('G1.b.2b rotação da chave do pseudônimo: cabeças sob a aposentada e sob
   assert.deepEqual(analysis.findings, []);
   const audit = analysis.audits.find((entry) => entry.auditId === A);
   assert.deepEqual([audit?.status, audit?.guardSeq, audit?.auditRef], ['CONSISTENT', 7, PSEUDONYMS_B_AFTER_A.current(A).auditRef]);
+  assert.equal(analysis.summary.headsOnRetiredKey, 0, 'toda auditoria com cabeça já tem a maior sob a chave atual: a aposentada pode sair da lista do WEB');
   // a aposentada com a cabeça mais alta que a atual também conta (cabeça antes da primeira publicação com a chave nova)
   const before = analyzeReconciliation(input({ pseudonyms: PSEUDONYMS_B_AFTER_A, guardHeads: [rowOf(A, 7, PSEUDONYMS_A), rowOf(C, 6, PSEUDONYMS_A)] }));
   assert.deepEqual(before.findings, []);
   assert.equal(before.audits.find((entry) => entry.auditId === A)?.status, 'CONSISTENT');
+  assert.equal(before.summary.headsOnRetiredKey, 2, 'A e C só têm cabeça sob a aposentada: ela NÃO pode sair da lista do web');
+  // a atual com a mesma posição máxima da aposentada já conta como coberta; a atual abaixo da aposentada, não
+  const mixed = analyzeReconciliation(input({ pseudonyms: PSEUDONYMS_B_AFTER_A, guardHeads: [rowOf(A, 7, PSEUDONYMS_A), current, rowOf(C, 6, PSEUDONYMS_A), { ...rowOf(C, 4), auditRef: PSEUDONYMS_B_AFTER_A.current(C).auditRef, keyId: 'gk-test-b' }] }));
+  assert.equal(mixed.summary.headsOnRetiredKey, 1);
 });
 
 test('G1.b.2b achados em ordem estável (código, auditoria, pseudônimo) e códigos fechados', () => {
