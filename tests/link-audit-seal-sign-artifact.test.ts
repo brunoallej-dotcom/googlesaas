@@ -26,8 +26,8 @@ import { CONFIRM_LENGTH, E1, writeStation } from './helpers/link-audit-seal-sign
  *    pseudo-terminal (`script`), com grants estreitos, chave GERADA no teste e o manifesto autenticado pelo verificador v2;
  *  - W5.2a: o `close-key` completo pela linha decidida (`--allow-fs-read=/` como único grant de leitura, escrita só em `_closures`, criada antes),
  *    em processo e em processo REAL no pseudo-terminal, com o fecho conferido pelo verificador v2 (R aposentada pelo fecho).
- * Com o node que bloqueia fsync sob `--permission` (24.22 em diante), os dois casos completos param na sondagem antecipada (SIGN_RUNTIME_NO_FSYNC) e
- * só o CI (linha 22, LINK_AUDIT_ARTIFACT_STRICT=1) os exercita até o fim. Dados 100% FICTÍCIOS. A assinatura completa precisa de uma "estação": uma pasta fora das temporárias e de qualquer árvore com `.git` (a custódia da
+ * Com o node que bloqueia fsync sob `--permission` (24.22 em diante), a assinatura e o fecho em processo REAL param na sondagem antecipada
+ * (SIGN_RUNTIME_NO_FSYNC), e só o CI (linha 22, LINK_AUDIT_ARTIFACT_STRICT=1) os exercita até o fim. Dados 100% FICTÍCIOS. A assinatura completa precisa de uma "estação": uma pasta fora das temporárias e de qualquer árvore com `.git` (a custódia da
  * chave recusa as duas), criada e apagada no HOME. Sem `script` ou sem essa pasta, o teste é pulado; com LINK_AUDIT_ARTIFACT_STRICT=1 (job do
  * artefato no CI), pular é falha.
  */
