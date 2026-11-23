@@ -63,13 +63,15 @@ export interface GuardReconcileCliDeps {
   readonly timer?: GuardTimer;
 }
 
-type RefusalCode = BackupRefusalCode | RecordsRefusal | ReaderRefusal | 'NOT_CONFIGURED' | 'INSIDE_THE_STACK' | 'READER_ENV_INVALID' | 'NO_PREVIOUS_RECORD' | 'PREVIOUS_RECORD_EXISTS' | 'GUARD_KEY_DROPPED' | string;
+type RefusalCode = BackupRefusalCode | RecordsRefusal | ReaderRefusal | 'NOT_CONFIGURED' | 'INSIDE_THE_STACK' | 'READER_ENV_INVALID' | 'NO_PREVIOUS_RECORD' | 'PREVIOUS_RECORD_EXISTS' | 'RECORDS_DIR_NOT_EMPTY' | 'GUARD_KEY_DROPPED' | string;
 const MESSAGES: Readonly<Record<string, string>> = {
   NOT_CONFIGURED: 'Guarda não configurada para a reconciliação: defina a credencial do leitor, a CA e a chave do pseudônimo.',
   INSIDE_THE_STACK: 'A reconciliação roda FORA da VPS (este ambiente tem GMN_ROLE, da pilha).',
   READER_ENV_INVALID: 'Variável do leitor inválida: valor e arquivo (_FILE) ao mesmo tempo, ou arquivo ilegível ou grande demais.',
   NO_PREVIOUS_RECORD: 'A pasta de registros está vazia: na primeira reconciliação use --first; nas seguintes, aponte a pasta com os registros anteriores.',
   PREVIOUS_RECORD_EXISTS: 'Já existe registro anterior nesta pasta: --first só vale na primeira reconciliação.',
+  RECORDS_DIR_NOT_EMPTY: 'A pasta de registros não está vazia: --first só vale numa pasta TOTALMENTE vazia (nem temporário órfão).',
+  RECORDS_DIR_UNSAFE: 'A pasta de registros é insegura: fica dentro do repositório (público), não é do seu usuário ou tem escrita para grupo ou outros.',
   GUARD_KEY_DROPPED: 'Uma chave do pseudônimo usada no registro anterior não está na lista desta reconciliação: a reconciliação guarda TODA chave já usada.',
   GUARD_WRITER_CREDENTIAL_PRESENT: 'A credencial de ESCRITA da guarda está neste ambiente: a reconciliação usa só a do papel de leitura e nunca a do escritor.',
   GUARD_READER_ROLE_REQUIRED: 'A URL do leitor precisa ser do papel gmn_guard_reader (direto) ou gmn_guard_reader.<projeto> (pooler).',
@@ -87,7 +89,7 @@ const MESSAGES: Readonly<Record<string, string>> = {
   SESSION_NOT_READ_ONLY: 'A sessão não é somente leitura por padrão (o papel de leitura da migração 004 é). Nada foi lido.',
   READER_CAN_PUBLISH: 'A sessão consegue executar a função de publicação: não é a credencial do leitor. Nada foi lido.',
   RECORDS_DIR_INVALID: 'A pasta de registros não existe ou não é um diretório comum.',
-  RECORDS_INVALID: 'A pasta de registros tem lacuna, encadeamento quebrado, nome fora do padrão ou registro alterado.',
+  RECORDS_INVALID: 'A pasta de registros tem lacuna, encadeamento quebrado, registro alterado ou um nome que não é reconcile-NNNNNN.json (nem o temporário órfão do gravador).',
   RECORD_EXISTS: 'O registro novo já existe (outra reconciliação gravou antes): nada foi sobrescrito; rode de novo.',
   RECORD_WRITE_FAILED: 'O registro novo não pôde ser gravado com durabilidade comprovada.',
   BACKUP_NOT_A_ROUND: 'A pasta informada não é uma rodada de backup do livro.',
@@ -226,12 +228,14 @@ function settingsOrRefuse(env: Env): GuardSettings {
   return config.settings;
 }
 
-async function previousOrRefuse(args: ParsedArgs, settings: GuardSettings): Promise<StoredRecord | null> {
-  const records = await readRecords(path.resolve(args.recordsDir as string));
+async function previousOrRefuse(args: ParsedArgs, settings: GuardSettings, deps: GuardReconcileCliDeps): Promise<StoredRecord | null> {
+  const records = await readRecords(path.resolve(args.recordsDir as string), { projectRoot: deps.projectRoot });
   if (!records.ok) throw new Refusal(records.code);
   const previous = records.value.last;
-  if (previous === null && !args.first) throw new Refusal('NO_PREVIOUS_RECORD');
-  if (previous !== null && args.first) throw new Refusal('PREVIOUS_RECORD_EXISTS');
+  if (args.first) {
+    if (previous !== null) throw new Refusal('PREVIOUS_RECORD_EXISTS');
+    if (records.value.entries > 0) throw new Refusal('RECORDS_DIR_NOT_EMPTY'); // nem um temporário órfão: a primeira cadeia nasce numa pasta vazia
+  } else if (previous === null) throw new Refusal('NO_PREVIOUS_RECORD');
   if (previous && previous.record.keyIds.some((id) => !settings.pseudonyms.keyIds.includes(id))) throw new Refusal('GUARD_KEY_DROPPED');
   return previous;
 }
@@ -244,14 +248,14 @@ async function backupOrRefuse(dir: string, deps: GuardReconcileCliDeps): Promise
 
 async function reconcile(args: ParsedArgs, env: Env, deps: GuardReconcileCliDeps): Promise<ReconcileContext> {
   const settings = settingsOrRefuse(env);
-  const previous = await previousOrRefuse(args, settings);
+  const previous = await previousOrRefuse(args, settings, deps);
   const backup = await backupOrRefuse(args.backup as string, deps);
   const connect = (deps.connectFor ?? pgGuardReaderConnector)(settings.target);
   const read = await readGuard(connect, previous?.record.heads ?? [], deps.timer ? { timer: deps.timer } : {});
   if (!read.ok) throw new Refusal(read.code);
   const analysis = analyzeReconciliation({ backup, pseudonyms: settings.pseudonyms, guardHeads: read.value.heads, previous: previous?.record.heads ?? null, previousNow: read.value.previousNow });
   const record = buildRecord({ previous, createdAt: (deps.now ?? (() => new Date()))(), backup: { round: backup.round, manifestSha256: backup.manifestSha256 }, keyIds: settings.pseudonyms.keyIds, analysis });
-  const written = await writeRecord(path.resolve(args.recordsDir as string), record);
+  const written = await writeRecord(path.resolve(args.recordsDir as string), { projectRoot: deps.projectRoot }, record);
   if (!written.ok) throw new Refusal(written.code);
   return { settings, previous, backup, reading: read.value, analysis, record: { fileName: written.fileName, sha256: written.sha256, sequence: record.sequence } };
 }

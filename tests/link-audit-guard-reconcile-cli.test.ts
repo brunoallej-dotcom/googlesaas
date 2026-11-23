@@ -177,6 +177,34 @@ test('G1.b.2b CLI reconcile: registro anterior exigido (sem --first numa pasta v
   assert.deepEqual([again.code, again.json().code], [EXIT.REFUSED, 'PREVIOUS_RECORD_EXISTS']);
 });
 
+test('G1.b.2b CLI reconcile (revisão do PR #64): --first só com a pasta TOTALMENTE vazia; registros renomeados nunca fazem a cadeia recomeçar; pasta insegura recusada', NEEDS_CA, async () => {
+  const w = await world();
+  const temp = tmpDir('lagr-cli-rec-');
+  fs.writeFileSync(path.join(temp, `.tmp-reconcile-000001-${'0a'.repeat(8)}.json`), 'sobra');
+  const onlyTemp = await run(['reconcile', '--backup', w.roundDir, '--records-dir', temp, '--first', '--json'], { reader: w.reader });
+  assert.deepEqual([onlyTemp.code, onlyTemp.json().code], [EXIT.REFUSED, 'RECORDS_DIR_NOT_EMPTY']);
+  const readme = tmpDir('lagr-cli-rec-');
+  fs.writeFileSync(path.join(readme, 'LEIA-ME.txt'), 'anotações');
+  const withReadme = await run(['reconcile', '--backup', w.roundDir, '--records-dir', readme, '--first', '--json'], { reader: w.reader });
+  assert.deepEqual([withReadme.code, withReadme.json().code], [EXIT.REFUSED, 'RECORDS_INVALID']);
+  assert.equal((await run(reconcileArgs(w, ['--first']), { reader: w.reader })).code, EXIT.OK);
+  fs.renameSync(path.join(w.recordsDir, recordFileName(1)), path.join(w.recordsDir, 'registro-antigo.json'));
+  for (const extra of [['--first'], []]) {
+    const renamed = await run(reconcileArgs(w, [...extra, '--json']), { reader: w.reader });
+    assert.deepEqual([renamed.code, renamed.json().code], [EXIT.REFUSED, 'RECORDS_INVALID'], extra.join(' ') || 'sem --first');
+  }
+  assert.deepEqual(fs.readdirSync(w.recordsDir), ['registro-antigo.json'], 'nenhuma cadeia nova começou');
+  const fakeRoot = tmpDir('lagr-cli-root-');
+  const inside = path.join(fakeRoot, 'registros');
+  fs.mkdirSync(inside, { mode: 0o700 });
+  const unsafe = await run(['reconcile', '--backup', w.roundDir, '--records-dir', inside, '--first', '--json'], { reader: w.reader, projectRoot: fakeRoot });
+  assert.deepEqual([unsafe.code, unsafe.json().code], [EXIT.REFUSED, 'RECORDS_DIR_UNSAFE']);
+  const open = tmpDir('lagr-cli-rec-');
+  fs.chmodSync(open, 0o777);
+  const writable = await run(['reconcile', '--backup', w.roundDir, '--records-dir', open, '--first', '--json'], { reader: w.reader });
+  assert.deepEqual([writable.code, writable.json().code], [EXIT.REFUSED, 'RECORDS_DIR_UNSAFE']);
+});
+
 test('G1.b.2b CLI reconcile: criação EXCLUSIVA do registro — se o arquivo aparecer entre a leitura e a gravação, ⇒ RECORD_EXISTS (código 3) e o arquivo alheio fica intacto', NEEDS_CA, async () => {
   const w = await world();
   const intruder = path.join(w.recordsDir, recordFileName(1));
