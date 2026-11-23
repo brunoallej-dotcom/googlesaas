@@ -15,11 +15,13 @@ import test from 'node:test';
  * acentos, minúsculas, separado por não-alfanumérico; também pedaços camelCase, sequências de dígitos com e sem zeros à
  * esquerda, sequências hexadecimais longas, janelas de 8 e 9 dígitos de trechos com cara de telefone e coordenadas
  * decimais) e compara o SHA-256 com separação de domínio (`gmn.repo-guard.v1:` + token) com a lista fixa FORBIDDEN.
- * Termos de duas ou três palavras são conferidos como sequências de palavras vizinhas.
+ * Termos de duas ou três palavras são conferidos como sequências de palavras vizinhas; termos "na mesma linha" (ex.:
+ * cidade + segmento de uma campanha) acusam quando as duas palavras aparecem numa mesma linha, em qualquer ordem.
  *
  * Falha FECHADA para o que o scanner não lê: PDF, documento de escritório, arquivo compactado ou imagem versionados,
- * link simbólico, submódulo e qualquer binário fora dos tipos reconhecidos (fontes e tiles vetoriais públicos) fazem o
- * teste falhar, salvo uma exceção explícita e justificada em UNREADABLE_EXCEPTIONS (hoje vazia).
+ * link simbólico, submódulo, texto que não é UTF-8 válido e qualquer binário fora dos caminhos reconhecidos (as fontes
+ * em assets/fonts e os tiles vetoriais públicos em tests/fixtures/tiles) fazem o teste falhar, salvo uma exceção
+ * explícita e justificada por caminho em UNREADABLE_EXCEPTIONS (hoje vazia).
  *
  * Os hashes NÃO escondem os termos: são termos de baixa entropia e o histórico público já os contém. O objetivo é
  * apenas não deixá-los em claro neste arquivo e impedir que voltem a qualquer arquivo versionado. A falha aponta
@@ -43,20 +45,20 @@ const UNREADABLE_EXTENSIONS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tif', '.tiff', '.heic', '.ico',
   '.sqlite', '.db', '.mbtiles',
 ]);
-/* Binários reconhecidos que o scanner pula (não são documentos e não carregam dado de cliente). */
-const KNOWN_BINARY_EXTENSIONS: ReadonlyMap<string, string> = new Map([
-  ['.woff', 'fonte tipográfica (Inter) usada nos PDFs'],
-  ['.woff2', 'fonte tipográfica'],
-  ['.ttf', 'fonte tipográfica'],
-  ['.otf', 'fonte tipográfica'],
-  ['.pbf', 'tile vetorial público (OpenStreetMap) das fixtures do mapa do PDF'],
-]);
+/* Binários reconhecidos que o scanner pula: só nestes CAMINHOS (prefixo) e com esta extensão, os únicos versionados hoje. */
+const KNOWN_BINARIES: ReadonlyArray<{ readonly prefix: string; readonly extension: string; readonly reason: string }> = [
+  { prefix: 'assets/fonts/', extension: '.woff', reason: 'fonte tipográfica (Inter) usada nos PDFs' },
+  { prefix: 'tests/fixtures/tiles/', extension: '.pbf', reason: 'tile vetorial público (OpenStreetMap) das fixtures do mapa do PDF' },
+];
+const UTF8 = new TextDecoder('utf-8', { fatal: true });
 /* Exceções explícitas (caminho → justificativa) para itens que, de outra forma, fariam a trava falhar. Hoje: nenhuma. */
 const UNREADABLE_EXCEPTIONS: ReadonlyMap<string, string> = new Map();
 
 interface ForbiddenTerm {
   /** SHA-256 de `gmn.repo-guard.v1:` + termo normalizado (um token, ou duas/três palavras separadas por um espaço). */
-  readonly sha256: string;
+  readonly sha256?: string;
+  /** Alternativa: os hashes de duas palavras que não podem aparecer juntas na mesma linha (qualquer ordem e distância). */
+  readonly sameLine?: readonly [string, string];
   /** Tipo do termo, sem revelá-lo. */
   readonly kind: string;
   /** Arquivos versionados em que o termo é legítimo (dado público sem relação com o cliente). */
@@ -90,9 +92,14 @@ const FORBIDDEN: readonly ForbiddenTerm[] = [
   { sha256: '7b3e65a898ebfbf766e81fbd87ea30fde0c2a21e152c58030d35de126eb1f161', kind: 'cliente de prospecção F (slug do PDF, três palavras)' },
   { sha256: 'd8f12f217fcd272288509dac6a7c29d8adf320d73eaebdd40d38b3babac4cc8b', kind: 'cliente de prospecção F (domínio do site)' },
   { sha256: '082711b106b88a817ac6ee79205ae120cf83b845fe6f8569884c16976b23a63b', kind: 'cliente de prospecção G (duas palavras)' },
+  // Cidade + segmento da campanha dos clientes F e G: cada palavra sozinha é comum (a cidade é a padrão dos testes e da
+  // lista do IBGE), então só a combinação na mesma linha é acusada.
+  { sameLine: ['4320294e3e56b92f1bffc5507431f3ad209c035af9dd4ad6c9cbda5ec9fbc6bc', '7a5cace935306129774f182120c692fff24ef9273cf8ff781d8795cb07598c37'], kind: 'cidade + segmento da campanha (mesma linha)' },
 ];
 
-const INDEX_BY_HASH = new Map(FORBIDDEN.map((term, index) => [term.sha256, index]));
+const INDEX_BY_HASH = new Map(FORBIDDEN.flatMap((term, index) => (term.sha256 ? [[term.sha256, index] as const] : [])));
+/* Palavra → [índice do termo, parte 0 ou 1] dos termos "na mesma linha". */
+const SAME_LINE_PART_BY_HASH = new Map(FORBIDDEN.flatMap((term, index) => (term.sameLine ? term.sameLine.map((hash, part) => [hash, [index, part]] as const) : [])));
 
 interface Finding {
   readonly file: string;
@@ -106,16 +113,21 @@ interface IndexEntry {
   readonly file: string;
 }
 
-type Verdict = { readonly kind: 'TEXT' } | { readonly kind: 'SKIP'; readonly reason: string } | { readonly kind: 'UNREADABLE'; readonly reason: string };
+type Verdict = { readonly kind: 'TEXT'; readonly text: string } | { readonly kind: 'SKIP'; readonly reason: string } | { readonly kind: 'UNREADABLE'; readonly reason: string };
 
 class RepoGuardSetupError extends Error {}
 
-const hashCache = new Map<string, number | undefined>();
+const hashCache = new Map<string, string>();
+function hashOf(token: string): string {
+  let hash = hashCache.get(token);
+  if (hash === undefined) {
+    hash = createHash('sha256').update(DOMAIN + token).digest('hex');
+    hashCache.set(token, hash);
+  }
+  return hash;
+}
 function forbiddenIndex(token: string): number | undefined {
-  if (hashCache.has(token)) return hashCache.get(token);
-  const index = INDEX_BY_HASH.get(createHash('sha256').update(DOMAIN + token).digest('hex'));
-  hashCache.set(token, index);
-  return index;
+  return INDEX_BY_HASH.get(hashOf(token));
 }
 
 /** Remove acentos (NFD sem marcas combinantes) preservando a caixa, para ainda separar camelCase. */
@@ -169,11 +181,14 @@ function scanText(text: string, file: string): Finding[] {
   const recent: Array<{ word: string; line: number }> = [];
   stripAccents(text).split('\n').forEach((content, offset) => {
     const line = offset + 1;
+    const sameLineParts = new Map<number, Set<number>>();
     for (const candidate of lineCandidates(content)) report(line, forbiddenIndex(candidate));
     for (const raw of content.split(/[^A-Za-z0-9]+/)) {
       if (!raw) continue;
       for (const candidate of candidates(raw)) report(line, forbiddenIndex(candidate));
       for (const word of camelPieces(raw)) {
+        const part = SAME_LINE_PART_BY_HASH.get(hashOf(word));
+        if (part) sameLineParts.set(part[0], (sameLineParts.get(part[0]) ?? new Set<number>()).add(part[1]));
         recent.push({ word, line });
         if (recent.length > MAX_WORDS) recent.shift();
         for (let size = 2; size <= recent.length; size += 1) {
@@ -182,6 +197,7 @@ function scanText(text: string, file: string): Finding[] {
         }
       }
     }
+    for (const [termIndex, parts] of sameLineParts) if (parts.size === 2) report(line, termIndex);
   });
   return findings;
 }
@@ -198,11 +214,14 @@ function classify(entry: IndexEntry, buffer: Buffer | null): Verdict {
   const extension = path.extname(entry.file).toLowerCase();
   if (UNREADABLE_EXTENSIONS.has(extension)) return unreadable(`arquivo ${extension} versionado (o guardião não lê PDF, documento, pacote nem imagem)`);
   if (buffer === null) return unreadable('item versionado que não é um arquivo comum no disco');
-  if (buffer.includes(0)) {
-    const known = KNOWN_BINARY_EXTENSIONS.get(extension);
-    return known ? { kind: 'SKIP', reason: known } : unreadable('binário versionado de tipo não reconhecido');
+  const known = KNOWN_BINARIES.find((binary) => entry.file.startsWith(binary.prefix) && extension === binary.extension);
+  if (known) return { kind: 'SKIP', reason: known.reason };
+  if (buffer.includes(0)) return unreadable('binário versionado fora dos caminhos reconhecidos');
+  try {
+    return { kind: 'TEXT', text: UTF8.decode(buffer) };
+  } catch {
+    return unreadable('texto versionado que não é UTF-8 válido (o guardião não o lê)');
   }
-  return { kind: 'TEXT' };
 }
 
 /** Entradas do índice (`git ls-files -s -z`: `<modo> <objeto> <estágio>\t<caminho>`). */
@@ -245,9 +264,9 @@ function scanRepository(root: string): { findings: Finding[]; unreadable: string
     const buffer = stat?.isFile() ? fs.readFileSync(full) : null;
     const verdict = classify(entry, buffer);
     if (verdict.kind === 'UNREADABLE') unreadable.push(`${entry.file}: ${verdict.reason}`);
-    if (verdict.kind !== 'TEXT' || buffer === null) continue;
+    if (verdict.kind !== 'TEXT') continue;
     scanned += 1;
-    findings.push(...scanText(buffer.toString('utf8'), entry.file));
+    findings.push(...scanText(verdict.text, entry.file));
   }
   return { findings, unreadable, scanned };
 }
@@ -291,6 +310,7 @@ const PROSPECT_F = decode('RHJhLiBBbm5hIFZpdMOzcmlh');
 const PROSPECT_F_PDF = decode('YXVkaXRvcmlhLWdtbi1kcmEtYW5uYS12aXQtcmlhLWRlbnRpc3RhLTg1OWI0MDIxLnBkZg==');
 const PROSPECT_F_SITE = decode('aHR0cHM6Ly93d3cuZHJhYW5uYXZpdG9yaWEuY29tLmJyLw==');
 const PROSPECT_G = decode('QmVsbyBSaXNv');
+const CAMPAIGN = decode('Y2FtcGFuaGEgQW7DoXBvbGlzIC8gQ2zDrW5pY2EgT2RvbnRvbMOzZ2ljYQ==');
 
 const indexes = (text: string, file = 'docs/x.md'): number[] => [...new Set(scanText(text, file).map((f) => f.termIndex))].sort();
 
@@ -348,8 +368,15 @@ test('guardião: falha fechada para PDF, documento, pacote, imagem, link simból
   assert.equal(kind(MODE_SUBMODULE, 'vendor/x', null), 'UNREADABLE', 'submódulo');
   assert.equal(kind('100644', 'dados/x.bin', binary), 'UNREADABLE', 'binário de tipo desconhecido');
   assert.equal(kind('100644', 'docs/x.md', null), 'UNREADABLE', 'item que não é arquivo comum no disco');
-  assert.equal(kind('100644', 'assets/fonts/Inter.woff', binary), 'SKIP', 'fonte');
-  assert.equal(kind('100644', 'tests/fixtures/tiles/1/2/3.pbf', binary), 'SKIP', 'tile vetorial');
+  assert.equal(kind('100644', 'assets/fonts/Inter.woff', binary), 'SKIP', 'fonte no caminho reconhecido');
+  assert.equal(kind('100644', 'tests/fixtures/tiles/1/2/3.pbf', binary), 'SKIP', 'tile vetorial no caminho reconhecido');
+  assert.equal(kind('100644', 'docs/Inter.woff', binary), 'UNREADABLE', 'extensão reconhecida FORA do caminho permitido');
+  assert.equal(kind('100644', 'tests/fixtures/x/1.pbf', binary), 'UNREADABLE', 'tile fora do caminho permitido');
+  assert.equal(kind('100644', 'assets/fonts/Inter.woff2', binary), 'UNREADABLE', 'extensão não versionada hoje');
+  assert.equal(kind('100644', 'assets/fonts/x.ttf', binary), 'UNREADABLE');
+  assert.equal(kind('100644', 'docs/latin1.md', Buffer.from([0x61, 0xe7, 0xe3, 0x6f])), 'UNREADABLE', 'UTF-8 inválido sem NUL (Latin-1)');
+  assert.equal(kind('100644', 'docs/truncado.md', Buffer.from([0x63, 0xc3])), 'UNREADABLE', 'sequência UTF-8 truncada');
+  assert.equal(kind('100644', 'docs/utf8.md', Buffer.from('ação', 'utf8')), 'TEXT', 'UTF-8 válido com acento');
   assert.equal(kind('100644', 'docs/x.md', text), 'TEXT');
   assert.equal(kind('100755', 'scripts/x.sh', text), 'TEXT');
   assert.equal(UNREADABLE_EXCEPTIONS.size, 0, 'nenhuma exceção hoje; cada uma precisa de justificativa');
@@ -370,6 +397,17 @@ test('guardião: clientes de prospecção das Fases 3–5 (nome, nome invertido,
   }
 });
 
+test('guardião: cidade + segmento da campanha na mesma linha, em qualquer ordem; cada palavra sozinha e linhas diferentes livres', () => {
+  const words = stripAccents(CAMPAIGN).split(/[^A-Za-z]+/);
+  const [city, , segment] = [words[1]!, words[2]!, words[3]!];
+  assert.deepEqual(indexes(`- **Empresa:** (#16, ${CAMPAIGN} de 16/10/2026)`), [20]);
+  assert.deepEqual(indexes(`auditoria real (${city.toUpperCase()}/GO, "Clínica ${segment}")`), [20]);
+  assert.deepEqual(indexes(`${segment} em ${city}`), [20], 'ordem inversa');
+  assert.deepEqual(indexes(`cidade: ${city}\nsegmento: ${segment}`), [], 'linhas diferentes');
+  assert.deepEqual(indexes(`placeholder="Ex: ${city}"`), [], 'só a cidade');
+  assert.deepEqual(indexes(`palavra-chave "Clínica ${segment}"`), [], 'só o segmento');
+});
+
 test('guardião: nomes de outros clientes só contam como par; cada palavra sozinha é livre', () => {
   const words = [...CLIENT_B.split(' '), ...CLIENT_C.split(' ')];
   for (const word of words) assert.deepEqual(scanText(`texto com ${word} solto`, 'docs/x.md'), [], 'palavra comum isolada');
@@ -381,7 +419,7 @@ test('guardião: aponta arquivo:linha e índice, nunca o termo; a exceção por 
   assert.deepEqual(findings, [{ file: 'docs/exemplo.md', line: 2, termIndex: 0 }]);
   const message = formatFinding(findings[0]!);
   assert.equal(message, 'docs/exemplo.md:2: termo proibido #0 (nome da empresa)');
-  for (const term of [NAME, CID, FID_1, FID_2, PLACE, CITY, CLIENT_B, CLIENT_C, OTHER_PLACE, PHONE, LATITUDE, LONGITUDE, PRIVATE_PATH, PROSPECT_D, PROSPECT_E, PROSPECT_F, PROSPECT_G]) assert.ok(!message.toLowerCase().includes(term.toLowerCase()));
+  for (const term of [NAME, CID, FID_1, FID_2, PLACE, CITY, CLIENT_B, CLIENT_C, OTHER_PLACE, PHONE, LATITUDE, LONGITUDE, PRIVATE_PATH, PROSPECT_D, PROSPECT_E, PROSPECT_F, PROSPECT_G, CAMPAIGN]) assert.ok(!message.toLowerCase().includes(term.toLowerCase()));
   assert.deepEqual(indexes(`"nome": "${CITY}"`, 'src/data/municipios.json'), [], 'lista pública de municípios');
   assert.deepEqual(indexes(`"nome": "${CITY}" ${NAME}`, 'src/data/municipios.json'), [0], 'a exceção não cobre outros termos');
 });

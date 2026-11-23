@@ -46,8 +46,10 @@ voltem.
   servem para não deixá-los em claro e impedir a volta. Para proibir um termo novo, calcule o hash fora da árvore e
   acrescente só o hash. Telefones são comparados só pelos dígitos e coordenadas com a precisão registrada.
 - **O que o guardião não lê não entra:** PDF, documento de escritório (doc/docx/xls/xlsx/odt…), arquivo compactado,
-  imagem (prints de painel são evidência de cliente), link simbólico, submódulo ou binário de tipo não reconhecido
-  versionados fazem o CI falhar, salvo exceção explícita e justificada no próprio teste. Caminhos locais da máquina do
+  imagem (prints de painel são evidência de cliente), link simbólico, submódulo, texto que não seja UTF-8 válido ou
+  binário fora dos caminhos reconhecidos (fontes em `assets/fonts/`, tiles em `tests/fixtures/tiles/`) versionados fazem
+  o CI falhar, salvo exceção explícita e justificada, por caminho, no próprio teste. Cidade e palavra-chave de uma
+  campanha também viram marcadores (`<CIDADE>`, `<PALAVRA_CHAVE>`) quando aparecem junto de um cliente. Caminhos locais da máquina do
   responsável (backups, unidade externa, pastas de projeto) também viram marcadores, como `<DESTINO_BACKUP_LOCAL>` e
   `<UNIDADE_EXTERNA>`.
 
