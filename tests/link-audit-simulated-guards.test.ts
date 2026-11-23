@@ -19,6 +19,7 @@ import { fakeList } from './helpers/link-audit-preview-fixtures';
 import { makeService, OP_A, resultsEnv, treeOf } from './helpers/link-audit-results-fixtures';
 import { canonicalJson, sha256Hex } from '../src/lib/link-audit/canonical';
 import { nodeFsOps } from '../src/lib/link-audit/snapshot-store';
+import { exportCandidatePackage } from '../src/lib/link-audit-attestation/export-run';
 import { createScoringBasisReader } from '../src/lib/link-audit-evidence/scoring-basis';
 import { registerCleanup, tmpDir } from './helpers/link-audit-evidence-fixtures';
 import { at, HOUR, jsonOf, makeAudit, newOut, readJsonFile, runCli as runSeal, exportArgs } from './helpers/link-audit-seal-export-fixtures';
@@ -309,4 +310,25 @@ test('camada 1: o manifesto do ensaio, assinado pela chave DESCARTÁVEL, autenti
   const verdict = (trustKeys: string) => evidenceProvenanceFromConfig({ sealsDir, trustKeys, otherDirs: [evidence], acceptedVersions: [2] }).classify(SIM_AUDIT_ID, evidences);
   assert.equal((await verdict(disposable.trustKeys)).status, 'AUTHENTICATED', 'homologação: a lista tem a chave do ensaio');
   assert.deepEqual(await verdict(real.trustKeys), { status: 'UNAUTHENTICATED', reason: 'SEAL_INVALID' }, 'produção: a chave do ensaio não está na lista');
+});
+
+test('export (2c), segunda camada SOZINHA: o módulo do export com allowSimulated mas SEM a trava ⇒ EXPORT_SIMULATED_CAPTURE, nada gravado; só a opção E a trava juntas exportam', async () => {
+  const evidence = tmpDir('lasim-mod-');
+  const { collectorHash } = await collectSimulated(evidence);
+  const options = (out: string, extra: { allowSimulated?: boolean; homologationLock?: boolean }) => ({
+    evidenceDir: evidence, auditId: SIM_AUDIT_ID, collectorHashes: new Map([[1, collectorHash]]), maxGapHours: 24, gapJustification: null, sealsDir: null, out,
+    projectRoot: path.join(__dirname, '..'), now: () => EXPORT_NOW, ...extra,
+  });
+  for (const extra of [{ allowSimulated: true }, { allowSimulated: true, homologationLock: false }]) {
+    const out = newOut();
+    const refused = await exportCandidatePackage(options(out, extra));
+    assert.ok(!refused.ok, JSON.stringify(extra));
+    assert.equal(refused.code, 'EXPORT_SIMULATED_CAPTURE');
+    assert.match(refused.message, /trava de homologação/);
+    assert.ok(!fs.existsSync(out), 'nada gravado');
+  }
+  const lockOnly = await exportCandidatePackage(options(newOut(), { homologationLock: true }));
+  assert.ok(!lockOnly.ok && lockOnly.code === 'EXPORT_SIMULATED_CAPTURE', 'a trava sem a opção não basta');
+  const both = await exportCandidatePackage(options(newOut(), { allowSimulated: true, homologationLock: true }));
+  assert.ok(both.ok && both.simulated, both.ok ? '' : both.message);
 });

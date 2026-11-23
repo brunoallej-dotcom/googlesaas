@@ -74,8 +74,10 @@ export interface CandidateInput {
   readonly maxGapHours: number | null;
   readonly gapJustification: string | null;
   readonly now: Date;
-  /** `--simulated` E a trava de homologação, conferidos por quem chama: só assim uma captura SIMULADA (ensaio) é exportada. */
+  /** `--simulated`: quem chama AFIRMA que a auditoria é a coleta SIMULADA do ensaio. Sozinho não basta. */
   readonly allowSimulated?: boolean;
+  /** Trava de homologação lida por quem chama (`GMN_LINK_AUDIT_HOMOLOGATION=1`). Ausente = desligada. Só a opção E a trava juntas exportam captura simulada. */
+  readonly homologationLock?: boolean;
 }
 export type CandidateResult = { readonly ok: true; readonly package: CandidatePackage } | ExportRefusal;
 export interface CandidateDelta {
@@ -167,8 +169,12 @@ function legacyChecks(input: CandidateInput): Decided {
 /** A base tem evidência da coleta SIMULADA do ensaio (marca da captura, spec §5.7). */
 export const basisIsSimulated = (basis: ExportBasis): boolean => basis.evidences.some((e) => e.simulated === true);
 
-/** W5.2b: captura simulada só com `--simulated` + trava; e `--simulated` só numa auditoria simulada (a opção AFIRMA que ela é simulada). */
-function simulationRefusal(basis: ExportBasis, allowSimulated: boolean): ExportRefusal | null {
+/**
+ * W5.2b: captura simulada só com `--simulated` + trava; e `--simulated` só numa auditoria simulada (a opção AFIRMA que ela é simulada). Esta é a
+ * segunda camada: confere a trava de novo, independente da recusa antecipada do CLI.
+ */
+function simulationRefusal(basis: ExportBasis, allowSimulated: boolean, homologationLock: boolean): ExportRefusal | null {
+  if (allowSimulated && !homologationLock) return refuse('EXPORT_SIMULATED_CAPTURE', '--simulated sem a trava de homologação ligada: nada foi exportado.');
   const simulated = basisIsSimulated(basis);
   if (simulated && !allowSimulated) return refuse('EXPORT_SIMULATED_CAPTURE', 'Captura SIMULADA (ensaio de homologação): não é evidência real. O export só a aceita com --simulated e a trava de homologação. Nada foi exportado.');
   if (!simulated && allowSimulated) return refuse('EXPORT_SIMULATED_CAPTURE', '--simulated informado, mas esta auditoria não tem captura simulada. Nada foi exportado.');
@@ -179,7 +185,7 @@ function simulationRefusal(basis: ExportBasis, allowSimulated: boolean): ExportR
 export function buildCandidatePackage(input: CandidateInput): CandidateResult {
   const nowMs = input.now.getTime();
   if (!Number.isFinite(nowMs)) return refuse('UNEXPECTED', 'Relógio inválido.');
-  const simulation = simulationRefusal(input.basis, input.allowSimulated === true);
+  const simulation = simulationRefusal(input.basis, input.allowSimulated === true, input.homologationLock === true);
   if (simulation) return simulation;
   const entries = evidenceToProveFromBasis(input.basis).sort(byRef);
   if (entries.length > MAX_PACKAGE_ENTRIES) return refuse('EXPORT_TOO_MANY_ENTRIES', `Mais de ${MAX_PACKAGE_ENTRIES} entradas; o pacote não é produzido.`);

@@ -218,7 +218,7 @@ async function runExport(args: ExportArgs, out: Line, err: Line, now: () => Date
   const lockOn = deps.getEnv ? isHomologationLockOn(deps.getEnv()) : homologationLockFromProcess();
   if (args.simulated && !lockOn) return refusal(SIMULATED_WITHOUT_LOCK, args.json, out, err);
   const outcome = await exportCandidatePackage(
-    { evidenceDir: args.evidenceDir, auditId: args.auditId, collectorHashes: args.collectorHashes, maxGapHours: args.maxGapHours, gapJustification: args.gapJustification, sealsDir: args.sealsDir, out: args.out, projectRoot: deps.projectRoot ?? path.resolve(__dirname, '..'), now, allowSimulated: args.simulated && lockOn },
+    { evidenceDir: args.evidenceDir, auditId: args.auditId, collectorHashes: args.collectorHashes, maxGapHours: args.maxGapHours, gapJustification: args.gapJustification, sealsDir: args.sealsDir, out: args.out, projectRoot: deps.projectRoot ?? path.resolve(__dirname, '..'), now, allowSimulated: args.simulated, homologationLock: lockOn },
     { ...(deps.fs ? { fs: deps.fs } : {}), ...(deps.outFs ? { outFs: deps.outFs } : {}) },
   );
   if (!outcome.ok) return refusal(outcome, args.json, out, err);

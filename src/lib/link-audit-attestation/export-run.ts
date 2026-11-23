@@ -31,8 +31,10 @@ export interface ExportOptions {
   /** Raiz do projeto: a pasta de evidências não pode estar em `public/`, `src/`, `.next/` nem `node_modules/` dela. */
   readonly projectRoot: string;
   readonly now: () => Date;
-  /** `--simulated` E a trava de homologação (W5.2b, spec §5.7), conferidos pelo CLI. */
+  /** `--simulated` (W5.2b, spec §5.7): afirma que a auditoria é a coleta SIMULADA do ensaio. */
   readonly allowSimulated?: boolean;
+  /** Trava de homologação lida pelo CLI; ausente = desligada. A montagem pura a confere de novo (segunda camada). */
+  readonly homologationLock?: boolean;
 }
 export interface ExportDeps {
   /** Leitura das evidências e dos manifestos (nunca escreve). */
@@ -63,7 +65,7 @@ export async function exportCandidatePackage(options: ExportOptions, deps: Expor
   if (target !== null && !target.ok) return target;
   const facts = await readEvidence(fs, base.real, options);
   if (!facts.ok) return facts;
-  const built = buildCandidatePackage({ ...facts.value, auditId: options.auditId, collectorHashes: options.collectorHashes, maxGapHours: options.maxGapHours, gapJustification: options.gapJustification, now: options.now(), allowSimulated: options.allowSimulated === true });
+  const built = buildCandidatePackage({ ...facts.value, auditId: options.auditId, collectorHashes: options.collectorHashes, maxGapHours: options.maxGapHours, gapJustification: options.gapJustification, now: options.now(), allowSimulated: options.allowSimulated === true, homologationLock: options.homologationLock === true });
   if (!built.ok) return built;
   const delta = options.sealsDir === null ? { status: 'NOT_REQUESTED' as const, delta: null } : await readDelta(fs, options.sealsDir, options.auditId, built.package.entries);
   const pkg = candidatePackageSchema.parse({ ...built.package, delta: delta.delta });
