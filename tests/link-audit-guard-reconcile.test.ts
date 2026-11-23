@@ -111,6 +111,10 @@ test('PG-G09 auditoria SEM CABEÇA com livro ≥ 2 ⇒ GUARD_HEAD_MISSING (regra
   const analysis = analyzeReconciliation(input({ guardHeads: [rowOf(C, 6)] }));
   assert.deepEqual(analysis.findings, [{ code: 'GUARD_HEAD_MISSING', auditRef: PSEUDONYMS_A.current(A).auditRef, auditId: A, backupSeq: 7, guardSeq: null, recordedSeq: null }]);
   assert.equal(analysis.audits.find((audit) => audit.auditId === B)?.status, 'NO_HEAD');
+  // fronteira da regra 2: exatamente 2 registros sem cabeça já é GUARD_HEAD_MISSING; 1 registro (GENESIS com a publicação interrompida) não
+  const two = 'auditoria-recon-d2';
+  const boundary = analyzeReconciliation(input({ backup: backupOf({ [two]: ledgerOf(two, 2), [B]: LEDGERS[B] as LedgerRecord[] }), guardHeads: [] }));
+  assert.deepEqual(boundary.findings.map((item) => [item.code, item.auditId, item.backupSeq]), [['GUARD_HEAD_MISSING', two, 2]]);
 });
 
 test('PG-G09 livro ILEGÍVEL na cópia ⇒ BACKUP_LEDGER_UNREADABLE daquela auditoria; as cabeças dela não viram "sem livro"', () => {
