@@ -121,17 +121,18 @@ const childEnvironment = (env: Readonly<Record<string, string>>): NodeJS.Process
 export const nodeProcessRunner: ProcessRunner = {
   run(request) {
     return new Promise<RunResult>((resolve) => {
-      const child = execFile(
-        programFile(request),
-        [...request.args],
-        { env: childEnvironment(request.env), shell: false, timeout: request.timeoutMs, killSignal: 'SIGKILL', maxBuffer: request.maxOutputBytes, encoding: 'buffer', windowsHide: true },
-        (error, stdout, stderr) => {
-          const overflow = errnoOf(error) === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
-          const killed = error !== null && 'killed' in error && error.killed === true;
-          const exitCode = error === null ? 0 : typeof (error as { code?: unknown }).code === 'number' && !killed ? ((error as { code: number }).code) : null;
-          resolve({ exitCode, stdout, stderr, timedOut: killed && !overflow, overflow });
-        },
-      );
+      const file = programFile(request);
+      const args = [...request.args];
+      const options = { env: childEnvironment(request.env), shell: false, timeout: request.timeoutMs, killSignal: 'SIGKILL' as const, maxBuffer: request.maxOutputBytes, encoding: 'buffer' as const, windowsHide: true };
+      const onExit = (error: Error | null, stdout: Buffer, stderr: Buffer): void => {
+        const overflow = errnoOf(error) === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+        const killed = error !== null && 'killed' in error && error.killed === true;
+        const code: unknown = error === null ? 0 : (error as { code?: unknown }).code;
+        const exitCode = error === null ? 0 : typeof code === 'number' && !killed ? code : null;
+        resolve({ exitCode, stdout, stderr, timedOut: killed && !overflow, overflow });
+      };
+      // o programa é um nome da lista fechada (docker, tar, gzip) ou o script fixo do wrapper; argv fixo e shell: false
+      const child = execFile(file, args, options, onExit); // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process -- programa de lista fechada, sem shell, argv montado pelo receptor
       child.stdin?.end();
     });
   },

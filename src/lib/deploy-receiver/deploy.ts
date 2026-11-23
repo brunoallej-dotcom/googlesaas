@@ -43,10 +43,16 @@ async function stagedBundle(command: DeployCommand, config: ReceiverConfig, deps
   return { file, size };
 }
 
+/** SHA-256 de um arquivo regular; ausente, link ou ilegível ⇒ `null` (o chamador recusa com o código do passo). */
 async function fileSha256OrNull(file: string, deps: ReceiverDeps): Promise<string | null> {
-  const info = await deps.fs.lstat(file);
-  if (info === null || !info.isFile || info.isSymbolicLink) return null;
-  return (await deps.fs.sha256File(file)).sha256;
+  try {
+    const info = await deps.fs.lstat(file);
+    if (info === null || !info.isFile || info.isSymbolicLink) return null;
+    return (await deps.fs.sha256File(file)).sha256;
+  } catch {
+    deps.log.write('deploy.stack_file_unreadable');
+    return null;
+  }
 }
 
 /** Passo 2: a stack (e a sobreposição) INSTALADAS pelo responsável têm o hash do commit (desvio D-1). Sem chamar o Docker. */

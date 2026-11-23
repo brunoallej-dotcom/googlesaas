@@ -30,6 +30,8 @@ export function main(): void {
   // a saída pública é só a linha final: um stdout/stderr fechado (ssh caído) não pode virar exceção com caminho
   process.stdout.on('error', () => process.exit(RECEIVER_EXIT_CODES.E_INTERNAL));
   process.stderr.on('error', () => process.exit(RECEIVER_EXIT_CODES.E_INTERNAL));
+  // nenhum aviso do Node (depreciação, experimental) pode virar uma segunda linha no stderr público
+  process.removeAllListeners('warning');
   process.on('uncaughtException', () => finish(INTERNAL));
   process.on('unhandledRejection', () => finish(INTERNAL));
   // job cancelado ou ssh caído no meio do deploy: o receptor termina o que começou (trava, lista e log coerentes) em vez de parar num passo qualquer
