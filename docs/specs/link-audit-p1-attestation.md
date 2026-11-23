@@ -658,6 +658,10 @@ O hash versionado passou a `395d5ba946e3f6b45c9689828947ca49107d3a9940db4f4ca457
 - **`.git` que é link simbólico pendente (revisão do PR #59, `wk2`, MENOR):** um grant de leitura terminado em `.git` com `realpath` em ENOENT virava "ausente" sem conferir o próprio caminho. O `realpath` de um link PENDENTE também dá ENOENT, e esse `.git` passava no pré-teste dos grants. A custódia da chave o recusava, mas só depois de ler as entradas e da confirmação. Agora o `.git` só conta como ausente se o `lstat` dele também der ENOENT (`gitTrulyAbsent`). Link pendente, ou qualquer outra resposta do `lstat`, ⇒ `SIGN_RUNTIME_UNSAFE` ("próprio caminho real") no pré-teste, antes de qualquer leitura. O `lstat` vem da mesma porta de disco da custódia (`KeyFileOps`). Sob `--permission`, o `lstat` do próprio caminho concedido é permitido. Testes: em processo (nenhuma entrada lida, nem confirmação nem frase) e em processo real sob `--permission`. Mutação: voltar ao ENOENT sem `lstat` ⇒ os dois testes falham.
 - **Hash do artefato:** o código do grafo do artefato mudou quatro vezes nesta fatia. O build da base reproduziu `395d5ba9…` antes das mudanças. A mudança do D15.6(d) deu `893b9c21edf7765e14879cc6595f9dc40e898c37f2752cafc51e05f5cc36c76b`; a regra dos grants do `close-key`, `a4c2842d4b0105046641a1a41b73a56a2f027f2dd577f3b535017c9b614fc43a`; o mesmo tratamento no `sign`, `26c6aba810f9da1ec5456fb0e2addb79b1f20e0f58ca1dc3338069d493ea0622`; e a correção do `.git` pendente deu o valor final, `d2df18c525de54bab0e241d15b2e12e2d0009e76f6571cf1892fd07adb369a4a` (753 267 bytes), versionado em `docs/phase6-auditoria-link/p1-sign-artifact.sha256`. O teste e o CI recompilam e recusam qualquer diferença.
 - **Hash do artefato depois da W5.2b (22/11/2026):** a W5.2b mudou o esquema da captura (`src/lib/link-audit-evidence/types.ts`, marca da coleta SIMULADA, §5.7), que o artefato empacota; sozinha, sobre `395d5ba9…`, ela dava `08ee1c75dc771c1d6ca5c52afe7b81161068c19fc3d58c00c6b9074989437a03`. No merge com a W5.2a o hash foi REFEITO pelo build reprodutível com as duas mudanças juntas (nenhum dos dois valores foi escolhido): `78de412ec59a944ca75b00d80f2daadd9b511ffe88816059a1942c26469002cb` (753 462 bytes), igual em duas pastas e conferido por `sha256sum -c`. O comportamento do `sign` e do `close-key` não muda com a W5.2b.
+- **Hash do artefato depois da revisão do PR #62 (22/11/2026):** a marca da coleta SIMULADA entrou no pacote (`schemas.ts`) e o `sign` ganhou a opção
+  `--simulated` (`sign-args.ts`, `sign-core.ts`, `sign-terminal.ts`, `sign-run.ts`, `sign-cli.ts`; §5.7). O build reprodutível dá
+  `37797893cdcc5fb64578cc41f08f0b403793ad464b2663a657a5d539eeefb5a1` (754 422 bytes), igual em duas pastas e conferido por `sha256sum -c`; os testes do artefato passam com ele. Para pacote real, o
+  `sign` se comporta exatamente como antes (mesmo plano, mesma tela, mesmo recibo).
 - **Teste, isolamento:** a limpeza da estação no HOME dos testes do artefato passou a ser registrada no nível do arquivo. Registrada dentro de um teste antes de qualquer `await`, ela ficava presa àquele teste e apagava a pasta para os seguintes (aparecia só ao rodar parte dos testes). Registrada tarde, numa execução completa, ela não rodava e deixava a pasta no HOME.
 
 ### 5.6 Manifesto `v2` e verificador `v2` (onda W3, contrato próprio)
@@ -711,9 +715,12 @@ Códigos de saída como no LIVE (0 ok, 1 uso, 3 recusado antes de gravar, 4/5 fa
 3. **Marca persistente, dentro do hash.** A captura leva `provider: "SIMULATED"` e `simulated: true` (o esquema exige os dois juntos ou
    nenhum); o relatório leva `source.provider: "SIMULATED"`, `source.simulated: true` e uma limitação explícita. A marca entra no
    `contentSha256` da captura, que é o `source.capture.sha256` do `--json`, o `--collector-hash` do `export`, a entrada `capture:c0001`
-   do pacote e do manifesto. Pacote, aprovação e manifesto `v2` **não mudam de formato** (D15.6(e): `entries[].source` continua fora;
-   nada de `v3`). Captura simulada e captura real não se misturam na mesma auditoria: o pré-voo do armazenamento recusa nos dois sentidos
-   (no LIVE, antes de pagar); a gravação recusa a simulada numa auditoria real e nunca descarta uma resposta paga.
+   do pacote e do manifesto. **Revisão do PR #62 (decisão do manager):** a marca também ENTRA no pacote, como campo opcional
+   `simulated: true` (só o literal, só no simulado), dentro do `packageSha256`; nos pacotes reais o campo não existe, e a forma e o hash
+   deles não mudam. Aprovação e manifesto `v2` **não mudam de formato** (D15.6(e): `entries[].source` continua fora; nada de `v3`). Captura simulada e captura real não se misturam na mesma auditoria: o pré-voo do armazenamento recusa nos dois sentidos
+   (no LIVE, antes de pagar); a gravação recusa a simulada numa auditoria real e nunca descarta uma resposta paga. A pré-checagem falha
+   fechada (revisão do PR #62): só a pasta da auditoria comprovadamente inexistente (ENOENT) conta como vazia; listagem que falha por outro
+   motivo, ou captura existente que não se lê, é recusa.
 4. **`export`.** Auditoria com captura simulada ⇒ `EXPORT_SIMULATED_CAPTURE` (código 3), salvo com `--simulated` **e** a mesma trava,
    conferida em duas camadas testadas cada uma sozinha (a recusa antecipada do CLI e a montagem pura do `export`, que recebe a opção e a
    trava separadas);
@@ -721,7 +728,13 @@ Códigos de saída como no LIVE (0 ok, 1 uso, 3 recusado antes de gravar, 4/5 fa
    `--json` traz `simulated: true` (ausente nas exportações reais: a forma estável não muda). A trava é a única leitura do ambiente do
    processo no `export`, feita em `src/lib/link-audit-evidence/simulated.ts` (só a variável da trava; o CLI e os módulos do `export`
    continuam sem olhar o ambiente); a lista fechada de imports do CLI ganhou esse módulo (teste de isolamento revisto).
-5. **Leitor e interface.** A fonte aparece como "SIMULADA — ensaio" (lista e detalhe das evidências), com selo próprio.
+5. **Leitor e interface.** A fonte aparece como "SIMULADA — ensaio" (lista e detalhe das evidências), com selo próprio. O relatório
+   simulado atribui os dados ao gerador sintético, nunca ao Serper: `data.googleMaps.source: "SIMULATED"`, `verified[].viaSerper: false`
+   e os textos do pipeline que diziam "obtido via Serper" reescritos (revisão do PR #62); o detalhe das evidências troca os rótulos de origem.
+5a. **`sign` (revisão do PR #62).** Pacote com `simulated: true` só é assinado com a opção própria `--simulated` (o `sign` roda com `env -i`:
+   nada de variável de ambiente); sem ela ⇒ `SIGN_SIMULATED_PACKAGE` (código 3), e `--simulated` com pacote real também. A recusa vem logo
+   depois de o pacote aprovado e íntegro ser conhecido, antes da confirmação humana e da frase. Com `--simulated`, a tela da confirmação
+   mostra "ATENÇÃO: SIMULADA — ensaio" antes da digitação. O recibo não muda de forma.
 6. **Prévia e finalização (ponto escolhido: o bloqueio da prévia, que a finalização já respeita).** Base com evidência simulada ⇒
    bloqueio `SIMULATED_EVIDENCE`: `BLOCKING` sem a trava no servidor (a finalização responde `NOT_FINALIZABLE`; a conclusão de uma
    pendente também é recusada) e `WARNING` com `GMN_LINK_AUDIT_HOMOLOGATION=1` no web da pilha de homologação (o S-13 depende disso).
@@ -732,7 +745,11 @@ Códigos de saída como no LIVE (0 ok, 1 uso, 3 recusado antes de gravar, 4/5 fa
 sobre a captura simulada (só na homologação) não leva a marca no próprio arquivo: ela é alcançável pelo hash da captura citada, e as
 chaves do ensaio não estão na lista de produção (reconferência da R2.2). (c) O artefato do `sign` empacota o esquema da captura
 (`src/lib/link-audit-evidence/types.ts`): o hash versionado do artefato muda nesta fatia, sem mudança de comportamento do `sign`
-(histórico no §5.5.1: `08ee1c75…` sobre a base; `78de412e…` depois do merge com a W5.2a).
+(histórico no §5.5.1: `08ee1c75…` sobre a base; `78de412e…` depois do merge com a W5.2a; `37797893…` depois da revisão do
+PR #62). (d) **Limite declarado (decisão do manager na revisão do PR #62):** o modo SIMULATED do runtime SEM armazenamento e com provedores
+injetados, que vem da Onda 4B e só os testes usam, não exige a trava; ele não grava nada. O runtime antigo não muda; um teste estático garante
+que o único chamador do runtime é o CLI de coleta, que nenhuma chamada dele injeta provedores (o SIMULATED do CLI usa só o gerador
+sintético, com a trava e gravando) e que nenhuma rota, página, componente ou worker importa o runtime.
 
 ## 6. Critérios de aceite (cada item vira ao menos um teste automatizado)
 

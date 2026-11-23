@@ -358,3 +358,35 @@ test('interface (PR #62, item 2): o detalhe da coleta SIMULADA nunca diz "via Se
   const realHtml = textOf(renderToStaticMarkup(createElement(StoredAuditDetail, { detail: toAuditDetailDto(realView), loading: false, onSelectRevision: noop })));
   assert.match(realHtml, /via Serper/);
 });
+
+/* ------------------------------------------------------------------ revisão do PR #62, item 4: limite declarado do SIMULATED da Onda 4B */
+
+test('limite (PR #62, item 4): o SIMULATED sem gravação com provedores injetados (Onda 4B, só testes) não é alcançável: só o CLI de coleta chama o runtime, nenhuma chamada injeta provedores, e nenhuma rota, página, componente ou worker importa o runtime', () => {
+  const root = path.join(__dirname, '..');
+  const walk = (dir: string): string[] => (fs.existsSync(dir) ? fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(dir, e.name)) : /\.(ts|tsx|js|mjs|cjs)$/.test(e.name) ? [path.join(dir, e.name)] : [])) : []);
+  const strip = (code: string): string => code.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '');
+  const files = [...walk(path.join(root, 'src')), ...walk(path.join(root, 'scripts'))].map((file) => ({ rel: path.relative(root, file).split(path.sep).join('/'), code: strip(fs.readFileSync(file, 'utf8')) }));
+  const callers = files.filter((f) => f.rel !== 'src/lib/link-audit-runtime/run.ts' && /\brunLinkAuditCollection\s*\(/.test(f.code)).map((f) => f.rel);
+  assert.deepEqual(callers, ['scripts/link-audit-collect.ts'], 'o único chamador do runtime é o CLI de coleta');
+  // cada chamada, com os parênteses balanceados: nenhuma passa `providers` (o SIMULATED do CLI usa só o gerador sintético, com a trava)
+  const cli = files.find((f) => f.rel === 'scripts/link-audit-collect.ts')?.code ?? '';
+  const calls: string[] = [];
+  for (const match of cli.matchAll(/\brunLinkAuditCollection\s*\(/g)) {
+    let depth = 0;
+    let end = match.index + match[0].length - 1;
+    for (; end < cli.length; end++) {
+      if (cli[end] === '(') depth++;
+      else if (cli[end] === ')' && --depth === 0) break;
+    }
+    calls.push(cli.slice(match.index, end + 1));
+  }
+  assert.ok(calls.length >= 3, 'DRY_RUN, LIVE e SIMULATED');
+  for (const call of calls) assert.doesNotMatch(call, /\bproviders\s*[:,}]/, `chamada com provedores injetados: ${call.slice(0, 80)}`);
+  const simulatedCalls = calls.filter((call) => /mode:\s*'SIMULATED'/.test(call));
+  assert.equal(simulatedCalls.length, 1);
+  assert.match(simulatedCalls[0] as string, /homologation:\s*true/);
+  assert.match(simulatedCalls[0] as string, /evidence:/, 'o SIMULATED do CLI sempre grava (o caminho com a trava)');
+  for (const f of files.filter((file) => /^src\/(app|components|workers|queues|agents)\//.test(file.rel) || file.rel === 'src/middleware.ts')) {
+    assert.ok(!/link-audit-runtime/.test(f.code), `${f.rel} importa o runtime de coleta`);
+  }
+});

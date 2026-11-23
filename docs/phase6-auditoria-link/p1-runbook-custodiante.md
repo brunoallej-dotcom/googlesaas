@@ -128,6 +128,10 @@ existia ou o `sha256sum -c` falhou). Com `noclobber`, o shell nunca sobrescreve 
   (recusa). As telas da confirmação e da frase saem na saída de erro (`sign-cli.ts:232,246`), e o terminal continua o mesmo.
   Com `--json`, a pública derivada (`<KEY_ID>:<pública>`) também sai na saída de erro.
 
+> **Só no ensaio da W5 (pacote da coleta SIMULADA, spec do P1 §5.7):** acrescente `--simulated` às opções do `sign` (por exemplo, antes de
+> `--json`). Sem ela, o `sign` recusa o pacote simulado (`SIGN_SIMULATED_PACKAGE`, código 3) antes da confirmação e da frase; com ela, a
+> tela da confirmação mostra "ATENÇÃO: SIMULADA — ensaio". `--simulated` com pacote real também é recusado. **Em produção, nunca.**
+
 ### 3.1 O que o custodiante faz durante a execução
 
 1. Confere na tela só `auditId`, `seq` e número de entradas.
