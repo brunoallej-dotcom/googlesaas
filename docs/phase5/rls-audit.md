@@ -160,7 +160,7 @@ Plano de teste depois de aplicar: `rls:probe` (anon, forjado e authenticated: tu
 
 ## Roteiro para aplicar (você)
 1. Abra o SQL Editor do projeto **`tzcybiivxxlcqqcpnpix`** (o mesmo do `.env.local`): `https://supabase.com/dashboard/project/tzcybiivxxlcqqcpnpix/sql/new`. Confirme o ref na barra de endereço.
-2. Abra `D:\gmn-intelligence-platform-corrigido\gmn-intelligence-platform\supabase\proposed\003_rls_hardening.sql`, Ctrl+A, copie e cole numa query nova (não use "Run selected" parcial).
+2. Abra `<PASTA_PROJETO_V100>\supabase\proposed\003_rls_hardening.sql`, Ctrl+A, copie e cole numa query nova (não use "Run selected" parcial).
 3. **Run.** Esperado: **"Success. No rows returned"**. Mensagens `G5 abortado…`/`G5 falhou…` significam que **nada foi alterado** (bloco atômico): envie o texto.
 4. Avise "aplicada". Em caso de comportamento estranho: cole `003_rls_hardening.rollback.sql` da mesma forma.
 5. Rode `supabase/audit/rls-audit-json.sql` de novo e envie o JSON; rode no terminal `npm run rls:probe -- --authenticated`.

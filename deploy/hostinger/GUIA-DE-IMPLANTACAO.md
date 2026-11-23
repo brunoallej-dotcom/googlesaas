@@ -5,7 +5,7 @@
 ## 0. Decisões a confirmar antes de começar
 | Item | Padrão desta preparação | Como confirmar (somente leitura) |
 |---|---|---|
-| Domínio | `<DOMINIO_DA_GMN>` (provisório; o valor real fica no arquivo de variáveis, `GMN_HOST`) | criar o registro DNS A (e AAAA, se houver) para o IP da VPS e aguardar propagar |
+| Domínio | `<DOMINIO_PRODUCAO>` (provisório; o valor real fica no arquivo de variáveis, `GMN_HOST`) | criar o registro DNS A (e AAAA, se houver) para o IP da VPS e aguardar propagar |
 | Nó Swarm | `GMN_NODE_HOSTNAME` | `docker node ls` |
 | Rede do Traefik | `automacaotrafegopagoredeinterna` (external) | `docker network ls \| grep automacao` |
 | Entrypoint HTTP (porta 80) | `web` | `docker service inspect traefik_traefik --format '{{json .Spec.TaskTemplate.ContainerSpec.Args}}'` (procure `--entrypoints.<nome>.address=:80`) |

@@ -259,7 +259,7 @@ test('DINÂMICO: com armadilhas em rede, DNS, http(s), sockets, fs, relógio, al
   const records: OperatorRecord[] = [c2Judgement(), s4NotApplicable()];
   const scenarios = [
     () => assembleScoringInput(makeBasis(), records, { now: NOW }),
-    () => assembleScoringInput(makeBasis({ auditId: 'tuvaplast_20261022_maps01' }), [], { now: NOW }),
+    () => assembleScoringInput(makeBasis({ auditId: 'aud_001_autorizacao_01' }), [], { now: NOW }),
     () => assembleScoringInput(makeBasis({ profile: unavailable('NOT_LOCATED') }), [], { now: NOW }),
     () => assembleScoringInput(makeBasis({ profile: richProfile({ website: website({ derived: 'http://evil.example/p?token=SEGREDO' }) }) }), [], { now: NOW }),
     () => assembleScoringInput({ lixo: true } as never, [], { now: NOW }),

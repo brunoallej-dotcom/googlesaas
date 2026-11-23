@@ -34,7 +34,7 @@ Cada item foi **reproduzido ou refutado por teste nosso** a partir da descriçã
 
 # Revisão adversarial independente nº 7 — Livro de cabeças (Onda 6C), correções R6-01..R6-13
 
-Revisor independente (contexto separado da implementação). Sem rede, VPS, Redis, Supabase, Serper nem leitura de `.env*`. Snapshot revisado: `$R/proj`, onde `$R` = `/tmp/claude-1000/-mnt-d-gmn-intelligence-platform-corrigido-gmn-intelligence-platform/cda01505-cfc8-45a5-84b6-33cc32e272fe/scratchpad/review-r7`.
+Revisor independente (contexto separado da implementação). Sem rede, VPS, Redis, Supabase, Serper nem leitura de `.env*`. Snapshot revisado: `$R/proj`, onde `$R` = `<SCRATCHPAD_DA_REVISAO>/cda01505-cfc8-45a5-84b6-33cc32e272fe/scratchpad/review-r7`.
 `src/` e `scripts/` NÃO foram alterados: `diff -rq src.orig proj/src` vazio e `sha256sum -c src.sha256` = 300/300 OK, conferidos no fim. As mutações rodaram só em cópia (`$R/mut`), restaurada e conferida.
 Meus testes: `$R/proj/tests/zz-rv7-*.test.ts` (+ `tests/helpers/zz-rv7-{lib,channels}.ts`). Rodar: `cd $R/proj && node --require ./tests/register-typescript.cjs --test tests/zz-rv7-X.test.ts`. Saídas brutas em `$R/evidence/`.
 Convenção: "reproduzido" = saída de teste MEU colada. "Hipótese" = não reproduzido. Os testes `zz-rv7-*` são exploratórios: vários IMPRIMEM o comportamento observado e só afirmam o invariante essencial (marcado em cada achado).

@@ -93,7 +93,7 @@ RAIZ: evidência forjada/adulterada tratada como AUTENTICADA                    
 |   +-- C1 Adulterar na janela coleta -> exportação -> aprovação (A1/A2) ........ ABERTO (T-001)
 |   +-- C2 Trocar o pacote entre aprovação e assinatura (TOCTOU / swap) ......... ABERTO (T-002)
 |   +-- C3 Conferência negligente ou conivente (mesma pessoa opera/confere/assina) PROCESSO (T-003)
-|   +-- C4 "Regularizar" o legado TUVAPLAST sem fonte independente .............. PROCESSO (T-004)
+|   +-- C4 "Regularizar" o legado AUD-001 sem fonte independente .............. PROCESSO (T-004)
 |   +-- C5 Enganar o conferente com prova falsa (marcador de autorização forjado,
 |   |       hash "do canal separado" ditado pelo mesmo atacante)  ................ ABERTO (T-005)
 |   +-- C6 Comprometer a FERRAMENTA de assinatura para assinar conjunto diferente
@@ -161,7 +161,7 @@ Probabilidade: Baixa=1, Média=2, Alta=3. Impacto: Baixo=1, Médio=2, Alto=3, Cr
 - Risco residual: Médio-Alto. Controle humano não é eliminável, só reduzível. Declarar no ADR que a assinatura vale o que vale esta conferência (já dito em §1).
 - Tracking: SEC-P1-003.
 
-### T-004 [HIGH, 9] Spoofing / Tampering — legado TUVAPLAST sem fonte independente
+### T-004 [HIGH, 9] Spoofing / Tampering — legado AUD-001 sem fonte independente
 - Categoria/ativo: S/T; evidência `legacy-status:c0001`, `capture:c0001` e relatório legado (`scoring-basis.ts:360-411`).
 - Ator: A2/A4 (quer finalizar a primeira auditoria real), A1.
 - Pré-condição: a única cópia é a da própria VPS ("a cópia fica no mesmo disco; não é backup independente": `E0-CONTRATO-DE-FIDELIDADE.md:350`, `link-audit-collect.ts:108`). O §4.2 exige fonte independente anterior ao incidente; ela pode não existir. O verificador NÃO diferencia entrada legada de nova no manifesto (`provenance.ts:236-242` só compara hashes), então um manifesto que cubra o legado é aceito; a única barreira é o procedimento do assinador (§3.4(b)).
@@ -340,7 +340,7 @@ Probabilidade: Baixa=1, Média=2, Alta=3. Impacto: Baixo=1, Médio=2, Alto=3, Cr
 | ID | STRIDE | Ameaça | P | I | Risco |
 |---|---|---|---|---|---|
 | T-003 | R/E | Atestar sem conferir; acúmulo de papéis | Alta | Crítico | 12 |
-| T-004 | S/T | Legado TUVAPLAST sem fonte independente | Alta | Alto | 9 |
+| T-004 | S/T | Legado AUD-001 sem fonte independente | Alta | Alto | 9 |
 | T-001 | T | Janela coleta→atestação (coletor não imprime hash) | Média | Crítico | 8 |
 | T-002 | T | Troca do pacote entre aprovação e assinatura | Média | Crítico | 8 |
 | T-010 | S/E/D | Comprometimento ou perda da chave titular | Média | Crítico | 8 |
@@ -361,7 +361,7 @@ Probabilidade: Baixa=1, Média=2, Alta=3. Impacto: Baixo=1, Médio=2, Alto=3, Cr
 ## Top-5 riscos priorizados
 
 1. T-003 (12) Fator humano e acúmulo de papéis: a assinatura vale exatamente a conferência; nada na máquina impede o carimbo. Sem separação de papéis imposta pela ferramenta, o resto é teatro.
-2. T-004 (9) Legado TUVAPLAST: não há fonte independente (a cópia está no mesmo disco), a pressão para "regularizar" é certa, e o verificador aceita manifesto que cubra legado; só o procedimento protege.
+2. T-004 (9) Legado AUD-001: não há fonte independente (a cópia está no mesmo disco), a pressão para "regularizar" é certa, e o verificador aceita manifesto que cubra legado; só o procedimento protege.
 3. T-001 (8) Janela coleta→atestação: o controle principal (hash impresso pelo coletor) não existe hoje (`link-audit-collect.ts:108`) e o contrato §6 proíbe tocar o coletor. Contradição a resolver antes de implementar P1.
 4. T-002 (8) Troca do pacote entre aprovação e assinatura: a aprovação não é criptográfica nem vinculada a `seq`/`auditId`; sem aprovação assinada e leitura única, um swap gera assinatura legítima sobre dado não conferido.
 5. T-010 (8) Chave do custodiante: comprometimento (sem detecção de manifesto não emitido) e perda (sem suplente testado). Empata tecnicamente com T-006 (supply chain da estação, 8) e T-007 (vazamento por argv/env, 8); tratar os três no mesmo marco, pois estação comprometida anula a custódia.
@@ -410,8 +410,8 @@ Servidor e detecção
    - **Atualização 17/11/2026 (spec D10):** titular = o responsável (de preferência sem administrar a VPS); suplente com par próprio; sem segunda pessoa, aceite formal antes da chave real. Os nomes entram no runbook da W5.
 2. Aprova alterar o coletor (mudança aditiva: imprimir o hash da captura e dos arquivos) ou prefere um comando separado somente leitura para o operador? A frase do contrato §6 ("o coletor não é tocado") precisa ser revista de acordo.
    - **DECIDIDA (16/11/2026): hash da coleta via `--json`, sem mudar o coletor; o contrato §6 fica como está (ver correção de fato acima).**
-3. Existe, de fato, fonte independente e anterior (backup fora da VPS, e-mail, impressão, registro externo) para a coleta TUVAPLAST? Se não, aceita que permaneça NÃO ATESTÁVEL e rotulada na UI?
-   - **DECIDIDA (16/11/2026): TUVAPLAST é NÃO ATESTÁVEL; quando o P1 existir, fazer coleta LIVE nova (autorização escrita específica; ~3 créditos Serper) em vez de atestar o legado.**
+3. Existe, de fato, fonte independente e anterior (backup fora da VPS, e-mail, impressão, registro externo) para a coleta AUD-001? Se não, aceita que permaneça NÃO ATESTÁVEL e rotulada na UI?
+   - **DECIDIDA (16/11/2026): AUD-001 é NÃO ATESTÁVEL; quando o P1 existir, fazer coleta LIVE nova (autorização escrita específica; ~3 créditos Serper) em vez de atestar o legado.**
 4. Qual dispositivo (token PIV/HSM ou arquivo cifrado)? Antes de comprar: ele assina Ed25519 puro?
    - **PARCIAL (16/11/2026). DECIDIDA a preferência: token de hardware que assine Ed25519 puro (compatível com `crypto.verify(null, …)`, RS-15); na falta, PKCS#8 cifrado com frase-senha digitada no terminal sem eco; chave nunca por argv, variável de ambiente, log ou arquivo temporário. ABERTA: qual dispositivo concretamente.**
    - **DECIDIDA (17/11/2026, spec D11):** K1 (PKCS#8 cifrado) primeiro; K2 só depois do teste da RS-15 e de exceção escrita e isolada à RS-14 (o acesso ao token exige biblioteca nativa ou utilitário externo).

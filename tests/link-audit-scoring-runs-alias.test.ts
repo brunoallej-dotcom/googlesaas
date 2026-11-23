@@ -55,19 +55,19 @@ test('os padrões locais são IGUAIS aos reais: armazenamento (AUDIT_ID_PATTERN)
 });
 
 test('id comum (sem "_", válido no motor, fora da forma reservada) passa INALTERADO e sem alias aplicado', () => {
-  for (const id of [AUDIT, 'tuvaplast-20261022-maps01', 'a1b2c3d4', 'x'.repeat(64), '9-9-9-9-9-9']) {
+  for (const id of [AUDIT, 'aud-001-autorizacao-01', 'a1b2c3d4', 'x'.repeat(64), '9-9-9-9-9-9']) {
     assert.deepEqual(alias(id), { applied: false, rule: 'IDENTITY', reason: null, sourceAuditId: id, scoringAuditId: id });
   }
 });
 
 test('id com "_" recebe alias aceito pelo motor: determinístico, legível, até 64 caracteres, com regra, motivo e id de origem', () => {
-  const id = 'tuvaplast_20261022_maps01';
+  const id = 'aud_001_autorizacao_01';
   const result = alias(id);
   assert.equal(result.applied, true);
   assert.equal(result.rule, AUDIT_ID_ALIAS_RULE);
   assert.equal(result.reason, 'CONTAINS_UNDERSCORE');
   assert.equal(result.sourceAuditId, id);
-  assert.match(result.scoringAuditId, /^tuvaplast-20261022-maps01-ux[0-9a-f]{32}$/);
+  assert.match(result.scoringAuditId, /^aud-001-autorizacao-01-ux[0-9a-f]{32}$/);
   assert.ok(ENGINE_AUDIT_ID.test(result.scoringAuditId) && result.scoringAuditId.length <= 64);
   assert.deepEqual(alias(id), result, 'determinístico');
   assert.equal(parseScoringInput({ schemaVersion: 1, auditId: result.scoringAuditId, referenceDate: '2026-10-22', evidences: [] }).ok, true, 'o motor aceita o alias');

@@ -30,7 +30,7 @@ Ele inclui as correções do Maestro/Battlefield/BullMQ **e** a exibição do te
 3. No PowerShell, execute:
 
 ```powershell
-$project = 'D:\gmn-intelligence-platform-corrigido\gmn-intelligence-platform'
+$project = '<PASTA_PROJETO_V100>'
 Expand-Archive "$env:USERPROFILE\Downloads\correcao-maestro-battlefield-whatsapp.zip" -DestinationPath $project -Force
 Set-Location $project
 npm run typecheck
