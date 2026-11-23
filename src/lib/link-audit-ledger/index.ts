@@ -1,7 +1,10 @@
 export { createLedgerService, createUnconfiguredLedger, type LedgerServiceOptions } from './service';
 export { boundGuard, createSyntheticGuard, GUARD_RESPONSE_TIMEOUT_MS, PROCESS_GUARD_TIMER, type ExternalGuardPort, type GuardLatestResult, type GuardPublishRefusal, type GuardPublishResult, type GuardTimer } from './guard';
-export { NO_GUARD_ALARMS, type GuardAlarm, type GuardAlarmSink, type GuardPublishCause, type GuardPublishPoint } from './guard-alarm';
-export { ledgerConfigFromEnv, ledgerConfigFromProcess, LEDGER_DIR_ENV, LEDGER_KEY_ENV, LEDGER_RETIRED_KEYS_ENV, LEDGER_REVOKED_IDS_ENV, type LedgerConfig } from './config';
+export { guardAlarmLogEntry, NO_GUARD_ALARMS, type GuardAlarm, type GuardAlarmLogEntry, type GuardAlarmSink, type GuardPublishCause, type GuardPublishPoint } from './guard-alarm';
+export { postgresGuardFor, type GuardDbTarget, type GuardSettings } from './guard-pg';
+export { createPostgresGuard, type GuardDbConnect, type GuardDbSession } from './guard-postgres';
+export { createGuardPseudonyms, type GuardPseudonyms, type GuardRef } from './guard-pseudonym';
+export { GUARD_DB_CA_ENV, GUARD_DB_URL_ENV, GUARD_KEY_ENV, GUARD_RETIRED_KEYS_ENV, guardConfigFromEnv, ledgerConfigFromEnv, ledgerConfigFromProcess, LEDGER_DIR_ENV, LEDGER_KEY_ENV, LEDGER_RETIRED_KEYS_ENV, LEDGER_REVOKED_IDS_ENV, type GuardConfig, type GuardConfigCode, type LedgerConfig } from './config';
 export { evaluateProtection, guardLagOf, guardVerdictNeedsReread, keyCoverageOf, keyEpochViolation, ledgerCapacity, needsCheckpoint, operationCost, pendingClosings, replayLedger, resultsGrew, rotationCheckpointDue, runIntentFits, runsAvailableOf, simulateOperations, verifyTags } from './model';
 export type { AbortedRun, ConfirmedRun, Evaluation, GuardEvidence, GuardLag, LedgerReadState, LedgerReplay, ProtectionInput, RecoveryPlan, RunPlan, TagFailure } from './model';
 export { createOpenObservations, MAX_OBSERVATIONS, monotonicNow, PROCESS_OBSERVATIONS, type OpenObservations } from './observed';

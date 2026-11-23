@@ -1,15 +1,13 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import { X509Certificate } from 'node:crypto';
-import fs from 'node:fs';
 import net from 'node:net';
-import path from 'node:path';
 import test from 'node:test';
 import tls from 'node:tls';
 import { createPostgresGuard } from '../src/lib/link-audit-ledger/guard-postgres';
 import { GUARD_DB_APPLICATION_NAME, pgClientConfig, pgGuardConnector, type GuardDbTarget } from '../src/lib/link-audit-ledger/guard-pg';
-import { registerCleanup, tmpDir } from './helpers/link-audit-decisions-fixtures';
+import { registerCleanup } from './helpers/link-audit-decisions-fixtures';
 import { PSEUDONYMS_A } from './helpers/link-audit-guard-db-fixtures';
+import { makeTestPki, type TestPki } from './helpers/link-audit-guard-pki-fixtures';
 
 /*
  * G1.b.2a — CONECTOR `pg` da guarda (`guard-pg.ts`): TLS OBRIGATÓRIO e VERIFICADO (cadeia até a CA fornecida E nome do host, o `verify-full` do
@@ -23,42 +21,7 @@ const SSL_REQUEST = Buffer.from([0, 0, 0, 8, 4, 210, 22, 47]);
 const USER = 'gmn_guard_writer';
 const SENTINELA = 'sentinela-de-teste';
 
-interface TestPki {
-  readonly caPem: string;
-  readonly otherCaPem: string;
-  /** certificado do servidor 127.0.0.1 assinado pela CA confiável */
-  readonly good: { readonly key: string; readonly cert: string };
-  /** assinado pela CA confiável, mas para OUTRO nome (verify-full recusa) */
-  readonly wrongHost: { readonly key: string; readonly cert: string };
-  /** 127.0.0.1, mas de OUTRA CA (cadeia não confere) */
-  readonly untrusted: { readonly key: string; readonly cert: string };
-}
-function makePki(): TestPki | null {
-  if (spawnSync('openssl', ['version']).status !== 0) return null;
-  const dir = tmpDir('lad-pki-');
-  const run = (...args: string[]): void => {
-    const result = spawnSync('openssl', args, { cwd: dir, encoding: 'utf8' });
-    if (result.status !== 0) throw new Error(`openssl ${args[0]}: ${result.stderr}`);
-  };
-  const ec = ['-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes'];
-  const ca = (name: string): void => run('req', '-x509', ...ec, '-keyout', `${name}.key`, '-out', `${name}.pem`, '-days', '1', '-subj', `/CN=${name}`, '-addext', 'basicConstraints=critical,CA:TRUE', '-addext', 'keyUsage=critical,keyCertSign');
-  const leaf = (name: string, issuer: string, san: string): { key: string; cert: string } => {
-    run('req', ...ec, '-keyout', `${name}.key`, '-out', `${name}.csr`, '-subj', `/CN=${name}`);
-    fs.writeFileSync(path.join(dir, `${name}.ext`), `subjectAltName=${san}\n`);
-    run('x509', '-req', '-in', `${name}.csr`, '-CA', `${issuer}.pem`, '-CAkey', `${issuer}.key`, '-CAcreateserial', '-out', `${name}.pem`, '-days', '1', '-extfile', `${name}.ext`);
-    return { key: fs.readFileSync(path.join(dir, `${name}.key`), 'utf8'), cert: fs.readFileSync(path.join(dir, `${name}.pem`), 'utf8') };
-  };
-  ca('gmn-teste-ca');
-  ca('outra-ca');
-  return {
-    caPem: fs.readFileSync(path.join(dir, 'gmn-teste-ca.pem'), 'utf8'),
-    otherCaPem: fs.readFileSync(path.join(dir, 'outra-ca.pem'), 'utf8'),
-    good: leaf('servidor', 'gmn-teste-ca', 'IP:127.0.0.1'),
-    wrongHost: leaf('outro-nome', 'gmn-teste-ca', 'DNS:outro-nome.invalid'),
-    untrusted: leaf('intruso', 'outra-ca', 'IP:127.0.0.1'),
-  };
-}
-const PKI = makePki();
+const PKI = makeTestPki();
 
 const targetOf = (port: number, caPem: string): GuardDbTarget => Object.defineProperty({ host: '127.0.0.1', port, database: 'postgres', user: USER, caPem }, 'password', { value: SENTINELA, enumerable: false }) as GuardDbTarget;
 

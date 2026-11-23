@@ -113,7 +113,9 @@ test('rotas: sem rede, sem disco, sem outra variável de ambiente além das duas
     for (const name of vars) assert.ok(['GMN_LINK_AUDIT_DECISIONS_DIR', 'GMN_LINK_AUDIT_DECISIONS_ANCHOR_DIR', 'GMN_LINK_AUDIT_EVIDENCE_DIR', 'GMN_LINK_AUDIT_RESULTS_DIR', 'GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR', 'GMN_LINK_AUDIT_EVIDENCE_SEALS_DIR', 'GMN_LINK_AUDIT_DECISIONS_LEDGER_DIR'].includes(name as string), `${rel(file)} lê ${name}`);
     assert.ok(!/process\.env(?!\.)/.test(code), `${rel(file)} lê o ambiente inteiro`);
     for (const specifier of imports(fs.readFileSync(file, 'utf8'))) {
-      const ok = specifier.startsWith('.') || specifier === 'next/server' || specifier === 'node:path' || /^@\/lib\/(?:auth\/require-operator|link-audit-decisions|link-audit-evidence|link-audit-ledger|link-audit-origin|link-audit-scoring-runs|rate-limit)$/.test(specifier);
+      // G1.b.2a (GE-E6): só a composição do livro (`ledger-wiring.ts`) liga os alarmes da guarda ao logger estruturado (spec de observabilidade §5.3)
+      const logger = specifier === '@/lib/logger' && rel(file) === 'src/app/api/link-audit/decisions/ledger-wiring.ts';
+      const ok = logger || specifier.startsWith('.') || specifier === 'next/server' || specifier === 'node:path' || /^@\/lib\/(?:auth\/require-operator|link-audit-decisions|link-audit-evidence|link-audit-ledger|link-audit-origin|link-audit-scoring-runs|rate-limit)$/.test(specifier);
       assert.ok(ok, `${rel(file)} importa "${specifier}"`);
     }
   }
