@@ -533,6 +533,17 @@ test('passo 9 (revisão da W4.1): papéis distintos ⇒ os bytes do aceite são 
   }
 });
 
+test('IA-16, D15.6(d) (W5.2a): operador = custodiante (quem assina) ⇒ assina com requiresLaterReview, sem roleException e sem bloquear, inclusive com caixa, separadores ou largura diferentes; sem aceite de risco', async () => {
+  const pkg = makePackage();
+  for (const [operator, custodian] of [['CUST-01', 'CUST-01'], ['cust 01', 'CUST-01'], ['ＣＵＳＴ.01', 'cust_01'], ['ΟΣ-02', 'ος 02']] as const) {
+    const plan = await assertSigned(inputFor(pkg, makeApproval(pkg, { operator }), { custodian }));
+    assert.deepEqual([plan.roleException, plan.requiresLaterReview], [false, true], `operador ${operator} = custodiante ${custodian} marca revisão posterior`);
+    assert.deepEqual([plan.operator, plan.custodian, plan.approvedBy], [operator, custodian, 'CONF-01']);
+  }
+  const distinct = await assertSigned(inputFor(pkg, makeApproval(pkg, { operator: 'OPER-01' }), { custodian: 'CUST-011' }));
+  assert.deepEqual([distinct.roleException, distinct.requiresLaterReview], [false, false], 'operador, conferente e custodiante distintos: sem marca');
+});
+
 /* --------------------------------------------------------------------------------------------------------------- passo 10 */
 
 test('passo 10: relógio antes do último manifesto ou da última coleta ⇒ SIGN_CLOCK_REGRESSION; instante igual é aceito', async () => {
