@@ -12,7 +12,9 @@ import { StoredAuditList } from '../src/components/link-audit/stored-audit-list'
 import { createEvidenceReader, toAuditDetailDto, toListItem } from '../src/lib/link-audit-evidence';
 import { SIMULATED_LABEL, SIMULATED_SOURCE_LABEL } from '../src/lib/link-audit-evidence/simulated';
 import { createScoringPreviewService } from '../src/lib/link-audit-scoring-runs';
-import { TRUSTING_EVIDENCE_POLICY } from './helpers/link-audit-evidence-provenance-fixtures';
+import { evidenceKeys, sealAuditV2ForTests, TRUSTING_EVIDENCE_POLICY } from './helpers/link-audit-evidence-provenance-fixtures';
+import { evidenceToProveFromBasis } from '../src/lib/link-audit-evidence/evidence-to-prove';
+import { evidenceProvenanceFromConfig } from '../src/lib/link-audit-evidence/provenance';
 import { fakeList } from './helpers/link-audit-preview-fixtures';
 import { makeService, OP_A, resultsEnv, treeOf } from './helpers/link-audit-results-fixtures';
 import { canonicalJson, sha256Hex } from '../src/lib/link-audit/canonical';
@@ -288,4 +290,21 @@ test('conclusão (2c): pendente gravada na homologação sobre evidência simula
   const concluded = await makeService(e, homologated).finalize(OP_A, SIM_AUDIT_ID, body);
   assert.ok(concluded.ok && concluded.value.recoveredPending, JSON.stringify(concluded).slice(0, 300));
   assert.equal(fs.existsSync(receipt), true);
+});
+
+/* ------------------------------------------------------------------ camada 1 (defesa principal, já existente): a lista de chaves de produção */
+
+test('camada 1: o manifesto do ensaio, assinado pela chave DESCARTÁVEL, autentica na lista da homologação e é UNAUTHENTICATED (SEAL_INVALID) na lista de produção, que só tem a chave real', async () => {
+  const evidence = tmpDir('lasim-k-');
+  await collectSimulated(evidence);
+  const sealsDir = tmpDir('lasim-seals-');
+  const disposable = evidenceKeys('ek-ensaio-w5');
+  const real = evidenceKeys('ek-real-0001');
+  await sealAuditV2ForTests({ evidenceDir: evidence, auditId: SIM_AUDIT_ID, sealsDir, keys: disposable });
+  const basis = await createScoringBasisReader({ baseDir: evidence, authorize: () => true }).readScoringBasis({ email: 'leitor@exemplo.invalid' }, SIM_AUDIT_ID);
+  assert.ok(basis.status === 'READY');
+  const evidences = evidenceToProveFromBasis(basis.basis);
+  const verdict = (trustKeys: string) => evidenceProvenanceFromConfig({ sealsDir, trustKeys, otherDirs: [evidence], acceptedVersions: [2] }).classify(SIM_AUDIT_ID, evidences);
+  assert.equal((await verdict(disposable.trustKeys)).status, 'AUTHENTICATED', 'homologação: a lista tem a chave do ensaio');
+  assert.deepEqual(await verdict(real.trustKeys), { status: 'UNAUTHENTICATED', reason: 'SEAL_INVALID' }, 'produção: a chave do ensaio não está na lista');
 });
