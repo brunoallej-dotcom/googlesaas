@@ -5,6 +5,7 @@ import test from 'node:test';
 import { computePackageSha256 } from '../src/lib/link-audit-attestation/package-hash';
 import { candidatePackageSchema, type CandidatePackage } from '../src/lib/link-audit-attestation/schemas';
 import { parseSignArgs } from '../src/lib/link-audit-attestation/sign-args';
+import { runSignWithChain } from '../src/lib/link-audit-attestation/sign-chain';
 import { terminalConfirm } from '../src/lib/link-audit-attestation/sign-terminal';
 import { keyModeRefusal, REHEARSAL_KEY_PREFIX } from '../src/lib/link-audit-attestation/sign-core';
 import { REHEARSAL_KEY_PREFIX as SERVER_REHEARSAL_PREFIX } from '../src/lib/link-audit-evidence/simulated';
@@ -128,4 +129,21 @@ test('chave (3a, 3b): a regra vale também no núcleo da cadeia (defesa em profu
   assert.equal(keyModeRefusal('ensaio-w5-k1', false)?.code, 'SIGN_KEY_MODE_MISMATCH');
   assert.equal(keyModeRefusal('ensaio-w5-k1', true), null);
   assert.equal(keyModeRefusal('ek-202611-a', false), null);
+});
+
+test('chave (3a, 3b), cada camada sozinha: o ANALISADOR recusa antes de qualquer leitura, e o NÚCLEO da cadeia recusa sem ler a pasta de manifestos', async () => {
+  const world = cliWorld();
+  const rehearsal = cliWorld({}, { keyId: REHEARSAL_KEY });
+  for (const [label, parsed] of [['--simulated com chave real', parseSignArgs(world.argv({}, ['--simulated']))], ['chave de ensaio sem --simulated', parseSignArgs(rehearsal.argv())]] as const) {
+    assert.ok('ok' in parsed && parsed.code === 'SIGN_KEY_MODE_MISMATCH', label);
+  }
+  const touched: string[] = [];
+  const trap = new Proxy({}, { get: (_target, name) => () => { touched.push(String(name)); throw new Error('o núcleo não pode tocar o disco antes da regra da chave'); } });
+  const base = { auditId: 'auditoria-teste-0001', custodian: 'CUST-01', packageBytes: new Uint8Array(), approvalBytes: new Uint8Array(), dossierBytes: new Uint8Array(), riskAcceptanceBytes: null, sealsDir: '/inexistente', trustKeys: '', expectSeq: 1, first: true };
+  const deps = { fs: trap as never, now: () => new Date(), confirm: async () => '', openKey: () => null };
+  for (const [keyId, simulated] of [['ek-teste-0001', true], [REHEARSAL_KEY, false]] as const) {
+    const refused = await runSignWithChain({ ...base, keyId, simulated }, deps);
+    assert.ok(!refused.ok && refused.code === 'SIGN_KEY_MODE_MISMATCH', `${keyId}/${simulated}`);
+  }
+  assert.deepEqual(touched, []);
 });

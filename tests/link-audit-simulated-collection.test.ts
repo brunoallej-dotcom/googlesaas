@@ -530,3 +530,15 @@ test('origem (item 2): o relatório simulado não tem chave de chamadas do Serpe
   const real = await buildReportFromCapture({ rawBody: text, body: { name: 'c0001.capture.json', sha256: 'a'.repeat(64), bytes: Buffer.byteLength(text) }, otherFiles: [], httpStatus: 200, httpAttempts: 1, collectedAt: COLLECTED_AT, input: inputFor(identity()), site: null, generatedAt: T_NOW });
   assert.ok(real.ok && 'serperMaps' in real.report.calls);
 });
+
+test('modo (item 1): corrida entre processos na PUBLICAÇÃO do marcador (o outro reservou entre a leitura e o link) ⇒ vale o vencedor; o outro modo é recusado', async () => {
+  const base = tmpDir('lasim-pub-');
+  assert.ok((await reserveAuditMode(base, AUDIT, 'SIMULATED')).ok, 'o "outro processo" reservou primeiro');
+  let hidden = false;
+  // a 1ª leitura do marcador não o vê (como se o outro processo ainda não tivesse publicado); o link exclusivo então colide
+  const lateMarker = faulty({ readFile: async (target: string, max: number) => (!hidden && target.endsWith('audit-mode.json') ? ((hidden = true), Promise.reject(errno('ENOENT'))) : nodeFsOps.readFile(target, max)) });
+  const loser = await reserveAuditMode(base, AUDIT, 'LIVE', { fs: lateMarker });
+  assert.ok(hidden, 'o caminho da colisão foi exercitado');
+  assert.ok(!loser.ok && loser.code === 'MODE_CONFLICT', JSON.stringify(loser));
+  assert.equal(readMode(base), 'SIMULATED', 'o marcador do vencedor não foi tocado');
+});
