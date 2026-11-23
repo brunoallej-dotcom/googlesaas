@@ -145,8 +145,10 @@ echo "rodada $RODADA válida nos seis destinos"
 ```
 - **Morte abrupta do script** (`SIGKILL`, queda do host ou da sessão): o `trap` pode **não** rodar. Então o web pode ficar parado e a rodada
   fica sem marcador nenhum. Depois de qualquer interrupção, conferir `docker service ls` (o `gmn_gmn-web` precisa estar em `1/1`) e, se
-  estiver em `0/0`, religar à mão com `docker service scale gmn_gmn-web=1`; a trava global é liberada sozinha quando o processo morre. A
-  rodada interrompida não tem `RODADA-VALIDA`: a restauração e a conferência no destino a recusam, e ela fica como está (nunca apagada).
+  estiver em `0/0`, religar à mão com `docker service scale gmn_gmn-web=1`; a trava global é liberada sozinha quando o processo morre. Se
+  a morte acontecer **durante** o laço que grava `RODADA-VALIDA`, podem sobrar marcadores **parciais** (algumas das seis pastas com
+  `RODADA-VALIDA`, outras sem). Por isso uma pasta isolada com `RODADA-VALIDA` nunca basta: a rodada só vale com a pré-conferência das
+  **seis** cópias (item seguinte e passo 2 da restauração). A rodada interrompida fica como está (nunca apagada).
 - **Depois:** com o web de volta, as cabeças lidas pela API precisam ser **iguais** às de `<ARQUIVO_DAS_CABECAS>`. Se mudaram, alguém gravou
   durante a janela: marcar a rodada como incompleta nas seis pastas (`printf 'rodada <RODADA> INCOMPLETA\nmotivo: cabeças mudaram durante a
   janela\n' > <destino>/<RODADA>/RODADA-INCOMPLETA`) e fazer outra, com outro rótulo; a incompleta nunca é apagada nem reaproveitada.
@@ -162,7 +164,19 @@ echo "rodada $RODADA válida nos seis destinos"
 ### Restauração da Fase 6 (sempre os pares do mesmo instante, em pasta nova irmã da viva)
 1. Consultar a guarda e a reconciliação externa **antes** (G1.b; spec dos portões Q2): restaurar backup mais velho que a guarda congela as
    auditorias afetadas (`GUARD_MISMATCH`), e sem papel administrativo elas não reabrem pela aplicação.
-2. Escolher **uma** rodada válida e restaurar, **dessa mesma rodada**, decisões + recibos das decisões, resultados + recibos dos resultados e
+2. **Pré-conferência da rodada inteira, antes de restaurar qualquer pasta:** para a rodada escolhida, as **seis** cópias precisam ter
+   `RODADA-VALIDA`, nenhuma pode ter `RODADA-INCOMPLETA`, e cada uma confere contra o próprio `SHA256SUMS`. Uma única falha recusa a rodada
+   inteira (marcadores parciais de uma morte abrupta caem aqui):
+   ```bash
+   set -euo pipefail
+   for C in "<DESTINO_BACKUP_DADOS_FASE6>/decisions/<RODADA>" "<DESTINO_BACKUP_DADOS_FASE6>/results/<RODADA>" \
+            "<DESTINO_BACKUP_RECIBOS_DECISOES>/<RODADA>" "<DESTINO_BACKUP_RECIBOS_RESULTADOS>/<RODADA>" \
+            "<DESTINO_BACKUP_LIVRO>/<RODADA>" "<DESTINO_BACKUP_MANIFESTOS>/<RODADA>"; do
+     [ -f "$C/RODADA-VALIDA" ] && [ ! -e "$C/RODADA-INCOMPLETA" ] || { echo "rodada recusada: $C" >&2; exit 1; }
+     ( cd -- "$C/dados" && sha256sum --quiet --strict -c ../SHA256SUMS )
+   done
+   ```
+   Depois, restaurar **dessa mesma rodada**, decisões + recibos das decisões, resultados + recibos dos resultados e
    o livro (e os manifestos, se preciso). Para cada pasta viva `P` (o caminho de um marcador `GMN_RAIZ_DADOS_*`) e a cópia
    `C=<destino>/<RODADA>`, a restaurada nasce como **irmã** de `P`, nunca dentro dela, e só com o conteúdo de `dados/`:
    ```bash
