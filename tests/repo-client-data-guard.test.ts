@@ -48,6 +48,10 @@ const FORBIDDEN: readonly ForbiddenTerm[] = [
   { sha256: '206b958203c9adaa980692e9d5f82eb706cfcc7ab2d6f04719d3811189cb5a61', kind: 'placeId' },
   // A lista pública de municípios do IBGE contém a cidade legitimamente, sem nenhuma relação com o cliente.
   { sha256: 'dfd059736e27b95446824247609b4a5997f38cf3162627a79107fcac59c480c4', kind: 'cidade (duas palavras)', allowedIn: ['src/data/municipios.json'] },
+  // Outros clientes reais (auditorias históricas em PDF): só o PAR de palavras, porque cada palavra sozinha é comum.
+  { sha256: 'd707d07f4094a7fbc8903ade66870b155256ccb982d5f1c3f9b24bf05dcd07be', kind: 'nome de outro cliente (duas palavras)' },
+  { sha256: '59b8e733e6668d2ba5f52a2fa61742a9a8ad5f4fbcf9e757b4c16d6935b2d779', kind: 'nome de outro cliente (duas palavras)' },
+  { sha256: 'fc936931818339a3c6d1991e3b0b1d1a980feb5096930cc1d6f929c92407ee07', kind: 'placeId de outro perfil' },
 ];
 
 const INDEX_BY_HASH = new Map(FORBIDDEN.map((term, index) => [term.sha256, index]));
@@ -179,6 +183,9 @@ const FID_1 = decode('OTRjODU3OWU0NjI0NjBlMw==');
 const FID_2 = decode('M2EzMjQ1Zjc1YjYxZTU3ZQ==');
 const PLACE = decode('Q2hJSjQyQWtScDVYeUpRUmZ1VmhXX2RGTWpv');
 const CITY = decode('TW9naSBHdWHDp3U=');
+const CLIENT_B = decode('RXN0w6l0aWNhIERhbmllbGUgQ2FyZG9zbw==');
+const CLIENT_C = decode('RnVuZXLDoXJpYSBQYXogVW5pdmVyc2Fs');
+const OTHER_PLACE = decode('Q2hJSmpZWUltV0NsWHBNUnZmdDJYV01uQ1Bj');
 
 const indexes = (text: string, file = 'docs/x.md'): number[] => [...new Set(scanText(text, file).map((f) => f.termIndex))].sort();
 
@@ -195,6 +202,15 @@ test('guardião: acusa cada termo proibido em formas variadas (caixa, acento, UR
   assert.deepEqual(indexes(`cidade: ${CITY.toUpperCase()}/SP`), [5]);
   assert.deepEqual(indexes(`cidade: ${CITY.split(' ').join('\n')}`), [5], 'par de palavras em linhas vizinhas');
   assert.deepEqual(indexes(`x ${stripAccents(CITY).replace(' ', '_').toLowerCase()} y`), [5]);
+  assert.deepEqual(indexes(`Relatório da ${CLIENT_B} de 21/10/2026`), [6]);
+  assert.deepEqual(indexes(`PDF: ${CLIENT_C.toUpperCase()} (16 unidades)`), [7]);
+  assert.deepEqual(indexes(`listAuditsForLeadKeyword('${OTHER_PLACE}', 'x')`), [8]);
+});
+
+test('guardião: nomes de outros clientes só contam como par; cada palavra sozinha é livre', () => {
+  const words = [...CLIENT_B.split(' '), ...CLIENT_C.split(' ')];
+  for (const word of words) assert.deepEqual(scanText(`texto com ${word} solto`, 'docs/x.md'), [], 'palavra comum isolada');
+  assert.deepEqual(indexes(words.join(' e ')), [], 'palavras separadas por outra palavra não formam o par');
 });
 
 test('guardião: aponta arquivo:linha e índice, nunca o termo; a exceção por arquivo vale só para o termo dela', () => {
@@ -202,7 +218,7 @@ test('guardião: aponta arquivo:linha e índice, nunca o termo; a exceção por 
   assert.deepEqual(findings, [{ file: 'docs/exemplo.md', line: 2, termIndex: 0 }]);
   const message = formatFinding(findings[0]!);
   assert.equal(message, 'docs/exemplo.md:2: termo proibido #0 (nome da empresa)');
-  for (const term of [NAME, CID, FID_1, FID_2, PLACE, CITY]) assert.ok(!message.toLowerCase().includes(term.toLowerCase()));
+  for (const term of [NAME, CID, FID_1, FID_2, PLACE, CITY, CLIENT_B, CLIENT_C, OTHER_PLACE]) assert.ok(!message.toLowerCase().includes(term.toLowerCase()));
   assert.deepEqual(indexes(`"nome": "${CITY}"`, 'src/data/municipios.json'), [], 'lista pública de municípios');
   assert.deepEqual(indexes(`"nome": "${CITY}" ${NAME}`, 'src/data/municipios.json'), [0], 'a exceção não cobre outros termos');
 });
