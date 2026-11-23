@@ -630,3 +630,95 @@ test('modo (item 1): corrida entre processos na PUBLICAÇÃO do marcador (o outr
   assert.ok(!loser.ok && loser.code === 'MODE_CONFLICT', JSON.stringify(loser));
   assert.equal(readMode(base), 'SIMULATED', 'o marcador do vencedor não foi tocado');
 });
+
+/* quarentena (rodada final do PR #62): publicada-mas-não-conferida, permissões da pasta e durabilidade, cada caso com marca própria */
+
+const paidRecord = (requestedAuditId = LIVE_AUDIT) => ({
+  requestedAuditId, reasonCode: 'MODE_CONFLICT', collectedAt: PAID_AT,
+  request: { url: 'https://google.serper.dev/maps', body: { q: 'Padaria Exemplo' } },
+  response: { httpStatus: 200, attempts: 1, bodyText: bodyText(), failure: null },
+  input: { snapshotId: 'snap-exemplo-0001', originalLink: 'https://www.google.com/maps/place/x', identity: {} },
+});
+
+test('quarentena (final, 1): a captura PUBLICADA cuja releitura falha vai para a quarentena com marca própria (publishedUnverified, número da captura) e a mensagem avisa que ela pode já estar na auditoria', async () => {
+  const base = tmpDir('lasim-qpub-');
+  // a releitura da captura recém-publicada falha (EIO na leitura): o arquivo existe na auditoria, mas não foi conferido
+  const rereadFails = faulty({ readFile: async (target: string, max: number) => (target.endsWith(`${LIVE_AUDIT}/c0001.capture.json`) ? Promise.reject(errno('EIO')) : nodeFsOps.readFile(target, max)) });
+  const s = liveDeps(base);
+  const outcome = await runLinkAuditCollection({ mode: 'LIVE', input: NAMED(), authorization: liveAuthorization() }, { ...s.deps, evidence: { baseDir: base, fs: rereadFails } } as never);
+  const message = errorsOf(outcome).find((error) => /quarentena/.test(error));
+  assert.ok(message, JSON.stringify(errorsOf(outcome)));
+  assert.match(message, /PODE JÁ ESTAR na auditoria/);
+  assert.match(message, /captura 1/);
+  assert.match(message, /Confira a auditoria antes de recuperar/);
+  assert.ok(fs.existsSync(path.join(base, LIVE_AUDIT, 'c0001.capture.json')), 'a captura foi de fato publicada');
+  const [file] = quarantineFiles(base);
+  assert.ok(file);
+  assert.deepEqual(quarantined(base, file).reason, { code: 'CORRUPT', publishedUnverified: true, publishedCaptureNumber: 1 });
+  // controle: "não publicada" mantém o motivo simples (sem a marca)
+  const plain = tmpDir('lasim-qpub-');
+  const control = await runLinkAuditCollection({ mode: 'LIVE', input: NAMED(), authorization: liveAuthorization() }, liveDeps(plain, flipToSimulated(plain)).deps as never);
+  assert.ok(errorsOf(control).some((error) => /PRESERVADA/.test(error) && !/PODE JÁ ESTAR/.test(error)));
+  assert.deepEqual(quarantined(plain, quarantineFiles(plain)[0] as string).reason, { code: 'MODE_CONFLICT' });
+});
+
+test('quarentena (final, 2): chmod da pasta falhando, pasta com modo largo ou de outro dono ⇒ o arquivo AINDA é gravado 0600, com a marca dirPermissionsUnverified; pasta conferida ⇒ sem marca', async () => {
+  const chmodFails = faulty({ chmod: async () => Promise.reject(errno('EPERM')) });
+  const fresh = tmpDir('lasim-qperm-');
+  const denied = await quarantinePaidResponse(fresh, paidRecord(), { fs: chmodFails });
+  assert.ok(denied.ok && denied.value.dirPermissionsUnverified === true, JSON.stringify(denied));
+  const wide = tmpDir('lasim-qperm-');
+  fs.mkdirSync(path.join(wide, QUARANTINE_DIR), { mode: 0o777 });
+  fs.chmodSync(path.join(wide, QUARANTINE_DIR), 0o777);
+  const wideResult = await quarantinePaidResponse(wide, paidRecord(), { fs: chmodFails });
+  assert.ok(wideResult.ok && wideResult.value.dirPermissionsUnverified === true);
+  for (const [base, result] of [[fresh, denied], [wide, wideResult]] as const) {
+    assert.ok(result.ok);
+    assert.equal(fs.statSync(path.join(base, QUARANTINE_DIR, result.value.fileName)).mode & 0o777, 0o600, 'o arquivo é 0600 mesmo assim');
+  }
+  // cada condição sozinha: chmod que falha numa pasta já 0700 (falha nunca ignorada) e chmod que "passa" sem mudar o modo largo (conferido pelo lstat)
+  const privateDir = tmpDir('lasim-qperm-');
+  fs.mkdirSync(path.join(privateDir, QUARANTINE_DIR), { mode: 0o700 });
+  fs.chmodSync(path.join(privateDir, QUARANTINE_DIR), 0o700);
+  const privateButChmodFailed = await quarantinePaidResponse(privateDir, paidRecord(), { fs: chmodFails });
+  assert.ok(privateButChmodFailed.ok && privateButChmodFailed.value.dirPermissionsUnverified === true, 'falha de chmod nunca é ignorada');
+  const silentWide = tmpDir('lasim-qperm-');
+  fs.mkdirSync(path.join(silentWide, QUARANTINE_DIR), { mode: 0o777 });
+  fs.chmodSync(path.join(silentWide, QUARANTINE_DIR), 0o777);
+  const chmodNoop = faulty({ chmod: async () => undefined });
+  const silent = await quarantinePaidResponse(silentWide, paidRecord(), { fs: chmodNoop });
+  assert.ok(silent.ok && silent.value.dirPermissionsUnverified === true, 'o modo é conferido depois do chmod, não presumido');
+  const otherOwner = await quarantinePaidResponse(tmpDir('lasim-qperm-'), paidRecord(), { uid: (process.getuid?.() ?? 0) + 1 });
+  assert.ok(otherOwner.ok && otherOwner.value.dirPermissionsUnverified === true, 'dono diferente do processo');
+  // controle: a pasta larga é corrigida pelo chmod (0700) e conferida ⇒ sem marca
+  const fixable = tmpDir('lasim-qperm-');
+  fs.mkdirSync(path.join(fixable, QUARANTINE_DIR), { mode: 0o777 });
+  fs.chmodSync(path.join(fixable, QUARANTINE_DIR), 0o777);
+  const fixed = await quarantinePaidResponse(fixable, paidRecord());
+  assert.ok(fixed.ok && fixed.value.dirPermissionsUnverified === undefined);
+  assert.equal(fs.statSync(path.join(fixable, QUARANTINE_DIR)).mode & 0o777, 0o700);
+  // o runtime informa a marca como erro (o caso já sai com código 5)
+  const run = tmpDir('lasim-qperm-');
+  const s = liveDeps(run, flipToSimulated(run));
+  const outcome = await runLinkAuditCollection({ mode: 'LIVE', input: NAMED(), authorization: liveAuthorization() }, { ...s.deps, evidence: { baseDir: run, fs: chmodFails } } as never);
+  assert.ok(errorsOf(outcome).some((error) => /quarentena/.test(error) && /permissões da pasta da quarentena não puderam ser garantidas/.test(error)), JSON.stringify(errorsOf(outcome)));
+});
+
+test('quarentena (final, 3): fsync da pasta falhando ⇒ sucesso com durability UNCONFIRMED, e a mensagem diz "durabilidade não confirmada" em vez de "PRESERVADA"', async () => {
+  const syncFails = faulty({ syncDirectory: async () => Promise.reject(errno('EIO')) });
+  const base = tmpDir('lasim-qsync-');
+  const result = await quarantinePaidResponse(base, paidRecord(), { fs: syncFails });
+  assert.ok(result.ok && result.value.durability === 'UNCONFIRMED', JSON.stringify(result));
+  const confirmed = await quarantinePaidResponse(tmpDir('lasim-qsync-'), paidRecord());
+  assert.ok(confirmed.ok && confirmed.value.durability === 'CONFIRMED');
+  const run = tmpDir('lasim-qsync-');
+  const s = liveDeps(run, flipToSimulated(run));
+  // só o fsync da PASTA DA QUARENTENA falha (o resto do armazenamento segue normal)
+  const quarantineSyncFails = faulty({ syncDirectory: async (dir: string) => (dir.includes(QUARANTINE_DIR) ? Promise.reject(errno('EIO')) : nodeFsOps.syncDirectory(dir)) });
+  const outcome = await runLinkAuditCollection({ mode: 'LIVE', input: NAMED(), authorization: liveAuthorization() }, { ...s.deps, evidence: { baseDir: run, fs: quarantineSyncFails } } as never);
+  const message = errorsOf(outcome).find((error) => /quarentena/.test(error));
+  assert.ok(message, JSON.stringify(errorsOf(outcome)));
+  assert.match(message, /gravada na quarentena/);
+  assert.match(message, /durabilidade não confirmada \(fsync da pasta falhou\)/);
+  assert.doesNotMatch(message, /PRESERVADA/);
+});

@@ -335,7 +335,7 @@ function captureHook(params: { base: string; auditId: string; request: RunReques
  * auditorias, recuperação manual), com o código da falha. Nada entra na auditoria pedida e nenhum relatório é gerado. Se a quarentena também falhar,
  * a mensagem de sempre ("NÃO foi persistida") traz os dois códigos.
  */
-async function quarantinePaid(base: string, auditId: string, request: RunRequest, info: ProviderCaptureInfo, written: { readonly code: string; readonly issues: readonly string[] }, storageOptions: StorageOptionsOf): Promise<string> {
+async function quarantinePaid(base: string, auditId: string, request: RunRequest, info: ProviderCaptureInfo, written: { readonly code: string; readonly issues: readonly string[]; readonly publishedCapture?: number }, storageOptions: StorageOptionsOf): Promise<string> {
   const quarantined = await quarantinePaidResponse(
     base,
     {
@@ -345,11 +345,21 @@ async function quarantinePaid(base: string, auditId: string, request: RunRequest
       request: { url: info.url, body: info.requestBody },
       response: { httpStatus: info.httpStatus, attempts: info.attempts, bodyText: info.bodyText, failure: info.failure },
       input: { snapshotId: request.input.snapshotId, originalLink: sanitizeUrl(request.input.link.originalLink), identity: { ...(JSON.parse(JSON.stringify(request.input.identity)) as Record<string, unknown>), originalLink: sanitizeUrl(request.input.identity.originalLink) } },
+      ...(written.publishedCapture !== undefined ? { publishedCaptureNumber: written.publishedCapture } : {}),
     },
     storageOptions,
   );
   if (quarantined.ok) {
-    return `A resposta paga NÃO foi gravada na auditoria ${auditId} (${written.code}): foi PRESERVADA na quarentena, fora das auditorias (arquivo ${quarantined.value.fileName}; recuperação manual pelo responsável). Nenhum relatório foi gerado.`;
+    const { fileName, durability, dirPermissionsUnverified } = quarantined.value;
+    const what = written.publishedCapture !== undefined
+      ? `A captura ${written.publishedCapture} PODE JÁ ESTAR na auditoria ${auditId}: foi publicada, mas a releitura falhou (${written.code}). Uma cópia da resposta paga`
+      : `A resposta paga NÃO foi gravada na auditoria ${auditId} (${written.code}):`;
+    const where = durability === 'CONFIRMED'
+      ? `foi PRESERVADA na quarentena, fora das auditorias (arquivo ${fileName}; recuperação manual pelo responsável).`
+      : `foi gravada na quarentena, fora das auditorias (arquivo ${fileName}), mas com durabilidade não confirmada (fsync da pasta falhou); recuperação manual pelo responsável.`;
+    const permissions = dirPermissionsUnverified ? ' ATENÇÃO: as permissões da pasta da quarentena não puderam ser garantidas (dono do processo e modo 0700); restrinja a pasta.' : '';
+    const check = written.publishedCapture !== undefined ? ' Confira a auditoria antes de recuperar.' : '';
+    return `${what} ${where}${permissions}${check} Nenhum relatório foi gerado.`;
   }
   return `A resposta paga NÃO foi persistida (${written.code}): ${written.issues.join(' ')} A quarentena também falhou (${quarantined.code}): ${quarantined.issues.join(' ')}`;
 }

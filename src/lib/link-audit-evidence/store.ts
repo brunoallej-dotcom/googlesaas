@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { canonicalJson, sha256Hex } from '../link-audit/canonical';
 import { METHODOLOGY_VERSION } from '../link-audit/methodology';
 import { bestEffort, errorCode, nodeFsOps, publishExclusive, withLock, type FsOps } from '../link-audit/snapshot-store';
+import type { FileInfo } from '../link-audit/fs-ops';
 import { AUTH_PATTERNS, containsSecret } from './secrets';
 import { isSimulatedCapture, SIMULATED_PROVIDER } from './simulated';
 import {
@@ -51,7 +52,13 @@ export type EvidenceErrorCode =
 
 export type EvidenceResult<T> =
   | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly code: EvidenceErrorCode; readonly issues: readonly string[] };
+  | {
+      readonly ok: false;
+      readonly code: EvidenceErrorCode;
+      readonly issues: readonly string[];
+      /** Só em `writeCapture`: a captura com este número FOI publicada, mas a releitura falhou (pode já estar na auditoria). */
+      readonly publishedCapture?: number;
+    };
 
 /** Mensagens nunca revelam caminhos do disco (nem do servidor, nem do Windows). */
 export const scrubPaths = (text: string): string => text.replace(/(?<![\w.])(?:[A-Za-z]:\\|\/)[^\s"'`)]*/g, '[caminho]');
@@ -64,6 +71,8 @@ export interface StoreOptions {
   readonly projectRoot?: string;
   /** Valor literal da chave de API (se conhecido) para a varredura de segredos. */
   readonly apiKey?: string;
+  /** Dono esperado da pasta da quarentena (testes). Padrão: o usuário do processo, quando o sistema tem `getuid`. */
+  readonly uid?: number;
 }
 
 /** Descrição de erro de disco SEM a mensagem do Node (ela traz o caminho): só operação e código. */
@@ -283,22 +292,52 @@ export interface PaidResponseQuarantineInput {
   readonly request: CaptureInput['request'];
   readonly response: CaptureInput['response'];
   readonly input: CaptureInput['input'];
+  /** A captura com este número foi publicada na auditoria pedida, mas não conferida (releitura falhou): marca própria no conteúdo. */
+  readonly publishedCaptureNumber?: number;
 }
 
-export async function quarantinePaidResponse(baseDir: string, record: PaidResponseQuarantineInput, options: StoreOptions = {}): Promise<EvidenceResult<{ readonly fileName: string; readonly contentSha256: string }>> {
+export interface QuarantinedPaidResponse {
+  readonly fileName: string;
+  readonly contentSha256: string;
+  /** `UNCONFIRMED`: o arquivo foi gravado (com fsync), mas o fsync da PASTA falhou. */
+  readonly durability: 'CONFIRMED' | 'UNCONFIRMED';
+  /** A pasta não pôde ser garantida (chmod 0700 falhou, modo com bits de grupo/outros, outro dono ou sem como conferir); o arquivo é 0600 mesmo assim. */
+  readonly dirPermissionsUnverified?: true;
+}
+
+const PRIVATE_DIR_MODE = 0o700;
+const GROUP_OTHER_BITS = 0o077;
+
+/** A pasta da quarentena é diretório comum (não link), do usuário do processo (quando dá para saber) e sem bits de grupo/outros. */
+function quarantineDirTrusted(info: FileInfo, chmodFailed: boolean, expectedUid: number | undefined): boolean {
+  if (chmodFailed || info.mode === undefined || (info.mode & GROUP_OTHER_BITS) !== 0) return false;
+  return expectedUid === undefined || info.uid === expectedUid;
+}
+
+export async function quarantinePaidResponse(baseDir: string, record: PaidResponseQuarantineInput, options: StoreOptions = {}): Promise<EvidenceResult<QuarantinedPaidResponse>> {
   const ops = options.fs ?? nodeFsOps;
   const allowed = assertAllowedBase(baseDir, options.projectRoot ?? process.cwd());
   if (!allowed.ok) return allowed;
   if (await isTripped(ops, allowed.value)) return fail('STORAGE_FATAL', 'Base bloqueada por erro fatal de disco anterior: a quarentena também não grava.');
   const dir = path.join(allowed.value, QUARANTINE_DIR);
+  // mkdir → chmod 0700 → lstat: diretório comum (não link), do usuário do processo e sem bits de grupo/outros. Link ou não diretório ⇒ recusa (o
+  // arquivo iria para outro lugar); permissões que não dá para garantir ⇒ o arquivo AINDA é gravado 0600, com a marca (preservar a resposta paga vem
+  // primeiro). Limite declarado (spec §5.7): a janela entre o lstat e a escrita só é explorável pelo próprio usuário do volume (sem openat).
+  let dirTrusted: boolean;
   try {
     await ops.mkdir(dir);
+    let chmodFailed = false;
+    try {
+      await ops.chmod(dir, PRIVATE_DIR_MODE);
+    } catch {
+      chmodFailed = true;
+    }
     const info = await ops.lstat(dir);
     if (info.isSymbolicLink() || !info.isDirectory()) return fail('UNSAFE_PATH', 'A pasta da quarentena não é um diretório comum.');
+    dirTrusted = quarantineDirTrusted(info, chmodFailed, options.uid ?? process.getuid?.());
   } catch (error) {
     return writeFailure(ops, allowed.value, errorCode(error), [describeError('pasta da quarentena', error)]);
   }
-  await bestEffort(() => ops.chmod(dir, 0o700));
   // a chave literal (se ecoada) é trocada por [REDACTED], como na captura; a resposta paga nunca é descartada por suspeita
   const key = options.apiKey?.trim();
   const body = record.response.bodyText;
@@ -307,7 +346,7 @@ export async function quarantinePaidResponse(baseDir: string, record: PaidRespon
     schemaVersion: 1,
     kind: 'LINK_AUDIT_PAID_RESPONSE_QUARANTINE',
     requestedAuditId: record.requestedAuditId,
-    reason: { code: record.reasonCode },
+    reason: { code: record.reasonCode, ...(record.publishedCaptureNumber !== undefined ? { publishedUnverified: true, publishedCaptureNumber: record.publishedCaptureNumber } : {}) },
     collectedAt: record.collectedAt,
     request: { method: 'POST', url: record.request.url, body: record.request.body },
     response: {
@@ -331,8 +370,13 @@ export async function quarantinePaidResponse(baseDir: string, record: PaidRespon
       if (errorCode(error) === 'EEXIST') continue; // nunca sobrescreve: outro nome aleatório
       return writeFailure(ops, allowed.value, errorCode(error), [describeError('gravação na quarentena', error)]);
     }
-    await bestEffort(() => ops.syncDirectory(dir));
-    return { ok: true, value: { fileName, contentSha256: content.contentSha256 } };
+    let durability: QuarantinedPaidResponse['durability'] = 'CONFIRMED';
+    try {
+      await ops.syncDirectory(dir);
+    } catch {
+      durability = 'UNCONFIRMED'; // o arquivo existe (com fsync), mas a entrada na pasta não foi confirmada no disco
+    }
+    return { ok: true, value: { fileName, contentSha256: content.contentSha256, durability, ...(dirTrusted ? {} : { dirPermissionsUnverified: true as const }) } };
   }
   return fail('CONFLICT', 'Não foi possível reservar um nome novo na quarentena.');
 }
@@ -636,9 +680,10 @@ export async function writeCapture(baseDir: string, input: CaptureInput, options
         if (written.code === 'CONFLICT') continue; // outro processo ocupou o número: tenta o próximo
         return written;
       }
+      // publicada: daqui em diante a falha é de CONFERÊNCIA (a captura pode já estar na auditoria), marcada com o número para quem chama
       const reread = await readCapture(baseDir, input.auditId, number, options);
-      if (!reread.ok) return fail(reread.code, `A releitura da captura ${number} falhou: ${reread.issues.join(' ')}`);
-      if (reread.value.contentSha256 !== file.contentSha256) return fail('HASH_MISMATCH', 'A releitura difere do que foi gravado.');
+      if (!reread.ok) return { ...fail(reread.code, `A releitura da captura ${number} falhou: ${reread.issues.join(' ')}`), publishedCapture: number };
+      if (reread.value.contentSha256 !== file.contentSha256) return { ...fail('HASH_MISMATCH', 'A releitura difere do que foi gravado.'), publishedCapture: number };
       return { ok: true, value: { captureNumber: number, filePath: written.value, contentSha256: file.contentSha256, duplicate: false } };
     }
     return fail('CONFLICT', 'Não foi possível reservar um número de captura (disputa persistente).');
