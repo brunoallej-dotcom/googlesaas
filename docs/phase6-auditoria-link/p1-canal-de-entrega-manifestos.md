@@ -3,6 +3,8 @@
 > **Status:** procedimento e requisitos escritos na fatia **W5.1** (22/11/2026). **O canal ainda não existe:** nenhum workflow
 > entrega manifestos (`.github/workflows/ci.yml` só tem typecheck, test, build, sign-artifact, security, sca e sast) e o volume
 > de manifestos no `stack.yml` é da onda G1.a (fase 2 do ADR 6C-03). O que falta de código está no §5 (pendências da W5.2).
+> **O desenho do canal (quem, onde, credencial) aguarda a decisão do responsável sobre o deploy pelo CI (P-9)**; a recomendação
+> do manager e as decisões que valem até lá estão no §6.
 >
 > **Decisões aplicadas:** D7 (o canal é o pipeline de CI, nunca cópia manual) e **D15.5** (só o canal do CI escreve no volume
 > de manifestos; o servidor confere a assinatura contra a lista de chaves fixada antes de aceitar; o administrador da VPS fica
@@ -58,7 +60,8 @@ novo `--expect-seq` do livro (spec §7.3).
   periódica do livro contra o servidor (`p1-livro-de-manifestos.md` §5).
 - **Mesma conta do GitHub** para código, CI, artefato do `sign` e canal: comprometê-la dá acesso a todos (spec dos portões,
   concentração; spec P1 §5.5.1 item 6).
-- **Ponto em aberto (decisão do responsável ou do manager na W5.2): por onde o manifesto entra no CI.** O repositório é
+- **Pendência do responsável: por onde o manifesto entra no CI** (parte da decisão do P-9; recomendação do manager no §6). O
+  repositório é
   **público**. Pôr os manifestos em commits expõe `auditId`, datas e frequência das atestações (não há dado pessoal no
   manifesto, mas um `auditId` com nome de empresa revelaria o cliente). Alternativas: (a) commit no repositório público, com a
   regra de que o `auditId` nunca carrega nome de empresa; (b) repositório privado só para o canal (plano gratuito: sem proteção
@@ -76,3 +79,27 @@ novo `--expect-seq` do livro (spec §7.3).
 | CE-3 | Receptor no host que grava no volume com criação exclusiva e `fsync` (RC-04, RC-05) e devolve o `sha256sum` (RC-08) | não existe; `publishExclusive` não serve (ignora falha do `fsync` da pasta, revisão da W4.6 item 4) |
 | CE-4 | Volume de manifestos no `stack.yml`, `:ro` no web, ausente no Worker | onda G1.a (VC-E1, VC-E5), não desta fatia |
 | CE-5 | Testes do canal sem rede (recusa de sobrescrita, de manifesto não assinado, de cadeia quebrada, de chave fora da lista) | não existem |
+
+## 6. Decisões do manager sob a delegação D15 (22/11/2026) e pendência do responsável
+
+1. **Ensaio da W5 com entrega manual (desvio declarado da D15.5).** O ensaio W5.3 pode rodar na pilha de homologação com a
+   entrega **manual** do manifesto, registrada no relatório do ensaio como desvio declarado da D15.5. A entrega pelo canal do CI
+   é ensaiada de novo na **G2**, antes de produção, e isso é **critério de entrada da produção**. Nunca há entrega manual em
+   produção. Na homologação, a cópia manual segue o mesmo cuidado do canal:
+   - só os bytes do `seal-NNNN.json` (ou do fecho), sem abrir nem reformatar;
+   - criação exclusiva no destino: conferir antes que o nome não existe e nunca sobrescrever;
+   - `sha256sum` antes e depois, iguais ao anotado no livro;
+   - quem fez, quando e o hash, no relatório do ensaio e no livro.
+2. **Conferência do livro contra o servidor:** antes de cada sessão de assinatura e, no mínimo, trimestralmente
+   (`p1-livro-de-manifestos.md` §5).
+3. **O canal (quem, onde, credencial) aguarda a decisão do responsável sobre o deploy pelo CI (P-9 da spec dos portões).**
+   Pendência do responsável. **Recomendação do manager:**
+   - um único pipeline de deploy pelo CI, com um job de entrega de manifestos;
+   - o manifesto entra por **PR**, com `auditId` **opaco** (nunca nome de empresa, porque o repositório é público);
+   - verificação `v2` no CI **antes do merge** (RC-06: formato, assinatura, cadeia e estado da chave contra a lista fixada);
+   - entrega por um job num **ambiente protegido**, com aprovação do responsável, usando uma chave SSH **restrita a um único
+     comando receptor** no host. O receptor confere de novo a assinatura e grava com criação exclusiva e `fsync` (RC-04, RC-05,
+     RC-06).
+
+   Com essa forma, as pendências CE-1 (workflow e ambiente protegido), CE-2 (verificação antes do merge) e CE-3 (receptor como
+   comando único da chave SSH, com a segunda verificação) ficam definidas. Elas só viram código depois da decisão do P-9.
