@@ -241,13 +241,20 @@ test('P9-T04 fixar `retired:<hash>` (de active ou de retired) sem o fecho no com
 
 /* ------------------------------------------------------------------------------------------------------------------- P9-T05 */
 
-test('P9-T05 lista e manifestos do MESMO ambiente no mesmo PR ⇒ SEALS_AND_TRUST_LIST_TOGETHER; ambientes diferentes não', async () => {
+test('P9-T05 lista e manifestos (ou um fecho) do MESMO ambiente no mesmo PR ⇒ SEALS_AND_TRUST_LIST_TOGETHER; ambientes diferentes não', async () => {
   const w = world();
   writeTrustList(w, [listItem(KEY_A)]);
   const seal = nextSeal(AUD_A, [], { signer: KEY_A });
   writeRepoFile(w.root, sealRepoPath(AUD_A, 1), canonicalText(seal));
   const report = await check(w, [['M', LIST], ['A', sealRepoPath(AUD_A, 1)]], { baseTrust: { producao: ABSENT } });
   assert.deepEqual(report.refusals.map((item) => [item.rule, item.code, item.path]), [['S-13', 'SEALS_AND_TRUST_LIST_TOGETHER', 'producao/trust-keys.txt']]);
+  // um FECHO novo e válido também é "manifesto" para o S-13 (arquivo novo sob `<amb>/seals/`)
+  const withClosure = world();
+  writeTrustList(withClosure, [listItem(KEY_R), listItem(KEY_S)]);
+  const chain = chainInRepo(withClosure, AUD_A, [KEY_R]);
+  writeRepoFile(withClosure.root, closureRepoPath(KEY_R.keyId), canonicalText(closureFor(KEY_R, KEY_S, chain)));
+  const closureAndList = await check(withClosure, [['M', LIST], ['A', closureRepoPath(KEY_R.keyId)]], { baseTrust: { producao: baseBytes(listFile([listItem(KEY_R)])) } });
+  assert.deepEqual(closureAndList.refusals.map((item) => [item.rule, item.code, item.path]), [['S-13', 'SEALS_AND_TRUST_LIST_TOGETHER', 'producao/trust-keys.txt']], 'fecho válido + lista no mesmo ambiente');
   const apart = world();
   const rehearsal = signer(`${REHEARSAL_KEY_PREFIX}lista-02`);
   writeTrustList(apart, [listItem(KEY_A)]);

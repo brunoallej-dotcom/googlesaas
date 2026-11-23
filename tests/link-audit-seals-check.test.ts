@@ -262,6 +262,11 @@ test('P9-S08 cadeia correta ⇒ verde, com `headSeq` = último `seq` novo (dois 
   const trustValue = `${listItem(KEY_A)},${listItem(KEY_B)}`;
   assert.equal(await chainRefusalCode({ sealsDir: w.sealsDir(), auditId: AUD_A, trustValue, lastNew: chain[2] as (typeof chain)[number] }, nodeFsOps), null, 'a cabeça autenticada é o último novo');
   assert.equal(await chainRefusalCode({ sealsDir: w.sealsDir(), auditId: AUD_A, trustValue, lastNew: chain[1] as (typeof chain)[number] }, nodeFsOps), 'SEAL_HEAD_MISMATCH');
+  // mesmo `seq` da cabeça (3), outro `sealSha256`: só a comparação do digest recusa
+  const sameSeq = nextSeal(AUD_A, chain.slice(0, 2), { signer: KEY_A, entries: [...E2, { ref: 'capture:c0003', contentSha256: '7'.repeat(64) }] });
+  assert.equal(sameSeq.seq, 3);
+  assert.notEqual(sealSha256(sameSeq), sealSha256(chain[2] as (typeof chain)[number]));
+  assert.equal(await chainRefusalCode({ sealsDir: w.sealsDir(), auditId: AUD_A, trustValue, lastNew: sameSeq }, nodeFsOps), 'SEAL_HEAD_MISMATCH', 'mesmo seq, outro sealSha256');
 });
 
 /* ------------------------------------------------------------------------------------------------------------------- P9-S09 */
