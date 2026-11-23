@@ -2,6 +2,15 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
+import './helpers/stub-lucide';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { SIMULATED_BADGE } from '../src/components/link-audit/evidence-labels';
+import type { Phase } from '../src/components/link-audit/evidence-state';
+import { StoredAuditDetail } from '../src/components/link-audit/stored-audit-detail';
+import { StoredAuditList } from '../src/components/link-audit/stored-audit-list';
+import { createEvidenceReader, toAuditDetailDto, toListItem } from '../src/lib/link-audit-evidence';
+import { SIMULATED_LABEL, SIMULATED_SOURCE_LABEL } from '../src/lib/link-audit-evidence/simulated';
 import { canonicalJson, sha256Hex } from '../src/lib/link-audit/canonical';
 import { createScoringBasisReader } from '../src/lib/link-audit-evidence/scoring-basis';
 import { registerCleanup, tmpDir } from './helpers/link-audit-evidence-fixtures';
@@ -15,6 +24,7 @@ import { collectSimulated, SIM_AUDIT_ID, SIM_NOW } from './helpers/link-audit-si
 registerCleanup();
 
 const LOCK = { GMN_LINK_AUDIT_HOMOLOGATION: '1' } as const;
+const textOf = (html: string): string => html.replace(/<[^>]+>/g, ' ').replace(/&#x27;/g, "'").replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/\s+/g, ' ');
 const EXPORT_NOW = at(SIM_NOW, 2 * HOUR);
 const simExport = (evidence: string, hash: string, extra: readonly string[] = []): string[] => ['export', '--evidence-dir', evidence, '--audit', SIM_AUDIT_ID, '--collector-hash', `c0001=${hash}`, '--max-gap-hours', '24', ...extra];
 
@@ -118,4 +128,55 @@ test('export (2c): o único acesso ao ambiente do processo é a variável da tra
   assert.deepEqual([...simulated.matchAll(/process\.env(\[[^\]]+\]|\.\w+)?/g)].map((m) => m[0]), ['process.env[HOMOLOGATION_LOCK_ENV]'], 'só a variável da trava');
   assert.ok(!/loadEnvConfig|dotenv|@next\/env|readFile/.test(simulated), 'nunca arquivo de ambiente');
   for (const file of ['scripts/link-audit-seal.ts', 'src/lib/link-audit-attestation/export.ts', 'src/lib/link-audit-attestation/export-run.ts']) assert.ok(!/process\.env/.test(read(file)), file);
+});
+
+/* ------------------------------------------------------------------ leitor e interface: "SIMULADA — ensaio" (2c) */
+
+test('leitor e interface (2c): a coleta simulada aparece como "SIMULADA — ensaio" na lista e no detalhe (leitor → apresentação → componentes); a real não', async () => {
+  const evidence = tmpDir('lasim-ui-');
+  await collectSimulated(evidence);
+  const actor = { email: 'leitor@exemplo.invalid' };
+  const reader = createEvidenceReader({ baseDir: evidence, authorize: () => true });
+  const [summary] = await reader.listAudits(actor);
+  assert.ok(summary);
+  assert.equal(summary.simulated, true);
+  const view = await reader.getAudit(actor, SIM_AUDIT_ID);
+  assert.ok(view);
+  assert.equal(view.simulated, true);
+  assert.equal(view.source.provider, SIMULATED_SOURCE_LABEL);
+
+  const item = toListItem(summary);
+  const detail = toAuditDetailDto(view);
+  assert.equal(item.simulated, true);
+  assert.equal(item.sourceLabel, SIMULATED_SOURCE_LABEL);
+  assert.equal(detail.source.simulated, true);
+  assert.equal(detail.source.label, SIMULATED_SOURCE_LABEL);
+  assert.ok(detail.limitations.some((line) => /SIMULADA — ensaio/.test(line)), 'a limitação gravada no relatório chega à tela');
+
+  const noop = (): void => undefined;
+  const listHtml = textOf(renderToStaticMarkup(createElement(StoredAuditList, { phase: 'ready' as Phase, items: [item], total: 1, message: null, query: '', selectedId: null, onQueryChange: noop, onSelect: noop, onRetry: noop })));
+  const detailHtml = textOf(renderToStaticMarkup(createElement(StoredAuditDetail, { detail, loading: false, onSelectRevision: noop })));
+  for (const html of [listHtml, detailHtml]) {
+    assert.match(html, /SIMULADA — ensaio/);
+    assert.match(html, /nenhuma consulta foi feita/);
+  }
+  assert.match(detailHtml, /nunca é evidência real/);
+
+  const real = await makeAudit();
+  const realReader = createEvidenceReader({ baseDir: real.base, authorize: () => true });
+  const [realSummary] = await realReader.listAudits(actor);
+  const realView = await realReader.getAudit(actor, real.auditId);
+  assert.ok(realSummary && realView);
+  assert.ok(!('simulated' in realSummary) && !('simulated' in realView));
+  const realItem = toListItem(realSummary);
+  const realDetail = toAuditDetailDto(realView);
+  assert.ok(!('simulated' in realItem) && !('simulated' in realDetail.source));
+  assert.notEqual(realItem.sourceLabel, SIMULATED_SOURCE_LABEL);
+  const realHtml = textOf(renderToStaticMarkup(createElement(StoredAuditDetail, { detail: realDetail, loading: false, onSelectRevision: noop })));
+  assert.doesNotMatch(realHtml, /SIMULADA/);
+});
+
+test('interface: o selo da tela é o mesmo rótulo do servidor (uma fonte só para "SIMULADA — ensaio")', () => {
+  assert.equal(SIMULATED_BADGE, SIMULATED_LABEL);
+  assert.ok(SIMULATED_SOURCE_LABEL.startsWith(SIMULATED_LABEL));
 });

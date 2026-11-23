@@ -2,7 +2,7 @@ import { Archive, ArrowRight, CircleCheck, FileSearch, Fingerprint, LoaderCircle
 import { StatusBadge } from '@/components/ui/status-badge';
 import type { AuditListItemDto } from '@/lib/link-audit-evidence';
 import type { Phase } from './evidence-state';
-import { formatDateTime, LIST_INTEGRITY_LABELS, placeLine, pluralize } from './evidence-labels';
+import { formatDateTime, LIST_INTEGRITY_LABELS, placeLine, pluralize, SIMULATED_BADGE } from './evidence-labels';
 
 const INPUT_CLASS =
   'h-11 w-full rounded-lg border border-white/40 bg-gmn-tile pl-10 pr-3 text-sm text-gmn-text transition-colors placeholder:text-gmn-muted/80 hover:border-white/60 focus:border-gmn-accent focus:outline-none focus:ring-2 focus:ring-gmn-accent/40';
@@ -58,6 +58,7 @@ function AuditCard({ item, selected, onSelect }: { readonly item: AuditListItemD
         </dl>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <IntegrityBadge status={item.integrity.status} />
+          {item.simulated && <StatusBadge tone="warning" label={SIMULATED_BADGE} icon={TriangleAlert} />}
           <StatusBadge tone="neutral" label={`${pluralize(item.captureCount, 'captura', 'capturas')} · ${pluralize(item.reportRevisions, 'versão', 'versões')}`} icon={Archive} />
         </div>
       </button>

@@ -36,6 +36,8 @@ import {
   ORIGIN_LABELS,
   PROVIDER_FIELD_LABELS,
   placeLine,
+  SIMULATED_BADGE,
+  SIMULATED_NOTICE,
   STATE_LABELS,
 } from './evidence-labels';
 
@@ -129,6 +131,7 @@ export function StoredAuditDetail({ detail, loading, onSelectRevision }: StoredA
           <div className="flex flex-wrap items-center gap-2">
             {loading && <StatusBadge tone="info" label="Atualizando…" icon={LoaderCircle} spin />}
             <StatusBadge tone="info" label="Coleta de evidências" icon={Archive} />
+            {detail.source.simulated && <StatusBadge tone="warning" label={SIMULATED_BADGE} icon={TriangleAlert} />}
             <StatusBadge tone={integrityTone} label={INTEGRITY_LABELS[detail.integrity.status] ?? detail.integrity.status} icon={detail.integrity.status === 'OK' ? CircleCheck : ShieldAlert} />
           </div>
         </div>
@@ -147,6 +150,16 @@ export function StoredAuditDetail({ detail, loading, onSelectRevision }: StoredA
           Abrir auditoria Lumos
         </a>
       </header>
+
+      {detail.source.simulated && (
+        <div role="alert" className="rounded-xl border border-amber-400/40 bg-amber-400/[0.08] p-4">
+          <p className="flex items-start gap-2 text-sm font-semibold text-gmn-text">
+            <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" aria-hidden="true" />
+            {SIMULATED_BADGE}
+          </p>
+          <p className="mt-1 text-xs text-gmn-text">{SIMULATED_NOTICE}</p>
+        </div>
+      )}
 
       <div role="note" className="rounded-xl border border-gmn-accent/30 bg-gmn-accent/[0.06] p-4">
         <p className="flex items-start gap-2 text-sm font-semibold text-gmn-text">
