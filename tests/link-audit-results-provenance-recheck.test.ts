@@ -45,14 +45,15 @@ function onlyRunOf(e: ResultsEnv, auditId: string): ScoreRun {
   return JSON.parse(fs.readFileSync(path.join(dir, 's0001.json'), 'utf8')) as ScoreRun;
 }
 
-/** Porta que conta as chamadas (e as bases recebidas) e delega a outra porta ou a uma resposta fixa. */
-function counting(answer: ProvenanceRecheckPort | ((auditId: string) => Promise<ProvenanceRecheckOutcome>)): { readonly port: ProvenanceRecheckPort; readonly calls: Array<readonly string[]> } {
-  const calls: Array<readonly string[]> = [];
+type SeenBasis = ReadonlyArray<{ readonly ref: string; readonly contentSha256: string; readonly legacy: boolean }>;
+/** Porta que conta as chamadas e guarda a base COMPLETA recebida (ref, hash e `legacy`), delegando a outra porta ou a uma resposta fixa. */
+function counting(answer: ProvenanceRecheckPort | ((auditId: string) => Promise<ProvenanceRecheckOutcome>)): { readonly port: ProvenanceRecheckPort; readonly calls: SeenBasis[] } {
+  const calls: SeenBasis[] = [];
   return {
     calls,
     port: {
       async recheck(auditId, evidences) {
-        calls.push(evidences.map((item) => item.ref));
+        calls.push(evidences.map(({ ref, contentSha256, legacy }) => ({ ref, contentSha256, legacy })));
         return typeof answer === 'function' ? answer(auditId) : answer.recheck(auditId, evidences);
       },
     },
@@ -162,6 +163,23 @@ test('R2.2 veredito: tabela de estados e precedência (a revogação é dita mes
     ['revogado não texto', recorded, checked(authentic, [7] as never), { state: 'RECHECK', cause: 'PORT_ERROR' }],
     ['sem trust', recorded, { kind: 'CHECKED', revokedKeyIds: [] }, { state: 'RECHECK', cause: 'PORT_ERROR' }],
     ['keyIds de hoje fora de forma', recorded, checked({ ...authentic, keyIds: 'ek-chave-a' }), { state: 'RECHECK', cause: 'PORT_ERROR' }],
+    ['keyIds de hoje vazios (mesma cabeça)', recorded, checked({ ...authentic, keyIds: [] }), { state: 'RECHECK', cause: 'PORT_ERROR' }],
+    ['keyIds de hoje repetidos', recorded, checked({ ...authentic, keyIds: ['ek-chave-a', 'ek-chave-a', 'ek-chave-r', 'ek-chave-s'] }), { state: 'RECHECK', cause: 'PORT_ERROR' }],
+    ['keyIds de hoje fora de ordem', recorded, checked({ ...authentic, keyIds: ['ek-chave-s', 'ek-chave-a', 'ek-chave-r'] }), { state: 'RECHECK', cause: 'PORT_ERROR' }],
+    ['id de hoje fora do padrão (maiúsculo)', recorded, checked({ ...authentic, keyIds: ['EK-CHAVE-A', 'ek-chave-r', 'ek-chave-s'] }), { state: 'RECHECK', cause: 'PORT_ERROR' }],
+    ['id de hoje fora do padrão (ponto)', recorded, checked({ ...authentic, keyIds: ['ek.chave.a', 'ek-chave-r', 'ek-chave-s'] }), { state: 'RECHECK', cause: 'PORT_ERROR' }],
+    ['id de hoje não texto', recorded, checked({ ...authentic, keyIds: ['ek-chave-a', 7] }), { state: 'RECHECK', cause: 'PORT_ERROR' }],
+    ['17 ids de hoje', recorded, checked({ ...authentic, keyIds: Array.from({ length: 17 }, (_, i) => `ek-chave-${String(i).padStart(2, '0')}`) }), { state: 'RECHECK', cause: 'PORT_ERROR' }],
+    ['cabeça 0', recorded, checked({ ...authentic, headSeq: 0 }), { state: 'RECHECK', cause: 'PORT_ERROR' }],
+    ['cabeça negativa', recorded, checked({ ...authentic, headSeq: -2 }), { state: 'RECHECK', cause: 'PORT_ERROR' }],
+    ['cabeça não inteira', recorded, checked({ ...authentic, headSeq: 2.5 }), { state: 'RECHECK', cause: 'PORT_ERROR' }],
+    ['cabeça texto', recorded, checked({ ...authentic, headSeq: '2' }), { state: 'RECHECK', cause: 'PORT_ERROR' }],
+    ['cabeça 257', recorded, checked({ ...authentic, headSeq: 257 }), { state: 'RECHECK', cause: 'PORT_ERROR' }],
+    ['hash maiúsculo', recorded, checked({ ...authentic, headSealSha256: 'AA'.repeat(32) }), { state: 'RECHECK', cause: 'PORT_ERROR' }],
+    ['hash curto', recorded, checked({ ...authentic, headSealSha256: 'aa'.repeat(31) }), { state: 'RECHECK', cause: 'PORT_ERROR' }],
+    ['sem hash (cabeça e chaves presentes)', recorded, checked({ status: 'AUTHENTICATED', headSeq: 2, keyIds: authentic.keyIds }), { state: 'RECHECK', cause: 'PORT_ERROR' }],
+    ['sem keyIds (cabeça presente)', recorded, checked({ status: 'AUTHENTICATED', headSeq: 2, headSealSha256: authentic.headSealSha256 }), { state: 'RECHECK', cause: 'PORT_ERROR' }],
+    ['campo extra', recorded, checked({ ...authentic, revokedKeyIds: [] }), { state: 'RECHECK', cause: 'PORT_ERROR' }],
   ];
   for (const [label, rec, outcome, expected] of cases) assert.deepEqual(provenanceVerdictOf(rec, outcome as ProvenanceRecheckOutcome), expected, label);
 });
@@ -173,7 +191,7 @@ test('R2.2 releitura: tudo confere ⇒ VERIFIED na lista e no detalhe; a porta r
   const spy = counting(portOf(c.sealsDir, entryOf(c.A, 'active')));
   const read = await readWith(c, spy.port);
   assert.deepEqual(read.states, ['VERIFIED', 'VERIFIED']);
-  assert.deepEqual(spy.calls, [basisOf(c.run).map((item) => item.ref), basisOf(c.run).map((item) => item.ref)], 'uma chamada na lista, uma no detalhe, sempre com a base gravada');
+  assert.deepEqual(spy.calls, [basisOf(c.run), basisOf(c.run)], 'uma chamada na lista, uma no detalhe, sempre com a base gravada COMPLETA (ref, hash e legacy)');
   for (const out of [read.listed, read.detail]) {
     const text = JSON.stringify(out);
     assert.ok(!PROVENANCE_FIELDS.test(text), 'nenhum campo da proveniência nas respostas');
@@ -385,6 +403,60 @@ test('R2.2 erro, configuração inválida ou resposta fora de forma da porta ⇒
   assert.ok(ok.ok && ok.value.results[0]?.provenanceState === 'VERIFIED', show(ok));
 });
 
+test('R2.2 resposta AUTHENTICATED com a cabeça gravada mas prova fora de forma (keyIds vazios, repetidos, fora de ordem, fora do padrão; cabeça ou hash inválidos; campo extra) ⇒ "A reconferir"', async () => {
+  const ev = buildEvaluation();
+  const e = resultsEnv();
+  assert.ok((await makeService(e, new FakeEvaluator(ev)).finalize(OP_A, 'auditoria-res-0001', bodyOf(ev))).ok);
+  const run = onlyRunOf(e, 'auditoria-res-0001');
+  const recorded = run.evidenceProvenance as NonNullable<ScoreRun['evidenceProvenance']>;
+  const authentic = { status: 'AUTHENTICATED', headSeq: recorded.headSeq, headSealSha256: recorded.headSealSha256, keyIds: [...recorded.keyIds] };
+  const [only] = recorded.keyIds;
+  const variants: ReadonlyArray<readonly [string, unknown]> = [
+    ['keyIds vazios', { ...authentic, keyIds: [] }],
+    ['keyIds repetidos', { ...authentic, keyIds: [only, only] }],
+    ['keyIds fora de ordem', { ...authentic, keyIds: ['ek-teste-0002', only] }],
+    ['id fora do padrão', { ...authentic, keyIds: ['EK-TESTE-0001'] }],
+    ['cabeça 0', { ...authentic, headSeq: 0 }],
+    ['cabeça negativa', { ...authentic, headSeq: -1 }],
+    ['cabeça não inteira', { ...authentic, headSeq: recorded.headSeq + 0.5 }],
+    ['hash maiúsculo', { ...authentic, headSealSha256: recorded.headSealSha256.toUpperCase() }],
+    ['hash curto', { ...authentic, headSealSha256: recorded.headSealSha256.slice(2) }],
+    ['campo extra', { ...authentic, missingRefs: [] }],
+  ];
+  for (const [label, trust] of variants) {
+    const port: ProvenanceRecheckPort = { recheck: async () => ({ kind: 'CHECKED', revokedKeyIds: [], trust }) as unknown as ProvenanceRecheckOutcome };
+    const svc = makeService(e, new FakeEvaluator(ev), { provenanceRecheck: port });
+    const listed = await svc.list(OP_A, 'auditoria-res-0001');
+    const detail = await svc.get(OP_A, 'auditoria-res-0001', 1);
+    assert.ok(listed.ok && detail.ok, `${label}: ${show([listed, detail])}`);
+    assert.deepEqual([listed.value.results[0]?.provenanceState, detail.value.provenanceState], ['RECHECK', 'RECHECK'], label);
+  }
+  // controle: a prova bem formada e igual à gravada confere
+  const fine = makeService(e, new FakeEvaluator(ev), { provenanceRecheck: { recheck: async () => ({ kind: 'CHECKED', revokedKeyIds: [], trust: authentic }) as unknown as ProvenanceRecheckOutcome } });
+  const ok = await fine.get(OP_A, 'auditoria-res-0001', 1);
+  assert.ok(ok.ok && ok.value.provenanceState === 'VERIFIED', show(ok));
+});
+
+test('R2.2 a porta recebe a base GRAVADA completa (ref, hash e legacy), nunca a base de hoje, mesmo quando a de hoje difere', async () => {
+  const ev = buildEvaluation();
+  const e = resultsEnv();
+  const evaluator = new FakeEvaluator(ev);
+  assert.ok((await makeService(e, evaluator).finalize(OP_A, 'auditoria-res-0001', bodyOf(ev))).ok);
+  const run = onlyRunOf(e, 'auditoria-res-0001');
+  // hoje: outros hashes e uma captura a mais (a avaliação de hoje alimenta `stale`, nunca a reconferência)
+  evaluator.current = buildEvaluation({ evidenceSalt: 'base-de-hoje', extraRefs: ['capture:c0009'] });
+  const spy = counting(async () => ({ kind: 'CHECKED', revokedKeyIds: [], trust: { status: 'AUTHENTICATED', ...run.evidenceProvenance } }));
+  const svc = makeService(e, evaluator, { provenanceRecheck: spy.port });
+  const listed = await svc.list(OP_A, 'auditoria-res-0001');
+  const detail = await svc.get(OP_A, 'auditoria-res-0001', 1);
+  assert.ok(listed.ok && detail.ok, show([listed, detail]));
+  assert.equal(listed.value.results[0]?.stale, true, 'a base de hoje é outra (o resultado está desatualizado)');
+  const recordedBasis = basisOf(run);
+  assert.deepEqual(spy.calls, [recordedBasis, recordedBasis], 'lista e detalhe reconferem a base GRAVADA');
+  const today = (evaluator.current as { mapped: { traceability: { evidences: Array<{ ref: string; contentSha256: string }> } } }).mapped.traceability.evidences;
+  assert.ok(today.some((item) => !recordedBasis.some((rec) => rec.ref === item.ref && rec.contentSha256 === item.contentSha256)), 'controle: a base de hoje difere da gravada');
+});
+
 /* ============================================================================================ custo: dedupe dentro da requisição, nada entre requisições */
 
 test('R2.2 custo: a porta é chamada UMA vez por base dentro da requisição; nada é lembrado entre requisições (revogar entre elas muda o estado)', async () => {
@@ -407,7 +479,7 @@ test('R2.2 custo: a porta é chamada UMA vez por base dentro da requisição; na
   };
   assert.deepEqual(await states(), ['VERIFIED', 'VERIFIED', 'VERIFIED']);
   assert.equal(spy.calls.length, 2, 's0001 e s0002 têm a MESMA base gravada (uma chamada); s0003 tem outra');
-  assert.deepEqual(spy.calls.map((refs) => refs.length).sort(), [6, 7]);
+  assert.deepEqual(spy.calls.map((basis) => basis.length).sort(), [6, 7]);
   revoked = ['ek-teste-0001'];
   assert.deepEqual(await states(), ['RECHECK', 'RECHECK', 'RECHECK'], 'a revogação entre as requisições aparece na seguinte');
   assert.equal(spy.calls.length, 4, 'a segunda requisição consulta a porta de novo');
