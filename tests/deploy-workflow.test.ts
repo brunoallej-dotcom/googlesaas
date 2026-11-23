@@ -282,6 +282,30 @@ test('P9.4 runbook: repositório público, só marcadores (sem IP, e-mail ou dom
   for (const forbidden of [/StrictHostKeyChecking=no/, /accept-new/, /set -x/, /docker stack rm/, /docker system prune/, /rm -rf \/srv/]) assert.ok(!forbidden.test(commands), `${forbidden}`);
 });
 
+test('P9.4 runbook (revisão do PR #69): blocos privilegiados param no erro, o arquivo de variáveis nunca é executado, P9-O03 estrito depois do H-09, H-06 idempotente, impressão de produção no H-04 e rollback com a lista conferida', () => {
+  const runbook = runbookText();
+  const section = (from: string, to: string): string => runbook.slice(runbook.indexOf(from), runbook.indexOf(to));
+  const h04 = section('### H-04', '### H-05');
+  assert.match(h04, /\( set -euo pipefail[\s\S]*sha256sum -c -[\s\S]*sudo tar -xJf/, 'Node só instalado depois do sha256sum -c, num subshell que para no erro');
+  assert.match(h04, /--forbid-supabase/);
+  assert.match(h04, /read -rsp 'URL do Supabase de PRODUÇÃO: ' U; printf '%s' "\$U" \| sha256sum \| cut -c1-12; unset U/);
+  assert.ok(!/forbid-supabase[\s\S]*```bash[\s\S]*read -rsp 'URL do Supabase de produção/.test(section('## 3. Produção', '## 4.')), 'a impressão de produção não fica para a seção de produção');
+  assert.ok(!/^\s*(?:sudo\s+)?(?:sh -c ')?[^#\n]*(?:\bsource\b|\s\.\s+\/opt\/gmn-hml)/m.test((runbook.match(/```bash[\s\S]*?```/g) ?? []).join('\n')), 'o arquivo de variáveis nunca é carregado como shell');
+  const h06 = section('### H-06', '### H-07');
+  assert.match(h06, /if ! sudo test -e "\$img"; then\n\s+sudo fallocate[^\n]*\n\s+sudo mkfs\.ext4 -q -F "\$img"/, 'mkfs só na imagem recém-criada');
+  assert.equal((h06.match(/```bash[\s\S]*?```/g) ?? []).join('\n').split('mkfs.ext4').length - 1, 1, 'um só mkfs nos comandos');
+  assert.match(h06, /blkid -o value -s TYPE/);
+  assert.match(h06, /\[ -e "\$log" \] \|\| sudo install -m 0600/, 'log existente nunca truncado');
+  const h09 = section('### H-09', '### H-10');
+  assert.match(h09, /P9-O03[\s\S]*StrictHostKeyChecking yes[\s\S]*UserKnownHostsFile[\s\S]*ssh -F/, 'P9-O03 com as opções estritas, depois do H-09');
+  assert.match(h09, /if \[ "\$dr" -eq 10 \] && \[ "\$sr" -eq 10 \][^\n]*grep -qx 'ERRO E_COMMAND'[^\n]*grep -qx 'ERRO E_COMMAND'; then\n[^\n]*\n\s+shred -u/, 'shred só com as duas recusas');
+  assert.ok(!(section('### H-05', '### H-06').match(/```bash[\s\S]*?```/g) ?? []).join('\n').includes('shred'), 'nenhum comando apaga a chave antes da prova');
+  const rollback = section('## 6. Rollback', '## 7.');
+  assert.match(rollback, /PreviousSpec/);
+  assert.match(rollback, /paste -sd, "\/var\/lib\/gmn-deploy\/\$\{AMB\}\/trust-keys\.txt" \| sha256sum/);
+  assert.match(rollback, /docker service update --no-resolve-image --image/);
+});
+
 test('P9.4 emendas: guia, plano de rollback, verificação pós-deploy e CLAUDE.md apontam para o deploy.yml (homologacao/producao) e o caminho manual é só histórico', () => {
   const guide = read('deploy/hostinger/GUIA-DE-IMPLANTACAO.md');
   assert.match(guide, /\.github\/workflows\/deploy\.yml/);

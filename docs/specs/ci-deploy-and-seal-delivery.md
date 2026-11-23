@@ -389,17 +389,31 @@ dispara e aprova as próprias execuções (risco aceito, §11.2).
   job usa `::add-mask::`.
 - **`OK DEPLOYED`:** o job aceita os ids das imagens no formato do Docker (`sha256:<64 hex>`), confere tag, stack e sobreposição
   declaradas, e exige que a lista **instalada** seja a enviada (senão `TRUST_LIST_INSTALLED_MISMATCH`, vermelho).
-- **Saída do `ssh`:** o stderr do `ssh` nunca vai ao log (repete host e endereço). Só passa a linha `ERRO E_…` do receptor que casa a
-  gramática do §5.8. Conexão que falha (255) vira `SSH_CONNECT_FAILED HOST_KEY|AUTH|OTHER`. Às opções fixas do passo 7 soma-se
-  `-F /dev/null` (nenhum arquivo de configuração do runner). O usuário (`gmn-deploy`, `gmn-hml-deploy`) sai do ambiente, não de segredo.
+- **Configuração privada do `ssh`:** o passo 7 escreve, além da chave e do `known_hosts`, `$RUNNER_TEMP/gmn-ssh/config` (`0600`) com o
+  apelido fixo `gmn-receiver`: `HostName`, `Port`, `User` e todas as opções fixas do passo 7. Os passos 8 e 9 chamam
+  `ssh -F <config> -T gmn-receiver <comando>`: host, porta e usuário nunca vão à linha de comando, e o `-F` faz o `ssh` ignorar
+  qualquer outra configuração (nem a do sistema). O usuário (`gmn-deploy`, `gmn-hml-deploy`) sai do ambiente, não de segredo.
+- **Saída do `ssh` e do receptor:** o stderr do `ssh` nunca vai ao log (repete host e endereço). O erro do receptor também não passa
+  como veio: o código tem de ser do conjunto **fechado** do §5.8 (os do receptor de deploy e os comuns), com a saída numérica
+  correspondente; o detalhe só pode vir da lista fechada do código (`E_HOST_CONFIG <nome>` de uma lista fixa de variáveis,
+  `E_POSTDEPLOY_CHECK PD-01..PD-08`; os demais sem detalhe), e a linha pública é remontada pelo job. Qualquer outra coisa vira
+  `RECEIVER_UNKNOWN_ERROR EXIT_<n>`, sem repetir nada. Conexão que falha (255) vira `SSH_CONNECT_FAILED HOST_KEY|AUTH|OTHER`. **A
+  P9.3a usa a mesma lista de nomes do `E_HOST_CONFIG`** (`HOST_CONFIG_NAMES` em `deploy/ci/receiver-call.sh`); um nome novo entra
+  nela no mesmo PR.
+- **Saída do Docker:** a saída do `docker build` e do `docker save` vai só para arquivos `0600` em `$RUNNER_TEMP/gmn-build`, apagados
+  na limpeza; o log público recebe só `BUILD_FAILED <web|worker>` ou `BUNDLE_FAILED`. Para depurar: o job público `build` do `ci.yml` e,
+  na máquina de desenvolvimento, `build-images.sh` e `verify-local.sh`.
 - **`GMN_SSH_PORT` é opcional (ausente = 22):** um segredo curto como `22` seria mascarado em todo o log, inclusive dentro dos hashes;
   a porta nunca é impressa, porque o stderr do `ssh` não vai ao log.
 - **Códigos do lado do workflow**, além dos do §5.8: `INPUT_INVALID`, `GITHUB_API_FAILED`, `CI_PENDING`, `CI_NOT_GREEN`,
   `NOT_MAIN_HEAD`, `CHECKOUT_MISMATCH`, `BUILD_CONFIG_MISSING`, `BUILD_CONFIG_INVALID`, `BUILD_FAILED`, `BUNDLE_FAILED`,
   `BUNDLE_SIZE_OUT_OF_RANGE`, `HASH_INPUT_MISSING`, `TRUST_LIST_TOO_LARGE`, `SSH_CONFIG_MISSING`, `SSH_CONFIG_INVALID`,
-  `BUNDLE_MISSING`, `BUNDLE_CHANGED`, `TRUST_LIST_CHANGED`, `SSH_CONNECT_FAILED`, `RECEIVER_FAILED`, `RECEIVER_BAD_OUTPUT`,
+  `BUNDLE_MISSING`, `BUNDLE_CHANGED`, `TRUST_LIST_CHANGED`, `SSH_CONNECT_FAILED`, `RECEIVER_UNKNOWN_ERROR`, `RECEIVER_BAD_OUTPUT`,
   `TRUST_LIST_INSTALLED_MISMATCH`, `EX_CONFIG_INVALID`, `EX_CHECK_FAILED` (o que fazer em cada um: runbook §0.1).
-- **Verificação externa:** até 12 tentativas em até 2 min, `curl --proto =https --tlsv1.2 --max-redirs 0`, sem `-k`, sem cookie.
+- **Verificação externa:** até 12 tentativas, com o prazo de 2 min conferido antes de cada tentativa e de cada chamada; o `--max-time`
+  de cada chamada é o menor entre 10 s e o tempo que falta. `curl -q --proto =https --tlsv1.2 --max-redirs 0 --config -`: a URL vai
+  pela configuração no stdin (o domínio nunca na linha de comando), `-q` ignora `.curlrc`, sem `-k`, sem cookie. Uma chamada só vale
+  se o `curl` sair com 0 (um código impresso antes de um erro, como o 28 de prazo, conta como `000`).
 - **Pacote:** `gzip -n` só estabiliza o cabeçalho do gzip (sem nome nem data). O sha256 do pacote é a **integridade** do pacote daquela
   execução, conferida pelo receptor; não é prova de build reprodutível entre execuções.
 - Até a P9.5, `acao = entregar-selos` não roda nenhum job, e o gatilho `push` no caminho dos manifestos ainda não existe.
@@ -808,7 +822,7 @@ relatório indicado.
 - [x] **P9-W05** nenhum `${{ secrets.` e nenhum `${{ inputs.` dentro de `run:`; nenhum `set -x` nem `ssh -v`.
 - [x] **P9-W06** `concurrency` por operação e ambiente: `gmn-<amb>-deploy` no `deploy` e `gmn-<amb>-seals` no `seals-deliver`;
   nenhum grupo comum às duas operações; nenhum `cancel-in-progress: true`.
-- [x] **P9-W07** `StrictHostKeyChecking=yes` e `UserKnownHostsFile` explícito em todo `ssh`; nenhum `StrictHostKeyChecking=no`
+- [x] **P9-W07** *(P9.4: na configuração privada do `ssh -F`, §5.5.1, precisões)* `StrictHostKeyChecking=yes` e `UserKnownHostsFile` explícito em todo `ssh`; nenhum `StrictHostKeyChecking=no`
   nem `accept-new`.
 - [x] **P9-W08** a chave só é escrita depois do passo de build, e há limpeza com `if: always()`.
 - [ ] **P9-W09** `seals-deliver` não roda `npm`, `node` nem `npx`.
