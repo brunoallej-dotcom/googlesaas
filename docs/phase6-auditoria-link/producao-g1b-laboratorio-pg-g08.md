@@ -28,12 +28,16 @@
 ### 0.1 A sessão segura do roteiro (rodar uma vez, num shell só para isto)
 
 Abra um shell novo só para o roteiro (`bash --norc --noprofile`), cole o bloco abaixo nele e, no fim do roteiro, `exit` (o `trap` apaga
-a pasta temporária com o `PGPASSFILE`, os cabeçalhos e as respostas).
+a pasta temporária com o `PGPASSFILE`, os cabeçalhos e as respostas). Se a sessão do runbook da guarda (§0 dele) também for aberta neste
+shell, em qualquer ordem, as duas usam o mesmo `trap` sobre a lista `GMN_SESSOES`: um não substitui o outro, e o `exit` apaga as duas
+pastas (revisão final do PR #64).
 
 ```bash
 set +x
 umask 077
-LAB="$(mktemp -d)"; trap 'rm -rf -- "$LAB"' EXIT
+LAB="$(mktemp -d)"; GMN_SESSOES+=("$LAB")
+# o MESMO trap no roteiro do laboratório e no runbook da guarda: apaga TODAS as pastas de sessão deste shell, em qualquer ordem
+trap 'rm -rf -- "${GMN_SESSOES[@]}"' EXIT
 # TLS obrigatório em TODA conexão psql (laboratório e produção): cadeia até a CA do projeto E nome do host
 export PGSSLMODE=verify-full PGSSLROOTCERT=<ARQUIVO_CA> PGDATABASE=postgres PGPASSFILE="$LAB/pgpass"
 : > "$PGPASSFILE"

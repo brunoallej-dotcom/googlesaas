@@ -26,7 +26,20 @@ pasta temporária da sessão, que o CLI lê pelas variáveis `*_FILE`:
 ```bash
 set +x
 umask 077
-SESSAO="$(mktemp -d)"; trap 'rm -rf -- "$SESSAO"' EXIT
+SESSAO="$(mktemp -d)"; GMN_SESSOES+=("$SESSAO")
+# o MESMO trap no runbook e no roteiro do laboratório: apaga TODAS as pastas de sessão deste shell, em qualquer ordem
+trap 'rm -rf -- "${GMN_SESSOES[@]}"' EXIT
+# TLS obrigatório em TODA conexão psql deste runbook (\password, conferências): cadeia até a CA do projeto E nome do host
+export PGSSLMODE=verify-full PGSSLROOTCERT=<ARQUIVO_CA_DO_PROJETO> PGDATABASE=postgres PGPASSFILE="$SESSAO/pgpass"
+: > "$PGPASSFILE"
+# pg_como <usuário> <host> <porta>: pede a senha sem eco, guarda no PGPASSFILE 0600 da sessão e aponta PGHOST/PGPORT/PGUSER
+pg_como() {
+  local senha
+  read -rsp "senha de $1 em $2:$3: " senha; echo
+  printf '%s:%s:*:%s:%s\n' "$2" "$3" "$1" "$(printf '%s' "$senha" | sed 's/[\\:]/\\&/g')" >> "$PGPASSFILE"
+  unset senha
+  export PGHOST="$2" PGPORT="$3" PGUSER="$1"
+}
 read -rsp 'URL do leitor (postgresql://gmn_guard_reader[.<REF>]:<senha com escape>@<HOST>:<PORTA>/postgres?sslmode=verify-full): ' V; echo
 printf '%s' "$V" > "$SESSAO/reader-url"; unset V
 read -rsp 'chave ATUAL do pseudônimo (<id>:<64 hex>): ' K; echo
@@ -40,9 +53,10 @@ if [ -n "$R" ]; then printf '%s' "$R" > "$SESSAO/retired-keys"; export GMN_LINK_
 
 Ao terminar: `exit` (o `trap` apaga os arquivos da sessão).
 
-**Conexões `psql` deste runbook** (`\password` nos §4 e §5, conferências): a mesma sessão segura do roteiro do laboratório
-(`producao-g1b-laboratorio-pg-g08.md` §0.1) — `PGSSLMODE=verify-full` e `PGSSLROOTCERT=<ARQUIVO_CA_DO_PROJETO>` obrigatórios, senha só
-num `PGPASSFILE` `0600` temporário (função `pg_como`) ou no prompt do `psql`, **nunca** uma URL com senha no comando.
+**Conexões `psql` deste runbook** (`\password` nos §4 e §5, conferências): o bloco acima já basta — `PGSSLMODE=verify-full` e
+`PGSSLROOTCERT=<ARQUIVO_CA_DO_PROJETO>` exportados, e `pg_como <usuário> <host> <porta>` (igual à do roteiro do laboratório) pede a senha
+sem eco e a guarda só no `PGPASSFILE` `0600` da sessão; **nunca** uma URL com senha no comando. Se a sessão do roteiro do laboratório
+também for aberta neste shell, em qualquer ordem, as duas usam o mesmo `trap` sobre `GMN_SESSOES` e o `exit` apaga as duas pastas.
 
 ## 1. Ativação (antes do primeiro `ENROLL` — regra 1)
 
@@ -77,9 +91,13 @@ rodada** (a rodada é tirada com o web parado; uma escrita entre a rodada e a re
 `GUARD_HEAD_NOT_IN_BACKUP`):
 
 **A pasta dos registros** é dedicada e estrita (revisão do PR #64): fora do repositório pelo caminho real (o repositório é público),
-dona do seu usuário e sem escrita para grupo ou outros (`mkdir -m 700 <PASTA_DOS_REGISTROS>`); senão `RECORDS_DIR_UNSAFE`. Dentro dela só
+dona do seu usuário e sem escrita para grupo ou outros (`mkdir -m 700 <PASTA_DOS_REGISTROS>`), e **cada pasta acima dela até `/`** do seu
+usuário ou do root, sem escrita para grupo ou outros (a menos que tenha o sticky bit, como `/tmp`) — a regra do StrictModes do ssh, que
+impede outro usuário de trocar a pasta por um link no meio da gravação. Senão `RECORDS_DIR_UNSAFE`; também numa plataforma em que não dá
+para verificar dono e modo. Na gravação, a pasta é conferida de novo antes de publicar e, depois, o registro publicado precisa ser o
+mesmo arquivo (mesmo `dev`/`ino`) no mesmo caminho real; qualquer troca no meio ⇒ `RECORDS_DIR_UNSAFE` (código 3), nunca sucesso. Dentro dela só
 cabem os `reconcile-NNNNNN.json` e, depois de uma execução interrompida, o temporário órfão do gravador (`.tmp-reconcile-NNNNNN-<16
-hex>.json`, que não conta como registro). **Qualquer outro nome** — um LEIA-ME, um registro renomeado — é recusado (`RECORDS_INVALID`):
+hex>.json`, arquivo regular — link simbólico ou pasta com esse nome é recusado — que não conta como registro). **Qualquer outro nome** — um LEIA-ME, um registro renomeado — é recusado (`RECORDS_INVALID`):
 anotações ficam em outra pasta. A primeira reconciliação (`--first`) só é aceita com a pasta **totalmente vazia**
 (`RECORDS_DIR_NOT_EMPTY`), para que renomear os registros nunca faça a cadeia recomeçar.
 
@@ -239,6 +257,9 @@ saída é abandonar a auditoria, **preservar** a evidência e abrir uma nova. **
   pseudônimo e as linhas do registro anterior). Linhas antigas abaixo da cabeça não são cobradas (o protocolo só usa a maior).
 - **Web comprometido** mente sobre o `latest` para a própria tela: detecção só depois do fato, na reconciliação semanal (PP-T1).
 - **Janela residual** de até `L_max` = 5 registros: o retrocesso dentro da última operação ainda não publicada passa (regra 3).
+- **Corrida na pasta dos registros feita pelo próprio usuário dono dela (ou pelo root):** fora do escopo. A conferência de ancestrais,
+  a reconferência antes de publicar e a conferência de `dev`/`ino` depois barram outro usuário; quem já é dono da pasta pode alterá-la de
+  qualquer forma (o Node não tem operações relativas a um descritor de diretório, e não se tenta imitar o `openat`).
 - A reconciliação **não confere as etiquetas HMAC** do livro (a chave do livro não sai da VPS); o que a guarda testemunha é o
   `contentSha256`, e um registro forjado na cópia não bate com a cabeça publicada.
 - Uma pessoa só reconcilia (PP-R1): sem a rotina, nada fora da VPS percebe a guarda que regrediu.

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -379,6 +380,42 @@ test('PG-G07 verificador do portão G-1: configuração inválida ⇒ CONFIG_INV
   assert.deepEqual([writer.code, writer.json().code], [EXIT.REFUSED, 'GUARD_WRITER_CREDENTIAL_PRESENT']);
   const writerSession = await run(['gate', '--json'], { reader: simulatedReaderDb([], WRITER_IDENTITY) });
   assert.deepEqual([writerSession.code, writerSession.json().code], [EXIT.REFUSED, 'NOT_READER_ROLE']);
+});
+
+/* ============================================================================ documentação operacional (revisão final do PR #64) */
+
+test('G1.b.2b documentação: os blocos de sessão do roteiro do laboratório e do runbook são autossuficientes (verify-full, CA, pg_como iguais) e, colados no MESMO shell em qualquer ordem, um não desfaz o trap do outro — o exit apaga as duas pastas de sessão', { skip: spawnSync('bash', ['--version']).status === 0 ? false : 'bash ausente' }, () => {
+  const read = (rel: string): string => fs.readFileSync(path.join(ROOT, rel), 'utf8');
+  const blockAfter = (doc: string, heading: string): string => {
+    const from = doc.indexOf(heading);
+    assert.ok(from >= 0, heading);
+    const start = doc.indexOf('```bash\n', from) + '```bash\n'.length;
+    return doc.slice(start, doc.indexOf('\n```', start));
+  };
+  const lab = blockAfter(read('docs/phase6-auditoria-link/producao-g1b-laboratorio-pg-g08.md'), '### 0.1 A sessão segura do roteiro');
+  const runbook = blockAfter(read('docs/phase6-auditoria-link/producao-g1b-runbook-guarda.md'), '**Ambiente da reconciliação**');
+  const pgComo = (block: string): string => block.slice(block.indexOf('pg_como() {'), block.indexOf('\n}\n', block.indexOf('pg_como() {')));
+  const trapLine = `trap 'rm -rf -- "\${GMN_SESSOES[@]}"' EXIT`;
+  for (const [name, block] of [['laboratório', lab], ['runbook', runbook]] as const) {
+    assert.match(block, /export PGSSLMODE=verify-full PGSSLROOTCERT=<ARQUIVO_CA[A-Z_]*> /, `${name}: verify-full e a CA exportados`);
+    assert.match(block, /GMN_SESSOES\+=\("\$(?:LAB|SESSAO)"\)/, `${name}: registra a pasta na lista comum`);
+    assert.ok(block.includes(trapLine), `${name}: o mesmo trap sobre todas as pastas`);
+    assert.equal((block.match(/^trap /gm) ?? []).length, 1, `${name}: um trap só`);
+    assert.ok(block.includes('umask 077'));
+  }
+  assert.equal(pgComo(runbook), pgComo(lab), 'pg_como idêntica nos dois blocos');
+  const ca = path.join(tmpDir('lagr-doc-'), 'ca-falsa.pem');
+  fs.writeFileSync(ca, 'não é usada aqui');
+  const fill = (block: string): string => block.replace(/<ARQUIVO_CA(?:_DO_PROJETO)?>/g, ca).replace(/<URL_DATA_API>/g, 'http://127.0.0.1:9');
+  for (const order of [[lab, runbook], [runbook, lab]]) {
+    const out = path.join(tmpDir('lagr-doc-'), 'sessoes.txt');
+    const script = `${fill(order[0] as string)}\n${fill(order[1] as string)}\nprintf '%s\\n' "\${GMN_SESSOES[@]}" > ${JSON.stringify(out)}\nfor d in "\${GMN_SESSOES[@]}"; do [ -d "$d" ] || exit 9; done\nexit 0\n`;
+    const result = spawnSync('bash', ['--norc', '--noprofile', '-c', script], { input: 'url-sentinela\nchave-sentinela\n\n', encoding: 'utf8', env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: os.tmpdir() } });
+    assert.equal(result.status, 0, result.stderr);
+    const sessions = fs.readFileSync(out, 'utf8').trim().split('\n');
+    assert.equal(sessions.length, 2, 'as duas pastas de sessão registradas');
+    for (const dir of sessions) assert.ok(!fs.existsSync(dir), `pasta de sessão apagada no exit: ${dir}`);
+  }
 });
 
 /* ============================================================================ isolamento */
