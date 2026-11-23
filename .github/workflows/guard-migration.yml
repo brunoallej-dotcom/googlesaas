@@ -8,8 +8,8 @@ name: guard-migration
 # (scripts/link-audit-guard-reconcile.ts), mais o carregador TS (tests/register-typescript.cjs) e o package-lock.json (a versão do pg e
 # do typescript exercitada). Fora das pastas da guarda e da reconciliação, o fecho passa pelo serviço do livro (decisões,
 # armazenamento, origem, núcleo da Fase 6) e pelas fixtures de teste do livro (evidências, coletor): por isso essas pastas inteiras e
-# quatro arquivos soltos de src/lib. A cobertura é TRAVADA em teste (tests/link-audit-guard-reconcile-reader.test.ts): import novo sem
-# gatilho aqui faz o teste falhar.
+# quatro arquivos soltos de src/lib. A cobertura é TRAVADA em teste (tests/link-audit-guard-reconcile-reader.test.ts, que também é gatilho):
+# import novo sem gatilho aqui, ou import(...)/require(...) não literal no fecho, faz o teste falhar.
 # Sem secrets; o contêiner do banco roda com --network none.
 # A saída deste job no SHA exato da 004 é EVIDÊNCIA OBRIGATÓRIA antes de o responsável aplicá-la (spec dos portões, GE-E4 e PG-G08).
 on:
@@ -31,6 +31,7 @@ on:
       - 'src/lib/site-check.ts'
       - 'src/lib/url-safety.ts'
       - 'tests/register-typescript.cjs'
+      - 'tests/link-audit-guard-reconcile-reader.test.ts'
       - 'tests/helpers/link-audit-collect-fixtures.ts'
       - 'tests/helpers/link-audit-decisions-fixtures.ts'
       - 'tests/helpers/link-audit-evidence-fixtures.ts'
@@ -58,6 +59,7 @@ on:
       - 'src/lib/site-check.ts'
       - 'src/lib/url-safety.ts'
       - 'tests/register-typescript.cjs'
+      - 'tests/link-audit-guard-reconcile-reader.test.ts'
       - 'tests/helpers/link-audit-collect-fixtures.ts'
       - 'tests/helpers/link-audit-decisions-fixtures.ts'
       - 'tests/helpers/link-audit-evidence-fixtures.ts'
@@ -113,7 +115,7 @@ jobs:
               supabase/proposed/local-test/guard-run.sh supabase/proposed/local-test/guard-adapter-run.ts \
               supabase/proposed/local-test/guard-reconcile-run.ts scripts/link-audit-guard-reconcile.ts \
               src/lib/link-audit-guard-reconcile/*.ts src/lib/link-audit-ledger/guard*.ts src/lib/link-audit-ledger/config.ts \
-              package-lock.json
+              tests/link-audit-guard-reconcile-reader.test.ts package-lock.json
             echo '```'
             echo "- resultado: $(grep -E '^(TODOS OS|FALHOU)' "$RUNNER_TEMP/guard-run.log" 2>/dev/null | tail -1 || echo 'sem saída')"
           } >> "$GITHUB_STEP_SUMMARY"
