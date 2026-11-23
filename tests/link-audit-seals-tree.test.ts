@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { nodeFsOps } from '../src/lib/link-audit/node-fs-ops';
-import { parseTreeModes } from '../src/lib/link-audit-seals-channel/changes';
+import { parseTreeEntries } from '../src/lib/link-audit-seals-channel/changes';
 import { parseSealsTreeArgs, runSealsCheckCli, SEALS_CHECK_EXIT, USAGE_LINES } from '../src/lib/link-audit-seals-channel/cli';
 import type { ChannelEnvironment } from '../src/lib/link-audit-seals-channel/paths';
 import { summaryLines } from '../src/lib/link-audit-seals-channel/summary';
@@ -23,9 +23,9 @@ const KEY_A = signer('ensaio-chave-a');
 const KEY_B = signer('ensaio-chave-b');
 
 const tree = (w: World, env: ChannelEnvironment = 'homologacao', overrides: Readonly<Record<string, string>> = {}, readBudgetBytes?: number) => {
-  const modes = parseTreeModes(modesBytes(w.root, overrides));
-  assert.ok(modes);
-  return runSealsTreeCheck({ repoRoot: w.root, modes, env }, { fs: nodeFsOps, ...(readBudgetBytes === undefined ? {} : { readBudgetBytes }) });
+  const entries = parseTreeEntries(modesBytes(w.root, overrides));
+  assert.ok(entries);
+  return runSealsTreeCheck({ repoRoot: w.root, entries, env }, { fs: nodeFsOps, ...(readBudgetBytes === undefined ? {} : { readBudgetBytes }) });
 };
 const codes = (report: { readonly refusals: ReadonlyArray<{ readonly code: string }> }): string[] => report.refusals.map((item) => item.code);
 
@@ -100,10 +100,10 @@ test(`P9.5 árvore: mais de ${MAX_TREE_FILES} manifestos e fechos ⇒ SEALS_TOO_
     fs.writeFileSync(path.join(dir, audit, 'seal-0001.json'), 'nunca lido');
   }
   const reads: string[] = [];
-  const modes = parseTreeModes(modesBytes(w.root));
-  assert.ok(modes);
+  const entries = parseTreeEntries(modesBytes(w.root));
+  assert.ok(entries);
   const spy = { ...nodeFsOps, readFileBytes: async (file: string, max: number) => (reads.push(file), nodeFsOps.readFileBytes(file, max)) };
-  const report = await runSealsTreeCheck({ repoRoot: w.root, modes, env: 'homologacao' }, { fs: spy });
+  const report = await runSealsTreeCheck({ repoRoot: w.root, entries, env: 'homologacao' }, { fs: spy });
   assert.deepEqual(codes(report), ['SEALS_TOO_MANY']);
   assert.equal(reads.length, 0, 'nada lido acima do teto de quantidade');
 
@@ -158,4 +158,65 @@ test('P9.5 CLI --tree: argumentos exatos (ambiente do enum, cada opção uma vez
   const unreadable: string[] = [];
   assert.equal(await runSealsCheckCli(['--tree', 'homologacao', '--modes', modesFile, '--repo', w.root], () => undefined, (line) => unreadable.push(line), { fs: nodeFsOps }), SEALS_CHECK_EXIT.USAGE);
   assert.deepEqual(unreadable, ['ERRO SEALS_INPUT_INVALID']);
+});
+
+/* ------------------------------------------------------------------------------------------------ revisão do PR #74, item 5 */
+
+/** `git ls-tree -r -z` montado à mão: cada entrada `[modo, caminho (texto ou bytes)]`. */
+const rawModes = (entries: ReadonlyArray<readonly [string, string | Buffer]>): Buffer =>
+  Buffer.concat(entries.map(([mode, repoPath]) => Buffer.concat([Buffer.from(`${mode} ${mode === '160000' ? 'commit' : 'blob'} ${'a'.repeat(40)}\t`, 'utf8'), Buffer.isBuffer(repoPath) ? repoPath : Buffer.from(repoPath, 'utf8'), Buffer.from([0])])));
+const treeOfRaw = async (w: World, raw: Buffer, env: ChannelEnvironment = 'homologacao', fsOps = nodeFsOps) => {
+  const entries = parseTreeEntries(raw);
+  assert.ok(entries, 'entrada na forma do git');
+  return runSealsTreeCheck({ repoRoot: w.root, entries, env }, { fs: fsOps });
+};
+const details = (report: { readonly refusals: ReadonlyArray<{ readonly code: string; readonly detail: string | null }> }): string[] => report.refusals.map((item) => `${item.code}${item.detail === null ? '' : ` ${item.detail}`}`);
+
+test('P9.5 árvore (revisão do PR #74, item 5): caminho do ambiente que não é UTF-8 é RECUSADO (nunca descartado nem "árvore vazia"); fora do ambiente não interfere', async () => {
+  const w = world();
+  const nonUtf8 = Buffer.concat([Buffer.from('link-audit-seals/homologacao/seals/', 'utf8'), Buffer.from([0xff, 0xfe]), Buffer.from('/seal-0001.json', 'utf8')]);
+  const only = await treeOfRaw(w, rawModes([['100644', nonUtf8]]));
+  assert.equal(only.touched, true, 'nunca "nada a verificar"');
+  assert.deepEqual(codes(only), ['SEALS_UNEXPECTED_PATH']);
+  chainInRepo(w, AUD_A, [KEY_A], 'homologacao');
+  const mixed = await treeOfRaw(w, Buffer.concat([modesBytes(w.root), rawModes([['100644', nonUtf8]])]));
+  assert.deepEqual(codes(mixed), ['SEALS_UNEXPECTED_PATH']);
+  assert.equal(mixed.manifests.length, 1, 'os válidos continuam no resumo');
+  assert.deepEqual(codes(await treeOfRaw(w, Buffer.concat([modesBytes(w.root), rawModes([['100644', nonUtf8]])]), 'producao')), [], 'o caminho é de homologação');
+});
+
+test('P9.5 árvore (revisão do PR #74, item 5): link, submódulo ou arquivo EXATAMENTE em link-audit-seals, link-audit-seals/<amb> ou <amb>/seals ⇒ SEALS_BAD_MODE / SEALS_UNEXPECTED_PATH com a pasta no detalhe (nunca "nada sob o ambiente")', async () => {
+  const w = world();
+  const cases: Array<[string, string, string]> = [
+    ['120000', 'link-audit-seals/homologacao', 'SEALS_BAD_MODE homologacao'],
+    ['100644', 'link-audit-seals/homologacao', 'SEALS_UNEXPECTED_PATH homologacao'],
+    ['120000', 'link-audit-seals/homologacao/seals', 'SEALS_BAD_MODE homologacao/seals'],
+    ['160000', 'link-audit-seals/homologacao/seals', 'SEALS_BAD_MODE homologacao/seals'],
+    ['100755', 'link-audit-seals/homologacao/seals', 'SEALS_UNEXPECTED_PATH homologacao/seals'],
+    ['120000', 'link-audit-seals', 'SEALS_BAD_MODE link-audit-seals'],
+  ];
+  for (const [mode, repoPath, expected] of cases) {
+    const report = await treeOfRaw(w, rawModes([[mode, repoPath]]));
+    assert.equal(report.touched, true, repoPath);
+    assert.deepEqual(details(report), [expected], `${mode} ${repoPath}`);
+  }
+  assert.deepEqual(details(await treeOfRaw(w, rawModes([['120000', 'link-audit-seals/homologacao']]), 'producao')), [], 'a pasta do outro ambiente não interfere');
+});
+
+test('P9.5 árvore (revisão do PR #74, item 5): toda pasta ancestral de um arquivo, no CHECKOUT, tem de ser diretório real (lstat): pasta da auditoria, seals ou do ambiente como link ⇒ SEALS_UNEXPECTED_PATH com a pasta, e o arquivo nunca é lido', async () => {
+  for (const linked of [`homologacao/seals/${AUD_A}`, 'homologacao/seals', 'homologacao']) {
+    const w = world();
+    const outside = path.join(tmpDir('p95-fora-'), 'alvo');
+    const real = path.join(w.root, 'link-audit-seals', ...linked.split('/'));
+    const chain = chainInRepo(w, AUD_A, [KEY_A], 'homologacao');
+    fs.mkdirSync(path.dirname(outside), { recursive: true });
+    fs.renameSync(real, outside);
+    fs.symlinkSync(outside, real);
+    const reads: string[] = [];
+    const spy = { ...nodeFsOps, readFileBytes: async (file: string, max: number) => (reads.push(file), nodeFsOps.readFileBytes(file, max)) };
+    const report = await treeOfRaw(w, rawModes([['100644', sealRepoPath(AUD_A, 1, 'homologacao')], ['100644', 'link-audit-seals/homologacao/trust-keys.txt']]), 'homologacao', spy);
+    assert.ok(details(report).includes(`SEALS_UNEXPECTED_PATH ${linked}`), `${linked}: ${JSON.stringify(details(report))}`);
+    assert.ok(!reads.some((file) => file.endsWith('seal-0001.json')), `${linked}: nada lido através do link`);
+    assert.equal(chain.length, 1);
+  }
 });

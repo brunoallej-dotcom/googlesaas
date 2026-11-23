@@ -90,3 +90,40 @@ export function parseTreeModes(raw: Uint8Array): ReadonlyMap<string, string> | n
   }
   return modes;
 }
+
+/** Uma entrada de `git ls-tree -r -z` com o caminho sempre presente (P9.5, modo árvore): `path` é `null` quando os bytes não são UTF-8. */
+export interface TreeEntry {
+  readonly mode: string;
+  readonly path: string | null;
+  readonly pathBytes: Uint8Array;
+}
+
+/**
+ * `git ls-tree -r -z` SEM descartar nada (revisão do PR #74, item 5): um caminho que não é UTF-8 continua na lista, com `path: null` e os bytes
+ * crus (o modo árvore o recusa; nunca vira "árvore vazia"). Mesma forma de linha do `parseTreeModes`; caminho repetido ou linha fora da forma
+ * ⇒ `null`.
+ */
+export function parseTreeEntries(raw: Uint8Array): readonly TreeEntry[] | null {
+  const fields = nulFields(raw);
+  if (fields === null) return null;
+  const entries: TreeEntry[] = [];
+  const seen = new Set<string>();
+  for (const field of fields) {
+    const tab = field.indexOf(0x09);
+    const meta = tab > 0 ? decodeToken(field.subarray(0, tab)) : null;
+    const [mode, type, object, extra] = (meta ?? '').split(' ');
+    const pathBytes = field.subarray(tab + 1);
+    if (meta === null || extra !== undefined || !MODE.test(mode ?? '') || !OBJECT_TYPE.test(type ?? '') || !OBJECT_NAME.test(object ?? '') || pathBytes.byteLength === 0) return null;
+    const key = Buffer.from(pathBytes).toString('hex');
+    if (seen.has(key)) return null;
+    seen.add(key);
+    let path: string | null;
+    try {
+      path = STRICT_UTF8.decode(pathBytes);
+    } catch {
+      path = null;
+    }
+    entries.push({ mode: mode as string, path, pathBytes });
+  }
+  return entries;
+}

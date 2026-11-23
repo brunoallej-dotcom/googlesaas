@@ -1,7 +1,7 @@
 import nodePath from 'node:path';
 import { z } from 'zod';
 import { errorCode, type BytesFsOps } from '../link-audit/fs-ops';
-import { parseNameStatus, parseTreeModes } from './changes';
+import { parseNameStatus, parseTreeEntries, parseTreeModes } from './changes';
 import { runSealsCheck, type SealsCheckReport } from './check';
 import { refusal } from './codes';
 import { CHANNEL_ENVIRONMENTS, SEALS_ROOT, TRUST_LIST_FILE, type ChannelEnvironment } from './paths';
@@ -139,9 +139,9 @@ async function buildReport(args: SealsCheckArgs, fs: BytesFsOps): Promise<SealsC
 async function buildTreeReport(args: SealsTreeArgs, fs: BytesFsOps): Promise<SealsCheckReport> {
   const repoRoot = await repoRootOf(fs, args.repo);
   const modesRaw = await readInput(fs, args.modes, MAX_MODES_BYTES);
-  const modes = modesRaw === 'TOO_LARGE' ? null : parseTreeModes(modesRaw);
-  if (modes === null) throw new InputError();
-  return runSealsTreeCheck({ repoRoot, modes, env: args.tree }, { fs });
+  const entries = modesRaw === 'TOO_LARGE' ? null : parseTreeEntries(modesRaw);
+  if (entries === null) throw new InputError();
+  return runSealsTreeCheck({ repoRoot, entries, env: args.tree }, { fs });
 }
 
 /** O resumo do modo árvore: título e textos próprios (o ambiente vem do enum validado, nunca da entrada crua). */
