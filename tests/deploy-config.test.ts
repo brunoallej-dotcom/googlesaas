@@ -563,7 +563,9 @@ test('P9-H01 stack: produção nunca declara GMN_LINK_AUDIT_HOMOLOGATION; a trav
     }
   };
   walk(path.join(ROOT, 'deploy'));
-  assert.deepEqual(offenders.sort(), ['deploy/hostinger/docker-entrypoint.sh', 'deploy/hostinger/stack-hml.yml'], 'nenhum outro arquivo de implantação cita a trava');
+  assert.deepEqual(offenders.sort(), ['deploy/ci/receiver-call.sh', 'deploy/hostinger/docker-entrypoint.sh', 'deploy/hostinger/stack-hml.yml'], 'nenhum outro arquivo de implantação cita a trava');
+  const receiverCall = fs.readFileSync(path.join(ROOT, 'deploy', 'ci', 'receiver-call.sh'), 'utf8');
+  assert.ok(!receiverCall.replace(/readonly HOST_CONFIG_NAMES="[^"]*"/, '').includes('GMN_LINK_AUDIT_HOMOLOGATION'), 'o job só cita a trava como nome possível do E_HOST_CONFIG');
   const entrypointReads = stripComments(entrypoint).match(/[^\n]*GMN_LINK_AUDIT_HOMOLOGATION[^\n]*/g);
   assert.deepEqual(entrypointReads, ['if [ "${GMN_LINK_AUDIT_HOMOLOGATION:-}" = "1" ]; then'], 'o entrypoint só LÊ a trava (regra do Serper), nunca a liga');
   const webEnv = mapAt(mapAt(mapAt(overlayDoc.services, 'services')['gmn-web'], 'gmn-web').environment, 'environment');

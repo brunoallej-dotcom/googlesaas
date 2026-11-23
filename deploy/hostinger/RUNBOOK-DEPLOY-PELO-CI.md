@@ -43,20 +43,21 @@ por execução (spec §5.9), que vai para o `RELATORIO-DE-IMPLANTACAO.md` (e, na
 | `INPUT_INVALID <NOME>` | qualquer | entrada fora do padrão (não deveria acontecer pelo formulário) |
 | `CHECKOUT_MISMATCH` | 4 | o checkout não é o SHA do disparo; disparar de novo |
 | `BUILD_CONFIG_MISSING` / `BUILD_CONFIG_INVALID <NOME>` | 4 | segredo de build ausente no ambiente, ou a URL não começa com `https://` |
-| `BUILD_FAILED <alvo>` / `BUNDLE_FAILED` / `BUNDLE_SIZE_OUT_OF_RANGE` | 4 e 5 | ver o log do build (sem segredo) |
+| `BUILD_FAILED <alvo>` / `BUNDLE_FAILED` / `BUNDLE_SIZE_OUT_OF_RANGE` | 4 e 5 | a saída do Docker **não** vai ao log público (fica num arquivo privado do runner, apagado no fim). Para depurar: o job público `build` do `ci.yml` (`npm run build`, sem segredo) e, na máquina de desenvolvimento, `deploy/hostinger/build-images.sh` e `verify-local.sh` |
 | `HASH_INPUT_MISSING <arquivo>` / `TRUST_LIST_TOO_LARGE` | 6 | arquivo ausente no commit ou lista acima de 8 KiB |
-| `SSH_CONFIG_MISSING` / `SSH_CONFIG_INVALID <NOME>` | 7 a 9 | segredo SSH ausente ou fora do formato (H-05, H-09) |
+| `SSH_CONFIG_MISSING` / `SSH_CONFIG_INVALID <NOME>` | 7 a 9 | segredo SSH (chave, `known_hosts`, host ou porta) ausente ou fora do formato (H-03, H-05, H-09). Host, porta e usuário vão só para uma configuração privada do ssh no runner, nunca para a linha de comando |
 | `SSH_CONNECT_FAILED HOST_KEY` | 8 e 9 | chave de host diferente da fixada: **pare** e confira no console (H-09; pode ser ataque) |
 | `SSH_CONNECT_FAILED AUTH` / `OTHER` | 8 e 9 | chave pública ausente no host, `sshd`, porta ou rede (Q-2, aceita em 23/11/2026: porta aberta aos runners, só chave, `fail2ban`) |
 | `BUNDLE_MISSING` / `BUNDLE_CHANGED` / `TRUST_LIST_CHANGED` | 8 e 9 | o arquivo mudou entre passos do job: investigar o runner; disparar de novo |
-| `E_…` (ex.: `E_STACK_FILE_MISMATCH`) | 8 e 9 | código do receptor (spec §5.8); `E_STACK_FILE_MISMATCH` = instalar a stack do commit (H-08) |
-| `RECEIVER_FAILED EXIT_<n>` / `RECEIVER_BAD_OUTPUT` | 8 e 9 | o receptor saiu fora da gramática pública: ler o log local do receptor no host |
+| `E_…` (ex.: `E_STACK_FILE_MISMATCH`) | 8 e 9 | código do receptor, só do conjunto fechado da spec §5.8 e remontado pelo job; `E_STACK_FILE_MISMATCH` = instalar a stack do commit (H-08) |
+| `RECEIVER_UNKNOWN_ERROR EXIT_<n>` / `RECEIVER_BAD_OUTPUT` | 8 e 9 | o receptor respondeu fora do conjunto fechado (código, saída numérica ou detalhe desconhecido): o job não repete nada; ler o log local do receptor no host |
 | `TRUST_LIST_INSTALLED_MISMATCH` | 9 | a lista instalada não é a enviada: incidente; conferir o log do receptor |
-| `EX_CHECK_FAILED EX-0n` / `EX_CONFIG_INVALID` | 10 | `EX-01` `/login` ≠ 200, `EX-02`/`EX-03` ≠ 401: o serviço já foi atualizado; decidir pelo §5 |
+| `EX_CHECK_FAILED EX-0n` / `EX_CONFIG_INVALID` | 10 | `EX-01` `/login` ≠ 200, `EX-02`/`EX-03` ≠ 401: o serviço já foi atualizado; decidir pelo §6 |
 
 ## 1. Homologação: ações H-01 a H-10
 
-Ordem sugerida: H-01, H-02, H-03, H-05 (só gerar os pares), H-04, H-05 (host), H-06, H-07, H-08, H-09, H-10 e o primeiro deploy (§2).
+Ordem sugerida: H-01, H-02, H-03, H-05 (só gerar os pares), H-04, H-05 (host), H-06, H-07, H-08, H-09 (e, logo depois dele, a prova
+P9-O03), H-10 e o primeiro deploy (§2). Os blocos com `sudo` rodam num subshell com `set -eu`: param no primeiro erro.
 
 ### H-01 Recursos da VPS e custo
 
@@ -113,17 +114,19 @@ O Node dos receptores é o oficial, a mesma versão do `Dockerfile` (`node:22.23
 `SHASUMS256.txt`:
 
 ```bash
-set +x
-W="$(mktemp -d)" && cd "$W"
-curl -fsSLO https://nodejs.org/dist/v22.23.2/node-v22.23.2-linux-x64.tar.xz
-curl -fsSLO https://nodejs.org/dist/v22.23.2/SHASUMS256.txt
-grep ' node-v22.23.2-linux-x64.tar.xz$' SHASUMS256.txt | sha256sum -c -        # precisa dizer: OK
-sudo install -d -m 0755 -o root -g root /opt/gmn-receivers /opt/gmn-receivers/node
-sudo tar -xJf node-v22.23.2-linux-x64.tar.xz -C /opt/gmn-receivers/node --strip-components=1 --no-same-owner
-sudo chown -R root:root /opt/gmn-receivers/node && sudo chmod -R go-w /opt/gmn-receivers/node
-/opt/gmn-receivers/node/bin/node --version                                     # v22.23.2
-sha256sum /opt/gmn-receivers/node/bin/node                                    # registrar (P9-O04)
-cd / && rm -rf -- "$W"
+( set -euo pipefail                                                             # para no primeiro erro (nada instalado sem o OK)
+  W="$(mktemp -d)"; cd "$W"
+  curl -fsSLO https://nodejs.org/dist/v22.23.2/node-v22.23.2-linux-x64.tar.xz
+  curl -fsSLO https://nodejs.org/dist/v22.23.2/SHASUMS256.txt
+  grep ' node-v22.23.2-linux-x64.tar.xz$' SHASUMS256.txt | sha256sum -c -       # precisa dizer: OK; senão o subshell para aqui
+  sudo install -d -m 0755 -o root -g root /opt/gmn-receivers /opt/gmn-receivers/node
+  sudo tar -xJf node-v22.23.2-linux-x64.tar.xz -C /opt/gmn-receivers/node --strip-components=1 --no-same-owner
+  sudo chown -R root:root /opt/gmn-receivers/node
+  sudo chmod -R go-w /opt/gmn-receivers/node
+  /opt/gmn-receivers/node/bin/node --version                                    # v22.23.2
+  sha256sum /opt/gmn-receivers/node/bin/node                                   # registrar (P9-O04)
+  cd /; rm -rf -- "$W"
+)
 ```
 
 Recomendado: conferir também a assinatura do `SHASUMS256.txt` (`SHASUMS256.txt.sig`) com as chaves públicas de release do Node.
@@ -134,6 +137,21 @@ completam este passo. A regra fica: instalar do clone limpo do commit, como root
 do commit; o CI **nunca** atualiza receptor. Até lá, o `command=` do H-05 aponta para um *wrapper* que ainda não existe, e toda
 conexão falha fechada. Os caminhos `/opt/gmn-receivers/bin/gmn-hml-deploy` e `/opt/gmn-receivers/bin/gmn-hml-seals` abaixo são os
 sugeridos; use os que a P9.3a/P9.3b fixarem.
+
+**Impressão do projeto de produção no *wrapper* de homologação (`--forbid-supabase`), agora, antes de habilitar a chave do CI (H-05) e
+do primeiro deploy de homologação.** É o que faz o receptor de homologação recusar o projeto Supabase de produção
+(`E_HML_PRODUCTION_PROJECT`). Calcule exatamente como o workflow (sha256 dos bytes da URL, **sem** quebra de linha, 12 primeiros hex),
+sem a URL passar pela linha de comando nem pelo histórico:
+
+```bash
+set +x
+read -rsp 'URL do Supabase de PRODUÇÃO: ' U; printf '%s' "$U" | sha256sum | cut -c1-12; unset U     # 12 hex
+read -rsp 'URL do LABORATÓRIO: ' U; printf '%s' "$U" | sha256sum | cut -c1-12; unset U             # tem de ser diferente
+```
+
+Escreva a impressão de produção no *wrapper* de homologação, no lugar que o modelo da P9.3a indicar (`--forbid-supabase <12 hex>`),
+como root, e confira o sha256 do *wrapper* instalado. Se as duas impressões forem iguais, **pare**: a homologação estaria apontando
+para o projeto de produção.
 
 ### H-05 Usuários, chaves e `sshd`
 
@@ -147,8 +165,8 @@ gh secret set GMN_DEPLOY_SSH_KEY --env homologacao --repo <DONO>/<REPO> < <PASTA
 gh secret set GMN_SEALS_SSH_KEY --env homologacao --repo <DONO>/<REPO> < <PASTA_FORA_DO_REPO>/gmn-hml-seals
 ```
 
-Só os arquivos `.pub` vão para a VPS. As privadas ficam na estação apenas até o teste do P9-O03 (abaixo) e então são apagadas com
-`shred -u`; a cópia que vale é a do segredo do ambiente.
+Só os arquivos `.pub` vão para a VPS. As privadas ficam na estação apenas até a prova do P9-O03 (logo depois do H-09) e só então,
+se as duas recusas esperadas aparecerem, são apagadas com `shred -u`; a cópia que vale é a do segredo do ambiente.
 
 **Na VPS** (usuários com shell `/bin/sh`, porque o `sshd` roda o comando forçado pelo shell do usuário; `nologin` o impediria):
 
@@ -207,17 +225,8 @@ sudo sshd -T -C user=<SEU_USUARIO_SSH>,host=teste,addr=127.0.0.1 | grep -i '^for
 sudo systemctl reload ssh
 ```
 
-**P9-O03** (depois do H-04 completo, com o receptor instalado): da estação, um comando fora da gramática é recusado, e só então as
-privadas locais são apagadas.
-
-```bash
-ssh -i <PASTA_FORA_DO_REPO>/gmn-hml-deploy -o IdentitiesOnly=yes -p <PORTA_SSH> gmn-hml-deploy@<HOST_VPS> qualquer-coisa   # ERRO E_COMMAND
-ssh -i <PASTA_FORA_DO_REPO>/gmn-hml-seals -o IdentitiesOnly=yes -p <PORTA_SSH> gmn-hml-seals@<HOST_VPS> qualquer-coisa     # ERRO E_COMMAND
-shred -u <PASTA_FORA_DO_REPO>/gmn-hml-deploy <PASTA_FORA_DO_REPO>/gmn-hml-seals
-```
-
-Registre no relatório: `id` dos dois usuários, as duas linhas do `authorized_keys` (só o começo, `restrict,command="…" ssh-ed25519`),
-a saída do `sshd -T` e as duas recusas.
+Registre no relatório: `id` dos dois usuários, as duas linhas do `authorized_keys` (só o começo, `restrict,command="…" ssh-ed25519`)
+e a saída do `sshd -T`. A prova de que as chaves só executam o receptor (P9-O03) vem depois do H-09, com a chave de host fixada.
 
 ### H-06 Pastas de homologação
 
@@ -225,33 +234,51 @@ Tudo sob `/srv/gmn-hml/` (o receptor confere o prefixo, `E_DATA_PREFIX`). Recibo
 *loop*: passa no `verificar-pastas-fase6.sh`, mas **não** é independência física (limite declarado da homologação, spec §5.11). As
 pastas usadas ficam numa subpasta do sistema de arquivos montado (a raiz dele tem `lost+found`).
 
+O bloco pode ser repetido sem estrago (retomada depois de uma falha): cada imagem, sistema de arquivos, linha do `/etc/fstab`, montagem
+e log só é criado se **não** existir; o que já existe é conferido (tipo `ext4`, ponto de montagem, dono e modo), nunca recriado. O
+`mkfs.ext4 -F` só roda sobre uma imagem que o próprio bloco acabou de criar. `install -d` só ajusta dono e modo de pasta existente.
+
 ```bash
-sudo install -d -m 0755 -o root -g root /srv/gmn-hml /opt/gmn-hml
-sudo install -d -m 0700 -o 10001 -g 10001 /srv/gmn-hml/audits /srv/gmn-hml/link-audits /srv/gmn-hml/evidence
-sudo install -d -m 0700 -o 999 -g 1000 /srv/gmn-hml/redis
-sudo install -d -m 0700 -o 10001 -g 10001 /srv/gmn-hml/decisoes /srv/gmn-hml/resultados
-sudo install -d -m 0700 -o root -g root /var/lib/gmn-hml-loop
-sudo fallocate -l 512M /var/lib/gmn-hml-loop/recibos.img
-sudo fallocate -l 512M /var/lib/gmn-hml-loop/livro.img
-sudo mkfs.ext4 -q -F /var/lib/gmn-hml-loop/recibos.img
-sudo mkfs.ext4 -q -F /var/lib/gmn-hml-loop/livro.img
-sudo install -d -m 0755 -o root -g root /srv/gmn-hml/vol-recibos /srv/gmn-hml/vol-livro
-printf '%s\n' '/var/lib/gmn-hml-loop/recibos.img /srv/gmn-hml/vol-recibos ext4 loop,nodev,nosuid,noexec 0 2' \
-  '/var/lib/gmn-hml-loop/livro.img /srv/gmn-hml/vol-livro ext4 loop,nodev,nosuid,noexec 0 2' | sudo tee -a /etc/fstab >/dev/null
-sudo mount /srv/gmn-hml/vol-recibos && sudo mount /srv/gmn-hml/vol-livro
-sudo install -d -m 0700 -o 10001 -g 10001 /srv/gmn-hml/vol-recibos/decisoes /srv/gmn-hml/vol-recibos/resultados /srv/gmn-hml/vol-livro/livro
-sudo install -d -m 2750 -o gmn-hml-seals -g 10001 /srv/gmn-hml/manifestos       # regra da P9.3b (P9-O05)
+( set -euo pipefail
+  sudo install -d -m 0755 -o root -g root /srv/gmn-hml /opt/gmn-hml
+  sudo install -d -m 0700 -o 10001 -g 10001 /srv/gmn-hml/audits /srv/gmn-hml/link-audits /srv/gmn-hml/evidence
+  sudo install -d -m 0700 -o 999 -g 1000 /srv/gmn-hml/redis
+  sudo install -d -m 0700 -o 10001 -g 10001 /srv/gmn-hml/decisoes /srv/gmn-hml/resultados
+  sudo install -d -m 0700 -o root -g root /var/lib/gmn-hml-loop
+  for vol in recibos livro; do
+    img="/var/lib/gmn-hml-loop/${vol}.img"; mnt="/srv/gmn-hml/vol-${vol}"
+    if ! sudo test -e "$img"; then
+      sudo fallocate -l 512M "$img"
+      sudo mkfs.ext4 -q -F "$img"                                                # só na imagem recém-criada
+    fi
+    [ "$(sudo blkid -o value -s TYPE "$img")" = ext4 ] || { echo "PARE: $img existe e não é ext4" >&2; exit 1; }
+    sudo install -d -m 0755 -o root -g root "$mnt"
+    grep -qF " $mnt ext4 " /etc/fstab || printf '%s %s ext4 loop,nodev,nosuid,noexec 0 2\n' "$img" "$mnt" | sudo tee -a /etc/fstab >/dev/null
+    mountpoint -q "$mnt" || sudo mount "$mnt"
+    [ "$(findmnt -n -o FSTYPE --mountpoint "$mnt")" = ext4 ] || { echo "PARE: $mnt não está montado como ext4" >&2; exit 1; }
+    sudo install -d -m 0755 -o root -g root "$mnt"                              # a raiz do sistema montado
+  done
+  sudo install -d -m 0700 -o 10001 -g 10001 /srv/gmn-hml/vol-recibos/decisoes /srv/gmn-hml/vol-recibos/resultados /srv/gmn-hml/vol-livro/livro
+  sudo install -d -m 2750 -o gmn-hml-seals -g 10001 /srv/gmn-hml/manifestos     # regra da P9.3b (P9-O05)
+)
 stat -c '%U:%g %a %n' /srv/gmn-hml/manifestos                                    # gmn-hml-seals:10001 2750
+findmnt -n -o SOURCE,FSTYPE,TARGET --mountpoint /srv/gmn-hml/vol-recibos; findmnt -n -o SOURCE,FSTYPE,TARGET --mountpoint /srv/gmn-hml/vol-livro
 ```
 
-Estado e logs dos receptores (confira com o modelo de *wrapper* da P9.3a/P9.3b):
+Estado e logs dos receptores (confira com o modelo de *wrapper* da P9.3a/P9.3b). Um log que já existe **nunca** é truncado: só é
+conferido.
 
 ```bash
-sudo install -d -m 0755 -o root -g root /var/lib/gmn-deploy /var/lib/gmn-seals /var/log/gmn-receivers
-sudo install -d -m 0711 -o gmn-hml-deploy -g gmn-hml-deploy /var/lib/gmn-deploy/homologacao
-sudo install -d -m 0700 -o gmn-hml-seals -g gmn-hml-seals /var/lib/gmn-seals/homologacao
-sudo install -m 0600 -o gmn-hml-deploy -g gmn-hml-deploy /dev/null /var/log/gmn-receivers/homologacao-deploy.log
-sudo install -m 0600 -o gmn-hml-seals -g gmn-hml-seals /dev/null /var/log/gmn-receivers/homologacao-seals.log
+( set -euo pipefail
+  sudo install -d -m 0755 -o root -g root /var/lib/gmn-deploy /var/lib/gmn-seals /var/log/gmn-receivers
+  sudo install -d -m 0711 -o gmn-hml-deploy -g gmn-hml-deploy /var/lib/gmn-deploy/homologacao
+  sudo install -d -m 0700 -o gmn-hml-seals -g gmn-hml-seals /var/lib/gmn-seals/homologacao
+  for pair in deploy:gmn-hml-deploy seals:gmn-hml-seals; do
+    log="/var/log/gmn-receivers/homologacao-${pair%%:*}.log"; owner="${pair#*:}"
+    [ -e "$log" ] || sudo install -m 0600 -o "$owner" -g "$owner" /dev/null "$log"
+    [ "$(stat -c '%U:%G %a' "$log")" = "$owner:$owner 600" ] || { echo "PARE: dono ou modo inesperado em $log" >&2; exit 1; }
+  done
+)
 ```
 
 A conferência das seis pastas (com o `verificar-pastas-fase6.sh` instalado no H-08, do mesmo commit) roda no fim do H-08.
@@ -345,14 +372,29 @@ sudo bash /opt/gmn-hml/verificar-pastas-fase6.sh /srv/gmn-hml/decisoes /srv/gmn-
   /srv/gmn-hml/vol-recibos/resultados /srv/gmn-hml/vol-livro/livro /srv/gmn-hml/manifestos
 ```
 
-**P9-H07** (fusão dos dois arquivos no Docker do host): renderize a configuração para um arquivo só do root (ela contém valores do
-arquivo de variáveis, como os e-mails dos operadores), confira só as linhas abaixo e apague-o:
+**Conferência do arquivo de variáveis como DADO** (nunca `source`, nunca executado como shell sob `sudo`; a conferência definitiva é o
+parser estrito do receptor, P9.3a). Só nomes e números de linha vão ao terminal, nunca valores:
 
 ```bash
-sudo sh -c 'set -a; . /opt/gmn-hml/<ARQUIVO_DE_VARIAVEIS>; set +a; GMN_IMAGE_TAG=homologacao-<SHA40> GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS= docker stack config -c /opt/gmn-hml/stack.yml -c /opt/gmn-hml/stack-hml.yml > /root/gmn-hml-config.yml'
-sudo grep -cE '^\s+name: gmn-hml_' /root/gmn-hml-config.yml                    # 12
-sudo grep -nE 'GMN_LINK_AUDIT_HOMOLOGATION|replicas:|target: gmn_|routers\.gmn' /root/gmn-hml-config.yml
-sudo shred -u /root/gmn-hml-config.yml
+F=/opt/gmn-hml/<ARQUIVO_DE_VARIAVEIS>
+sudo sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$F" | sort                    # os nomes definidos
+sudo grep -nEv '^([A-Za-z_][A-Za-z0-9_]*=.*|#.*|)$' "$F" | cut -d: -f1             # linhas fora de NOME=valor: tem de sair vazio
+sudo grep -cE '^(GMN_IMAGE_TAG|GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS|GMN_AUTH_DISABLED|GMN_DEMO_MODE|GMN_LINK_AUDIT_HOMOLOGATION)=' "$F"   # 0
+sudo grep -cE '^GMN_TRAEFIK_NAME=gmn-hml$' "$F"                                   # 1
+sudo grep -nE '\$|`|^export ' "$F" | cut -d: -f1                                   # expansão ou export: tem de sair vazio
+```
+
+**P9-H07** (fusão dos dois arquivos no Docker do host): renderize com **valores fictícios** no ambiente (o arquivo de variáveis não é
+lido), confira só as linhas abaixo e apague a saída:
+
+```bash
+cd /opt/gmn-hml && sudo env -i PATH=/usr/bin:/bin GMN_IMAGE_TAG=conferencia GMN_HOST=conferencia.invalid GMN_NODE_HOSTNAME=conferencia \
+  GMN_TRAEFIK_NAME=gmn-hml GMN_DATA_ROOT=/srv/gmn-hml GMN_RAIZ_DADOS_DECISOES=/x/1 GMN_RAIZ_DADOS_RECIBOS_DECISOES=/x/2 \
+  GMN_RAIZ_DADOS_RESULTADOS=/x/3 GMN_RAIZ_DADOS_RECIBOS_RESULTADOS=/x/4 GMN_RAIZ_DADOS_LIVRO=/x/5 GMN_RAIZ_DADOS_MANIFESTOS=/x/6 \
+  docker stack config -c stack.yml -c stack-hml.yml > /tmp/gmn-hml-config.yml
+grep -cE '^\s+name: gmn-hml_' /tmp/gmn-hml-config.yml                            # 12
+grep -nE 'GMN_LINK_AUDIT_HOMOLOGATION|replicas:|target: gmn_|routers\.gmn' /tmp/gmn-hml-config.yml
+rm -f /tmp/gmn-hml-config.yml
 ```
 
 Esperado: 12 secrets `gmn-hml_*` (externos), `GMN_LINK_AUDIT_HOMOLOGATION: "1"` só no web, Worker com `replicas: 0`, `target: gmn_*`
@@ -380,6 +422,47 @@ gh secret set GMN_SSH_KNOWN_HOSTS --env homologacao --repo <DONO>/<REPO> < <PAST
 Com porta diferente de 22 a linha começa com `[<HOST_VPS>]:<PORTA_SSH>`. O host da linha tem de ser exatamente o `GMN_SSH_HOST`. O
 job recusa linhas com marcador (`@cert-authority`, `@revoked`) ou curinga, e nunca aceita chave nova sozinho
 (`StrictHostKeyChecking=yes`). A chave de host é a mesma para os dois ambientes (mesma VPS); grave o segredo em cada ambiente.
+
+**P9-O03, logo depois do H-09** (com o receptor instalado no H-04 e a chave de host fixada): da estação, com as **mesmas** opções
+estritas do CI (configuração privada, `known_hosts` fixado, `BatchMode`, `StrictHostKeyChecking yes`), um comando fora da gramática
+tem de ser recusado pelas duas chaves. As privadas locais só são apagadas se as **duas** recusas esperadas aparecerem (`ERRO
+E_COMMAND`, saída 10):
+
+```bash
+umask 077
+cat > <PASTA_FORA_DO_REPO>/ssh_config_gmn_hml <<'EOF'
+Host gmn-hml-deploy-teste
+  HostName <HOST_VPS>
+  Port <PORTA_SSH>
+  User gmn-hml-deploy
+  IdentityFile <PASTA_FORA_DO_REPO>/gmn-hml-deploy
+Host gmn-hml-seals-teste
+  HostName <HOST_VPS>
+  Port <PORTA_SSH>
+  User gmn-hml-seals
+  IdentityFile <PASTA_FORA_DO_REPO>/gmn-hml-seals
+Host gmn-hml-*-teste
+  IdentitiesOnly yes
+  BatchMode yes
+  StrictHostKeyChecking yes
+  UserKnownHostsFile <PASTA_FORA_DO_REPO>/known_hosts_gmn
+  GlobalKnownHostsFile /dev/null
+  LogLevel ERROR
+  ConnectTimeout 20
+  RequestTTY no
+  ClearAllForwardings yes
+EOF
+d="$(ssh -F <PASTA_FORA_DO_REPO>/ssh_config_gmn_hml gmn-hml-deploy-teste qualquer-coisa 2>&1 >/dev/null)"; dr=$?
+s="$(ssh -F <PASTA_FORA_DO_REPO>/ssh_config_gmn_hml gmn-hml-seals-teste qualquer-coisa 2>&1 >/dev/null)"; sr=$?
+if [ "$dr" -eq 10 ] && [ "$sr" -eq 10 ] && printf '%s\n' "$d" | grep -qx 'ERRO E_COMMAND' && printf '%s\n' "$s" | grep -qx 'ERRO E_COMMAND'; then
+  echo "P9-O03 OK: as duas chaves só executam o receptor"
+  shred -u <PASTA_FORA_DO_REPO>/gmn-hml-deploy <PASTA_FORA_DO_REPO>/gmn-hml-seals
+else
+  echo "PARE: as duas recusas E_COMMAND não apareceram; não apague as chaves e investigue (sshd -T, wrapper, receptor)"
+fi
+```
+
+Registre no relatório as duas recusas (P9-O03).
 
 ### H-10 Check obrigatório e CODEOWNERS
 
@@ -439,15 +522,8 @@ Antes do primeiro deploy de produção (G3), repita H-03 a H-09 com os nomes de 
 | Lista de confiança | `link-audit-seals/producao/trust-keys.txt`, nenhum id `ensaio-` |
 | Estado e logs | `/var/lib/gmn-deploy/producao`, `/var/lib/gmn-seals/producao`, `/var/log/gmn-receivers/producao-*.log` |
 
-Ainda para produção: a impressão do projeto de **produção** escrita no *wrapper* de homologação (`--forbid-supabase`), para que a
-homologação nunca aponte para ele (`E_HML_PRODUCTION_PROJECT`), calculada sem expor a URL:
-
-```bash
-set +x
-read -rsp 'URL do Supabase de produção: ' U; printf '%s' "$U" | sha256sum | cut -c1-12; unset U
-```
-
-E a autorização escrita da implantação (checklist §0). **P9-O07:** primeiro deploy de produção pelo workflow, `VERIFICACAO-POS-DEPLOY.md`
+A impressão do projeto de produção no *wrapper* de homologação (`--forbid-supabase`) já foi instalada no H-04, antes da homologação.
+Para produção, ainda: a autorização escrita da implantação (checklist §0). **P9-O07:** primeiro deploy de produção pelo workflow, `VERIFICACAO-POS-DEPLOY.md`
 inteiro com `STACK=gmn` e `HOST=<DOMINIO_PRODUCAO>`, e o primeiro teste de escrita só numa auditoria sintética combinada (P-9). Com
 o Worker ligado, faça o deploy com a fila vazia (`GUIA-DE-IMPLANTACAO.md` §7). A entrega de manifestos em produção é só pelo canal
 (P9.5, ensaiada na G2, P9-O06); nunca à mão.
@@ -491,6 +567,29 @@ Pela spec §10.3 e pelo `PLANO-DE-ROLLBACK.md`:
 - **Da aplicação (emergência):** `docker service rollback "${STACK}_gmn-web"` por você, no host, registrado como desvio no
   relatório; depois, o commit de reversão e o deploy normal, para o host voltar a bater com a `main`. **Nunca** para imagem anterior
   ao livro depois do primeiro `ENROLL` (R6-09; o receptor não sabe disso, é regra sua).
+- **Antes de qualquer `docker service rollback` do web, compare a lista de confiança.** O rollback de serviço volta a especificação
+  anterior **inteira**, inclusive a variável `GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS`: se o último deploy revogou uma chave, o rollback a
+  reativaria no servidor, enquanto o receptor continua com a lista revogada instalada. Compare só os hashes (o valor nunca é impresso):
+
+  ```bash
+  STACK=gmn-hml; AMB=homologacao                                       # produção: STACK=gmn; AMB=producao
+  lista_do_servico() { docker service inspect "${STACK}_gmn-web" --format "{{range .$1.TaskTemplate.ContainerSpec.Env}}{{println .}}{{end}}" \
+    | sed -n 's/^GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS=//p' | sha256sum | cut -c1-64; }
+  instalada="$(paste -sd, "/var/lib/gmn-deploy/${AMB}/trust-keys.txt" | sha256sum | cut -c1-64)"
+  if [ "$(lista_do_servico PreviousSpec)" = "$instalada" ]; then echo "lista anterior = instalada: o rollback de serviço pode ser usado"
+  else echo "LISTA DIFERENTE: NÃO use docker service rollback"; fi
+  ```
+
+  Se as listas forem diferentes (ou a especificação anterior não tiver a variável), **não** use `docker service rollback`: reverta por
+  commit + workflow ou, na emergência, troque **só a imagem** e mantenha o ambiente atual, com uma imagem posterior ao livro:
+
+  ```bash
+  docker service update --no-resolve-image --image gmn-web:<AMB>-<SHA40_ANTERIOR> "${STACK}_gmn-web"
+  [ "$(lista_do_servico Spec)" = "$instalada" ] && echo "PD-07 OK: a lista do web é a instalada" || echo "PARE: PD-07 falhou"
+  ```
+
+  Depois, refaça a conferência PD-07 (acima) e as do `VERIFICACAO-POS-DEPLOY.md`, registre o desvio e volte ao commit + workflow. O
+  Worker não recebe a lista; o rollback de serviço dele não tem esse risco.
 - **O Swarm voltou sozinho** (`E_ROLLED_BACK`): o serviço está na especificação anterior e a lista de confiança **não** foi
   instalada; corrija por commit e dispare de novo.
 - **Do pipeline:** corte o acesso (§5) e apague os segredos do ambiente. Sem o pipeline, a produção fica parada até ele voltar.

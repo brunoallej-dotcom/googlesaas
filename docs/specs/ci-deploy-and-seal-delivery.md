@@ -970,6 +970,12 @@ autorização escrita da implantação (checklist §0).
 
 - **Da aplicação:** commit de reversão + deploy pelo workflow. Emergência: `docker service rollback` pelo responsável no host
   (§7). Nunca para imagem anterior ao livro depois do primeiro `ENROLL`.
+  - *(P9.4, revisão do PR #69)* O `docker service rollback` do web volta a especificação anterior **inteira**, inclusive
+    `GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS`, e pode reativar uma chave que o último deploy revogou, enquanto o receptor mantém a lista
+    revogada instalada. Antes de usá-lo, o responsável compara o hash da lista da `PreviousSpec` do serviço com o da lista instalada
+    (`<estado>/trust-keys.txt`), sem imprimir valores. Se diferirem, não usa o rollback de serviço: reverte por commit + workflow ou,
+    na emergência, `docker service update --no-resolve-image --image <imagem anterior>`, que mantém o ambiente atual, e confere de novo o
+    PD-07 (runbook §6, `PLANO-DE-ROLLBACK.md` §1).
 - **Do pipeline:** tirar a linha do `authorized_keys` (corta o acesso na hora) e apagar os segredos do ambiente. Nada é apagado
   no host: manifestos, imagens, stacks e pastas ficam. Voltar ao deploy manual **não** é opção em produção (`CLAUDE.md`). Sem o
   pipeline, a produção fica parada até ele voltar.
