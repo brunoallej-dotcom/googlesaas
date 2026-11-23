@@ -8,7 +8,9 @@
 # receptor, nunca impressa). Host, porta, usuário e opções fixas vêm da configuração privada escrita no passo 7 (ssh-setup.sh):
 # `ssh -F <config> gmn-receiver`, nada disso na linha de comando.
 # Saída pública: a linha `OK …` do receptor ou uma linha `ERRO <CÓDIGO>[ <DETALHE>]`. O stderr do ssh NUNCA vai ao log (as mensagens
-# dele repetem host e endereço): só passa a linha de erro do receptor, se casar a gramática pública do §5.8.
+# dele repetem host e endereço). O erro do receptor também não passa adiante como veio: o código tem de ser um do conjunto FECHADO do
+# §5.8 (com a saída numérica correspondente), o detalhe tem de vir da lista fechada daquele código, e a linha pública é remontada aqui.
+# Qualquer outra coisa vira RECEIVER_UNKNOWN_ERROR EXIT_<n>, sem repetir nada do receptor.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 . deploy/ci/lib.sh
@@ -16,6 +18,42 @@ cd "$(dirname "$0")/../.."
 readonly SSH_CONNECT_FAILED_RC=255
 readonly MAX_COMMAND_BYTES=512
 readonly PUBLIC_ERROR_LINE='^ERRO E_[A-Z0-9_]+( [A-Za-z0-9_-]{1,64})?$'
+# Códigos do receptor de deploy e os comuns aos dois receptores (spec §5.8), com a saída numérica de cada um.
+declare -rA RECEIVER_EXIT_CODES=(
+  [E_COMMAND]=10 [E_INPUT_TOO_LARGE]=11 [E_INPUT_TRUNCATED]=12 [E_HASH_MISMATCH]=13 [E_TRUST_LIST_MISMATCH]=14
+  [E_TRUST_LIST_INVALID]=15 [E_LOCKED]=16 [E_ARTIFACT]=17 [E_INTERNAL]=29
+  [E_NOT_STAGED]=50 [E_STACK_FILE_MISMATCH]=51 [E_HOST_CONFIG]=52 [E_HOST_FOLDERS]=53 [E_SUPABASE_MISMATCH]=54
+  [E_HML_PRODUCTION_PROJECT]=55 [E_WORKER_REPLICAS_DRIFT]=56 [E_DISK_LOW]=57 [E_BUNDLE_TAGS]=58 [E_DOCKER_LOAD]=59
+  [E_STACK_CONFIG]=60 [E_STACK_DEPLOY]=61 [E_ROLLED_BACK]=62 [E_CONVERGE_TIMEOUT]=63 [E_POSTDEPLOY_CHECK]=64
+  [E_DATA_PREFIX]=65 [E_TRUST_LIST_TRANSITION]=66
+)
+# Nomes que o E_HOST_CONFIG pode trazer (spec §5.6 passo 4: proibidas, obrigatórias e as pastas de homologação). O receptor da P9.3a
+# usa esta lista; um nome novo entra aqui no mesmo PR.
+readonly HOST_CONFIG_NAMES=" GMN_IMAGE_TAG GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS GMN_AUTH_DISABLED GMN_DEMO_MODE GMN_LINK_AUDIT_HOMOLOGATION \
+GMN_TRAEFIK_NAME GMN_WORKER_REPLICAS GMN_DATA_ROOT GMN_RAIZ_DADOS_DECISOES GMN_RAIZ_DADOS_RECIBOS_DECISOES GMN_RAIZ_DADOS_RESULTADOS \
+GMN_RAIZ_DADOS_RECIBOS_RESULTADOS GMN_RAIZ_DADOS_LIVRO GMN_RAIZ_DADOS_MANIFESTOS NEXT_PUBLIC_SUPABASE_URL GMN_HOST GMN_NODE_HOSTNAME \
+GMN_OPERATOR_EMAILS "
+
+# receiver_error SAÍDA ARQUIVO: imprime "CÓDIGO[ DETALHE]" se a primeira linha de erro do receptor casar o conjunto fechado; senão nada.
+receiver_error() {
+  local rc="$1" line marker code detail
+  line="$(grep -E -m1 -- "$PUBLIC_ERROR_LINE" "$2" || true)"
+  [ -n "$line" ] || return 0
+  read -r marker code detail <<<"$line"
+  [ "$marker" = ERRO ] && [ "${RECEIVER_EXIT_CODES[$code]:-}" = "$rc" ] || return 0
+  case "$code" in
+    E_HOST_CONFIG)
+      [ -n "$detail" ] && [[ "$HOST_CONFIG_NAMES" == *" $detail "* ]] || return 0
+      ;;
+    E_POSTDEPLOY_CHECK)
+      [[ "$detail" =~ ^PD-0[1-8]$ ]] || return 0
+      ;;
+    *)
+      [ -z "$detail" ] || return 0
+      ;;
+  esac
+  printf '%s%s' "$code" "${detail:+ $detail}"
+}
 
 verb="${1:-}"
 gmn_require_amb
@@ -70,20 +108,16 @@ set +e
 response="$(LC_ALL=C ssh -F "$GMN_CI_SSH_CONFIG" -T "$GMN_CI_SSH_ALIAS" "$remote_command" <"$stdin_file" 2>"$stderr_file")"
 rc=$?
 set -e
-public_error="$(grep -E -m1 -- "$PUBLIC_ERROR_LINE" "$stderr_file" || true)"
+public_error="$(receiver_error "$rc" "$stderr_file")"
 ssh_hint=OTHER
 if grep -q 'Host key verification failed' "$stderr_file"; then ssh_hint=HOST_KEY; elif grep -q 'Permission denied' "$stderr_file"; then ssh_hint=AUTH; fi
 rm -f -- "$stderr_file"
 
 if [ "$rc" -eq "$SSH_CONNECT_FAILED_RC" ]; then gmn_fail SSH_CONNECT_FAILED "$ssh_hint"; fi
 if [ "$rc" -ne 0 ]; then
-  if [ -n "$public_error" ]; then
-    code="$(cut -d' ' -f2 <<<"$public_error")"
-    gmn_output code "$code"
-    printf '%s\n' "$public_error" >&2
-    exit 1
-  fi
-  gmn_fail RECEIVER_FAILED "EXIT_${rc}"
+  [ -n "$public_error" ] || gmn_fail RECEIVER_UNKNOWN_ERROR "EXIT_${rc}"
+  read -r code detail <<<"$public_error"
+  gmn_fail "$code" "$detail"
 fi
 if [[ "$response" == *$'\n'* ]] || ! [[ "$response" =~ $expected ]]; then gmn_fail RECEIVER_BAD_OUTPUT "$verb"; fi
 printf '%s\n' "$response"

@@ -435,7 +435,7 @@ test('P9.4 upload: ssh sem conexão (255) ⇒ SSH_CONNECT_FAILED com dica fixa; 
   }
 });
 
-test('P9.4 receptor: só a linha pública `ERRO E_…` do receptor passa (sem caminho nem saída do Docker); outra saída ⇒ RECEIVER_FAILED / RECEIVER_BAD_OUTPUT', (t) => {
+test('P9.4 receptor: só códigos do conjunto fechado do §5.8, com a saída numérica certa, e a linha pública remontada (sem caminho nem saída do Docker); outra saída ⇒ RECEIVER_UNKNOWN_ERROR / RECEIVER_BAD_OUTPUT', (t) => {
   const refused = receiverFixture(t, [{ rc: 13, stderr: 'ERRO E_HASH_MISMATCH\n/srv/caminho-real-sentinela/saida do docker\n' }]);
   const result = runScript(refused.sandbox, 'receiver-call.sh', ['upload'], uploadEnv(refused));
   assert.equal(result.status, 1);
@@ -443,19 +443,42 @@ test('P9.4 receptor: só a linha pública `ERRO E_…` do receptor passa (sem ca
   assert.equal(outputs(refused.sandbox).code, 'E_HASH_MISMATCH');
   assertNoLeak(result, 'caminho-real-sentinela', 'saida do docker');
 
-  const detail = receiverFixture(t, [{ rc: 64, stderr: 'ERRO E_POSTDEPLOY_CHECK PD-07\n' }]);
-  const pd = runScript(detail.sandbox, 'receiver-call.sh', ['upload'], uploadEnv(detail));
-  assert.equal(pd.stderr, 'ERRO E_POSTDEPLOY_CHECK PD-07\n');
+  const accepted: Array<[number, string]> = [[64, 'ERRO E_POSTDEPLOY_CHECK PD-07'], [52, 'ERRO E_HOST_CONFIG GMN_IMAGE_TAG'], [66, 'ERRO E_TRUST_LIST_TRANSITION']];
+  for (const [rc, line] of accepted) {
+    const fixture = receiverFixture(t, [{ rc, stderr: `aviso qualquer\n${line}\n` }]);
+    const out = runScript(fixture.sandbox, 'receiver-call.sh', ['upload'], uploadEnv(fixture));
+    assert.equal(out.stderr, `${line}\n`);
+    assert.equal(outputs(fixture.sandbox).code, line.split(' ')[1]);
+  }
 
   const garbage = receiverFixture(t, [{ rc: 1, stderr: 'Traceback /opt/caminho-sentinela\n' }]);
   const failed = runScript(garbage.sandbox, 'receiver-call.sh', ['upload'], uploadEnv(garbage));
-  assertRefused(garbage.sandbox, failed, 'RECEIVER_FAILED', 'EXIT_1');
+  assertRefused(garbage.sandbox, failed, 'RECEIVER_UNKNOWN_ERROR', 'EXIT_1');
   assertNoLeak(failed, 'caminho-sentinela');
 
   const wrong = receiverFixture(t, [{ stdout: `OK UPLOADED ${OTHER_SHA} ${HEX64_A}\n` }]);
   assertRefused(wrong.sandbox, runScript(wrong.sandbox, 'receiver-call.sh', ['upload'], uploadEnv(wrong)), 'RECEIVER_BAD_OUTPUT', 'upload');
   const extra = receiverFixture(t, [{ stdout: `OK UPLOADED ${SHA} ${sha256('pacote-falso')}\nmais uma linha\n` }]);
   assertRefused(extra.sandbox, runScript(extra.sandbox, 'receiver-call.sh', ['upload'], uploadEnv(extra)), 'RECEIVER_BAD_OUTPUT', 'upload');
+});
+
+test('P9.4 receptor: código desconhecido, detalhe fora da lista do código, detalhe em código sem detalhe ou saída numérica trocada ⇒ RECEIVER_UNKNOWN_ERROR EXIT_<n>, sem repetir nada', (t) => {
+  const cases: Array<[number, string, string]> = [
+    [70, 'ERRO E_SEGREDO_SENTINELA', 'E_SEGREDO_SENTINELA'],
+    [52, 'ERRO E_HOST_CONFIG SENHA_SENTINELA', 'SENHA_SENTINELA'],
+    [52, 'ERRO E_HOST_CONFIG', 'E_HOST_CONFIG'],
+    [64, 'ERRO E_POSTDEPLOY_CHECK PD-09', 'PD-09'],
+    [64, 'ERRO E_POSTDEPLOY_CHECK valor-sentinela', 'valor-sentinela'],
+    [16, 'ERRO E_LOCKED detalhe-sentinela', 'detalhe-sentinela'],
+    [13, 'ERRO E_LOCKED', 'E_LOCKED'],
+    [55, 'ERRO E_V2_REFUSED SEAL_KEY_REVOKED', 'E_V2_REFUSED'],
+  ];
+  for (const [rc, line, sentinel] of cases) {
+    const fixture = receiverFixture(t, [{ rc, stderr: `${line}\n` }]);
+    const result = runScript(fixture.sandbox, 'receiver-call.sh', ['upload'], uploadEnv(fixture));
+    assertRefused(fixture.sandbox, result, 'RECEIVER_UNKNOWN_ERROR', `EXIT_${rc}`);
+    assertNoLeak(result, sentinel);
+  }
 });
 
 test('P9-D01 P9-D11 (lado do workflow) deploy em produção: overlay "-", lista no stdin, impressão do Supabase só no comando (nunca impressa), OK DEPLOYED conferido', (t) => {
