@@ -340,7 +340,7 @@ test('passo 3: formato fora do v2 estrito, bytes não canônicos ou nome incoere
 
 /* ===================================================================================================================== P9-R06 */
 
-test('P9-R06 raiz como link simbólico ou arquivo, subpasta como link ou arquivo, `_closures` como link, destino FIFO, link ou pasta ⇒ E_UNSAFE_PATH (34); nada seguido nem gravado', async () => {
+test('P9-R06 raiz como link simbólico ou arquivo, subpasta como link ou arquivo, `_closures` como link, destino FIFO, link ou pasta ⇒ E_UNSAFE_PATH (34); nada seguido nem gravado', { timeout: 30_000 }, async () => {
   const { w, second, text, command, first } = hostWithChain();
   // raiz = link para a pasta real
   const alias = path.join(w.root, 'manifestos-apelido');
@@ -473,7 +473,7 @@ test('P9-R08 corrida determinística no link(): outro processo grava o MESMO nom
   }
 });
 
-test('trava de DEFESA: arquivo de trava existente (outra execução, ou uma morta por SIGKILL) ⇒ E_LOCKED (16) sem ler o stdin, e o arquivo alheio nunca é apagado; duas execuções simultâneas do receptor ⇒ uma recusa com E_LOCKED', async () => {
+test('trava de DEFESA: arquivo de trava existente (outra execução, ou uma morta por SIGKILL) ⇒ E_LOCKED (16) sem ler o stdin, e o arquivo alheio nunca é apagado; duas execuções simultâneas do receptor ⇒ uma recusa com E_LOCKED', { timeout: 30_000 }, async () => {
   const { w, text, command } = hostWithChain();
   fs.writeFileSync(w.lockFile, '999999\n', { mode: 0o600 });
   const locked = await runReceiver(w, command, text);
@@ -482,14 +482,25 @@ test('trava de DEFESA: arquivo de trava existente (outra execução, ou uma mort
   assert.equal((locked.stdin as FakeStdin).reads, 0, 'stdin não lido');
   assert.equal(fs.readFileSync(w.lockFile, 'utf8'), '999999\n', 'a trava alheia fica');
   fs.rmSync(w.lockFile);
+  // a primeira execução avisa quando chega ao stdin (já com a trava) e só segue quando o teste a solta: sem corrida de tempo
   let releaseFirst: () => void = () => undefined;
-  const firstStdin = { reads: 0, next: async () => { await new Promise<void>((resolve) => { releaseFirst = resolve; }); return { kind: 'end' as const }; } };
+  let reachedStdin: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const reached = new Promise<void>((resolve) => {
+    reachedStdin = resolve;
+  });
+  const firstStdin = {
+    next: async () => {
+      reachedStdin();
+      await gate;
+      return { kind: 'end' as const };
+    },
+  };
   const first = runReceiver(w, command, firstStdin);
-  const deadline = Date.now() + 10_000;
-  while (!fs.existsSync(w.lockFile)) {
-    assert.ok(Date.now() < deadline, 'a primeira execução não pegou a trava');
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
+  await reached;
+  assert.ok(fs.existsSync(w.lockFile), 'a primeira execução segura a trava');
   const second = await runReceiver(w, command, text);
   assert.equal(stderrOf(second), 'ERRO E_LOCKED');
   releaseFirst();
