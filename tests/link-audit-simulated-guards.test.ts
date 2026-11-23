@@ -278,7 +278,10 @@ test('servidor (2c): as rotas montam a prévia com a trava lida SÓ de GMN_LINK_
   assert.equal((shared.match(/GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS/g) ?? []).length, 1, 'a lista é lida uma vez, só pelo filtro');
   const stack = fs.readFileSync(path.join(root, 'deploy/hostinger/stack.yml'), 'utf8');
   assert.ok(!stack.includes('GMN_LINK_AUDIT_HOMOLOGATION'), 'produção nunca liga a trava de homologação');
-  for (const file of ['deploy/hostinger/Dockerfile', 'deploy/hostinger/docker-entrypoint.sh']) assert.ok(!fs.readFileSync(path.join(root, file), 'utf8').includes('GMN_LINK_AUDIT_HOMOLOGATION'), file);
+  assert.ok(!fs.readFileSync(path.join(root, 'deploy/hostinger/Dockerfile'), 'utf8').includes('GMN_LINK_AUDIT_HOMOLOGATION'), 'Dockerfile');
+  // P9.4: o entrypoint só LÊ a trava (para não carregar a chave do Serper em homologação); nunca a define nem a exporta.
+  const entrypointCode = fs.readFileSync(path.join(root, 'deploy/hostinger/docker-entrypoint.sh'), 'utf8').replace(/^\s*#.*$/gm, '');
+  assert.deepEqual(entrypointCode.match(/[^\n]*GMN_LINK_AUDIT_HOMOLOGATION[^\n]*/g), ['if [ "${GMN_LINK_AUDIT_HOMOLOGATION:-}" = "1" ]; then'], 'entrypoint: só a leitura da trava');
 });
 
 test('conclusão (2c): pendente gravada na homologação sobre evidência simulada NÃO recebe recibo sem a trava; com a trava, o autor conclui', async () => {

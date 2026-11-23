@@ -1,0 +1,207 @@
+name: deploy
+
+# Deploy pelo CI (P-9). Spec docs/specs/ci-deploy-and-seal-delivery.md §5.5 e §5.5.1; ADR-0004; ameaças
+# docs/security/threats/deploy-pelo-ci.md (DC-01 a DC-22); runbook do responsável deploy/hostinger/RUNBOOK-DEPLOY-PELO-CI.md.
+#
+# P9.4: só o job `deploy`, disparado à mão na `main` e aprovado pelo responsável no ambiente protegido (`homologacao` ou `producao`).
+# Os jobs `seals-verify` e `seals-deliver` e o gatilho `push` no caminho dos manifestos (`link-audit-seals/*/seals/**`) entram na
+# P9.5, neste mesmo arquivo. Até lá, um dispatch com `acao = entregar-selos` não roda nenhum job.
+#
+# Regras (tests/deploy-workflow.test.ts): permissões declaradas por job, só de leitura; segredos só de AMBIENTE, no `env:` do passo
+# que os usa; nenhuma expressão `${{ }}` dentro de `run:`; sem rastreamento do shell nem ssh verboso; actions só as do ci.yml, fixadas
+# por SHA; nada de artefato, registry, login ou cache. A lógica fica em deploy/ci/ (tests/deploy-ci-scripts.test.ts), menos as duas
+# conferências que precisam rodar ANTES do checkout (CI verde e cabeça da `main`), escritas aqui e testadas pelo mesmo texto.
+on:
+  workflow_dispatch:
+    inputs:
+      ambiente:
+        description: Ambiente de destino (aprovação do responsável no ambiente do GitHub)
+        type: choice
+        required: true
+        options: [homologacao, producao]
+      acao:
+        description: deploy (P9.4) ou entregar-selos (P9.5, ainda sem job)
+        type: choice
+        required: true
+        default: deploy
+        options: [deploy, entregar-selos]
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: deploy (${{ inputs.ambiente }})
+    if: github.event_name == 'workflow_dispatch' && inputs.acao == 'deploy' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: ${{ inputs.ambiente }}
+    # As permissões do job SUBSTITUEM as do workflow: `actions: read` lista as execuções do ci.yml no SHA exato (passo 1).
+    permissions:
+      contents: read
+      actions: read
+    # Um grupo por operação e ambiente; o mais novo substitui o pendente (o antigo falharia em NOT_MAIN_HEAD), nunca o em andamento.
+    concurrency:
+      group: gmn-${{ inputs.ambiente }}-deploy
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+    env:
+      GMN_AMB: ${{ inputs.ambiente }}
+      GMN_SHA: ${{ github.sha }}
+    steps:
+      - name: CI verde no SHA exato (ci.yml por push)
+        id: ci
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          fail() { printf 'code=%s\n' "$1" >>"$GITHUB_OUTPUT"; printf 'ERRO %s\n' "$1" >&2; exit 1; }
+          [[ "$GMN_SHA" =~ ^[0-9a-f]{40}$ ]] || fail INPUT_INVALID
+          [[ "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail INPUT_INVALID
+          # A execução mais recente (maior id) do ci.yml por push neste SHA; a API já filtra por SHA, evento e branch.
+          last="$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f head_sha="$GMN_SHA" -f event=push -f branch=main -f per_page=100 \
+            --jq '[.workflow_runs[] | select(.event == "push")] | max_by(.id) // {} | "\(.head_sha // "-") \(.status // "-") \(.conclusion // "-")"')" \
+            || fail GITHUB_API_FAILED
+          read -r run_sha run_status run_conclusion <<<"$last"
+          if [ "$run_sha" != "$GMN_SHA" ] || [ "$run_status" != completed ]; then fail CI_PENDING; fi
+          [ "$run_conclusion" = success ] || fail CI_NOT_GREEN
+          echo "CI verde no SHA (ci.yml, push): success"
+
+      - name: Commit ainda é a cabeça da main (NOT_MAIN_HEAD, antes do checkout e do build)
+        id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          fail() { printf 'code=%s\n' "$1" >>"$GITHUB_OUTPUT"; printf 'ERRO %s\n' "$1" >&2; exit 1; }
+          [[ "$GMN_SHA" =~ ^[0-9a-f]{40}$ ]] || fail INPUT_INVALID
+          [[ "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail INPUT_INVALID
+          # Cabeça atual da main pela API, só leitura (contents: read); o gh autentica com o GH_TOKEN do ambiente, nada é montado.
+          head="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" || fail NOT_MAIN_HEAD
+          [ "$head" = "$GMN_SHA" ] || fail NOT_MAIN_HEAD
+          echo "o commit ainda é a cabeça da main"
+
+      - name: Checkout do SHA (sem credencial persistida)
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Build das imagens web e worker (tag ambiente-sha40)
+        id: build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.GMN_BUILD_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.GMN_BUILD_SUPABASE_ANON_KEY }}
+        run: bash deploy/ci/build-images.sh
+
+      - name: Pacote (docker save e gzip -n em RUNNER_TEMP, nunca artefato)
+        id: bundle
+        run: bash deploy/ci/bundle.sh
+
+      - name: Hashes declarados (stack, sobreposição e lista de confiança)
+        id: hashes
+        run: bash deploy/ci/declared-hashes.sh
+
+      - name: Chave SSH, known_hosts e configuração privada do ssh (só depois do build)
+        id: ssh
+        env:
+          GMN_DEPLOY_SSH_KEY: ${{ secrets.GMN_DEPLOY_SSH_KEY }}
+          GMN_SSH_KNOWN_HOSTS: ${{ secrets.GMN_SSH_KNOWN_HOSTS }}
+          GMN_SSH_HOST: ${{ secrets.GMN_SSH_HOST }}
+          GMN_SSH_PORT: ${{ secrets.GMN_SSH_PORT }}
+        run: bash deploy/ci/ssh-setup.sh
+
+      - name: Receptor - upload (pacote no stdin)
+        id: upload
+        env:
+          GMN_BUNDLE_SHA256: ${{ steps.bundle.outputs.sha256 }}
+          GMN_BUNDLE_BYTES: ${{ steps.bundle.outputs.bytes }}
+        run: bash deploy/ci/receiver-call.sh upload
+
+      - name: Commit ainda é a cabeça da main (NOT_MAIN_HEAD, imediatamente antes do deploy)
+        id: head2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          fail() { printf 'code=%s\n' "$1" >>"$GITHUB_OUTPUT"; printf 'ERRO %s\n' "$1" >&2; exit 1; }
+          [[ "$GMN_SHA" =~ ^[0-9a-f]{40}$ ]] || fail INPUT_INVALID
+          [[ "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail INPUT_INVALID
+          # Cabeça atual da main pela API, só leitura (contents: read); o gh autentica com o GH_TOKEN do ambiente, nada é montado.
+          head="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" || fail NOT_MAIN_HEAD
+          [ "$head" = "$GMN_SHA" ] || fail NOT_MAIN_HEAD
+          echo "o commit ainda é a cabeça da main"
+
+      - name: Receptor - deploy (lista de confiança no stdin)
+        id: deploy
+        env:
+          GMN_BUILD_SUPABASE_URL: ${{ secrets.GMN_BUILD_SUPABASE_URL }}
+          GMN_BUNDLE_SHA256: ${{ steps.bundle.outputs.sha256 }}
+          GMN_STACK_SHA256: ${{ steps.hashes.outputs.stack_sha256 }}
+          GMN_OVERLAY_SHA256: ${{ steps.hashes.outputs.overlay_sha256 }}
+          GMN_TRUST_SHA256: ${{ steps.hashes.outputs.trust_sha256 }}
+        run: bash deploy/ci/receiver-call.sh deploy
+
+      - name: Verificação externa somente leitura (EX-01 a EX-03)
+        id: external
+        env:
+          GMN_PUBLIC_HOST: ${{ secrets.GMN_PUBLIC_HOST }}
+        run: bash deploy/ci/external-check.sh
+
+      - name: Limpeza da chave, do pacote e da saída do Docker
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/gmn-ssh" "$RUNNER_TEMP/gmn-bundle" "$RUNNER_TEMP/gmn-build"
+
+      - name: Resumo do job
+        if: always() && steps.checkout.outcome == 'success'
+        env:
+          GMN_O_CI: ${{ steps.ci.outcome }}
+          GMN_E_CI: ${{ steps.ci.outputs.code }}
+          GMN_O_HEAD: ${{ steps.head.outcome }}
+          GMN_E_HEAD: ${{ steps.head.outputs.code }}
+          GMN_O_CHECKOUT: ${{ steps.checkout.outcome }}
+          GMN_O_BUILD: ${{ steps.build.outcome }}
+          GMN_E_BUILD: ${{ steps.build.outputs.code }}
+          GMN_O_BUNDLE: ${{ steps.bundle.outcome }}
+          GMN_E_BUNDLE: ${{ steps.bundle.outputs.code }}
+          GMN_O_HASHES: ${{ steps.hashes.outcome }}
+          GMN_E_HASHES: ${{ steps.hashes.outputs.code }}
+          GMN_O_SSH: ${{ steps.ssh.outcome }}
+          GMN_E_SSH: ${{ steps.ssh.outputs.code }}
+          GMN_O_UPLOAD: ${{ steps.upload.outcome }}
+          GMN_E_UPLOAD: ${{ steps.upload.outputs.code }}
+          GMN_O_HEAD2: ${{ steps.head2.outcome }}
+          GMN_E_HEAD2: ${{ steps.head2.outputs.code }}
+          GMN_O_DEPLOY: ${{ steps.deploy.outcome }}
+          GMN_E_DEPLOY: ${{ steps.deploy.outputs.code }}
+          GMN_O_EXTERNAL: ${{ steps.external.outcome }}
+          GMN_E_EXTERNAL: ${{ steps.external.outputs.code }}
+          GMN_V_BUNDLE_SHA256: ${{ steps.bundle.outputs.sha256 }}
+          GMN_V_STACK_SHA256: ${{ steps.hashes.outputs.stack_sha256 }}
+          GMN_V_OVERLAY_SHA256: ${{ steps.hashes.outputs.overlay_sha256 }}
+          GMN_V_TRUST_INSTALLED_SHA256: ${{ steps.deploy.outputs.trust_installed_sha256 }}
+          GMN_V_WEB_IMAGE: ${{ steps.deploy.outputs.web_image }}
+          GMN_V_WORKER_IMAGE: ${{ steps.deploy.outputs.worker_image }}
+          GMN_V_EX: ${{ steps.external.outputs.ex }}
+        run: bash deploy/ci/summary.sh
+
+      - name: Resumo do job (recusado antes do checkout)
+        if: always() && steps.checkout.outcome != 'success'
+        env:
+          GMN_E_CI: ${{ steps.ci.outputs.code }}
+          GMN_E_HEAD: ${{ steps.head.outputs.code }}
+        run: |
+          set -euo pipefail
+          code="${GMN_E_CI:-${GMN_E_HEAD:-}}"
+          [[ "$code" =~ ^[A-Z][A-Z0-9_]{1,63}$ ]] || code=FALHOU_ANTES_DO_CHECKOUT
+          amb=-
+          case "$GMN_AMB" in homologacao | producao) amb="$GMN_AMB" ;; esac
+          {
+            echo "### Deploy pelo CI ($amb)"
+            echo
+            echo "Recusado antes do checkout: \`$code\` (execução \`$GITHUB_RUN_ID\`, commit \`$GMN_SHA\`). Nada foi construído nem enviado."
+          } >>"$GITHUB_STEP_SUMMARY"

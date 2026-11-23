@@ -295,7 +295,7 @@ não guardam estado.
 - **Probabilidade**: Média (uma pessoa, aprovações acumuladas). **Impacto**: Alto (uma chave revogada volta a valer). **Risco**:
   Alto.
 - **Mitigação**:
-  - Workflow: `github.sha` tem de ser a cabeça atual de `refs/heads/main` (`git ls-remote`, só leitura) no início do job e de
+  - Workflow: `github.sha` tem de ser a cabeça atual de `refs/heads/main` (lida pela API, `gh api …/git/ref/heads/main`, só leitura; P9.4) no início do job e de
     novo imediatamente antes do comando `deploy` por SSH (`NOT_MAIN_HEAD`, P9-W11). Grupos de concorrência por operação: um
     deploy mais novo substitui o pendente.
   - Host: a lista nova tem de ser transição válida a partir da instalada (`E_TRUST_LIST_TRANSITION`, P9-D14), o que cobre os
