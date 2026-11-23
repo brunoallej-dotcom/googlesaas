@@ -609,7 +609,7 @@ test('P9-R10 o conjunto fechado: detalhe só em E_V2_REFUSED (razões do verific
   assert.deepEqual(Object.values(SEAL_RECEIVER_EXIT_CODES).filter((exit) => exit >= 30), [30, 31, 32, 33, 34, 35, 36, 37]);
 });
 
-test('E_INTERNAL (29): ambiente além de PATH e SSH_ORIGINAL_COMMAND, PATH relativo, parâmetro fixo inválido, modelo de permissões desligado, filho ou worker permitidos, lista instalada gravável ou log que não é privado ⇒ recusa da instalação, sem ler o stdin', async () => {
+test('E_INTERNAL (29): ambiente além de PATH e SSH_ORIGINAL_COMMAND, PATH relativo, parâmetro fixo inválido, modelo de permissões desligado, filho ou worker permitidos, grant global de disco, lista instalada gravável ou log que não é privado ⇒ recusa da instalação, sem ler o stdin', async () => {
   const { w, text, command } = hostWithChain();
   const cases: Array<[string, Parameters<typeof runReceiver>[3]]> = [
     ['ambiente a mais', { env: { PATH: '/usr/bin:/bin', SSH_ORIGINAL_COMMAND: command, HOME: '/root' } }],
@@ -625,6 +625,8 @@ test('E_INTERNAL (29): ambiente além de PATH e SSH_ORIGINAL_COMMAND, PATH relat
     ['filho permitido', { permission: { has: (scope, ref) => scope === 'child' || wrapperPermission(w).has(scope, ref) } }],
     ['worker permitido', { permission: { has: (scope, ref) => scope === 'worker' || wrapperPermission(w).has(scope, ref) } }],
     ['lista instalada gravável', { permission: { has: (scope, ref) => (scope === 'fs.write' && ref === w.trustFile) || wrapperPermission(w).has(scope, ref) } }],
+    ['leitura global (--allow-fs-read=*)', { permission: { has: (scope, ref) => (scope === 'fs.read' && ref === undefined) || wrapperPermission(w).has(scope, ref) } }],
+    ['escrita global (--allow-fs-write=*)', { permission: { has: (scope, ref) => (scope === 'fs.write' && ref === undefined) || wrapperPermission(w).has(scope, ref) } }],
     ['pasta de manifestos sem escrita', { permission: { has: (scope, ref) => !(scope === 'fs.write' && ref === w.sealsRoot) && wrapperPermission(w).has(scope, ref) } }],
   ];
   for (const [label, options] of cases) {

@@ -217,6 +217,7 @@ test('P9-R11 em processo REAL: fora do modelo de permissões, com processo filho
     ['com --allow-worker', ['--permission', ...grants, '--allow-worker']],
     ['com escrita sobre a lista instalada', ['--permission', ...grants, `--allow-fs-write=${w.trustFile}`]],
     ['com escrita em tudo', ['--permission', ...grants.filter((grant) => !grant.startsWith('--allow-fs-write')), '--allow-fs-write=*']],
+    ['com leitura de tudo', ['--permission', ...grants.filter((grant) => !grant.startsWith('--allow-fs-read')), '--allow-fs-read=*']],
   ] as const) {
     const run = viaEnvI(nodeArgs);
     assertOneLine(run, w);

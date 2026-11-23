@@ -784,8 +784,8 @@ na fatia, todas de falha fechada:
   `<RAIZ_MANIFESTOS>` (o `GMN_RAIZ_DADOS_MANIFESTOS` real); homologação usa `/srv/gmn-hml/manifestos` (H-06).
 - **Confinamento conferido pelo receptor:** ambiente só com `PATH` e `SSH_ORIGINAL_COMMAND`, parâmetros fixos (`--env`, `--seals-root`,
   `--trust-list`, `--lock`, `--log`: todos obrigatórios, absolutos e normalizados; lista, trava e log fora da pasta de manifestos) e o
-  modelo de permissões **ligado**, sem filho nem worker, sem escrita sobre a lista instalada (RC-09) e com escrita na pasta de manifestos e
-  leitura da lista. Qualquer desvio ⇒ `E_INTERNAL`, antes de ler o stdin. A entrada também aplica `umask 027` (defesa).
+  modelo de permissões **ligado**, sem filho nem worker, sem grant global de disco (`--allow-fs-read=*`, `--allow-fs-write=*`), sem escrita
+  sobre a lista instalada (RC-09) e com escrita na pasta de manifestos e leitura da lista. Qualquer desvio ⇒ `E_INTERNAL`, antes de ler o stdin. A entrada também aplica `umask 027` (defesa).
 - **Trava de defesa** (`--lock`, como a `deploy.lock` da P9.3a): arquivo `O_EXCL | O_NOFOLLOW` com o pid; existente ⇒ `E_LOCKED`, nunca
   retomado. A liberação só apaga o arquivo que ainda é o **mesmo inode** que o processo criou, conferido por uma abertura só de escrita
   (sob `--permission` o receptor não tem leitura da pasta da trava). Depois de `SIGKILL`, o responsável confere a trava do kernel e apaga à mão

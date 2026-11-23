@@ -9,8 +9,8 @@ import { runPut } from './put';
  * P9.3b — o receptor de manifestos de ponta a ponta (spec §5.7, §5.8): o ÚNICO comando da chave de manifestos. Ordem:
  *  1. ambiente do processo = só `PATH` e `SSH_ORIGINAL_COMMAND` (o wrapper roda `env -i`); parâmetros fixos do wrapper: defeito ⇒ `E_INTERNAL`;
  *  2. log local aberto (`--log`, `0600`); sem ele ⇒ `E_INTERNAL`;
- *  3. o modelo de permissões do Node LIGADO, sem processo filho nem worker, e sem escrita concedida sobre a lista instalada (RC-09: a chave de
- *     manifestos nunca troca a lista); senão `E_INTERNAL` (wrapper fora do modelo);
+ *  3. o modelo de permissões do Node LIGADO, sem processo filho nem worker, sem grant global de disco e sem escrita concedida sobre a lista
+ *     instalada (RC-09: a chave de manifestos nunca troca a lista); senão `E_INTERNAL` (wrapper fora do modelo);
  *  4. gramática fechada (`E_COMMAND`, nada lido do stdin, nada criado);
  *  5. trava de DEFESA do ambiente (`--lock`, `E_LOCKED`; a de verdade é a do kernel, no wrapper);
  *  6. o `put`. Qualquer erro inesperado ⇒ `E_INTERNAL`.
@@ -42,6 +42,7 @@ function environmentIsClean(env: Readonly<Record<string, string | undefined>>): 
 export function confinementDefect(permission: PermissionFacts | null, config: SealReceiverConfig): string | null {
   if (permission === null) return 'permission model off';
   if (permission.has('child') || permission.has('worker')) return 'child process or worker allowed';
+  if (permission.has('fs.read') || permission.has('fs.write')) return 'global file system grant (only the paths of the wrapper line)';
   if (permission.has('fs.write', config.trustList)) return 'installed trust list writable';
   if (!permission.has('fs.write', config.sealsRoot) || !permission.has('fs.read', config.trustList)) return 'seals root or trust list not granted';
   return null;
