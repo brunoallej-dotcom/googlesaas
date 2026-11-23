@@ -5,7 +5,7 @@ import test from 'node:test';
 import './helpers/stub-lucide';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { SIMULATED_BADGE } from '../src/components/link-audit/evidence-labels';
+import { SIMULATED_BADGE, SIMULATED_NOTICE } from '../src/components/link-audit/evidence-labels';
 import type { Phase } from '../src/components/link-audit/evidence-state';
 import { StoredAuditDetail } from '../src/components/link-audit/stored-audit-detail';
 import { StoredAuditList } from '../src/components/link-audit/stored-audit-list';
@@ -168,6 +168,8 @@ test('leitor e interface (2c): a coleta simulada aparece como "SIMULADA — ensa
     assert.match(html, /nenhuma consulta foi feita/);
   }
   assert.match(detailHtml, /nunca é evidência real/);
+  assert.ok(detailHtml.includes(SIMULATED_NOTICE), 'o aviso em destaque do detalhe');
+  assert.ok((listHtml.match(/SIMULADA — ensaio/g) ?? []).length >= 2, 'na lista: o selo e o rótulo da fonte');
 
   const real = await makeAudit();
   const realReader = createEvidenceReader({ baseDir: real.base, authorize: () => true });

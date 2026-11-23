@@ -215,9 +215,10 @@ function refuseSimulated(message: string): ExportRefusal {
 
 async function runExport(args: ExportArgs, out: Line, err: Line, now: () => Date, deps: SealCliDeps): Promise<number> {
   // a trava é conferida ANTES de ler a pasta; sem `--simulated` + trava, o `export` recusa a captura simulada que encontrar
-  if (args.simulated && !(deps.getEnv ? isHomologationLockOn(deps.getEnv()) : homologationLockFromProcess())) return refusal(SIMULATED_WITHOUT_LOCK, args.json, out, err);
+  const lockOn = deps.getEnv ? isHomologationLockOn(deps.getEnv()) : homologationLockFromProcess();
+  if (args.simulated && !lockOn) return refusal(SIMULATED_WITHOUT_LOCK, args.json, out, err);
   const outcome = await exportCandidatePackage(
-    { evidenceDir: args.evidenceDir, auditId: args.auditId, collectorHashes: args.collectorHashes, maxGapHours: args.maxGapHours, gapJustification: args.gapJustification, sealsDir: args.sealsDir, out: args.out, projectRoot: deps.projectRoot ?? path.resolve(__dirname, '..'), now, allowSimulated: args.simulated },
+    { evidenceDir: args.evidenceDir, auditId: args.auditId, collectorHashes: args.collectorHashes, maxGapHours: args.maxGapHours, gapJustification: args.gapJustification, sealsDir: args.sealsDir, out: args.out, projectRoot: deps.projectRoot ?? path.resolve(__dirname, '..'), now, allowSimulated: args.simulated && lockOn },
     { ...(deps.fs ? { fs: deps.fs } : {}), ...(deps.outFs ? { outFs: deps.outFs } : {}) },
   );
   if (!outcome.ok) return refusal(outcome, args.json, out, err);
