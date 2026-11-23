@@ -106,18 +106,18 @@ jobs:
         id: hashes
         run: bash deploy/ci/declared-hashes.sh
 
-      - name: Chave SSH e known_hosts (só depois do build)
+      - name: Chave SSH, known_hosts e configuração privada do ssh (só depois do build)
         id: ssh
         env:
           GMN_DEPLOY_SSH_KEY: ${{ secrets.GMN_DEPLOY_SSH_KEY }}
           GMN_SSH_KNOWN_HOSTS: ${{ secrets.GMN_SSH_KNOWN_HOSTS }}
+          GMN_SSH_HOST: ${{ secrets.GMN_SSH_HOST }}
+          GMN_SSH_PORT: ${{ secrets.GMN_SSH_PORT }}
         run: bash deploy/ci/ssh-setup.sh
 
       - name: Receptor - upload (pacote no stdin)
         id: upload
         env:
-          GMN_SSH_HOST: ${{ secrets.GMN_SSH_HOST }}
-          GMN_SSH_PORT: ${{ secrets.GMN_SSH_PORT }}
           GMN_BUNDLE_SHA256: ${{ steps.bundle.outputs.sha256 }}
           GMN_BUNDLE_BYTES: ${{ steps.bundle.outputs.bytes }}
         run: bash deploy/ci/receiver-call.sh upload
@@ -139,8 +139,6 @@ jobs:
       - name: Receptor - deploy (lista de confiança no stdin)
         id: deploy
         env:
-          GMN_SSH_HOST: ${{ secrets.GMN_SSH_HOST }}
-          GMN_SSH_PORT: ${{ secrets.GMN_SSH_PORT }}
           GMN_BUILD_SUPABASE_URL: ${{ secrets.GMN_BUILD_SUPABASE_URL }}
           GMN_BUNDLE_SHA256: ${{ steps.bundle.outputs.sha256 }}
           GMN_STACK_SHA256: ${{ steps.hashes.outputs.stack_sha256 }}

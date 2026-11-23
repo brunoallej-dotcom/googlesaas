@@ -3,9 +3,10 @@
 # gramática fechada do §5.6, e confere a resposta. O receptor é o único comando da chave (`restrict,command=` no host).
 #   upload <sha40> <bundle-sha256> <bytes>                                                    (pacote no stdin)
 #   deploy <sha40> <bundle-sha256> <stack-sha256> <overlay-sha256|-> <trust-sha256> <supabase-fp12>   (lista no stdin)
-# Uso: deploy/ci/receiver-call.sh upload|deploy. Ambiente: GMN_AMB, GMN_SHA, GMN_SSH_HOST, GMN_SSH_PORT (opcional, padrão 22),
-# GMN_BUNDLE_SHA256 e, no upload, GMN_BUNDLE_BYTES; no deploy, GMN_STACK_SHA256, GMN_OVERLAY_SHA256, GMN_TRUST_SHA256 e
-# GMN_BUILD_SUPABASE_URL (segredo; só a impressão de 12 hex vai ao receptor, nunca impressa).
+# Uso: deploy/ci/receiver-call.sh upload|deploy. Ambiente: GMN_AMB, GMN_SHA, GMN_BUNDLE_SHA256 e, no upload, GMN_BUNDLE_BYTES; no
+# deploy, GMN_STACK_SHA256, GMN_OVERLAY_SHA256, GMN_TRUST_SHA256 e GMN_BUILD_SUPABASE_URL (segredo; só a impressão de 12 hex vai ao
+# receptor, nunca impressa). Host, porta, usuário e opções fixas vêm da configuração privada escrita no passo 7 (ssh-setup.sh):
+# `ssh -F <config> gmn-receiver`, nada disso na linha de comando.
 # Saída pública: a linha `OK …` do receptor ou uma linha `ERRO <CÓDIGO>[ <DETALHE>]`. O stderr do ssh NUNCA vai ao log (as mensagens
 # dele repetem host e endereço): só passa a linha de erro do receptor, se casar a gramática pública do §5.8.
 set -euo pipefail
@@ -14,30 +15,14 @@ cd "$(dirname "$0")/../.."
 
 readonly SSH_CONNECT_FAILED_RC=255
 readonly MAX_COMMAND_BYTES=512
-readonly HOST_PATTERN='^[A-Za-z0-9]([A-Za-z0-9.:-]*[A-Za-z0-9])?$'
 readonly PUBLIC_ERROR_LINE='^ERRO E_[A-Z0-9_]+( [A-Za-z0-9_-]{1,64})?$'
-# Opções fixas (spec §5.5.1 passo 7). `-F /dev/null`: nenhum arquivo de configuração do runner, nem o do sistema.
-readonly -a SSH_OPTS=(
-  -F /dev/null -T
-  -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes
-  -o "UserKnownHostsFile=${GMN_CI_SSH_DIR}/known_hosts" -o GlobalKnownHostsFile=/dev/null
-  -o LogLevel=ERROR -o ConnectTimeout=20 -o ServerAliveInterval=15
-)
 
 verb="${1:-}"
 gmn_require_amb
 gmn_require_sha
-[[ "${GMN_SSH_HOST:-}" =~ $HOST_PATTERN ]] || gmn_fail SSH_CONFIG_INVALID GMN_SSH_HOST
-# Porta: segredo opcional. Ausente ou vazio = 22 (um segredo curto como "22" seria mascarado em todo o log, inclusive dentro dos
-# hashes; e a porta nunca é impressa, porque o stderr do ssh não vai ao log).
-ssh_port="${GMN_SSH_PORT:-22}"
-if ! [[ "$ssh_port" =~ ^[1-9][0-9]{0,4}$ ]] || [ "$ssh_port" -gt 65535 ]; then gmn_fail SSH_CONFIG_INVALID GMN_SSH_PORT; fi
 gmn_regular_file "$GMN_CI_SSH_DIR/id_deploy" || gmn_fail SSH_CONFIG_MISSING id_deploy
 gmn_regular_file "$GMN_CI_SSH_DIR/known_hosts" || gmn_fail SSH_CONFIG_MISSING known_hosts
-case "$GMN_AMB" in
-  producao) ssh_user=gmn-deploy ;;
-  homologacao) ssh_user=gmn-hml-deploy ;;
-esac
+gmn_regular_file "$GMN_CI_SSH_CONFIG" || gmn_fail SSH_CONFIG_MISSING config
 gmn_is_hex "${GMN_BUNDLE_SHA256:-}" 64 || gmn_fail INPUT_INVALID GMN_BUNDLE_SHA256
 
 prepare_upload() {
@@ -82,8 +67,7 @@ esac
 
 stderr_file="$(mktemp "${RUNNER_TEMP}/gmn-ssh-stderr.XXXXXX")"
 set +e
-response="$(LC_ALL=C ssh "${SSH_OPTS[@]}" -i "$GMN_CI_SSH_DIR/id_deploy" -p "$ssh_port" -- \
-  "${ssh_user}@${GMN_SSH_HOST}" "$remote_command" <"$stdin_file" 2>"$stderr_file")"
+response="$(LC_ALL=C ssh -F "$GMN_CI_SSH_CONFIG" -T "$GMN_CI_SSH_ALIAS" "$remote_command" <"$stdin_file" 2>"$stderr_file")"
 rc=$?
 set -e
 public_error="$(grep -E -m1 -- "$PUBLIC_ERROR_LINE" "$stderr_file" || true)"

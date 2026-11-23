@@ -38,12 +38,28 @@ const IMAGE_WORKER = `sha256:${'2'.repeat(64)}`;
 /** Gramática do receptor de deploy (spec §5.6), do lado de quem chama. */
 const UPLOAD_GRAMMAR = /^upload [0-9a-f]{40} [0-9a-f]{64} (?:[1-9][0-9]{0,9})$/;
 const DEPLOY_GRAMMAR = /^deploy [0-9a-f]{40} [0-9a-f]{64} [0-9a-f]{64} (?:[0-9a-f]{64}|-) [0-9a-f]{64} [0-9a-f]{12}$/;
-const EXPECTED_SSH_OPTIONS = (sshDir: string): string[] => [
-  '-F', '/dev/null', '-T',
-  '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-o', 'StrictHostKeyChecking=yes',
-  '-o', `UserKnownHostsFile=${sshDir}/known_hosts`, '-o', 'GlobalKnownHostsFile=/dev/null',
-  '-o', 'LogLevel=ERROR', '-o', 'ConnectTimeout=20', '-o', 'ServerAliveInterval=15',
-];
+/** Configuração privada do ssh (spec §5.5.1 passo 7): host, porta, usuário e as opções fixas, fora da linha de comando. */
+const EXPECTED_SSH_CONFIG = (sshDir: string, port: string, user: string): string => [
+  'Host gmn-receiver',
+  `  HostName ${HOST_SENTINEL}`,
+  `  Port ${port}`,
+  `  User ${user}`,
+  `  IdentityFile "${sshDir}/id_deploy"`,
+  '  IdentitiesOnly yes',
+  '  BatchMode yes',
+  '  StrictHostKeyChecking yes',
+  `  UserKnownHostsFile "${sshDir}/known_hosts"`,
+  '  GlobalKnownHostsFile /dev/null',
+  '  LogLevel ERROR',
+  '  ConnectTimeout 20',
+  '  ServerAliveInterval 15',
+  '  RequestTTY no',
+  '  ForwardAgent no',
+  '  ForwardX11 no',
+  '  ClearAllForwardings yes',
+  '',
+].join('\n');
+const SSH_SETUP_ENV = { GMN_AMB: 'producao', GMN_SSH_HOST: HOST_SENTINEL, GMN_DEPLOY_SSH_KEY: KEY_SENTINEL, GMN_SSH_KNOWN_HOSTS: KNOWN_HOSTS_LINE };
 
 interface FakeResponse {
   readonly stdout?: string;
@@ -298,30 +314,42 @@ test('P9.4 hashes declarados: stack, sobreposição só em homologação ("-" em
 
 /* ------------------------------------------------------------------------------------------------ chave SSH */
 
-test('P9-W08 chave: escrita em $RUNNER_TEMP/gmn-ssh (0700) com arquivos 0600; nada impresso', (t) => {
+test('P9-W07 P9-W08 chave: escrita em $RUNNER_TEMP/gmn-ssh (0700) com arquivos 0600 e a configuração privada do ssh (apelido fixo, opções fixas, usuário do ambiente, porta 22 por padrão); nada impresso', (t) => {
   const sandbox = makeSandbox(t);
-  const result = runScript(sandbox, 'ssh-setup.sh', [], { GMN_DEPLOY_SSH_KEY: KEY_SENTINEL, GMN_SSH_KNOWN_HOSTS: KNOWN_HOSTS_LINE });
+  const result = runScript(sandbox, 'ssh-setup.sh', [], SSH_SETUP_ENV);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(fs.statSync(sandbox.sshDir).mode & 0o777, 0o700);
-  for (const name of ['id_deploy', 'known_hosts']) assert.equal(fs.statSync(path.join(sandbox.sshDir, name)).mode & 0o777, 0o600);
+  for (const name of ['id_deploy', 'known_hosts', 'config']) assert.equal(fs.statSync(path.join(sandbox.sshDir, name)).mode & 0o777, 0o600);
   assert.equal(fs.readFileSync(path.join(sandbox.sshDir, 'id_deploy'), 'utf8'), `${KEY_SENTINEL}\n`);
   assert.equal(fs.readFileSync(path.join(sandbox.sshDir, 'known_hosts'), 'utf8'), `${KNOWN_HOSTS_LINE}\n`);
+  assert.equal(fs.readFileSync(path.join(sandbox.sshDir, 'config'), 'utf8'), EXPECTED_SSH_CONFIG(sandbox.sshDir, '22', 'gmn-deploy'));
   assertNoLeak(result, 'sentinela-chave-falsa', HOST_SENTINEL);
+
+  setScenario(sandbox, {});
+  assert.equal(runScript(sandbox, 'ssh-setup.sh', [], { ...SSH_SETUP_ENV, GMN_AMB: 'homologacao', GMN_SSH_PORT: '2222' }).status, 0);
+  assert.equal(fs.readFileSync(path.join(sandbox.sshDir, 'config'), 'utf8'), EXPECTED_SSH_CONFIG(sandbox.sshDir, '2222', 'gmn-hml-deploy'), 'homologação: usuário próprio, porta do segredo');
 });
 
-test('P9-W07 chave: known_hosts vazio, com marcador, curinga ou lixo, e chave sem a moldura OpenSSH ⇒ recusa sem escrever nada (sem TOFU)', (t) => {
+test('P9-W07 chave: host ou porta fora do padrão (inclusive opção disfarçada de host), known_hosts vazio, com marcador, curinga ou lixo, e chave sem a moldura OpenSSH ⇒ recusa sem escrever nada (sem TOFU)', (t) => {
   const sandbox = makeSandbox(t);
   const cases: Array<[Record<string, string>, string, string]> = [
-    [{ GMN_DEPLOY_SSH_KEY: '', GMN_SSH_KNOWN_HOSTS: KNOWN_HOSTS_LINE }, 'SSH_CONFIG_MISSING', 'GMN_DEPLOY_SSH_KEY'],
-    [{ GMN_DEPLOY_SSH_KEY: KEY_SENTINEL, GMN_SSH_KNOWN_HOSTS: '' }, 'SSH_CONFIG_MISSING', 'GMN_SSH_KNOWN_HOSTS'],
-    [{ GMN_DEPLOY_SSH_KEY: 'sentinela-chave-falsa', GMN_SSH_KNOWN_HOSTS: KNOWN_HOSTS_LINE }, 'SSH_CONFIG_INVALID', 'GMN_DEPLOY_SSH_KEY'],
-    [{ GMN_DEPLOY_SSH_KEY: KEY_SENTINEL, GMN_SSH_KNOWN_HOSTS: `@cert-authority ${KNOWN_HOSTS_LINE}` }, 'SSH_CONFIG_INVALID', 'GMN_SSH_KNOWN_HOSTS'],
-    [{ GMN_DEPLOY_SSH_KEY: KEY_SENTINEL, GMN_SSH_KNOWN_HOSTS: KNOWN_HOSTS_LINE.replace(HOST_SENTINEL, '*') }, 'SSH_CONFIG_INVALID', 'GMN_SSH_KNOWN_HOSTS'],
-    [{ GMN_DEPLOY_SSH_KEY: KEY_SENTINEL, GMN_SSH_KNOWN_HOSTS: `${KNOWN_HOSTS_LINE}\nlixo` }, 'SSH_CONFIG_INVALID', 'GMN_SSH_KNOWN_HOSTS'],
+    [{ GMN_AMB: 'staging' }, 'INPUT_INVALID', 'GMN_AMB'],
+    [{ GMN_SSH_HOST: '-oProxyCommand=sentinela' }, 'SSH_CONFIG_INVALID', 'GMN_SSH_HOST'],
+    [{ GMN_SSH_HOST: `${HOST_SENTINEL} extra` }, 'SSH_CONFIG_INVALID', 'GMN_SSH_HOST'],
+    [{ GMN_SSH_HOST: `${HOST_SENTINEL}\n  ProxyCommand sentinela` }, 'SSH_CONFIG_INVALID', 'GMN_SSH_HOST'],
+    [{ GMN_SSH_PORT: '0' }, 'SSH_CONFIG_INVALID', 'GMN_SSH_PORT'],
+    [{ GMN_SSH_PORT: '70000' }, 'SSH_CONFIG_INVALID', 'GMN_SSH_PORT'],
+    [{ GMN_SSH_PORT: '22 -v' }, 'SSH_CONFIG_INVALID', 'GMN_SSH_PORT'],
+    [{ GMN_DEPLOY_SSH_KEY: '' }, 'SSH_CONFIG_MISSING', 'GMN_DEPLOY_SSH_KEY'],
+    [{ GMN_SSH_KNOWN_HOSTS: '' }, 'SSH_CONFIG_MISSING', 'GMN_SSH_KNOWN_HOSTS'],
+    [{ GMN_DEPLOY_SSH_KEY: 'sentinela-chave-falsa' }, 'SSH_CONFIG_INVALID', 'GMN_DEPLOY_SSH_KEY'],
+    [{ GMN_SSH_KNOWN_HOSTS: `@cert-authority ${KNOWN_HOSTS_LINE}` }, 'SSH_CONFIG_INVALID', 'GMN_SSH_KNOWN_HOSTS'],
+    [{ GMN_SSH_KNOWN_HOSTS: KNOWN_HOSTS_LINE.replace(HOST_SENTINEL, '*') }, 'SSH_CONFIG_INVALID', 'GMN_SSH_KNOWN_HOSTS'],
+    [{ GMN_SSH_KNOWN_HOSTS: `${KNOWN_HOSTS_LINE}\nlixo` }, 'SSH_CONFIG_INVALID', 'GMN_SSH_KNOWN_HOSTS'],
   ];
-  for (const [env, code, detail] of cases) {
+  for (const [extra, code, detail] of cases) {
     setScenario(sandbox, {});
-    const result = runScript(sandbox, 'ssh-setup.sh', [], env);
+    const result = runScript(sandbox, 'ssh-setup.sh', [], { ...SSH_SETUP_ENV, ...extra });
     assertRefused(sandbox, result, code, detail);
     assertNoLeak(result, 'sentinela-chave-falsa', HOST_SENTINEL);
     assert.ok(!fs.existsSync(sandbox.sshDir), 'nada escrito');
@@ -340,18 +368,18 @@ function receiverFixture(t: { after: (fn: () => void) => void }, sshResponses: r
   fs.mkdirSync(sandbox.sshDir, { mode: 0o700 });
   fs.writeFileSync(path.join(sandbox.sshDir, 'id_deploy'), `${KEY_SENTINEL}\n`, { mode: 0o600 });
   fs.writeFileSync(path.join(sandbox.sshDir, 'known_hosts'), `${KNOWN_HOSTS_LINE}\n`, { mode: 0o600 });
+  fs.writeFileSync(path.join(sandbox.sshDir, 'config'), EXPECTED_SSH_CONFIG(sandbox.sshDir, '22', 'gmn-deploy'), { mode: 0o600 });
   fs.mkdirSync(path.dirname(sandbox.bundleFile), { mode: 0o700 });
   fs.writeFileSync(sandbox.bundleFile, 'pacote-falso');
   setScenario(sandbox, { commands: { ssh: [{ responses: sshResponses }] }, readStdin: ['ssh'] });
   return { sandbox, bundleSha: sha256('pacote-falso'), bundleBytes: String('pacote-falso'.length) };
 }
 const uploadEnv = (fixture: ReceiverFixture, extra: Record<string, string> = {}): Record<string, string> => ({
-  GMN_AMB: 'producao', GMN_SHA: SHA, GMN_SSH_HOST: HOST_SENTINEL, GMN_BUNDLE_SHA256: fixture.bundleSha, GMN_BUNDLE_BYTES: fixture.bundleBytes, ...extra,
+  GMN_AMB: 'producao', GMN_SHA: SHA, GMN_BUNDLE_SHA256: fixture.bundleSha, GMN_BUNDLE_BYTES: fixture.bundleBytes, ...extra,
 });
 const deployEnv = (fixture: ReceiverFixture, amb: 'producao' | 'homologacao', extra: Record<string, string> = {}): Record<string, string> => ({
   GMN_AMB: amb,
   GMN_SHA: SHA,
-  GMN_SSH_HOST: HOST_SENTINEL,
   GMN_BUILD_SUPABASE_URL: SUPABASE_URL_SENTINEL,
   GMN_BUNDLE_SHA256: fixture.bundleSha,
   GMN_STACK_SHA256: HEX64_A,
@@ -361,44 +389,35 @@ const deployEnv = (fixture: ReceiverFixture, amb: 'producao' | 'homologacao', ex
 });
 const deployedLine = (amb: string, overlay: string, trust: string): string => `OK DEPLOYED ${amb}-${SHA} ${IMAGE_WEB} ${IMAGE_WORKER} ${HEX64_A} ${overlay} ${trust}\n`;
 
-test('P9-W07 P9-D01 (lado do workflow) upload: opções fixas do ssh, usuário do ambiente, porta 22 por padrão, comando na gramática e o pacote no stdin', (t) => {
+test('P9-W07 P9-D01 (lado do workflow) upload: `ssh -F <configuração privada> -T gmn-receiver`, sem host, porta nem usuário na linha de comando; comando na gramática e o pacote no stdin', (t) => {
   const fixture = receiverFixture(t, [{ stdout: `OK UPLOADED ${SHA} ${sha256('pacote-falso')}\n` }]);
   const result = runScript(fixture.sandbox, 'receiver-call.sh', ['upload'], uploadEnv(fixture));
   assert.equal(result.status, 0, result.stderr);
   const [call] = calls(fixture.sandbox, 'ssh');
   assert.ok(call);
-  const sshDir = fixture.sandbox.sshDir;
-  assert.deepEqual(call.argv, [...EXPECTED_SSH_OPTIONS(sshDir), '-i', `${sshDir}/id_deploy`, '-p', '22', '--', `gmn-deploy@${HOST_SENTINEL}`, `upload ${SHA} ${fixture.bundleSha} ${fixture.bundleBytes}`]);
+  assert.deepEqual(call.argv, ['-F', `${fixture.sandbox.sshDir}/config`, '-T', 'gmn-receiver', `upload ${SHA} ${fixture.bundleSha} ${fixture.bundleBytes}`]);
   assert.match(call.argv[call.argv.length - 1] ?? '', UPLOAD_GRAMMAR);
   assert.equal(call.stdinSha256, fixture.bundleSha, 'o pacote vai no stdin');
   assert.match(result.stdout, new RegExp(`^OK UPLOADED ${SHA} ${fixture.bundleSha}$`, 'm'));
   assertNoLeak(result, HOST_SENTINEL);
-
-  setScenario(fixture.sandbox, { commands: { ssh: [{ responses: [{ stdout: `OK UPLOADED ${SHA} ${fixture.bundleSha}\n` }] }] }, readStdin: ['ssh'] });
-  assert.equal(runScript(fixture.sandbox, 'receiver-call.sh', ['upload'], uploadEnv(fixture, { GMN_AMB: 'homologacao', GMN_SSH_PORT: '2222' })).status, 0);
-  const [hml] = calls(fixture.sandbox, 'ssh');
-  assert.ok(hml);
-  assert.deepEqual(hml.argv.slice(-4, -1), ['2222', '--', `gmn-hml-deploy@${HOST_SENTINEL}`], 'homologação: usuário próprio, porta do segredo');
 });
 
-test('P9.4 upload: host ou porta fora do padrão (inclusive opção disfarçada de host), pacote mudado ou chave ausente ⇒ recusa sem chamar o ssh', (t) => {
+test('P9.4 upload: pacote mudado, hash fora do padrão ou chave/configuração ausente ⇒ recusa sem chamar o ssh', (t) => {
   const fixture = receiverFixture(t, [{ stdout: 'nao-deveria-ser-chamado\n' }]);
   const cases: Array<[Record<string, string>, string, string]> = [
-    [{ GMN_SSH_HOST: '-oProxyCommand=sentinela' }, 'SSH_CONFIG_INVALID', 'GMN_SSH_HOST'],
-    [{ GMN_SSH_HOST: `${HOST_SENTINEL} extra` }, 'SSH_CONFIG_INVALID', 'GMN_SSH_HOST'],
-    [{ GMN_SSH_PORT: '0' }, 'SSH_CONFIG_INVALID', 'GMN_SSH_PORT'],
-    [{ GMN_SSH_PORT: '70000' }, 'SSH_CONFIG_INVALID', 'GMN_SSH_PORT'],
-    [{ GMN_SSH_PORT: '22 -v' }, 'SSH_CONFIG_INVALID', 'GMN_SSH_PORT'],
     [{ GMN_BUNDLE_BYTES: '999' }, 'BUNDLE_CHANGED', ''],
     [{ GMN_BUNDLE_SHA256: 'xyz' }, 'INPUT_INVALID', 'GMN_BUNDLE_SHA256'],
+    [{ GMN_AMB: 'staging' }, 'INPUT_INVALID', 'GMN_AMB'],
   ];
   for (const [extra, code, detail] of cases) {
     setScenario(fixture.sandbox, { readStdin: ['ssh'] });
     assertRefused(fixture.sandbox, runScript(fixture.sandbox, 'receiver-call.sh', ['upload'], uploadEnv(fixture, extra)), code, detail === '' ? undefined : detail);
   }
-  fs.rmSync(path.join(fixture.sandbox.sshDir, 'id_deploy'));
-  setScenario(fixture.sandbox, { readStdin: ['ssh'] });
-  assertRefused(fixture.sandbox, runScript(fixture.sandbox, 'receiver-call.sh', ['upload'], uploadEnv(fixture)), 'SSH_CONFIG_MISSING', 'id_deploy');
+  for (const name of ['config', 'id_deploy']) {
+    fs.rmSync(path.join(fixture.sandbox.sshDir, name));
+    setScenario(fixture.sandbox, { readStdin: ['ssh'] });
+    assertRefused(fixture.sandbox, runScript(fixture.sandbox, 'receiver-call.sh', ['upload'], uploadEnv(fixture)), 'SSH_CONFIG_MISSING', name === 'config' ? 'config' : 'id_deploy');
+  }
   assert.equal(calls(fixture.sandbox, 'ssh').length, 0);
 });
 
@@ -452,7 +471,7 @@ test('P9-D01 P9-D11 (lado do workflow) deploy em produção: overlay "-", lista 
   assert.match(command, DEPLOY_GRAMMAR);
   assert.ok(command.length <= 512 && /^[\x20-\x7e]+$/.test(command), 'ASCII, até 512 bytes');
   assert.equal(call.stdinSha256, trust, 'a lista vai no stdin');
-  assert.equal(call.argv[call.argv.length - 2], `gmn-deploy@${HOST_SENTINEL}`);
+  assert.deepEqual(call.argv.slice(0, -1), ['-F', `${fixture.sandbox.sshDir}/config`, '-T', 'gmn-receiver']);
   assertNoLeak(result, fp12, SUPABASE_URL_SENTINEL, HOST_SENTINEL);
   assert.ok(!result.stdout.includes('::'), 'nenhum comando de workflow (nada de add-mask)');
   assert.deepEqual(outputs(fixture.sandbox), { web_image: IMAGE_WEB, worker_image: IMAGE_WORKER, trust_installed_sha256: trust });
@@ -466,7 +485,7 @@ test('P9-D01 (lado do workflow) deploy em homologação: overlay obrigatório; p
   const [call] = calls(fixture.sandbox, 'ssh');
   assert.ok(call);
   assert.match(call.argv[call.argv.length - 1] ?? '', new RegExp(`^deploy ${SHA} [0-9a-f]{64} ${HEX64_A} ${'b'.repeat(64)} ${trust} [0-9a-f]{12}$`));
-  assert.equal(call.argv[call.argv.length - 2], `gmn-hml-deploy@${HOST_SENTINEL}`);
+  assert.equal(call.argv[call.argv.length - 2], 'gmn-receiver');
 
   const cases: Array<[Record<string, string>, 'producao' | 'homologacao', string, string]> = [
     [{ GMN_OVERLAY_SHA256: 'b'.repeat(64) }, 'producao', 'INPUT_INVALID', 'GMN_OVERLAY_SHA256'],

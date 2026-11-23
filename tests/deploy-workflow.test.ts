@@ -47,17 +47,21 @@ const ciActions = new Set([...ciText.matchAll(/uses: (\S+@[0-9a-f]{40})\b/g)].ma
 /** Segredos por passo (spec §5.5): só de ambiente, só no `env:` do passo que os usa, e nada além disto. */
 const SECRETS_BY_STEP: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   build: { NEXT_PUBLIC_SUPABASE_URL: 'GMN_BUILD_SUPABASE_URL', NEXT_PUBLIC_SUPABASE_ANON_KEY: 'GMN_BUILD_SUPABASE_ANON_KEY' },
-  ssh: { GMN_DEPLOY_SSH_KEY: 'GMN_DEPLOY_SSH_KEY', GMN_SSH_KNOWN_HOSTS: 'GMN_SSH_KNOWN_HOSTS' },
-  upload: { GMN_SSH_HOST: 'GMN_SSH_HOST', GMN_SSH_PORT: 'GMN_SSH_PORT' },
-  deploy: { GMN_SSH_HOST: 'GMN_SSH_HOST', GMN_SSH_PORT: 'GMN_SSH_PORT', GMN_BUILD_SUPABASE_URL: 'GMN_BUILD_SUPABASE_URL' },
+  ssh: { GMN_DEPLOY_SSH_KEY: 'GMN_DEPLOY_SSH_KEY', GMN_SSH_KNOWN_HOSTS: 'GMN_SSH_KNOWN_HOSTS', GMN_SSH_HOST: 'GMN_SSH_HOST', GMN_SSH_PORT: 'GMN_SSH_PORT' },
+  deploy: { GMN_BUILD_SUPABASE_URL: 'GMN_BUILD_SUPABASE_URL' },
   external: { GMN_PUBLIC_HOST: 'GMN_PUBLIC_HOST' },
 };
-/** Opções fixas do ssh (spec §5.5.1 passo 7), mais `-F /dev/null` (nenhum arquivo de configuração do runner). */
-const SSH_OPTIONS = [
-  '-F /dev/null -T',
-  '-o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes',
-  '-o "UserKnownHostsFile=${GMN_CI_SSH_DIR}/known_hosts" -o GlobalKnownHostsFile=/dev/null',
-  '-o LogLevel=ERROR -o ConnectTimeout=20 -o ServerAliveInterval=15',
+/** Opções fixas do ssh (spec §5.5.1 passo 7), escritas na configuração privada do `ssh-setup.sh` (o `ssh -F` ignora qualquer outra). */
+const SSH_CONFIG_OPTIONS = [
+  'IdentitiesOnly yes',
+  'BatchMode yes',
+  'StrictHostKeyChecking yes',
+  'UserKnownHostsFile "${GMN_CI_SSH_DIR}/known_hosts"',
+  'GlobalKnownHostsFile /dev/null',
+  'LogLevel ERROR',
+  'ConnectTimeout 20',
+  'ServerAliveInterval 15',
+  'RequestTTY no',
 ];
 
 test('yaml-subset: o leitor dos testes recusa o que não cobre (âncora, alias, tag, chave repetida, tabulação, bloco dobrado, vários documentos)', () => {
@@ -161,13 +165,18 @@ test('P9-W06 concorrência por operação e ambiente (gmn-<amb>-deploy), sem can
   }
 });
 
-test('P9-W07 todo ssh com as opções fixas (StrictHostKeyChecking=yes, UserKnownHostsFile explícito, GlobalKnownHostsFile=/dev/null); nenhum ssh fora do script do receptor', () => {
+test('P9-W07 todo ssh pela configuração privada com as opções fixas (StrictHostKeyChecking yes, UserKnownHostsFile explícito, GlobalKnownHostsFile /dev/null); host e porta fora da linha de comando; nenhum ssh fora do script do receptor', () => {
+  const setup = scriptText('ssh-setup.sh');
+  const config = /cat >"\$GMN_CI_SSH_CONFIG" <<EOF\n([\s\S]*?)\nEOF/.exec(setup)?.[1];
+  assert.ok(config, 'a configuração privada é escrita pelo ssh-setup.sh');
+  const lines = config.split('\n').map((line) => line.trim());
+  assert.deepEqual(lines.slice(0, 4), ['Host ${GMN_CI_SSH_ALIAS}', 'HostName ${GMN_SSH_HOST}', 'Port ${ssh_port}', 'User ${ssh_user}']);
+  for (const option of SSH_CONFIG_OPTIONS) assert.ok(lines.includes(option), `opção fixa ${option}`);
+  assert.match(scriptText('lib.sh'), /readonly GMN_CI_SSH_ALIAS="gmn-receiver"/);
   const receiver = scriptText('receiver-call.sh');
-  const block = /readonly -a SSH_OPTS=\(\n([\s\S]*?)\n\)/.exec(receiver)?.[1];
-  assert.ok(block, 'opções num array fixo');
-  assert.deepEqual(block.split('\n').map((line) => line.trim()), SSH_OPTIONS);
-  const invocations = [...withoutComments(receiver).matchAll(/(?:^|[\s(])ssh (\S+)/gm)].map((m) => m[1]);
-  assert.deepEqual(invocations, ['"${SSH_OPTS[@]}"'], 'uma chamada, sempre com as opções fixas');
+  const invocations = [...withoutComments(receiver).matchAll(/(?:^|[\s(])ssh (.+?) "\$remote_command"/gm)].map((m) => m[1]);
+  assert.deepEqual(invocations, ['-F "$GMN_CI_SSH_CONFIG" -T "$GMN_CI_SSH_ALIAS"'], 'uma chamada, só pela configuração privada');
+  assert.ok(!/GMN_SSH_HOST|GMN_SSH_PORT/.test(withoutComments(receiver)), 'o script do receptor não vê host nem porta');
   const sources: Array<[string, string]> = [['deploy.yml (run:)', allSteps().map(runOf).join('\n')], ...CI_SCRIPTS.filter((name) => name !== 'receiver-call.sh').map((name): [string, string] => [name, scriptText(name)])];
   for (const [name, text] of sources) assert.ok(!/(?:^|[\s(;|&])(?:ssh|scp|sftp)\s/m.test(withoutComments(text)), `${name}: ssh fora do script do receptor`);
   assert.match(scriptText('lib.sh'), /readonly GMN_CI_SSH_DIR="\$\{RUNNER_TEMP:\?RUNNER_TEMP ausente\}\/gmn-ssh"/);

@@ -9,6 +9,9 @@
 #  - nenhum valor vem da linha de comando: tudo pelo ambiente do passo (segredos de ambiente via `env:` do workflow).
 
 readonly GMN_CI_SSH_DIR="${RUNNER_TEMP:?RUNNER_TEMP ausente}/gmn-ssh"
+# Configuração privada do ssh (0600) com um apelido fixo: host, porta e usuário nunca vão à linha de comando.
+readonly GMN_CI_SSH_CONFIG="${GMN_CI_SSH_DIR}/config"
+readonly GMN_CI_SSH_ALIAS="gmn-receiver"
 readonly GMN_CI_BUNDLE_DIR="${RUNNER_TEMP}/gmn-bundle"
 readonly GMN_CI_BUNDLE_FILE="${GMN_CI_BUNDLE_DIR}/gmn-images.tar.gz"
 readonly GMN_CI_STACK_FILE="deploy/hostinger/stack.yml"
