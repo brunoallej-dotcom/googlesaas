@@ -1,5 +1,11 @@
 # GMN Intelligence Platform — guia de implantação na VPS Hostinger (Docker Swarm + Traefik)
 
+> **Deploy pelo CI (P-9, desde a P9.4):** o build, a transferência e o `docker stack deploy` passaram ao workflow
+> `.github/workflows/deploy.yml` (ambientes `homologacao` e `producao`, aprovados pelo responsável), que entrega as imagens a um
+> receptor de comando único na VPS (spec `docs/specs/ci-deploy-and-seal-delivery.md`). O passo a passo do responsável (usuários, chaves,
+> segredos, homologação `gmn-hml`, rotação, incidente) está em `RUNBOOK-DEPLOY-PELO-CI.md`. Os comandos manuais de §1, §2 e §4 ficam só
+> como histórico e referência do que o receptor faz: **proibidos em produção**.
+>
 > **Status: PREPARAÇÃO.** Nada foi executado na VPS. Este guia só deve ser seguido **depois de autorização expressa**. Nenhum passo altera Traefik, n8n, Evolution API, Portainer, PostgreSQL ou o VRA Worker: a GMN é uma stack nova (`gmn`) que apenas **entra** na rede externa já existente (somente o serviço `web`).
 
 ## 0. Decisões a confirmar antes de começar
@@ -10,35 +16,51 @@
 | Rede do Traefik | `automacaotrafegopagoredeinterna` (external) | `docker network ls \| grep automacao` |
 | Entrypoint HTTP (porta 80) | `web` | `docker service inspect traefik_traefik --format '{{json .Spec.TaskTemplate.ContainerSpec.Args}}'` (procure `--entrypoints.<nome>.address=:80`) |
 | HSTS/redirecionamento global no Traefik | a stack define os seus (host único) | mesma inspeção; se já houver redirecionamento global, o router `gmn-http` pode ficar sem efeito |
-| Imagens | `docker save` → `scp` → `docker load` (sem registry) | alternativa: registry **privado** (ver §2.3) |
+| Imagens | construídas pelo job `deploy` do `.github/workflows/deploy.yml` e entregues por SSH ao receptor de deploy (sem registry, sem artefato) | `RUNBOOK-DEPLOY-PELO-CI.md` (H-03 a H-09) |
 
 > **A URL pública do Supabase (`NEXT_PUBLIC_SUPABASE_URL`) é embutida no build** (verificado: 1 arquivo do web); trocá-la exige novas imagens. A **anon key não fica em nenhum arquivo da imagem** (verificado na P0): o web a lê em tempo de execução do secret `gmn_supabase_anon`.
 
-## 1. Construir as imagens (máquina de desenvolvimento, com Docker)
-Dentro de `gmn-intelligence-platform/`:
-```bash
-export NEXT_PUBLIC_SUPABASE_URL='https://SEU-PROJETO.supabase.co'      # valor público
-export NEXT_PUBLIC_SUPABASE_ANON_KEY='...chave ANÔNIMA...'            # pública por desenho; NUNCA a service role
-deploy/hostinger/build-images.sh 1.0.0
-```
-- Constrói `gmn-web:1.0.0` (Next.js standalone) e `gmn-worker:1.0.0` (BullMQ + `tsx`), `linux/amd64`, não-root (uid 10001), com `tini`.
-- Gera `deploy/hostinger/dist/gmn-images-1.0.0.tar.gz` e `.sha256`. **Guarde o hash e os IDs das imagens** impressos ao final.
-- Nada de segredos entra na imagem (`.dockerignore` exclui `.env*`, `.data`, testes e docs; só `NEXT_PUBLIC_*` públicos viram argumento de build).
-- Antes de enviar, rode `deploy/hostinger/verify-local.sh` (build + testes dos containers em rede interna, sem custos).
+## 1. Construir as imagens: pelo workflow de deploy (P9.4)
+As imagens são construídas pelo job `deploy` de `.github/workflows/deploy.yml`, no runner do GitHub, a partir do **commit exato** da
+`main`, depois da aprovação do responsável no ambiente (`homologacao` ou `producao`) e de o job conferir que o `ci.yml` daquele commit
+está verde e que ele ainda é a cabeça da `main`:
+- alvos `web` e `worker` deste `Dockerfile`, `linux/amd64`, não-root (uid 10001), com `tini`, e a tag **`<amb>-<sha40>`** (ex.:
+  `gmn-web:producao-<sha40>`): a URL do Supabase é embutida no build (§0), então as imagens de homologação e de produção do mesmo
+  commit são diferentes;
+- os dois argumentos públicos (`NEXT_PUBLIC_SUPABASE_URL` e `NEXT_PUBLIC_SUPABASE_ANON_KEY`) vêm dos segredos do ambiente
+  (`GMN_BUILD_SUPABASE_URL`, `GMN_BUILD_SUPABASE_ANON_KEY`) pelo ambiente do passo (`--build-arg NOME` sem valor na linha de comando);
+  nenhum outro segredo entra no build (`.dockerignore` exclui `.env*`, `.data`, testes e docs);
+- o `npm ci` roda dentro do build; sem cache do GitHub, sem registry, sem artefato do Actions.
 
-## 2. Transferir as imagens
-### 2.1 Enviar e conferir
+Códigos do job e o que fazer em cada um: `RUNBOOK-DEPLOY-PELO-CI.md` §0.1. `deploy/hostinger/verify-local.sh` continua valendo para
+testar as imagens na máquina de desenvolvimento (rede interna, sem custos).
+
+> **Histórico (PROIBIDO para produção):** antes da P9.4 as imagens eram construídas na máquina de desenvolvimento com
+> `deploy/hostinger/build-images.sh <tag>` (gera `deploy/hostinger/dist/gmn-images-<tag>.tar.gz` e `.sha256`). O script fica só para
+> verificação local; uma imagem construída assim nunca vai para produção nem para homologação.
+
+## 2. Transferir as imagens: SSH restrito ao receptor de deploy (P9.4)
+O job empacota as duas imagens (`docker save … | gzip -n` em `$RUNNER_TEMP`, com sha256 e tamanho; nunca artefato nem registry) e as
+entrega à VPS por SSH ao **receptor de deploy**, o único comando da chave do ambiente (`restrict,command=`; usuários `gmn-deploy` e
+`gmn-hml-deploy`; chave de host fixada, sem TOFU):
+1. `upload <sha40> <sha256 do pacote> <bytes>`, com o pacote no stdin;
+2. nova conferência de que o commit ainda é a cabeça da `main`;
+3. `deploy <sha40> <pacote> <stack> <sobreposição|-> <lista> <impressão do Supabase>`, com a lista de confiança no stdin. O receptor
+   confere os hashes (inclusive o da stack **instalada por você**, §3.2), o arquivo de variáveis, as pastas e as tags, carrega as
+   imagens, roda o `docker stack deploy --resolve-image never` (§4) e as verificações PD-01 a PD-08;
+4. verificação externa somente leitura (EX-01 a EX-03) e uma linha no resumo do job (copiar para o `RELATORIO-DE-IMPLANTACAO.md`).
+
+Gramática e códigos: spec `docs/specs/ci-deploy-and-seal-delivery.md` §5.6 e §5.8.
+
+### 2.1 Histórico: transferência manual (PROIBIDA em produção)
+Registro do procedimento anterior à P9.4. **Não use em produção** (`CLAUDE.md`: deploy de produção só pelo CI) nem em homologação.
 ```bash
 scp deploy/hostinger/dist/gmn-images-1.0.0.tar.gz deploy/hostinger/dist/gmn-images-1.0.0.tar.gz.sha256 USUARIO@IP_DA_VPS:/tmp/
 ssh USUARIO@IP_DA_VPS 'cd /tmp && sha256sum -c gmn-images-1.0.0.tar.gz.sha256'      # precisa dizer: OK
-```
-### 2.2 Carregar na VPS
-```bash
 ssh USUARIO@IP_DA_VPS 'gunzip -c /tmp/gmn-images-1.0.0.tar.gz | docker load && docker image ls | grep "^gmn-"'
 ```
-Compare os IDs com os anotados no build. Apague `/tmp/gmn-images-*` depois.
-### 2.3 Alternativa: registry privado
-Use um registry **privado** (ex.: GHCR privado ou registry próprio), `docker login` só na VPS com token de leitura, e referencie `image: <registry>/gmn-web@sha256:<digest>` no `stack.yml`. Nunca publique estas imagens em registry público.
+### 2.2 Registry
+Não usado: o deploy pelo CI não passa por registry (ADR-0004). Nunca publique estas imagens em registry público.
 
 ## 3. Preparar a VPS (somente recursos novos)
 ```bash
@@ -70,6 +92,10 @@ install -m 0600 deploy/hostinger/.env.production.example /opt/gmn/.env.productio
 cp deploy/hostinger/stack.yml /opt/gmn/stack.yml
 cp deploy/hostinger/verificar-pastas-fase6.sh /opt/gmn/verificar-pastas-fase6.sh   # conferência das pastas da Fase 6 (§3.3)
 ```
+**Com o deploy pelo CI (P9.4):** o `stack.yml` (e, em homologação, o `stack-hml.yml` em `/opt/gmn-hml/`) vem de um **clone limpo do
+commit implantado**, com `sha256sum` conferido (`RUNBOOK-DEPLOY-PELO-CI.md` H-08); o receptor compara o hash a cada deploy
+(`E_STACK_FILE_MISMATCH`). O arquivo de variáveis fica root:`gmn-deploy` `0640`, só `NOME=valor` (parser estrito do receptor), e **não**
+define `GMN_IMAGE_TAG` nem `GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS` (o receptor define as duas; §3.4).
 
 ### 3.3 Pastas da Fase 6 no host (antes de implantar a versão da G1.a; ação do responsável)
 O `stack.yml` monta seis pastas novas só no web, com origem por marcador **obrigatório** e sem caminho padrão (spec dos portões §5.3,
@@ -105,14 +131,22 @@ sudo bash /opt/gmn/verificar-pastas-fase6.sh "$GMN_RAIZ_DADOS_DECISOES" "$GMN_RA
   `gmn_link_audit_guard_db_ca` e `gmn_link_audit_guard_key`), criados depois de aplicar a migração da guarda: a stack desta versão
   exige os seis no deploy.
 - **Variáveis** no arquivo de variáveis da implantação (sem segredo): os seis marcadores `GMN_RAIZ_DADOS_*` acima e as listas públicas
-  `GMN_LINK_AUDIT_ORIGIN_REVOKED_KEY_IDS`, `GMN_LINK_AUDIT_LEDGER_REVOKED_KEY_IDS` e `GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS` (vazias por
-  padrão: nenhum id revogado e atestação fechada).
+  `GMN_LINK_AUDIT_ORIGIN_REVOKED_KEY_IDS` e `GMN_LINK_AUDIT_LEDGER_REVOKED_KEY_IDS` (vazias por padrão: nenhum id revogado).
+- **Lista de confiança da atestação (P-9, P9.4):** `GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS` **saiu** do arquivo de variáveis. A fonte única é
+  `link-audit-seals/<amb>/trust-keys.txt` no commit implantado (spec `docs/specs/ci-deploy-and-seal-delivery.md` §5.3): o job manda o
+  arquivo ao receptor de deploy, que confere o hash, só aceita uma **transição válida** a partir da lista instalada
+  (`E_TRUST_LIST_TRANSITION`), passa o valor à stack e instala a cópia depois da convergência. Arquivo vazio = atestação fechada. O
+  receptor recusa o arquivo de variáveis que ainda defina a variável (`E_HOST_CONFIG GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS`), e o mesmo vale
+  para `GMN_IMAGE_TAG`. Mudar a lista = PR revisado + deploy pelo workflow; nunca edição no host.
 - **Ordem de ativação:** volumes e chaves (G1.a) ⇒ guarda (G1.b) ⇒ primeiro `ENROLL` (`PROVA-DE-ORIGEM-E-DE-COLETA.md` §3b). O web atualiza com
   `stop-first` (R6-09): cada atualização tem uma breve indisponibilidade, e nunca há dois processos gravando nas pastas. Depois do primeiro
   `ENROLL`, não voltar a uma imagem anterior ao livro; o `failure_action: rollback` automático volta à especificação anterior do serviço,
   então a **primeira** implantação com o livro é validada (503/200 esperados) antes de qualquer `ENROLL`.
 
 ## 4. Validar e implantar (**só com autorização**)
+**Desde a P9.4, quem executa este passo é o receptor de deploy**, chamado pelo workflow (com `GMN_IMAGE_TAG=<amb>-<sha40>` e a lista
+de confiança no ambiente do processo; em homologação, `-c stack.yml -c stack-hml.yml gmn-hml`). Os comandos abaixo ficam como
+referência do que ele faz; executá-los à mão em produção é **proibido**.
 ```bash
 cd /opt/gmn && set -a; . ./.env.production; set +a
 docker stack config -c stack.yml > /dev/null              # valida labels, redes, volumes e segredos
