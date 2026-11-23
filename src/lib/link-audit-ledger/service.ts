@@ -93,6 +93,9 @@ const WITNESS_REASONS: ReadonlySet<LedgerReason> = new Set<LedgerReason>(['RESUL
 /** Arquivo de FORMATO hostil no lugar de um registro (FIFO, soquete, diretório, link, grande demais, mudou durante a leitura): integridade, nunca "indisponível" (R7-07). */
 const HOSTILE_SHAPE = /\b(?:leitura|listagem)[^:]*: (?:ENOTFILE|ETOOBIG|ECHANGED|ELOOP|EISDIR|ENOTDIR)\b/;
 const READ_ERRNO = /\b(?:leitura|listagem)[^:]*: (?:E[A-Z0-9]+|DESCONHECIDO)\b/;
+/** Leitura do livro que falhou ⇒ o estado da sessão (configuração, indisponível ou não confiável); nunca "sem livro". */
+const failedReadState = (read: { readonly code: string; readonly issues: readonly string[] }): 'NOT_CONFIGURED' | 'UNAVAILABLE' | 'UNTRUSTED' =>
+  read.code === 'UNSAFE_PATH' || read.code === 'INVALID_ID' ? 'NOT_CONFIGURED' : read.code === 'STORAGE_MISSING' || (read.issues.some((issue) => READ_ERRNO.test(issue)) && !read.issues.some((issue) => HOSTILE_SHAPE.test(issue))) ? 'UNAVAILABLE' : 'UNTRUSTED';
 
 interface Session {
   readonly auditId: string;
@@ -281,6 +284,20 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
     return others.some((other) => mine === other || mine.startsWith(other + path.sep) || other.startsWith(mine + path.sep));
   }
 
+  /**
+   * RELEITURA do livro para conferir uma cabeça da guarda posterior à cauda lida (revisão do PR #56). Mesmas regras da leitura normal (a sessão confere as etiquetas e o modelo,
+   * o replay) e o livro só cresce: a releitura tem de ESTENDER o que foi lido (o último registro conhecido no mesmo lugar; o encadeamento fixa o resto). Falha ⇒ o estado.
+   */
+  async function rereadLedger(auditId: string, known: readonly LedgerRecord[]): Promise<{ readonly kind: 'RECORDS'; readonly records: LedgerRecord[] } | { readonly kind: 'STATE'; readonly state: Session['state'] }> {
+    if (ledgerDurabilityTripped(options.dir, storeOptions)) return { kind: 'STATE', state: 'DURABILITY_UNKNOWN' };
+    const read = await readLedgerFiles(options.dir, auditId, storeOptions);
+    if (!read.ok) return { kind: 'STATE', state: failedReadState(read) };
+    const records = [...read.value.records];
+    const last = known[known.length - 1];
+    if (records.length < known.length || (last !== undefined && records[last.ledgerSeq - 1]?.contentSha256 !== last.contentSha256)) return { kind: 'STATE', state: 'UNTRUSTED' };
+    return { kind: 'RECORDS', records };
+  }
+
   async function begin(auditId: string): Promise<Session> {
     const session: Session = { auditId, state: 'OK', records: [], tagFailure: null, guard: { status: 'NOT_CONFIGURED' }, intent: null, evaluation: null, grant: null, runIntent: null, runMark: null, concludeIntent: null, alarmed: new Set<string>() };
     try {
@@ -295,21 +312,25 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
         if (!latest.ok) alarm(session, { kind: 'GUARD_UNAVAILABLE', call: 'LATEST' });
       }
       const read = await readLedgerFiles(options.dir, auditId, storeOptions);
-      if (!read.ok) {
-        const state = read.code === 'UNSAFE_PATH' || read.code === 'INVALID_ID' ? 'NOT_CONFIGURED' : read.code === 'STORAGE_MISSING' || (read.issues.some((issue) => READ_ERRNO.test(issue)) && !read.issues.some((issue) => HOSTILE_SHAPE.test(issue))) ? 'UNAVAILABLE' : 'UNTRUSTED';
-        return { ...session, state };
-      }
+      if (!read.ok) return { ...session, state: failedReadState(read) };
       if (read.value.records.length === 0) return { ...session, state: 'ABSENT' };
       // REINÍCIO NÃO É COMPROVAÇÃO: com registros no disco, a durabilidade precisa estar PROVADA neste processo (uma vez por auditoria) antes de o livro ser lido como protegido
       const proof = await ensureLedgerProven(options.dir, auditId, storeOptions);
       if (!proof.ok) return { ...session, state: 'DURABILITY_UNKNOWN' };
-      const records = [...read.value.records];
+      let records = [...read.value.records];
       // REGRAS 2 E 3 numa corrida legítima (G1.b.1): o livro pode ter crescido entre a leitura da guarda e a dele. Só quando o veredito seria GUARD_HEAD_MISSING ou
-      // GUARD_LAGGING, relê a guarda DEPOIS do livro; a leitura anterior continua sendo a única que decide o GUARD_MISMATCH (R7-05).
+      // GUARD_LAGGING, relê a guarda DEPOIS do livro. Revisão do PR #56: uma cabeça dessa releitura ALÉM da cauda lida nunca vale por si: o livro é relido (como a
+      // leitura normal: sequência, hash, etiquetas e replay) e a avaliação usa o livro RELIDO — a cabeça só conta se for registro válido dele (prefixo); senão é MISMATCH.
+      // Na ordem guarda → livro → guarda → livro, toda cabeça publicada antes da 2ª leitura da guarda já está no livro relido depois dela (guarda ≤ livro em todo instante).
       if (guard && session.guard.status === 'READ' && guardVerdictNeedsReread(session.guard.head, records.length)) {
         const again = await guard.latest(auditId);
         session.guard = again.ok ? { status: 'READ', head: session.guard.head, afterLedger: again.head } : { status: 'UNAVAILABLE' };
         if (!again.ok) alarm(session, { kind: 'GUARD_UNAVAILABLE', call: 'LATEST' });
+        if (again.ok && again.head !== null && again.head.ledgerSeq > records.length) {
+          const reread = await rereadLedger(auditId, records);
+          if (reread.kind === 'STATE') return { ...session, state: reread.state };
+          records = reread.records;
+        }
       }
       return { ...session, state: 'OK', records, tagFailure: verifyTags(records, auth) };
     } catch {
@@ -479,21 +500,29 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
     const tail = head(session);
     if (!guard || !tail) return 'OK';
     const published = await guard.publish({ auditId: session.auditId, ledgerSeq: tail.ledgerSeq, sha256: tail.sha256 });
-    if (published.ok || (published.reason === 'STALE' && (await staleCovered(session.auditId, tail)))) {
+    if (!published.ok && published.reason !== 'STALE') return published.reason;
+    const coverage = published.ok ? 'COVERED' : await staleCoverage(session.auditId, tail);
+    if (coverage === 'COVERED') {
       session.guard = { status: 'READ', head: tail };
       return 'OK';
     }
-    return published.reason === 'STALE' ? 'STALE_UNCOVERED' : published.reason;
+    // revisão do PR #56: a conferência do STALE que não se completa (guarda ou livro ilegível) é INDISPONIBILIDADE (regra 5), nunca um falso MISMATCH
+    return coverage === 'UNAVAILABLE' ? 'UNAVAILABLE' : 'STALE_UNCOVERED';
   }
-  async function staleCovered(auditId: string, tail: LedgerHead): Promise<boolean> {
-    if (!guard) return false;
+  /**
+   * Conferência de uma publicação `STALE` (regra 7): `COVERED` = a cabeça maior da guarda é registro do livro relido (etiquetas e replay válidos) e a nossa cauda continua no
+   * lugar; `UNAVAILABLE` = o `latest` (erro, prazo, esquema) ou o livro não puderam ser lidos — nada se conclui; `DIVERGED` = lido tudo, a guarda tem o que o livro não tem.
+   */
+  async function staleCoverage(auditId: string, tail: LedgerHead): Promise<'COVERED' | 'UNAVAILABLE' | 'DIVERGED'> {
+    if (!guard) return 'UNAVAILABLE';
     const latest = await guard.latest(auditId);
-    if (!latest.ok || latest.head === null || latest.head.ledgerSeq <= tail.ledgerSeq) return false;
+    if (!latest.ok) return 'UNAVAILABLE';
+    if (latest.head === null || latest.head.ledgerSeq <= tail.ledgerSeq) return 'DIVERGED'; // disse STALE e não mostra cabeça maior: a guarda não é coerente
     const read = await readLedgerFiles(options.dir, auditId, storeOptions);
-    if (!read.ok) return false;
+    if (!read.ok) return 'UNAVAILABLE';
     const records = read.value.records;
-    if (verifyTags(records, auth) !== null || !replayLedger(records, auditId).ok) return false;
-    return records[tail.ledgerSeq - 1]?.contentSha256 === tail.sha256 && records[latest.head.ledgerSeq - 1]?.contentSha256 === latest.head.sha256;
+    if (verifyTags(records, auth) !== null || !replayLedger(records, auditId).ok) return 'UNAVAILABLE'; // o livro relido não confere: não há como decidir aqui (a leitura seguinte acusa)
+    return records[tail.ledgerSeq - 1]?.contentSha256 === tail.sha256 && records[latest.head.ledgerSeq - 1]?.contentSha256 === latest.head.sha256 ? 'COVERED' : 'DIVERGED';
   }
   /**
    * REGRA 4 (G1.b.1, PG-G03): publicação de MELHOR ESFORÇO depois de um registro já durável no livro (pontos S1–S9 da §5.1.2). A falha nunca vira "nada foi gravado": o

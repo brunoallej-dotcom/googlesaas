@@ -372,9 +372,9 @@ export type LedgerReadState =
   | { readonly kind: 'DURABILITY_UNKNOWN' };
 
 /**
- * O que a guarda externa (se houver) informa. `head` é a leitura ANTERIOR ao livro (R7-05): só ela decide o `GUARD_MISMATCH`. `afterLedger` (G1.b.1) é uma releitura feita
- * DEPOIS do livro, só quando o atraso medido com `head` passaria de `L_max` ou faltaria a cabeça (regras 2 e 3): o livro pode ter crescido entre as duas leituras numa corrida
- * legítima, e o atraso é o do livro LIDO contra a guarda mais recente que se conhece.
+ * O que a guarda externa (se houver) informa. `head` é a leitura ANTERIOR ao livro (R7-05). `afterLedger` (G1.b.1) é uma releitura feita DEPOIS do livro, só quando o atraso
+ * medido com `head` passaria de `L_max` ou faltaria a cabeça (regras 2 e 3): o livro pode ter crescido entre as duas leituras numa corrida legítima. Se ela vier além da cauda
+ * lida, o serviço RELÊ o livro e avalia sobre o livro relido (vista e cauda do mesmo instante); as duas cabeças têm de existir, com o mesmo hash, no livro avaliado.
  */
 export type GuardEvidence =
   | { readonly status: 'NOT_CONFIGURED' }
@@ -386,15 +386,18 @@ export interface GuardLag {
   readonly head: LedgerHead | null;
   readonly lag: number;
 }
-/** Regras 2 e 3 da guarda (spec `link-audit-production-gates.md` §5.1.4): o atraso, ou `MISMATCH` quando a releitura posterior ao livro traz uma cabeça que ele não contém. */
+/**
+ * Regras 2 e 3 da guarda (spec `link-audit-production-gates.md` §5.1.4): o atraso, ou `MISMATCH` quando a releitura posterior ao livro traz uma cabeça que o livro avaliado não
+ * contém — com outro hash na posição, ou ALÉM da cauda (revisão do PR #56: o serviço já relê o livro quando a cabeça é posterior à cauda lida; o que continua além dela não está
+ * provado e nunca vale como "coberto").
+ */
 export function guardLagOf(guard: { readonly head: LedgerHead | null; readonly afterLedger?: LedgerHead | null }, records: readonly LedgerRecord[]): GuardLag | 'MISMATCH' {
   const tail = records.length;
   const before = guard.head;
   const after = guard.afterLedger ?? null;
-  // a releitura só vale se andou para a frente (a guarda é monotônica); se já cobre além do que foi lido, o livro lido está todo publicado
+  // a releitura só vale se andou para a frente (a guarda é monotônica) E se a cabeça dela é registro do livro avaliado, com o mesmo hash
   if (after !== null && after.ledgerSeq > (before?.ledgerSeq ?? 0)) {
-    if (after.ledgerSeq > tail) return { head: after, lag: 0 };
-    if (records[after.ledgerSeq - 1]?.contentSha256 !== after.sha256) return 'MISMATCH';
+    if (after.ledgerSeq > tail || records[after.ledgerSeq - 1]?.contentSha256 !== after.sha256) return 'MISMATCH';
     return { head: after, lag: tail - after.ledgerSeq };
   }
   return { head: before, lag: tail - (before?.ledgerSeq ?? 0) };

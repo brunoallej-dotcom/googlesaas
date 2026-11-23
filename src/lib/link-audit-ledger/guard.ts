@@ -2,7 +2,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { atomicOnly, dirStatus, ensureDirectory } from '../link-audit-storage';
 import { nodeFsOps, publishExclusive, type FsOps } from '../link-audit/snapshot-store';
-import { LEDGER_AUDIT_ID_PATTERN, type LedgerHead } from './types';
+import { LEDGER_AUDIT_ID_PATTERN, MAX_LEDGER_RECORDS, type LedgerHead } from './types';
 
 /*
  * GUARDA EXTERNA (Q6, 01/11/2026): testemunha IMUTÁVEL da cabeça do livro, em domínio de falha SEPARADO da VPS. É a única defesa contra o
@@ -43,7 +43,8 @@ export const PROCESS_GUARD_TIMER: GuardTimer = {
   },
 };
 
-const headSchema = z.object({ ledgerSeq: z.number().int().positive(), sha256: z.string().regex(/^[0-9a-f]{64}$/) }).strict();
+/** `ledgerSeq` só na faixa válida do livro (1..`MAX_LEDGER_RECORDS`): uma posição que nenhum livro tem é resposta fora do esquema ⇒ indisponível (revisão do PR #56). */
+const headSchema = z.object({ ledgerSeq: z.number().int().min(1).max(MAX_LEDGER_RECORDS), sha256: z.string().regex(/^[0-9a-f]{64}$/) }).strict();
 /** Respostas aceitas da porta (fronteira de confiança: o adaptador fala com um terceiro). Fora disso ⇒ indisponível. */
 const latestSchema = z.union([z.object({ ok: z.literal(true), head: headSchema.nullable() }).strict(), z.object({ ok: z.literal(false) }).strict()]);
 const publishSchema = z.union([z.object({ ok: z.literal(true) }).strict(), z.object({ ok: z.literal(false), reason: z.enum(['CONFLICT', 'STALE', 'UNAVAILABLE']) }).strict()]);
@@ -129,7 +130,7 @@ export function createSyntheticGuard(options: { readonly dir: string; readonly f
   }
   return {
     async publish(record) {
-      if (!LEDGER_AUDIT_ID_PATTERN.test(record.auditId) || !/^[0-9a-f]{64}$/.test(record.sha256) || !Number.isSafeInteger(record.ledgerSeq) || record.ledgerSeq < 1) return PUBLISH_UNAVAILABLE;
+      if (!LEDGER_AUDIT_ID_PATTERN.test(record.auditId) || !/^[0-9a-f]{64}$/.test(record.sha256) || !Number.isSafeInteger(record.ledgerSeq) || record.ledgerSeq < 1 || record.ledgerSeq > MAX_LEDGER_RECORDS) return PUBLISH_UNAVAILABLE;
       try {
         return await serialized(record.auditId, () => decide(record));
       } catch {
