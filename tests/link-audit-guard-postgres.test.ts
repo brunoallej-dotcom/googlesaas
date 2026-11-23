@@ -331,3 +331,29 @@ test('PG-G04 / §5.1.7: a rotação da chave do pseudônimo NÃO esconde retroce
 test('chaves de teste derivadas de rótulos (nenhum material fixo no repositório)', () => {
   assert.equal(guardKey('gk-x-test', 'rotulo').hex, testKeyMaterial('rotulo'));
 });
+
+/* ============================================================================ migração 004 ↔ adaptador (estático) */
+
+test('migração 004 ↔ adaptador: a função e a tabela que o SQL fixo usa existem com os mesmos nomes e colunas; faixa 1..MAX_LEDGER_RECORDS igual à do livro; toda função com search_path vazio; nada em public', () => {
+  const sql = fs.readFileSync(path.join(__dirname, '..', 'supabase', 'proposed', '004_link_audit_guard.sql'), 'utf8');
+  const rollback = fs.readFileSync(path.join(__dirname, '..', 'supabase', 'proposed', '004_link_audit_guard.rollback.sql'), 'utf8');
+  assert.match(GUARD_PUBLISH_SQL, /^select gmn_link_audit_guard\.publish_head\(\$1, \$2, \$3, \$4\) as outcome$/);
+  assert.match(sql, /create or replace function gmn_link_audit_guard\.publish_head\(p_audit_ref text, p_key_id text, p_ledger_seq integer, p_sha256 text\)\s+returns text/);
+  for (const outcome of ['RECORDED', 'ALREADY_RECORDED', 'CONFLICT', 'STALE']) assert.match(sql, new RegExp(`return '${outcome}'`), outcome);
+  for (const column of ['audit_ref', 'key_id', 'ledger_seq', 'sha256']) {
+    assert.ok(GUARD_LATEST_SQL.includes(`h.${column}`), `o latest lê ${column}`);
+    assert.match(sql, new RegExp(`\\n  ${column} (?:text|integer) not null`), `a tabela tem ${column}`);
+  }
+  assert.ok(GUARD_LATEST_SQL.includes('from gmn_link_audit_guard.ledger_heads h where h.audit_ref = any($1::text[])'));
+  assert.equal(MAX_LEDGER_RECORDS, 4000);
+  assert.match(sql, new RegExp(`ledger_seq between 1 and ${MAX_LEDGER_RECORDS}\\)`), 'CHECK da tabela');
+  assert.match(sql, new RegExp(`p_ledger_seq > ${MAX_LEDGER_RECORDS} then`), 'validação da função');
+  assert.equal((sql.match(/create or replace function/g) ?? []).length, 3);
+  assert.equal((sql.match(/\n  set search_path = ''\n/g) ?? []).length, 3, 'as três funções com search_path vazio');
+  assert.equal((sql.match(/security definer/g) ?? []).length, 1, 'só a publicação é SECURITY DEFINER');
+  assert.ok(!/\bpublic\.|schema public\b/i.test(sql.replace(/from public,/g, '').replace(/revoke all on [^;]+ from public/g, '')), 'nenhum objeto em public');
+  assert.match(sql, /^begin;$/m);
+  assert.match(sql, /^commit;$/m);
+  assert.match(rollback, /APAGAR-CABECAS-DA-GUARDA/);
+  for (const text of [sql, rollback]) assert.ok(!/password\s+'|\bpassword\s+"|[0-9a-f]{32,}/i.test(text), 'nenhuma senha nem material no SQL');
+});
