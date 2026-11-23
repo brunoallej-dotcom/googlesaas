@@ -112,11 +112,10 @@ export interface CaptureReport {
   readonly unverified: readonly { readonly id: string; readonly criterionId: string; readonly reason: string }[];
   readonly limitations: readonly string[];
   readonly divergences: readonly Divergence[];
-  readonly calls: {
-    readonly serperMaps: { readonly attempts: number; readonly httpStatus: number };
-    readonly serperReviews: 0;
-    readonly siteHttpRequests: number | null;
-  };
+  /** Na coleta SIMULADA do ensaio (W5.2b), `simulatedMaps` (o gerador sintético) no lugar das chamadas ao Serper. */
+  readonly calls:
+    | { readonly serperMaps: { readonly attempts: number; readonly httpStatus: number }; readonly serperReviews: 0; readonly siteHttpRequests: number | null }
+    | { readonly simulatedMaps: { readonly attempts: number; readonly httpStatus: number }; readonly reviews: 0; readonly siteHttpRequests: number | null };
 }
 
 export type CaptureReportResult = { readonly ok: true; readonly report: CaptureReport } | { readonly ok: false; readonly reason: string };
@@ -165,13 +164,13 @@ const REAL_SOURCE_DESCRIPTION = 'Dados coletados via Serper /maps (intermediári
 const SIMULATED_SOURCE_DESCRIPTION = 'SIMULADA — ensaio: dados SINTÉTICOS gerados pelo modo SIMULATED do coletor na homologação. Nenhuma consulta foi feita ao Serper nem ao Google; nunca é evidência real.';
 const SIMULATED_LIMITATION = 'SIMULADA — ensaio: captura sintética de homologação (nenhuma consulta foi feita); não descreve nenhuma empresa real e nunca é evidência real.';
 /** No simulado, a origem de cada dado do perfil é o gerador sintético (nenhum texto atribui o dado a um provedor; revisão do PR #62). */
-const SIMULATED_ORIGIN_NOTE = 'SIMULADA — ensaio: dado sintético do gerador da homologação; nenhuma consulta externa foi feita.';
+export const SIMULATED_ORIGIN_NOTE = 'SIMULADA — ensaio: dado sintético do gerador da homologação; nenhuma consulta externa foi feita.';
 const SIMULATED_NOT_PROVIDED = 'SIMULADA — ensaio: o gerador sintético não traz este dado; nenhuma consulta externa foi feita.';
 const PROVIDER_ATTRIBUTION = /Serper/;
 const PROVIDER_NOT_PROVIDED = /não disponibiliza/;
 
 /** Texto do pipeline (feito para a coleta real) que atribui o dado ao provedor ⇒ a mesma informação, atribuída ao gerador sintético. */
-function simulatedText(text: string): string {
+export function simulatedText(text: string): string {
   if (!PROVIDER_ATTRIBUTION.test(text)) return text;
   return PROVIDER_NOT_PROVIDED.test(text) ? SIMULATED_NOT_PROVIDED : SIMULATED_ORIGIN_NOTE;
 }
@@ -319,7 +318,9 @@ export async function buildReportFromCapture(params: CaptureReportInput): Promis
       .map((e) => ({ id: e.id, criterionId: e.criterionId, reason: e.limitation ?? 'sem motivo registrado' })),
     limitations: [...new Set(limitations)],
     divergences: result.divergences,
-    calls: { serperMaps: { attempts: params.httpAttempts, httpStatus: params.httpStatus }, serperReviews: 0, siteHttpRequests: params.siteOutcome?.access?.requests ?? params.site?.httpRequests ?? null },
+    calls: simulated
+      ? { simulatedMaps: { attempts: params.httpAttempts, httpStatus: params.httpStatus }, reviews: 0, siteHttpRequests: params.siteOutcome?.access?.requests ?? params.site?.httpRequests ?? null }
+      : { serperMaps: { attempts: params.httpAttempts, httpStatus: params.httpStatus }, serperReviews: 0, siteHttpRequests: params.siteOutcome?.access?.requests ?? params.site?.httpRequests ?? null },
   };
   return { ok: true, report };
 }

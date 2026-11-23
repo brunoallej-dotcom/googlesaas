@@ -48,7 +48,8 @@ export interface BasisEvidence {
   readonly legacy: boolean;
   /** O Serper é um intermediário: o `GOOGLE_NATIVE` do contrato do motor não significa API oficial do Google. */
   readonly origin: 'GOOGLE_NATIVE';
-  readonly provider: 'serper-maps';
+  /** `SIMULATED` só junto de `simulated: true` (coleta sintética do ensaio, W5.2b): o dado veio do gerador sintético, não do Serper. */
+  readonly provider: 'serper-maps' | 'SIMULATED';
   readonly intermediary: true;
   /**
    * Coleta SIMULADA do ensaio (W5.2b, spec do P1 §5.7): presente SÓ na captura marcada e nos relatórios dela. A forma (origem, provedor) é a
@@ -285,7 +286,7 @@ export function createScoringBasisReader(options: EvidenceReaderOptions) {
         superseded: false,
         legacy: false,
         origin: 'GOOGLE_NATIVE',
-        provider: 'serper-maps',
+        provider: isSimulatedCapture(capture.value) ? 'SIMULATED' : 'serper-maps',
         intermediary: true,
         ...(isSimulatedCapture(capture.value) ? { simulated: true as const } : {}),
       });
@@ -322,7 +323,7 @@ export function createScoringBasisReader(options: EvidenceReaderOptions) {
         superseded: r.revision < Math.max(...reports.filter((x) => x.capture === r.capture).map((x) => x.revision)),
         legacy: false,
         origin: 'GOOGLE_NATIVE',
-        provider: 'serper-maps',
+        provider: isSimulatedCapture(owner) ? 'SIMULATED' : 'serper-maps',
         intermediary: true,
         ...(isSimulatedCapture(owner) ? { simulated: true as const } : {}),
       });

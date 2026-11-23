@@ -9,6 +9,9 @@ import { SIMULATED_BADGE, SIMULATED_NOTICE } from '../src/components/link-audit/
 import type { Phase } from '../src/components/link-audit/evidence-state';
 import { StoredAuditDetail } from '../src/components/link-audit/stored-audit-detail';
 import { StoredAuditList } from '../src/components/link-audit/stored-audit-list';
+import { CompanyPanel } from '../src/components/link-audit/audit-page/company-panel';
+import { CriteriaMatrix } from '../src/components/link-audit/audit-page/criteria-matrix';
+import { assembleScoringInput } from '../src/lib/link-audit-scoring-runs/assemble';
 import { createEvidenceReader, toAuditDetailDto, toListItem } from '../src/lib/link-audit-evidence';
 import { SIMULATED_LABEL, SIMULATED_SOURCE_LABEL } from '../src/lib/link-audit-evidence/simulated';
 import { createScoringPreviewService } from '../src/lib/link-audit-scoring-runs';
@@ -46,12 +49,12 @@ test('base (2b): a base de pontuação marca simulated:true na captura simulada 
   const outcome = await reader.readScoringBasis({ email: 'leitor@exemplo.invalid' }, SIM_AUDIT_ID);
   assert.equal(outcome.status, 'READY');
   assert.ok(outcome.status === 'READY');
-  assert.deepEqual(outcome.basis.evidences.map((e) => [e.ref, e.simulated]), [['capture:c0001', true], ['report:c0001-r0001', true]]);
+  assert.deepEqual(outcome.basis.evidences.map((e) => [e.ref, e.simulated, e.provider]), [['capture:c0001', true, 'SIMULATED'], ['report:c0001-r0001', true, 'SIMULATED']], 'origem simulada também no provedor (revisão do PR #62)');
 
   const real = await makeAudit();
   const realOutcome = await createScoringBasisReader({ baseDir: real.base, authorize: () => true }).readScoringBasis({ email: 'leitor@exemplo.invalid' }, real.auditId);
   assert.ok(realOutcome.status === 'READY');
-  assert.ok(realOutcome.basis.evidences.every((e) => !('simulated' in e)));
+  assert.ok(realOutcome.basis.evidences.every((e) => !('simulated' in e) && e.provider === 'serper-maps'));
 });
 
 test('export (2c): captura simulada SEM --simulated ⇒ EXPORT_SIMULATED_CAPTURE (código 3), mesmo com a trava no ambiente; nada gravado', async () => {
@@ -389,4 +392,54 @@ test('limite (PR #62, item 4): o SIMULATED sem gravação com provedores injetad
   for (const f of files.filter((file) => /^src\/(app|components|workers|queues|agents)\//.test(file.rel) || file.rel === 'src/middleware.ts')) {
     assert.ok(!/link-audit-runtime/.test(f.code), `${f.rel} importa o runtime de coleta`);
   }
+});
+
+/* ------------------------------------------------------------------ revisão do PR #62 (confirmação), item 2: nenhuma atribuição ao Serper no simulado */
+
+test('origem (item 2): o mapeador aceita a base simulada só com o par coerente (provider SIMULATED + simulated:true); provider SIMULATED sem a marca, ou a marca com serper-maps, é recusado', async () => {
+  const evidence = tmpDir('lasim-asm-');
+  await collectSimulated(evidence);
+  const outcome = await createScoringBasisReader({ baseDir: evidence, authorize: () => true }).readScoringBasis({ email: 'leitor@exemplo.invalid' }, SIM_AUDIT_ID);
+  assert.ok(outcome.status === 'READY');
+  const now = '2026-11-22T12:00:00.000Z';
+  assert.notEqual(assembleScoringInput(outcome.basis, [], { now }).input, null, 'par coerente: a base simulada é montada (o bloqueio é da prévia)');
+  const withoutMark = { ...outcome.basis, evidences: outcome.basis.evidences.map(({ simulated: _s, ...rest }) => rest) };
+  const markWithSerper = { ...outcome.basis, evidences: outcome.basis.evidences.map((e) => ({ ...e, provider: 'serper-maps' as const })) };
+  for (const incoherent of [withoutMark, markWithSerper]) assert.equal(assembleScoringInput(incoherent as never, [], { now }).input, null);
+});
+
+test('origem (item 2): a prévia da coleta simulada diz a fonte certa (company.source e evidence.simulated); a real não muda', async () => {
+  const evidence = tmpDir('lasim-pvs-');
+  await collectSimulated(evidence);
+  const ev = await simulatedPreview(evidence, true).evaluate(OP_A, SIM_AUDIT_ID);
+  assert.ok(ev.ok);
+  assert.doesNotMatch(ev.value.payload.company.source, /Serper/);
+  assert.match(ev.value.payload.company.source, /SIMULADA/);
+  assert.equal(ev.value.payload.evidence.simulated, true);
+  const real = await makeAudit();
+  const realPreview = createScoringPreviewService({ basisReader: createScoringBasisReader({ baseDir: real.base, authorize: () => true }), decisions: { list: async () => ({ ok: true as const, value: fakeList(real.auditId, [], { head: null }) }) }, clock: () => '2026-11-22T12:00:00.000Z', evidenceProvenance: TRUSTING_EVIDENCE_POLICY });
+  const realEv = await realPreview.evaluate(OP_A, real.auditId);
+  assert.ok(realEv.ok);
+  assert.equal(realEv.value.payload.company.source, 'Serper (intermediário)');
+  assert.ok(!('simulated' in realEv.value.payload.evidence), 'chaves do DTO real inalteradas');
+});
+
+test('origem (item 2): a tela da auditoria (empresa e matriz de critérios) da coleta simulada não fala em Serper; a real continua falando', async () => {
+  const evidence = tmpDir('lasim-uis-');
+  await collectSimulated(evidence);
+  const ev = await simulatedPreview(evidence, true).evaluate(OP_A, SIM_AUDIT_ID);
+  assert.ok(ev.ok);
+  const detail = await createEvidenceReader({ baseDir: evidence, authorize: () => true }).getAudit({ email: 'leitor@exemplo.invalid' }, SIM_AUDIT_ID);
+  assert.ok(detail);
+  const noop = (): void => undefined;
+  const matrix = textOf(renderToStaticMarkup(createElement(CriteriaMatrix, { preview: ev.value.payload, canAct: false, onRegister: noop })));
+  const company = textOf(renderToStaticMarkup(createElement(CompanyPanel, { evidence: toAuditDetailDto(detail), preview: ev.value.payload })));
+  for (const html of [matrix, company]) assert.doesNotMatch(html, /Serper/);
+  assert.match(matrix, /gerador sintético/);
+  assert.match(company, /SIMULADA/);
+  const real = await makeAudit();
+  const realPreview = createScoringPreviewService({ basisReader: createScoringBasisReader({ baseDir: real.base, authorize: () => true }), decisions: { list: async () => ({ ok: true as const, value: fakeList(real.auditId, [], { head: null }) }) }, clock: () => '2026-11-22T12:00:00.000Z', evidenceProvenance: TRUSTING_EVIDENCE_POLICY });
+  const realEv = await realPreview.evaluate(OP_A, real.auditId);
+  assert.ok(realEv.ok);
+  assert.match(textOf(renderToStaticMarkup(createElement(CriteriaMatrix, { preview: realEv.value.payload, canAct: false, onRegister: noop }))), /Serper/);
 });

@@ -2,7 +2,7 @@ import type { CompanyIdentity } from '../link-audit/audit';
 import { CallLedger, evaluateAuthorization, identifiersFingerprint, LIVE_HARD_LIMITS, MAX_AUTHORIZATION_WINDOW_MS, type AuthorizationDenial, type CollectionMode } from '../link-audit/collector/budget';
 import { collectEvidence, planSearch } from '../link-audit/collector/collect';
 import { estimateCost, SECONDARY_SOURCE_ASSUMPTIONS, type CostAssumptions, type CostEstimate } from '../link-audit/collector/cost';
-import { buildCollectionReport, type CollectionReport } from '../link-audit/collector/report';
+import { asSimulatedReport, buildCollectionReport, type CollectionReport } from '../link-audit/collector/report';
 import type { CallBudget, CollectionInput, CollectorProviders, Viewport } from '../link-audit/collector/types';
 import { safeFailureReason, sanitizeUrl } from '../link-audit/url-redaction';
 import { buildReportFromCapture, type CaptureReport } from '../link-audit/collector/capture-report';
@@ -243,7 +243,7 @@ export async function runLinkAuditCollection(request: RunRequest, deps: RunDeps)
     return { ok: false, code: outcome.code, reason: outcome.issues.join(' '), ...(persistedAfterFailure ? { persisted: persistedAfterFailure } : {}) };
   }
 
-  const report = buildCollectionReport({
+  const built = buildCollectionReport({
     mode,
     input: request.input,
     identity,
@@ -252,6 +252,8 @@ export async function runLinkAuditCollection(request: RunRequest, deps: RunDeps)
     cost: estimateCost(budget, deps.costAssumptions ?? SECONDARY_SOURCE_ASSUMPTIONS),
     generatedAt: deps.now().toISOString(),
   });
+  // W5.2b: a coleta simulada GRAVADA (ensaio) nunca atribui os dados ao Serper; o SIMULATED de teste da Onda 4B segue como antes
+  const report = mode === 'SIMULATED' && persisting ? asSimulatedReport(built) : built;
   if (!persisting) return { ok: true, kind: 'REPORT', report };
   const persisted = await finishPersistence({ deps, request, auditId, live, ledger, simulated: mode === 'SIMULATED' });
   return { ok: true, kind: 'REPORT', report, persisted };

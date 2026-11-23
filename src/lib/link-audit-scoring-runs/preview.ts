@@ -155,7 +155,8 @@ export interface PreviewPayload {
     readonly unavailableReason: string | null;
     readonly identityMatchedBy: { readonly cid: boolean; readonly placeId: boolean } | null;
     readonly websiteHost: string | null;
-    readonly source: 'Serper (intermediário)';
+    /** W5.2b: na coleta SIMULADA do ensaio, o gerador sintético (nunca o Serper). */
+    readonly source: 'Serper (intermediário)' | typeof SIMULATED_COMPANY_SOURCE;
   };
   readonly evidence: {
     readonly integrity: { readonly status: string; readonly checkedFiles: number | null };
@@ -166,6 +167,8 @@ export interface PreviewPayload {
     readonly referenceDateSource: { readonly ref: string; readonly observedAt: string } | null;
     readonly profileSource: { readonly ref: string; readonly observedAt: string } | null;
     readonly bases: ReadonlyArray<{ readonly ref: string; readonly kind: string; readonly observedAt: string; readonly origin: string; readonly contentSha256: string; readonly legacy: boolean; readonly superseded: boolean }>;
+    /** W5.2b: presente (e `true`) só quando a base vem da coleta SIMULADA do ensaio; ausente nas reais (chaves do DTO real inalteradas). */
+    readonly simulated?: true;
   };
   readonly decisions: {
     /** Head das decisões CONFIRMADAS efetivamente consultado (o mesmo nas duas leituras). */
@@ -193,6 +196,8 @@ export interface PreviewPayload {
 }
 
 const READ_ATTEMPTS = 3;
+/** Fonte exibida da coleta SIMULADA do ensaio (W5.2b). */
+export const SIMULATED_COMPANY_SOURCE = 'Gerador sintético do ensaio (SIMULADA)' as const;
 const POTENTIAL_NOTE = 'potencial, ainda não comprovado' as const;
 const FAMILY_LABEL: Readonly<Record<string, string>> = {
   M4A_EXCLUDED: 'Nota e volume de avaliações: fora do cálculo por política (M-4a) até haver fonte e verificação comprovadas',
@@ -346,7 +351,8 @@ export function createScoringPreviewService(deps: PreviewDeps) {
     const provenance = headProofOf(trust);
     if (trust === null || trust.status !== 'AUTHENTICATED') serviceBlockers.push(previewBlocker('EVIDENCE_PROVENANCE_UNPROVEN', 'BLOCKING', { reasonCode: trust?.status === 'UNAUTHENTICATED' ? trust.reason : 'VERIFICATION_ERROR' }));
     // W5.2b: evidência SIMULADA (ensaio) nunca passa por real: fora da homologação, bloqueia a finalização; na homologação, fica o aviso
-    if (basis.evidences.some((evidence) => evidence.simulated === true)) serviceBlockers.push(previewBlocker('SIMULATED_EVIDENCE', deps.homologation === true ? 'WARNING' : 'BLOCKING'));
+    const simulatedBasis = basis.evidences.some((evidence) => evidence.simulated === true);
+    if (simulatedBasis) serviceBlockers.push(previewBlocker('SIMULATED_EVIDENCE', deps.homologation === true ? 'WARNING' : 'BLOCKING'));
 
     /* decisões: aplicar ou RETER (campos estruturados; o alias nunca é usado para localizar nada) */
     const recordsById = new Map<string, OperatorRecord>(decisions.operatorRecords.map((record) => [record.id, record]));
@@ -437,9 +443,10 @@ export function createScoringPreviewService(deps: PreviewDeps) {
           unavailableReason: profile.state === 'UNAVAILABLE' ? profile.reason : null,
           identityMatchedBy: profile.state === 'AVAILABLE' ? { cid: profile.identity.matchedBy.cid, placeId: profile.identity.matchedBy.placeId } : null,
           websiteHost: typeof website === 'string' ? hostOf(website) : null,
-          source: 'Serper (intermediário)',
+          source: simulatedBasis ? SIMULATED_COMPANY_SOURCE : 'Serper (intermediário)',
         },
         evidence: {
+          ...(simulatedBasis ? { simulated: true as const } : {}),
           integrity: { status: 'OK', checkedFiles: null },
           // só status, motivo e referências ausentes: a cabeça e as chaves (R2.1) ficam na `Evaluation`, nunca na prévia pública
           provenance: trust === null ? null : { status: trust.status, reason: trust.status === 'UNAUTHENTICATED' ? trust.reason : null, missingRefs: trust.status === 'UNAUTHENTICATED' ? [...(trust.missingRefs ?? [])] : [] },

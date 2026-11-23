@@ -515,3 +515,18 @@ test('modo (item 1), runtime: se a reserva muda entre o pré-voo e a gravação 
   assert.ok(!rescued.value.simulated);
   assert.equal(readMode(base, rescueId), 'LIVE');
 });
+
+test('origem (item 2): o relatório simulado não tem chave de chamadas do Serper, e a saída legível do coletor simulado não atribui nada ao Serper', async () => {
+  const evidence = tmpDir('lasim-calls-');
+  const { report } = await collectSimulated(evidence);
+  const calls = (report as unknown as { calls: Record<string, unknown> }).calls;
+  assert.ok(!Object.keys(calls).some((key) => /serper/i.test(key)), JSON.stringify(calls));
+  assert.deepEqual(calls.simulatedMaps, { attempts: 0, httpStatus: 200 });
+  const human = simHarness(HOMOLOGATION_ENV);
+  assert.equal(await runCollectorCli(simArgs(tmpDir('lasim-calls-')), human.deps), 0, human.err.join('\n'));
+  assert.doesNotMatch([...human.out, ...human.err].join('\n'), /via Serper|Serper \/maps|pelo Serper/);
+  // controle: o relatório real mantém a chave de sempre
+  const text = bodyText();
+  const real = await buildReportFromCapture({ rawBody: text, body: { name: 'c0001.capture.json', sha256: 'a'.repeat(64), bytes: Buffer.byteLength(text) }, otherFiles: [], httpStatus: 200, httpAttempts: 1, collectedAt: COLLECTED_AT, input: inputFor(identity()), site: null, generatedAt: T_NOW });
+  assert.ok(real.ok && 'serperMaps' in real.report.calls);
+});
