@@ -468,6 +468,20 @@ No fim do ensaio da W5.3, antes de arquivar o relatório:
 
 Todo código `3` desta tabela fora da última linha é do caso B do §3.2 (recusa antes da gravação: nenhum manifesto foi gravado).
 
+### 11.1 Resposta paga na quarentena (coleta LIVE, código 5)
+
+Se a coleta LIVE terminar com código 5 e a mensagem "foi PRESERVADA na quarentena" (spec do P1 §5.7), a resposta paga não entrou na auditoria
+pedida (modo trocado numa corrida, marcador de modo ilegível, falha de disco). Ela está num arquivo próprio em
+`<PASTA_DE_EVIDENCIAS>/_quarentena-resgate-live/<auditId>-<carimbo>-<aleatório>.json` (modo 0600), com o corpo, os metadados, o motivo e o
+`auditId` pedido. **Nenhum fluxo de auditoria lê essa pasta.** A recuperação é **manual e só do responsável**:
+
+1. não apague, não mova e não edite o arquivo; anote nome, `contentSha256` e motivo no livro (incidente);
+2. não repita a coleta (a autorização já foi consumida) sem decisão escrita do responsável;
+3. o responsável decide o destino: investigar o motivo (`MODE_CONFLICT`, `CORRUPT`, `WRITE_FAILED`…), e, se for o caso, uma auditoria nova
+   com id novo e uma decisão registrada de como a resposta preservada entra nela; nunca por cópia para a pasta de outra auditoria;
+4. se a mensagem for "NÃO foi persistida" com dois códigos, a quarentena também falhou: a resposta paga se perdeu; registre os dois códigos
+   e trate como incidente de armazenamento.
+
 ## 12. Suplente (D15.1, D10)
 
 **Hoje não há suplente.** Vale a cláusula da D10: titular sem suplente, com o aceite formal do responsável no dossiê antes da

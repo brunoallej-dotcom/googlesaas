@@ -729,10 +729,17 @@ Códigos de saída como no LIVE (0 ok, 1 uso, 3 recusado antes de gravar, 4/5 fa
    e de pagar; o pré-voo e cada gravação (`writeCapture`) conferem o marcador e recusam o outro modo nos dois sentidos (`MODE_CONFLICT`;
    marcador ilegível ⇒ recusa). Duas coletas concorrentes de modos diferentes: exatamente uma reserva, a outra é recusada (testes com duas
    gravações no mesmo processo, dois processos e dois runtimes). Auditoria antiga sem marcador: o modo vem das capturas (todas legíveis e do
-   mesmo modo). **Resposta paga nunca descartada:** se, ainda assim, uma resposta LIVE paga encontrar a auditoria reservada como SIMULADA na
-   hora de gravar (corrida ou marcador adulterado), o runtime a grava, com o mesmo corpo, na auditoria de resgate `<auditId>-resgate-live`
-   (modo LIVE), nada entra na auditoria simulada, nenhum relatório é gerado e o caso sai como erro (código 5 no CLI), com o id do resgate.
-   O marcador não é evidência (fica fora do conjunto atestado) nem assinatura.
+   mesmo modo). **Resposta paga nunca descartada (QUARENTENA, 3ª rodada da revisão do PR #62, decisão do manager):** se a gravação de uma
+   resposta LIVE paga na auditoria pedida falhar por QUALQUER motivo (modo trocado numa corrida, marcador ilegível depois do pré-voo, disco),
+   o runtime grava o mesmo corpo e os metadados da captura, mais o motivo (código) e o `auditId` pedido, num arquivo NOVO da quarentena: a
+   subpasta reservada `_quarentena-resgate-live` da raiz de evidências (o nome começa por `_` e nunca é um `auditId` válido; o leitor, as
+   listagens e o armazenamento não a tratam como auditoria), criado com escrita exclusiva (`wx`), modo 0600 e fsync, com nome
+   `<auditId>-<carimbo da coleta>-<16 hex aleatórios>.json` (nunca reutiliza, sobrescreve nem deduplica). Nada entra na auditoria pedida,
+   nenhum relatório é gerado e o caso sai como erro (código 5 no CLI), com o nome do arquivo. Se a quarentena também falhar, a mensagem de
+   sempre ("NÃO foi persistida") traz os dois códigos. A quarentena **nunca** é lida pelos fluxos de auditoria; a recuperação é manual e fica
+   com o responsável (runbook do custodiante §11.1). Substitui a auditoria de resgate `<auditId>-resgate-live` da rodada anterior, que tinha
+   id previsível (podia cair numa auditoria existente, ou num `MODE_CONFLICT` que perdia a resposta) e colidia por causa do corte em 64
+   caracteres. O marcador de modo não é evidência (fica fora do conjunto atestado) nem assinatura.
 4. **`export`.** Auditoria com captura simulada ⇒ `EXPORT_SIMULATED_CAPTURE` (código 3), salvo com `--simulated` **e** a mesma trava,
    conferida em duas camadas testadas cada uma sozinha (a recusa antecipada do CLI e a montagem pura do `export`, que recebe a opção e a
    trava separadas);
