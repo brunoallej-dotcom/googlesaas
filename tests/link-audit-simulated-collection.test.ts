@@ -1,0 +1,724 @@
+import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import dns from 'node:dns';
+import fs from 'node:fs';
+import http from 'node:http';
+import https from 'node:https';
+import net from 'node:net';
+import path from 'node:path';
+import test, { mock } from 'node:test';
+import { runCli as runCollectorCli } from '../scripts/link-audit-collect';
+import { canonicalJson, sha256Hex } from '../src/lib/link-audit/canonical';
+import { buildReportFromCapture } from '../src/lib/link-audit/collector/capture-report';
+import { checkStorage, QUARANTINE_DIR, quarantinePaidResponse, readCapture, reserveAuditMode, writeCapture } from '../src/lib/link-audit-evidence/store';
+import { captureSchema } from '../src/lib/link-audit-evidence/types';
+import { parseGoogleMapsLink } from '../src/lib/link-audit/maps-link';
+import { runLinkAuditCollection } from '../src/lib/link-audit-runtime/run';
+import { createEvidenceReader } from '../src/lib/link-audit-evidence/reader';
+import { createMemoryUsedStore } from '../src/lib/link-audit-runtime/used-authorizations';
+import { identifiersFingerprint, type ConsumptionAuthorization } from '../src/lib/link-audit/collector/budget';
+import {
+  createSimulatedMapsProvider,
+  isSyntheticIdentity,
+  SIMULATED_CID,
+  SIMULATED_COMPANY,
+  SIMULATED_FID,
+  SIMULATED_LINK,
+  SIMULATED_REQUEST_URL,
+  simulatedCollectionInput,
+  simulatedMapsBody,
+} from '../src/lib/link-audit-runtime/simulated-provider';
+import { CID, clock, FID, inputFor, NAMED, PLACE, T_NOW } from './helpers/link-audit-collect-fixtures';
+import { AUDIT, bodyText, captureInput, COLLECTED_AT, errno, faulty, identity, registerCleanup, tmpDir } from './helpers/link-audit-evidence-fixtures';
+import { nodeFsOps } from '../src/lib/link-audit/snapshot-store';
+import { collectSimulated, HOMOLOGATION_ENV, SIM_AUDIT_ID, simArgs, simHarness } from './helpers/link-audit-simulated-fixtures';
+
+/*
+ * W5.2b (spec §5.7): coleta SIMULADA para o ensaio da W5 em homologação. Dados 100% SINTÉTICOS; nenhuma rede, nenhum arquivo de
+ * ambiente, pastas temporárias. Uma evidência simulada NUNCA passa por real: a marca é gravada, relida e coberta pelo hash.
+ */
+registerCleanup();
+
+const captureFile = (base: string, n = 1): Record<string, unknown> => JSON.parse(fs.readFileSync(path.join(base, AUDIT, `c000${n}.capture.json`), 'utf8')) as Record<string, unknown>;
+
+test('marca (2b): a captura simulada grava provider SIMULATED e simulated:true, relidos pelo leitor, e a marca está DENTRO do contentSha256', async () => {
+  const base = tmpDir('lasim-');
+  const written = await writeCapture(base, { ...captureInput(), simulated: true });
+  assert.ok(written.ok, written.ok ? '' : written.issues.join(' '));
+  const raw = captureFile(base);
+  assert.equal(raw.provider, 'SIMULATED');
+  assert.equal(raw.simulated, true);
+  const reread = await readCapture(base, AUDIT, 1);
+  assert.ok(reread.ok);
+  assert.equal(reread.value.provider, 'SIMULATED');
+  assert.equal(reread.value.simulated, true);
+  // o hash cobre a marca: tirá-la (ou trocar o provedor) e recalcular dá OUTRO contentSha256 (o que o --collector-hash e o manifesto fixam)
+  const { contentSha256, simulated, ...rest } = raw;
+  assert.equal(sha256Hex(canonicalJson({ ...rest, simulated })), contentSha256);
+  assert.notEqual(sha256Hex(canonicalJson({ ...rest, provider: 'serper-maps' })), contentSha256, 'sem a marca o hash muda');
+  assert.notEqual(sha256Hex(canonicalJson({ ...rest, simulated, provider: 'serper-maps' })), contentSha256);
+});
+
+test('marca (2b): a captura real continua EXATAMENTE como antes (provider serper-maps, sem o campo simulated)', async () => {
+  const base = tmpDir('lasim-');
+  const written = await writeCapture(base, captureInput());
+  assert.ok(written.ok);
+  const raw = captureFile(base);
+  assert.equal(raw.provider, 'serper-maps');
+  assert.ok(!('simulated' in raw));
+});
+
+test('marca (2b): o esquema exige provider SIMULATED e simulated:true JUNTOS; um sem o outro, ou simulated:false, é inválido', async () => {
+  const base = tmpDir('lasim-');
+  assert.ok((await writeCapture(base, { ...captureInput(), simulated: true })).ok);
+  const raw = captureFile(base);
+  assert.ok(captureSchema.safeParse(raw).success);
+  const { simulated: _drop, ...noFlag } = raw;
+  void _drop;
+  assert.equal(captureSchema.safeParse(noFlag).success, false, 'provider SIMULATED sem simulated');
+  assert.equal(captureSchema.safeParse({ ...raw, provider: 'serper-maps' }).success, false, 'simulated sem provider SIMULATED');
+  assert.equal(captureSchema.safeParse({ ...raw, simulated: false }).success, false, 'simulated:false não existe');
+  assert.equal(captureSchema.safeParse({ ...raw, provider: 'outro' }).success, false);
+});
+
+test('marca (2b): captura simulada e captura real NÃO se misturam na mesma auditoria: o pré-voo recusa nos dois sentidos e a gravação recusa a simulada numa auditoria real', async () => {
+  const realFirst = tmpDir('lasim-');
+  assert.ok((await writeCapture(realFirst, captureInput())).ok);
+  const mixed = await writeCapture(realFirst, { ...captureInput({ body: bodyText({ fixtureIndex: 2 }) }), simulated: true });
+  assert.ok(!mixed.ok);
+  assert.equal(mixed.code, 'MODE_CONFLICT', 'a reserva de modo (LIVE) recusa a simulada');
+  assert.match(mixed.issues.join(' '), /reservada como LIVE/);
+  assert.ok(!fs.existsSync(path.join(realFirst, AUDIT, 'c0002.capture.json')), 'nada gravado');
+  const preflightSimulated = await checkStorage(realFirst, { auditId: AUDIT, simulated: true });
+  assert.ok(!preflightSimulated.ok && preflightSimulated.code === 'STORAGE_NOT_READY');
+  assert.ok((await checkStorage(realFirst, { auditId: AUDIT })).ok, 'coleta real numa auditoria real segue');
+
+  const simulatedFirst = tmpDir('lasim-');
+  assert.ok((await writeCapture(simulatedFirst, { ...captureInput(), simulated: true })).ok);
+  const preflightReal = await checkStorage(simulatedFirst, { auditId: AUDIT });
+  assert.ok(!preflightReal.ok && preflightReal.code === 'STORAGE_NOT_READY', 'a coleta real (paga) é recusada ANTES de pagar numa auditoria simulada');
+  assert.match(preflightReal.issues.join(' '), /SIMULADA/);
+  assert.ok((await checkStorage(simulatedFirst, { auditId: AUDIT, simulated: true })).ok, 'nova captura simulada numa auditoria simulada segue');
+  // revisão do PR #62 (BLOQUEADOR): a gravação também recusa a captura REAL numa auditoria reservada como SIMULADA (a resposta paga é
+  // preservada pelo runtime na quarentena, fora das auditorias; aqui, no armazenamento, nada entra na auditoria simulada)
+  const real = await writeCapture(simulatedFirst, captureInput({ body: bodyText({ fixtureIndex: 3 }) }));
+  assert.ok(!real.ok && real.code === 'MODE_CONFLICT', JSON.stringify(real));
+  assert.ok(!fs.existsSync(path.join(simulatedFirst, AUDIT, 'c0002.capture.json')), 'nada gravado na auditoria simulada');
+});
+
+test('marca (2b): o relatório da captura simulada leva source.provider SIMULATED, source.simulated:true e a limitação explícita; o real não muda', async () => {
+  const text = bodyText();
+  const common = { rawBody: text, body: { name: 'c0001.capture.json', sha256: 'a'.repeat(64), bytes: Buffer.byteLength(text) }, otherFiles: [], httpStatus: 200, httpAttempts: 1, collectedAt: COLLECTED_AT, input: inputFor(identity()), site: null, generatedAt: T_NOW };
+  const simulated = await buildReportFromCapture({ ...common, simulated: true });
+  assert.ok(simulated.ok);
+  assert.equal(simulated.report.source.provider, 'SIMULATED');
+  assert.equal(simulated.report.source.simulated, true);
+  assert.match(simulated.report.source.description, /SIMULADA — ensaio/);
+  assert.ok(simulated.report.limitations.some((line) => /SIMULADA — ensaio/.test(line) && /nenhuma consulta/i.test(line)));
+  const real = await buildReportFromCapture(common);
+  assert.ok(real.ok);
+  assert.equal(real.report.source.provider, 'serper-maps');
+  assert.ok(!('simulated' in real.report.source));
+  assert.ok(!real.report.limitations.some((line) => /SIMULADA/.test(line)));
+});
+
+/* ------------------------------------------------------------------ runtime: gerador sintético e gravação marcada (2a, 2d) */
+
+const SIM_AUDIT = 'ensaio-w5-teste-01';
+const simClock = (): Date => new Date('2026-11-22T10:00:00.000Z');
+const simInput = () => simulatedCollectionInput({ operator: 'operador-ensaio@exemplo.invalid', confirmedAt: simClock().toISOString(), snapshotId: 'ensaio-snap-0001' });
+
+test('dados sintéticos (2d): link, identificadores e empresa do ensaio são FIXOS e obviamente fictícios; o corpo gerado só traz isso', () => {
+  assert.equal(SIMULATED_COMPANY.name, 'Empresa de Ensaio');
+  assert.equal(SIMULATED_COMPANY.city, 'Cidade de Ensaio');
+  assert.equal(SIMULATED_COMPANY.stateCode, 'ZZ', 'UF inexistente');
+  const parsed = parseGoogleMapsLink(SIMULATED_LINK);
+  assert.ok(parsed.status === 'IDENTIFIED');
+  assert.deepEqual(parsed.identifiers, { cid: SIMULATED_CID, featureId: SIMULATED_FID });
+  assert.match(SIMULATED_CID, /^\d{1,9}$/, 'CID curto demais para ser de um perfil real (os reais têm 17 a 20 dígitos)');
+  assert.match(SIMULATED_FID, /^0x0:/, 'prefixo zero');
+  const body = JSON.parse(simulatedMapsBody('Empresa de Ensaio Cidade de Ensaio ZZ')) as { places: Array<Record<string, unknown>>; simulated: unknown; credits: unknown };
+  assert.equal(body.simulated, true);
+  assert.equal(body.credits, 0);
+  assert.equal(body.places.length, 1);
+  const place = body.places[0] as Record<string, unknown>;
+  assert.equal(place.title, 'Empresa de Ensaio');
+  assert.equal(place.cid, SIMULATED_CID);
+  assert.equal(place.fid, SIMULATED_FID);
+  for (const field of ['phoneNumber', 'website', 'rating', 'ratingCount', 'placeId', 'thumbnailUrl']) assert.ok(!(field in place), `sem ${field}`);
+  const input = simInput();
+  assert.equal(input.identity.name, 'Empresa de Ensaio');
+  assert.ok(isSyntheticIdentity(input.identity));
+  assert.equal(isSyntheticIdentity({ ...input.identity, name: 'Outra Empresa' }), false);
+  assert.equal(isSyntheticIdentity({ ...input.identity, identifiers: { cid: '1311768467294899695' } }), false);
+});
+
+test('runtime (2a): SIMULATED com gravação de evidência SEM homologation:true ⇒ HOMOLOGATION_REQUIRED antes de qualquer pasta', async () => {
+  const base = path.join(tmpDir('lasim-rt-'), 'evidencias');
+  for (const homologation of [undefined, false]) {
+    const outcome = await runLinkAuditCollection({ mode: 'SIMULATED', input: simInput(), auditId: SIM_AUDIT }, { now: simClock, evidence: { baseDir: base }, ...(homologation === undefined ? {} : { homologation }) });
+    assert.ok(!outcome.ok);
+    assert.equal(outcome.code, 'HOMOLOGATION_REQUIRED');
+    assert.ok(!fs.existsSync(base), 'nenhuma pasta criada');
+  }
+});
+
+test('runtime (2a, 2d): com a trava, grava c0001 e r0001 MARCADAS pelo gerador sintético, sem nenhuma chamada enviada; provedor injetado ou identidade não sintética ⇒ recusa', async () => {
+  const base = tmpDir('lasim-rt-');
+  const outcome = await runLinkAuditCollection({ mode: 'SIMULATED', input: simInput(), auditId: SIM_AUDIT }, { now: simClock, evidence: { baseDir: base }, homologation: true });
+  assert.ok(outcome.ok && outcome.kind === 'REPORT', outcome.ok ? '' : `${outcome.code}: ${outcome.reason}`);
+  assert.equal(outcome.report.mode, 'SIMULATED');
+  assert.equal(outcome.report.externalTraffic, false);
+  assert.equal(outcome.report.calls.sent, 0);
+  const persisted = outcome.persisted;
+  assert.ok(persisted && persisted.errors.length === 0 && persisted.captureNumber === 1 && persisted.revision === 1);
+  assert.equal(persisted.storedReport?.source.simulated, true);
+  assert.equal(persisted.storedReport?.source.provider, 'SIMULATED');
+  const capture = await readCapture(base, SIM_AUDIT, 1);
+  assert.ok(capture.ok);
+  assert.equal(capture.value.simulated, true);
+  assert.equal(capture.value.provider, 'SIMULATED');
+  assert.equal(capture.value.request.url, SIMULATED_REQUEST_URL);
+  assert.equal(capture.value.response.attempts, 0, 'nenhuma tentativa HTTP');
+  assert.equal(persisted.storedReport?.source.capture.sha256, capture.value.contentSha256, 'o hash que o --json imprime é o da captura marcada');
+  assert.equal(persisted.storedReport?.located, 'MATCHED');
+
+  const injected = await runLinkAuditCollection({ mode: 'SIMULATED', input: simInput(), auditId: 'ensaio-w5-teste-02' }, { now: simClock, evidence: { baseDir: base }, homologation: true, providers: { maps: { search: async () => ({ state: 'OK', value: [], fetchedAt: simClock().toISOString() }) } } });
+  assert.ok(!injected.ok && injected.code === 'INVALID_REQUEST');
+  const realIdentity = simInput();
+  const notSynthetic = await runLinkAuditCollection({ mode: 'SIMULATED', input: { ...realIdentity, identity: { ...realIdentity.identity, name: 'Outra Empresa' } }, auditId: 'ensaio-w5-teste-03' }, { now: simClock, evidence: { baseDir: base }, homologation: true });
+  assert.ok(!notSynthetic.ok && notSynthetic.code === 'INVALID_REQUEST');
+  const badId = await runLinkAuditCollection({ mode: 'SIMULATED', input: simInput(), auditId: 'X' }, { now: simClock, evidence: { baseDir: base }, homologation: true });
+  assert.ok(!badId.ok && badId.code === 'STORAGE_NOT_READY');
+  assert.deepEqual(fs.readdirSync(base).sort(), [SIM_AUDIT], 'nada gravado pelas recusas');
+});
+
+test('runtime: SIMULATED SEM gravação (fixtures em memória) continua como antes e não exige a trava', async () => {
+  const outcome = await runLinkAuditCollection({ mode: 'SIMULATED', input: simInput() }, { now: simClock, providers: { maps: createSimulatedMapsProvider({ now: simClock }) } });
+  assert.ok(outcome.ok && outcome.kind === 'REPORT');
+  assert.equal(outcome.persisted, undefined);
+});
+
+/* ------------------------------------------------------------------ CLI de coleta: trava, opções, saída e zero rede (2a, 3) */
+
+test('CLI (2a): sem a trava de homologação o --simulated é RECUSADO (código 3) antes de qualquer pasta; NODE_ENV=production sem a trava também; só o valor exato "1" liga', async () => {
+  for (const env of [{}, { NODE_ENV: 'production' }, { GMN_LINK_AUDIT_HOMOLOGATION: 'true' }, { GMN_LINK_AUDIT_HOMOLOGATION: '0' }, { GMN_LINK_AUDIT_HOMOLOGATION: ' 1' }, { GMN_LINK_AUDIT_HOMOLOGATION: 'on', NODE_ENV: 'production' }]) {
+    const evidence = path.join(tmpDir('lasim-cli-'), 'evidencias');
+    const h = simHarness(env);
+    const code = await runCollectorCli(simArgs(evidence), h.deps);
+    assert.equal(code, 3, JSON.stringify(env));
+    assert.match(h.err.join('\n'), /GMN_LINK_AUDIT_HOMOLOGATION=1/);
+    if (env.NODE_ENV === 'production') assert.match(h.err.join('\n'), /NODE_ENV=production/);
+    assert.ok(!fs.existsSync(evidence), 'nenhuma pasta criada');
+    assert.deepEqual(h.forbidden, { loadEnv: 0, usedStore: 0, createLiveProviders: 0 });
+  }
+});
+
+test('CLI (2a): a trava vale SÓ do ambiente do comando: o modo SIMULATED nunca carrega o arquivo de ambiente (que poderia trazê-la)', async () => {
+  const evidence = path.join(tmpDir('lasim-cli-'), 'evidencias');
+  const env: Record<string, string | undefined> = {};
+  const h = simHarness(env);
+  const deps = { ...h.deps, loadEnv: () => { h.forbidden.loadEnv += 1; env.GMN_LINK_AUDIT_HOMOLOGATION = '1'; } };
+  assert.equal(await runCollectorCli(simArgs(evidence), deps), 3);
+  assert.equal(h.forbidden.loadEnv, 0);
+  assert.ok(!fs.existsSync(evidence));
+});
+
+test('CLI (2a, 2d): --simulated não aceita --live nem as opções do LIVE, nem --link/--name/--city/--uf (dados fixos e sintéticos); exige --audit, --operator e --evidence-dir', async () => {
+  const evidence = tmpDir('lasim-cli-');
+  const cases: string[][] = [
+    ['--live'], ['--ack-cost'], ['--authorization-id', 'auth-teste-0001'], ['--max-maps-calls', '1'], ['--expires-in-minutes', '5'],
+    ['--link', SIMULATED_LINK], ['--name', 'Empresa de Ensaio'], ['--city', 'Cidade de Ensaio'], ['--uf', 'ZZ'],
+  ];
+  for (const extra of cases) {
+    const h = simHarness(HOMOLOGATION_ENV);
+    assert.equal(await runCollectorCli(simArgs(evidence, extra), h.deps), 1, extra.join(' '));
+    assert.match(h.err.join('\n'), new RegExp(extra[0] as string));
+  }
+  for (const drop of ['--audit', '--operator', '--evidence-dir']) {
+    const args = simArgs(evidence);
+    const at = args.indexOf(drop);
+    args.splice(at, 2);
+    const h = simHarness(HOMOLOGATION_ENV);
+    assert.equal(await runCollectorCli(args, h.deps), 1, drop);
+  }
+  const h = simHarness(HOMOLOGATION_ENV);
+  assert.equal(await runCollectorCli(simArgs(evidence, [], 'X'), h.deps), 1, 'auditId inválido');
+  assert.deepEqual(fs.readdirSync(evidence), [], 'nada gravado');
+});
+
+test('CLI (S-02): com a trava, --json imprime UM objeto com a marca e o source.capture.sha256 IGUAL ao contentSha256 relido da captura marcada; nada real é usado', async () => {
+  const evidence = tmpDir('lasim-cli-');
+  const { report, collectorHash, harness } = await collectSimulated(evidence);
+  assert.deepEqual(harness.forbidden, { loadEnv: 0, usedStore: 0, createLiveProviders: 0 });
+  assert.equal(report.source.simulated, true);
+  assert.equal(report.source.provider, 'SIMULATED');
+  assert.match(collectorHash, /^[0-9a-f]{64}$/);
+  const capture = await readCapture(evidence, SIM_AUDIT_ID, 1);
+  assert.ok(capture.ok);
+  assert.equal(capture.value.simulated, true);
+  assert.equal(collectorHash, capture.value.contentSha256);
+  assert.equal((capture.value.input.identity as { name?: string }).name, 'Empresa de Ensaio');
+  assert.deepEqual(fs.readdirSync(path.join(evidence, SIM_AUDIT_ID)).sort(), ['audit-mode.json', 'c0001.capture.json', 'c0001.report-r0001.json']);
+  assert.equal((JSON.parse(fs.readFileSync(path.join(evidence, SIM_AUDIT_ID, 'audit-mode.json'), 'utf8')) as { mode: string }).mode, 'SIMULATED', 'o modo foi reservado antes da captura');
+});
+
+test('CLI: a saída legível diz "SIMULADA — ensaio" e que nenhuma consulta foi feita', async () => {
+  const evidence = tmpDir('lasim-cli-');
+  const h = simHarness(HOMOLOGATION_ENV);
+  assert.equal(await runCollectorCli(simArgs(evidence), h.deps), 0, h.err.join('\n'));
+  const text = h.out.join('\n');
+  assert.match(text, /SIMULADA — ensaio/);
+  assert.match(text, /nenhuma consulta/i);
+  assert.match(text, /RELATÓRIO \(SIMULATED\) — tráfego externo: não/);
+  assert.match(text, /Chamadas: enviadas 0/);
+});
+
+test('zero rede (3): a coleta simulada completa (CLI → runtime → gravação) com fetch, DNS, net e http(s) trocados por armadilhas, sem acioná-las', async () => {
+  const trap = (name: string) => () => {
+    throw new Error(`rede proibida: ${name}`);
+  };
+  const guards = [
+    mock.method(globalThis, 'fetch', trap('fetch')),
+    mock.method(dns, 'lookup', trap('dns.lookup') as never),
+    mock.method(dns.promises, 'lookup', trap('dns.promises.lookup') as never),
+    mock.method(net, 'connect', trap('net.connect') as never),
+    mock.method(net.Socket.prototype, 'connect', trap('net.Socket#connect') as never),
+    mock.method(http, 'request', trap('http.request') as never),
+    mock.method(https, 'request', trap('https.request') as never),
+  ];
+  try {
+    const evidence = tmpDir('lasim-net-');
+    const { report } = await collectSimulated(evidence);
+    assert.equal(report.source.simulated, true);
+    for (const guard of guards) assert.equal(guard.mock.callCount(), 0);
+  } finally {
+    for (const guard of guards) guard.mock.restore();
+  }
+});
+
+/* ------------------------------------------------------------------ revisão do PR #62, item 2: origem SIMULADA no relatório */
+
+const SERPER_ORIGIN = /via Serper|Serper \/maps|pelo Serper|viaSerper/i;
+/** Todos os textos (e o campo viaSerper) do relatório, com o caminho, para achar qualquer "obtido via Serper". */
+function textsOf(value: unknown, at = ''): Array<[string, string]> {
+  if (typeof value === 'string') return [[at, value]];
+  if (typeof value === 'boolean' && at.endsWith('.viaSerper')) return value ? [[at, 'viaSerper=true']] : [];
+  if (Array.isArray(value)) return value.flatMap((item, index) => textsOf(item, `${at}[${index}]`));
+  if (value && typeof value === 'object') return Object.entries(value).flatMap(([key, item]) => textsOf(item, `${at}.${key}`));
+  return [];
+}
+
+test('origem (PR #62, item 2): o relatório SIMULADO diz que a fonte é o gerador sintético — data.googleMaps.source SIMULATED, viaSerper:false e NENHUM texto "obtido via Serper"', async () => {
+  const evidence = tmpDir('lasim-orig-');
+  const { report } = await collectSimulated(evidence);
+  const full = report as unknown as { data: { googleMaps: { source: string } | null }; verified: Array<{ viaSerper: boolean; originNote: string | null }>; source: { description: string } };
+  assert.equal(full.data.googleMaps?.source, 'SIMULATED');
+  assert.ok(full.verified.length > 0 && full.verified.every((item) => item.viaSerper === false && /SIMULADA — ensaio/.test(item.originNote ?? '')));
+  const serper = textsOf(report).filter(([at, text]) => at !== '.source.description' && SERPER_ORIGIN.test(text));
+  assert.deepEqual(serper, [], 'nenhum texto do relatório simulado atribui o dado ao Serper');
+  // controle: o relatório real continua atribuindo ao Serper (intermediário), como antes
+  const text = bodyText();
+  const real = await buildReportFromCapture({ rawBody: text, body: { name: 'c0001.capture.json', sha256: 'a'.repeat(64), bytes: Buffer.byteLength(text) }, otherFiles: [], httpStatus: 200, httpAttempts: 1, collectedAt: COLLECTED_AT, input: inputFor(identity()), site: null, generatedAt: T_NOW });
+  assert.ok(real.ok);
+  assert.equal(real.report.data.googleMaps?.source, 'serper-maps');
+  assert.ok(real.report.verified.some((item) => item.viaSerper));
+});
+
+/* ------------------------------------------------------------------ revisão do PR #62, item 3: a pré-checagem de mistura falha FECHADA */
+
+test('mistura (PR #62, item 3): captura existente ILEGÍVEL (corrompida ou erro de leitura) ⇒ o pré-voo recusa nos dois sentidos, e a gravação simulada também', async () => {
+  const corrupt = tmpDir('lasim-mix-');
+  assert.ok((await writeCapture(corrupt, captureInput())).ok);
+  fs.rmSync(path.join(corrupt, AUDIT, 'audit-mode.json')); // auditoria anterior à reserva de modo: decide pelas capturas
+  const file = path.join(corrupt, AUDIT, 'c0001.capture.json');
+  fs.chmodSync(file, 0o644);
+  fs.writeFileSync(file, '{ não é json');
+  for (const simulated of [false, true]) {
+    const refused = await checkStorage(corrupt, { auditId: AUDIT, simulated });
+    assert.ok(!refused.ok && refused.code === 'STORAGE_NOT_READY', `simulated=${simulated}`);
+    assert.match(refused.issues.join(' '), /não pôde ser lida/);
+  }
+  const written = await writeCapture(corrupt, { ...captureInput({ body: bodyText({ fixtureIndex: 4 }) }), simulated: true });
+  assert.ok(!written.ok && ['INVALID', 'CORRUPT'].includes(written.code), 'nunca grava a simulada ao lado de uma captura que não se lê');
+
+  const unreadable = tmpDir('lasim-mix-');
+  assert.ok((await writeCapture(unreadable, captureInput())).ok);
+  fs.rmSync(path.join(unreadable, AUDIT, 'audit-mode.json'));
+  const denyCapture = faulty({ readFile: async (target: string, max: number) => (target.endsWith('.capture.json') ? Promise.reject(errno('EACCES')) : nodeFsOps.readFile(target, max)) });
+  const denied = await checkStorage(unreadable, { auditId: AUDIT, simulated: true, fs: denyCapture });
+  assert.ok(!denied.ok && denied.code === 'STORAGE_NOT_READY');
+});
+
+test('mistura (PR #62, item 3): listagem da pasta da auditoria que FALHA (não ENOENT) ⇒ recusa; só a pasta comprovadamente inexistente conta como vazia', async () => {
+  const base = tmpDir('lasim-mix-');
+  assert.ok((await writeCapture(base, captureInput())).ok);
+  fs.rmSync(path.join(base, AUDIT, 'audit-mode.json')); // auditoria anterior à reserva de modo
+  const auditDir = path.join(base, AUDIT);
+  for (const code of ['EACCES', 'EIO', 'ENOTDIR']) {
+    const failingList = faulty({ readdir: async (dir: string) => (path.resolve(dir) === path.resolve(auditDir) ? Promise.reject(errno(code)) : nodeFsOps.readdir(dir)) });
+    for (const simulated of [false, true]) {
+      const refused = await checkStorage(base, { auditId: AUDIT, simulated, fs: failingList });
+      assert.ok(!refused.ok && refused.code === 'STORAGE_NOT_READY', `${code}, simulated=${simulated}`);
+      assert.match(refused.issues.join(' '), /não pôde ser listada/);
+    }
+  }
+  // controle: a pasta da auditoria que não existe (ENOENT) é o caso normal de uma coleta nova
+  assert.ok((await checkStorage(tmpDir('lasim-mix-'), { auditId: AUDIT })).ok);
+  assert.ok((await checkStorage(tmpDir('lasim-mix-'), { auditId: AUDIT, simulated: true })).ok);
+});
+
+/* ------------------------------------------------------------------ revisão do PR #62 (confirmação), item 1: reserva EXCLUSIVA do modo */
+
+const modeFile = (base: string, auditId = AUDIT): string => path.join(base, auditId, 'audit-mode.json');
+const readMode = (base: string, auditId = AUDIT): string => (JSON.parse(fs.readFileSync(modeFile(base, auditId), 'utf8')) as { mode: string }).mode;
+
+test('modo (item 1): a primeira captura reserva o modo da auditoria num marcador criado com exclusividade (LIVE ou SIMULATED), conferido nos dois sentidos pela gravação e pelo pré-voo', async () => {
+  const live = tmpDir('lasim-mode-');
+  assert.ok((await writeCapture(live, captureInput())).ok);
+  assert.equal(readMode(live), 'LIVE');
+  assert.equal(fs.statSync(modeFile(live)).mode & 0o222, 0, 'marcador somente leitura (publicação exclusiva)');
+  const intoLive = await writeCapture(live, { ...captureInput({ body: bodyText({ fixtureIndex: 5 }) }), simulated: true });
+  assert.ok(!intoLive.ok && ['MODE_CONFLICT', 'INVALID'].includes(intoLive.code));
+  const simulated = tmpDir('lasim-mode-');
+  assert.ok((await writeCapture(simulated, { ...captureInput(), simulated: true })).ok);
+  assert.equal(readMode(simulated), 'SIMULATED');
+  const intoSimulated = await writeCapture(simulated, captureInput({ body: bodyText({ fixtureIndex: 6 }) }));
+  assert.ok(!intoSimulated.ok && intoSimulated.code === 'MODE_CONFLICT');
+  // só o marcador, sem captura nenhuma, já decide (reserva antes da primeira captura)
+  const reservedOnly = tmpDir('lasim-mode-');
+  assert.ok((await reserveAuditMode(reservedOnly, AUDIT, 'SIMULATED')).ok);
+  assert.equal(readMode(reservedOnly), 'SIMULATED');
+  const preLive = await checkStorage(reservedOnly, { auditId: AUDIT });
+  assert.ok(!preLive.ok && preLive.code === 'STORAGE_NOT_READY' && /reservada como SIMULADA/.test(preLive.issues.join(' ')));
+  assert.ok((await checkStorage(reservedOnly, { auditId: AUDIT, simulated: true })).ok);
+  const again = await reserveAuditMode(reservedOnly, AUDIT, 'LIVE');
+  assert.ok(!again.ok && again.code === 'MODE_CONFLICT', 'a reserva nunca é trocada');
+  assert.equal(readMode(reservedOnly), 'SIMULATED');
+  // marcador ilegível ⇒ recusa (falha fechada), nos dois sentidos
+  fs.chmodSync(modeFile(reservedOnly), 0o644);
+  fs.writeFileSync(modeFile(reservedOnly), '{ lixo');
+  for (const flag of [false, true]) assert.ok(!(await checkStorage(reservedOnly, { auditId: AUDIT, simulated: flag })).ok);
+  assert.ok(!(await writeCapture(reservedOnly, { ...captureInput(), simulated: true })).ok);
+});
+
+test('modo (item 1): reservas CONCORRENTES no mesmo processo — exatamente uma vence, nos dois sentidos', async () => {
+  for (const order of [['LIVE', 'SIMULATED'], ['SIMULATED', 'LIVE']] as const) {
+    const base = tmpDir('lasim-race-');
+    const results = await Promise.all(order.map((mode) => reserveAuditMode(base, AUDIT, mode)));
+    assert.equal(results.filter((r) => r.ok).length, 1, order.join('→'));
+    const winner = order[results.findIndex((r) => r.ok)];
+    assert.equal(readMode(base), winner);
+    const writes = await Promise.all(order.map((mode, i) => writeCapture(base, { ...captureInput({ body: bodyText({ fixtureIndex: 10 + i }) }), ...(mode === 'SIMULATED' ? { simulated: true as const } : {}) })));
+    assert.deepEqual(writes.map((w) => w.ok), order.map((mode) => mode === winner));
+  }
+});
+
+test('modo (item 1): DOIS PROCESSOS gravando ao mesmo tempo (um real, um simulado) numa auditoria nova — exatamente um grava, o outro é recusado; nos dois sentidos', async () => {
+  const child = path.join(__dirname, 'helpers', 'link-audit-simulated-mode-child.ts');
+  const register = path.join(__dirname, 'register-typescript.cjs');
+  for (const order of [['LIVE', 'SIMULATED'], ['SIMULATED', 'LIVE']] as const) {
+    for (let round = 0; round < 3; round++) {
+      const base = tmpDir('lasim-proc-');
+      const go = path.join(tmpDir('lasim-go-'), 'largada');
+      const runs = order.map((mode, i) => new Promise<{ ok: boolean; code?: string }>((resolve, reject) => {
+        execFile(process.execPath, ['--require', register, child, base, AUDIT, mode, String(20 + i), go], { timeout: 30_000, encoding: 'utf8', env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '' } as unknown as NodeJS.ProcessEnv }, (error: Error | null, stdout: string) => (error ? reject(error) : resolve(JSON.parse(stdout.trim()) as { ok: boolean; code?: string })));
+      }));
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      fs.writeFileSync(go, '');
+      const results = await Promise.all(runs);
+      assert.equal(results.filter((r) => r.ok).length, 1, `${order.join('→')} rodada ${round}: ${JSON.stringify(results)}`);
+      const loser = results.find((r) => !r.ok);
+      assert.ok(loser && ['MODE_CONFLICT', 'INVALID'].includes(loser.code ?? ''), JSON.stringify(results));
+      const captures = fs.readdirSync(path.join(base, AUDIT)).filter((name) => name.endsWith('.capture.json'));
+      assert.equal(captures.length, 1, 'uma captura só, do modo reservado');
+      const kept = JSON.parse(fs.readFileSync(path.join(base, AUDIT, captures[0] as string), 'utf8')) as { simulated?: boolean };
+      assert.equal(kept.simulated === true ? 'SIMULATED' : 'LIVE', readMode(base));
+    }
+  }
+});
+
+/* runtime: o pré-voo reserva o modo ANTES de pagar; a corrida que ainda assim chega à gravação preserva a resposta paga na quarentena */
+
+const LIVE_AUDIT = 'auth-teste-0001';
+const liveAuthorization = (): ConsumptionAuthorization => ({
+  authorizationId: LIVE_AUDIT, snapshotId: 'snap-exemplo-0001', identifiersFingerprint: identifiersFingerprint({ cid: CID, featureId: FID }),
+  maxMapsCalls: 1, maxSiteHttpRequests: 8, expiresAt: '2026-10-21T13:00:00.000Z', costAcknowledged: true, operator: 'ana@example.invalid',
+});
+const PAID_AT = '2026-10-21T12:10:00.000Z';
+function liveDeps(base: string, beforeCapture: () => Promise<void> = async () => undefined) {
+  const usedStore = createMemoryUsedStore();
+  const calls = { created: 0, searches: 0 };
+  return {
+    usedStore, calls,
+    deps: {
+      now: clock, liveEnabled: true, usedStore, evidence: { baseDir: base },
+      createLiveProviders: (hooks: { onCapture: (info: never) => Promise<void> }) => {
+        calls.created += 1;
+        return {
+          maps: {
+            search: async () => {
+              calls.searches += 1;
+              await beforeCapture();
+              await hooks.onCapture({ url: 'https://google.serper.dev/maps', requestBody: { q: 'Padaria Exemplo' }, httpStatus: 200, bodyText: bodyText(), attempts: 1, failure: null, capturedAt: PAID_AT } as never);
+              return { state: 'OK' as const, value: [PLACE], fetchedAt: PAID_AT };
+            },
+          },
+        };
+      },
+    },
+  };
+}
+
+test('modo (item 1), runtime: LIVE numa auditoria reservada como SIMULADA ⇒ recusado no pré-voo, ANTES de consumir a autorização e de criar provedores', async () => {
+  const base = tmpDir('lasim-rtm-');
+  assert.ok((await reserveAuditMode(base, LIVE_AUDIT, 'SIMULATED')).ok);
+  const s = liveDeps(base);
+  const outcome = await runLinkAuditCollection({ mode: 'LIVE', input: NAMED(), authorization: liveAuthorization() }, s.deps as never);
+  assert.ok(!outcome.ok && outcome.code === 'STORAGE_NOT_READY', JSON.stringify(outcome).slice(0, 200));
+  assert.match(outcome.reason, /reservada como SIMULADA/);
+  assert.equal(s.usedStore.isUsed(LIVE_AUDIT), false, 'a autorização não foi consumida');
+  assert.equal(s.calls.created + s.calls.searches, 0, 'nada pago');
+});
+
+test('modo (item 1), runtime: SIMULATED e LIVE CONCORRENTES na mesma auditoria nova — exatamente um passa o pré-voo; o outro é recusado antes de gravar ou pagar', async () => {
+  for (let round = 0; round < 3; round++) {
+    const base = tmpDir('lasim-rtc-');
+    const s = liveDeps(base);
+    const [live, simulated] = await Promise.all([
+      runLinkAuditCollection({ mode: 'LIVE', input: NAMED(), authorization: liveAuthorization() }, s.deps as never),
+      runLinkAuditCollection({ mode: 'SIMULATED', input: simInput(), auditId: LIVE_AUDIT }, { now: simClock, evidence: { baseDir: base }, homologation: true }),
+    ]);
+    assert.equal([live, simulated].filter((outcome) => outcome.ok).length, 1, `rodada ${round}`);
+    const loser = [live, simulated].find((outcome) => !outcome.ok);
+    assert.ok(loser && !loser.ok && loser.code === 'STORAGE_NOT_READY' && loser.persisted === undefined);
+    if (!live.ok) assert.equal(s.calls.searches, 0, 'o LIVE perdedor não pagou');
+    assert.equal(fs.readdirSync(path.join(base, LIVE_AUDIT)).filter((name) => name.endsWith('.capture.json')).length, 1);
+  }
+});
+
+/* quarentena da resposta paga (revisão do PR #62, 3ª rodada): QUALQUER falha da gravação de uma resposta LIVE paga vai para a quarentena, fora
+   das auditorias; nunca uma auditoria de resgate (id previsível, colisão e corte em 64 caracteres) */
+
+const quarantineFiles = (base: string): string[] => (fs.existsSync(path.join(base, QUARANTINE_DIR)) ? fs.readdirSync(path.join(base, QUARANTINE_DIR)).filter((name) => name.endsWith('.json')).sort() : []);
+const quarantined = (base: string, name: string): Record<string, unknown> => JSON.parse(fs.readFileSync(path.join(base, QUARANTINE_DIR, name), 'utf8')) as Record<string, unknown>;
+const errorsOf = (outcome: Awaited<ReturnType<typeof runLinkAuditCollection>>): string[] => ('persisted' in outcome && outcome.persisted ? [...outcome.persisted.errors] : []);
+/** O marcador LIVE reservado no pré-voo vira SIMULATED antes de a resposta ser gravada (corrida ou adulteração). */
+const flipToSimulated = (base: string) => async (): Promise<void> => {
+  fs.rmSync(path.join(base, LIVE_AUDIT, 'audit-mode.json'));
+  assert.ok((await reserveAuditMode(base, LIVE_AUDIT, 'SIMULATED')).ok);
+};
+
+test('quarentena (1): reserva trocada entre o pré-voo e a gravação ⇒ a resposta PAGA vai para um arquivo NOVO na quarentena (0600, mesmo corpo, motivo e auditId pedido), nada entra na auditoria e o caso sai como erro', async () => {
+  const base = tmpDir('lasim-q-');
+  const outcome = await runLinkAuditCollection({ mode: 'LIVE', input: NAMED(), authorization: liveAuthorization() }, liveDeps(base, flipToSimulated(base)).deps as never);
+  const errors = errorsOf(outcome);
+  assert.ok(errors.some((error) => /quarentena/.test(error) && /PRESERVADA/.test(error) && /MODE_CONFLICT/.test(error)), JSON.stringify(errors));
+  assert.equal(fs.readdirSync(path.join(base, LIVE_AUDIT)).filter((name) => name.endsWith('.capture.json')).length, 0, 'nada na auditoria pedida');
+  const [file, ...others] = quarantineFiles(base);
+  assert.ok(file && others.length === 0);
+  assert.match(file, new RegExp(`^${LIVE_AUDIT}-\\d{14}-[0-9a-f]{16}\\.json$`), 'auditId, carimbo e sufixo aleatório');
+  assert.equal(fs.statSync(path.join(base, QUARANTINE_DIR, file)).mode & 0o777, 0o600);
+  const record = quarantined(base, file);
+  assert.equal(record.kind, 'LINK_AUDIT_PAID_RESPONSE_QUARANTINE');
+  assert.equal(record.requestedAuditId, LIVE_AUDIT);
+  assert.deepEqual(record.reason, { code: 'MODE_CONFLICT' });
+  assert.equal((record.response as { bodyText: string }).bodyText, bodyText(), 'o MESMO corpo pago');
+  assert.equal((record.response as { bodySha256: string }).bodySha256, sha256Hex(bodyText()));
+  assert.equal(record.collectedAt, PAID_AT);
+  assert.equal(record.contentSha256, sha256Hex(canonicalJson(Object.fromEntries(Object.entries(record).filter(([key]) => key !== 'contentSha256')))), 'selado');
+});
+
+test('quarentena (1): uma auditoria JÁ EXISTENTE com o nome que o resgate antigo usaria (LIVE ou SIMULATED) fica intacta', async () => {
+  for (const mode of ['LIVE', 'SIMULATED'] as const) {
+    const base = tmpDir('lasim-qold-');
+    const oldRescue = `${LIVE_AUDIT}-resgate-live`;
+    assert.ok((await writeCapture(base, { ...captureInput({ auditId: oldRescue, body: bodyText({ fixtureIndex: 40 }) }), ...(mode === 'SIMULATED' ? { simulated: true as const } : {}) })).ok);
+    const before = fs.readdirSync(path.join(base, oldRescue)).sort().map((name) => [name, fs.readFileSync(path.join(base, oldRescue, name), 'utf8')]);
+    const outcome = await runLinkAuditCollection({ mode: 'LIVE', input: NAMED(), authorization: liveAuthorization() }, liveDeps(base, flipToSimulated(base)).deps as never);
+    assert.ok(errorsOf(outcome).some((error) => /quarentena/.test(error)), mode);
+    const after = fs.readdirSync(path.join(base, oldRescue)).sort().map((name) => [name, fs.readFileSync(path.join(base, oldRescue, name), 'utf8')]);
+    assert.deepEqual(after, before, `${mode}: a auditoria de mesmo nome não foi tocada`);
+    assert.equal(quarantineFiles(base).length, 1);
+  }
+});
+
+test('quarentena (1): dois auditId longos que só divergem depois do 50º caractere geram arquivos distintos; dois resgates do MESMO auditId geram dois arquivos, sem sobrescrever nem deduplicar', async () => {
+  const base = tmpDir('lasim-qlong-');
+  const stem = 'a'.repeat(52);
+  const ids = [`${stem}-um-0001`, `${stem}-dois-002`];
+  assert.ok(ids.every((id) => id.length <= 64 && /^[a-z0-9][a-z0-9_-]{7,63}$/.test(id)));
+  const record = (requestedAuditId: string) => ({
+    requestedAuditId, reasonCode: 'MODE_CONFLICT', collectedAt: PAID_AT,
+    request: { url: 'https://google.serper.dev/maps', body: { q: 'Padaria Exemplo' } },
+    response: { httpStatus: 200, attempts: 1, bodyText: bodyText(), failure: null },
+    input: { snapshotId: 'snap-exemplo-0001', originalLink: 'https://www.google.com/maps/place/x', identity: {} },
+  });
+  for (const id of ids) assert.ok((await quarantinePaidResponse(base, record(id))).ok);
+  const first = await quarantinePaidResponse(base, record(ids[0] as string));
+  assert.ok(first.ok);
+  const files = quarantineFiles(base);
+  assert.equal(files.length, 3, 'três resgates, três arquivos (o mesmo corpo não é deduplicado)');
+  assert.deepEqual(files.map((name) => quarantined(base, name).requestedAuditId).sort(), [ids[0], ids[0], ids[1]].sort(), 'cada arquivo guarda o auditId pedido inteiro');
+  assert.equal(new Set(files).size, 3);
+});
+
+test('quarentena (2): marcador CORROMPIDO depois do pré-voo, com resposta paga ⇒ a resposta vai para a quarentena (motivo CORRUPT) e o caso sai como erro', async () => {
+  const base = tmpDir('lasim-qcor-');
+  const corrupt = async (): Promise<void> => {
+    const marker = path.join(base, LIVE_AUDIT, 'audit-mode.json');
+    fs.chmodSync(marker, 0o644);
+    fs.writeFileSync(marker, '{ lixo');
+  };
+  const outcome = await runLinkAuditCollection({ mode: 'LIVE', input: NAMED(), authorization: liveAuthorization() }, liveDeps(base, corrupt).deps as never);
+  assert.ok(errorsOf(outcome).some((error) => /quarentena/.test(error) && /CORRUPT/.test(error)), JSON.stringify(errorsOf(outcome)));
+  const [file] = quarantineFiles(base);
+  assert.ok(file);
+  assert.deepEqual(quarantined(base, file).reason, { code: 'CORRUPT' });
+});
+
+test('quarentena (1): a pasta da quarentena não é auditoria — nome que não é auditId válido, fora de qualquer listagem do leitor, e a leitura de auditorias segue funcionando', async () => {
+  const base = tmpDir('lasim-qlist-');
+  assert.ok((await writeCapture(base, captureInput())).ok);
+  const outcome = await runLinkAuditCollection({ mode: 'LIVE', input: NAMED(), authorization: liveAuthorization() }, liveDeps(base, flipToSimulated(base)).deps as never);
+  assert.ok(errorsOf(outcome).some((error) => /quarentena/.test(error)));
+  assert.equal(quarantineFiles(base).length, 1);
+  assert.equal(/^[a-z0-9][a-z0-9_-]{7,63}$/.test(QUARANTINE_DIR), false, 'o nome nunca é um auditId válido');
+  const reader = createEvidenceReader({ baseDir: base, authorize: () => true });
+  const listed = await reader.listAudits({ email: 'leitor@exemplo.invalid' });
+  assert.deepEqual(listed.map((item) => item.auditId).sort(), [AUDIT, LIVE_AUDIT].sort(), 'só auditorias de verdade');
+  assert.equal(await reader.storageStatus({ email: 'leitor@exemplo.invalid' }), 'READY');
+  assert.ok(!(await readCapture(base, QUARANTINE_DIR, 1)).ok, 'o armazenamento recusa o nome como auditoria');
+});
+
+test('quarentena (2): se a PRÓPRIA quarentena falhar, a mensagem continua "NÃO foi persistida" e traz os DOIS códigos', async () => {
+  const base = tmpDir('lasim-qfail-');
+  const quarantineDenied = faulty({ writeExclusive: async (target: string, data: string, mode?: number) => (target.includes(QUARANTINE_DIR) ? Promise.reject(errno('EACCES')) : nodeFsOps.writeExclusive(target, data, mode)) });
+  const s = liveDeps(base, flipToSimulated(base));
+  const outcome = await runLinkAuditCollection({ mode: 'LIVE', input: NAMED(), authorization: liveAuthorization() }, { ...s.deps, evidence: { baseDir: base, fs: quarantineDenied } } as never);
+  const message = errorsOf(outcome).find((error) => /NÃO foi persistida/.test(error));
+  assert.ok(message, JSON.stringify(errorsOf(outcome)));
+  assert.match(message, /MODE_CONFLICT/);
+  assert.match(message, /WRITE_FAILED/);
+  assert.match(message, /quarentena/);
+  assert.deepEqual(quarantineFiles(base), []);
+});
+
+test('origem (item 2): o relatório simulado não tem chave de chamadas do Serper, e a saída legível do coletor simulado não atribui nada ao Serper', async () => {
+  const evidence = tmpDir('lasim-calls-');
+  const { report } = await collectSimulated(evidence);
+  const calls = (report as unknown as { calls: Record<string, unknown> }).calls;
+  assert.ok(!Object.keys(calls).some((key) => /serper/i.test(key)), JSON.stringify(calls));
+  assert.deepEqual(calls.simulatedMaps, { attempts: 0, httpStatus: 200 });
+  const human = simHarness(HOMOLOGATION_ENV);
+  assert.equal(await runCollectorCli(simArgs(tmpDir('lasim-calls-')), human.deps), 0, human.err.join('\n'));
+  assert.doesNotMatch([...human.out, ...human.err].join('\n'), /via Serper|Serper \/maps|pelo Serper/);
+  // controle: o relatório real mantém a chave de sempre
+  const text = bodyText();
+  const real = await buildReportFromCapture({ rawBody: text, body: { name: 'c0001.capture.json', sha256: 'a'.repeat(64), bytes: Buffer.byteLength(text) }, otherFiles: [], httpStatus: 200, httpAttempts: 1, collectedAt: COLLECTED_AT, input: inputFor(identity()), site: null, generatedAt: T_NOW });
+  assert.ok(real.ok && 'serperMaps' in real.report.calls);
+});
+
+test('modo (item 1): corrida entre processos na PUBLICAÇÃO do marcador (o outro reservou entre a leitura e o link) ⇒ vale o vencedor; o outro modo é recusado', async () => {
+  const base = tmpDir('lasim-pub-');
+  assert.ok((await reserveAuditMode(base, AUDIT, 'SIMULATED')).ok, 'o "outro processo" reservou primeiro');
+  let hidden = false;
+  // a 1ª leitura do marcador não o vê (como se o outro processo ainda não tivesse publicado); o link exclusivo então colide
+  const lateMarker = faulty({ readFile: async (target: string, max: number) => (!hidden && target.endsWith('audit-mode.json') ? ((hidden = true), Promise.reject(errno('ENOENT'))) : nodeFsOps.readFile(target, max)) });
+  const loser = await reserveAuditMode(base, AUDIT, 'LIVE', { fs: lateMarker });
+  assert.ok(hidden, 'o caminho da colisão foi exercitado');
+  assert.ok(!loser.ok && loser.code === 'MODE_CONFLICT', JSON.stringify(loser));
+  assert.equal(readMode(base), 'SIMULATED', 'o marcador do vencedor não foi tocado');
+});
+
+/* quarentena (rodada final do PR #62): publicada-mas-não-conferida, permissões da pasta e durabilidade, cada caso com marca própria */
+
+const paidRecord = (requestedAuditId = LIVE_AUDIT) => ({
+  requestedAuditId, reasonCode: 'MODE_CONFLICT', collectedAt: PAID_AT,
+  request: { url: 'https://google.serper.dev/maps', body: { q: 'Padaria Exemplo' } },
+  response: { httpStatus: 200, attempts: 1, bodyText: bodyText(), failure: null },
+  input: { snapshotId: 'snap-exemplo-0001', originalLink: 'https://www.google.com/maps/place/x', identity: {} },
+});
+
+test('quarentena (final, 1): a captura PUBLICADA cuja releitura falha vai para a quarentena com marca própria (publishedUnverified, número da captura) e a mensagem avisa que ela pode já estar na auditoria', async () => {
+  const base = tmpDir('lasim-qpub-');
+  // a releitura da captura recém-publicada falha (EIO na leitura): o arquivo existe na auditoria, mas não foi conferido
+  const rereadFails = faulty({ readFile: async (target: string, max: number) => (target.endsWith(`${LIVE_AUDIT}/c0001.capture.json`) ? Promise.reject(errno('EIO')) : nodeFsOps.readFile(target, max)) });
+  const s = liveDeps(base);
+  const outcome = await runLinkAuditCollection({ mode: 'LIVE', input: NAMED(), authorization: liveAuthorization() }, { ...s.deps, evidence: { baseDir: base, fs: rereadFails } } as never);
+  const message = errorsOf(outcome).find((error) => /quarentena/.test(error));
+  assert.ok(message, JSON.stringify(errorsOf(outcome)));
+  assert.match(message, /PODE JÁ ESTAR na auditoria/);
+  assert.match(message, /captura 1/);
+  assert.match(message, /Confira a auditoria antes de recuperar/);
+  assert.ok(fs.existsSync(path.join(base, LIVE_AUDIT, 'c0001.capture.json')), 'a captura foi de fato publicada');
+  const [file] = quarantineFiles(base);
+  assert.ok(file);
+  assert.deepEqual(quarantined(base, file).reason, { code: 'CORRUPT', publishedUnverified: true, publishedCaptureNumber: 1 });
+  // controle: "não publicada" mantém o motivo simples (sem a marca)
+  const plain = tmpDir('lasim-qpub-');
+  const control = await runLinkAuditCollection({ mode: 'LIVE', input: NAMED(), authorization: liveAuthorization() }, liveDeps(plain, flipToSimulated(plain)).deps as never);
+  assert.ok(errorsOf(control).some((error) => /PRESERVADA/.test(error) && !/PODE JÁ ESTAR/.test(error)));
+  assert.deepEqual(quarantined(plain, quarantineFiles(plain)[0] as string).reason, { code: 'MODE_CONFLICT' });
+});
+
+test('quarentena (final, 2): chmod da pasta falhando, pasta com modo largo ou de outro dono ⇒ o arquivo AINDA é gravado 0600, com a marca dirPermissionsUnverified; pasta conferida ⇒ sem marca', async () => {
+  const chmodFails = faulty({ chmod: async () => Promise.reject(errno('EPERM')) });
+  const fresh = tmpDir('lasim-qperm-');
+  const denied = await quarantinePaidResponse(fresh, paidRecord(), { fs: chmodFails });
+  assert.ok(denied.ok && denied.value.dirPermissionsUnverified === true, JSON.stringify(denied));
+  const wide = tmpDir('lasim-qperm-');
+  fs.mkdirSync(path.join(wide, QUARANTINE_DIR), { mode: 0o777 });
+  fs.chmodSync(path.join(wide, QUARANTINE_DIR), 0o777);
+  const wideResult = await quarantinePaidResponse(wide, paidRecord(), { fs: chmodFails });
+  assert.ok(wideResult.ok && wideResult.value.dirPermissionsUnverified === true);
+  for (const [base, result] of [[fresh, denied], [wide, wideResult]] as const) {
+    assert.ok(result.ok);
+    assert.equal(fs.statSync(path.join(base, QUARANTINE_DIR, result.value.fileName)).mode & 0o777, 0o600, 'o arquivo é 0600 mesmo assim');
+  }
+  // cada condição sozinha: chmod que falha numa pasta já 0700 (falha nunca ignorada) e chmod que "passa" sem mudar o modo largo (conferido pelo lstat)
+  const privateDir = tmpDir('lasim-qperm-');
+  fs.mkdirSync(path.join(privateDir, QUARANTINE_DIR), { mode: 0o700 });
+  fs.chmodSync(path.join(privateDir, QUARANTINE_DIR), 0o700);
+  const privateButChmodFailed = await quarantinePaidResponse(privateDir, paidRecord(), { fs: chmodFails });
+  assert.ok(privateButChmodFailed.ok && privateButChmodFailed.value.dirPermissionsUnverified === true, 'falha de chmod nunca é ignorada');
+  const silentWide = tmpDir('lasim-qperm-');
+  fs.mkdirSync(path.join(silentWide, QUARANTINE_DIR), { mode: 0o777 });
+  fs.chmodSync(path.join(silentWide, QUARANTINE_DIR), 0o777);
+  const chmodNoop = faulty({ chmod: async () => undefined });
+  const silent = await quarantinePaidResponse(silentWide, paidRecord(), { fs: chmodNoop });
+  assert.ok(silent.ok && silent.value.dirPermissionsUnverified === true, 'o modo é conferido depois do chmod, não presumido');
+  const otherOwner = await quarantinePaidResponse(tmpDir('lasim-qperm-'), paidRecord(), { uid: (process.getuid?.() ?? 0) + 1 });
+  assert.ok(otherOwner.ok && otherOwner.value.dirPermissionsUnverified === true, 'dono diferente do processo');
+  // controle: a pasta larga é corrigida pelo chmod (0700) e conferida ⇒ sem marca
+  const fixable = tmpDir('lasim-qperm-');
+  fs.mkdirSync(path.join(fixable, QUARANTINE_DIR), { mode: 0o777 });
+  fs.chmodSync(path.join(fixable, QUARANTINE_DIR), 0o777);
+  const fixed = await quarantinePaidResponse(fixable, paidRecord());
+  assert.ok(fixed.ok && fixed.value.dirPermissionsUnverified === undefined);
+  assert.equal(fs.statSync(path.join(fixable, QUARANTINE_DIR)).mode & 0o777, 0o700);
+  // o runtime informa a marca como erro (o caso já sai com código 5)
+  const run = tmpDir('lasim-qperm-');
+  const s = liveDeps(run, flipToSimulated(run));
+  const outcome = await runLinkAuditCollection({ mode: 'LIVE', input: NAMED(), authorization: liveAuthorization() }, { ...s.deps, evidence: { baseDir: run, fs: chmodFails } } as never);
+  assert.ok(errorsOf(outcome).some((error) => /quarentena/.test(error) && /permissões da pasta da quarentena não puderam ser garantidas/.test(error)), JSON.stringify(errorsOf(outcome)));
+});
+
+test('quarentena (final, 3): fsync da pasta falhando ⇒ sucesso com durability UNCONFIRMED, e a mensagem diz "durabilidade não confirmada" em vez de "PRESERVADA"', async () => {
+  const syncFails = faulty({ syncDirectory: async () => Promise.reject(errno('EIO')) });
+  const base = tmpDir('lasim-qsync-');
+  const result = await quarantinePaidResponse(base, paidRecord(), { fs: syncFails });
+  assert.ok(result.ok && result.value.durability === 'UNCONFIRMED', JSON.stringify(result));
+  const confirmed = await quarantinePaidResponse(tmpDir('lasim-qsync-'), paidRecord());
+  assert.ok(confirmed.ok && confirmed.value.durability === 'CONFIRMED');
+  const run = tmpDir('lasim-qsync-');
+  const s = liveDeps(run, flipToSimulated(run));
+  // só o fsync da PASTA DA QUARENTENA falha (o resto do armazenamento segue normal)
+  const quarantineSyncFails = faulty({ syncDirectory: async (dir: string) => (dir.includes(QUARANTINE_DIR) ? Promise.reject(errno('EIO')) : nodeFsOps.syncDirectory(dir)) });
+  const outcome = await runLinkAuditCollection({ mode: 'LIVE', input: NAMED(), authorization: liveAuthorization() }, { ...s.deps, evidence: { baseDir: run, fs: quarantineSyncFails } } as never);
+  const message = errorsOf(outcome).find((error) => /quarentena/.test(error));
+  assert.ok(message, JSON.stringify(errorsOf(outcome)));
+  assert.match(message, /gravada na quarentena/);
+  assert.match(message, /durabilidade não confirmada \(fsync da pasta falhou\)/);
+  assert.doesNotMatch(message, /PRESERVADA/);
+});

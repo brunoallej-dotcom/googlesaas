@@ -3,6 +3,7 @@ import type { Evidence } from '../evidence';
 import type { MapsIdentifiers } from '../maps-link';
 import type { CallLedger, CollectionMode, LedgerSummary } from './budget';
 import { MAPS_ORIGIN_LIMITATION } from './capabilities';
+import { SIMULATED_ORIGIN_NOTE, simulatedText } from './capture-report';
 import type { CostEstimate } from './cost';
 import type { CollectionInput, CollectionResult, Divergence, IdentifierReport, IdentityBasis, LocateState, ProfileSummary, ProviderId, SiteObservation } from './types';
 
@@ -51,7 +52,7 @@ export interface CollectionReport {
   readonly identifiers: IdentifierReport;
   readonly located: LocateState;
   readonly found: {
-    readonly googleMaps: (ProfileSummary & { readonly source: 'serper-maps'; readonly queriedAt: string | null; readonly originNote: string }) | null;
+    readonly googleMaps: (ProfileSummary & { readonly source: 'serper-maps' | 'SIMULATED'; readonly queriedAt: string | null; readonly originNote: string }) | null;
     readonly site: (SiteObservation & { readonly source: 'site-check' }) | null;
   };
   readonly evidences: readonly Evidence[];
@@ -119,5 +120,20 @@ export function buildCollectionReport(params: {
     divergences: result.divergences,
     calls: callsSummary(params.ledger),
     cost: params.cost,
+  };
+}
+
+/**
+ * W5.2b (revisão do PR #62): o relatório em memória da coleta SIMULADA GRAVADA (ensaio) atribui os dados ao gerador sintético, nunca ao Serper
+ * (fonte, nota de origem, limitações e evidências). O SIMULATED com provedores de teste da Onda 4B não passa por aqui.
+ */
+export function asSimulatedReport(report: CollectionReport): CollectionReport {
+  const googleMaps = report.found.googleMaps ? { ...report.found.googleMaps, source: 'SIMULATED' as const, originNote: SIMULATED_ORIGIN_NOTE } : null;
+  return {
+    ...report,
+    found: { ...report.found, googleMaps },
+    evidences: report.evidences.map((e) => (e.limitation ? { ...e, limitation: simulatedText(e.limitation) } : e)),
+    unverified: report.unverified.map((item) => ({ ...item, reason: simulatedText(item.reason) })),
+    limitations: report.limitations.map(simulatedText),
   };
 }

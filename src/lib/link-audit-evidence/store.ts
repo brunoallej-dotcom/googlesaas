@@ -1,9 +1,12 @@
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
+import { z } from 'zod';
 import { canonicalJson, sha256Hex } from '../link-audit/canonical';
 import { METHODOLOGY_VERSION } from '../link-audit/methodology';
 import { bestEffort, errorCode, nodeFsOps, publishExclusive, withLock, type FsOps } from '../link-audit/snapshot-store';
+import type { FileInfo } from '../link-audit/fs-ops';
 import { AUTH_PATTERNS, containsSecret } from './secrets';
+import { isSimulatedCapture, SIMULATED_PROVIDER } from './simulated';
 import {
   AUDIT_ID_PATTERN,
   CAPTURE_FILE,
@@ -43,11 +46,19 @@ export type EvidenceErrorCode =
   | 'WRITE_FAILED'
   | 'STORAGE_FATAL'
   | 'STORAGE_NOT_READY'
-  | 'SECRET_DETECTED';
+  | 'SECRET_DETECTED'
+  /** W5.2b (revisão do PR #62): a auditoria já está reservada no OUTRO modo (LIVE × SIMULATED); nada foi gravado nela. */
+  | 'MODE_CONFLICT';
 
 export type EvidenceResult<T> =
   | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly code: EvidenceErrorCode; readonly issues: readonly string[] };
+  | {
+      readonly ok: false;
+      readonly code: EvidenceErrorCode;
+      readonly issues: readonly string[];
+      /** Só em `writeCapture`: a captura com este número FOI publicada, mas a releitura falhou (pode já estar na auditoria). */
+      readonly publishedCapture?: number;
+    };
 
 /** Mensagens nunca revelam caminhos do disco (nem do servidor, nem do Windows). */
 export const scrubPaths = (text: string): string => text.replace(/(?<![\w.])(?:[A-Za-z]:\\|\/)[^\s"'`)]*/g, '[caminho]');
@@ -60,6 +71,8 @@ export interface StoreOptions {
   readonly projectRoot?: string;
   /** Valor literal da chave de API (se conhecido) para a varredura de segredos. */
   readonly apiKey?: string;
+  /** Dono esperado da pasta da quarentena (testes). Padrão: o usuário do processo, quando o sistema tem `getuid`. */
+  readonly uid?: number;
 }
 
 /** Descrição de erro de disco SEM a mensagem do Node (ela traz o caminho): só operação e código. */
@@ -174,6 +187,200 @@ async function ensureDirectory(ops: FsOps, dir: string, create: boolean): Promis
   }
 }
 
+// ------------------------------------------------------------------------------- reserva do modo (W5.2b)
+/**
+ * MODO da auditoria (W5.2b, spec do P1 §5.7, revisão do PR #62): `LIVE` (coleta real) ou `SIMULATED` (coleta sintética do ensaio). Reservado UMA vez,
+ * antes da primeira captura, num marcador publicado com criação EXCLUSIVA (`publishExclusive`: temporário + `link()` que nunca sobrescreve), e
+ * conferido no pré-voo e em cada gravação. Duas coletas concorrentes de modos diferentes: exatamente uma reserva; a outra é recusada. Falha fechada:
+ * marcador ilegível ou capturas que não se leem ⇒ recusa. O marcador não é evidência (fora do conjunto atestado) e não é assinatura.
+ */
+export type AuditMode = 'LIVE' | 'SIMULATED';
+export const AUDIT_MODE_FILE = 'audit-mode.json';
+const auditModeSchema = z
+  .object({ schemaVersion: z.literal(1), kind: z.literal('LINK_AUDIT_MODE'), auditId: z.string().regex(AUDIT_ID_PATTERN), mode: z.enum(['LIVE', 'SIMULATED']), contentSha256: z.string().regex(/^[0-9a-f]{64}$/) })
+  .strict();
+type AuditModeFile = z.infer<typeof auditModeSchema>;
+const MODE_LABEL: Readonly<Record<AuditMode, string>> = { LIVE: 'LIVE (coleta real)', SIMULATED: 'SIMULADA (ensaio)' };
+const modeConflict = (reserved: AuditMode): { readonly ok: false; readonly code: EvidenceErrorCode; readonly issues: readonly string[] } =>
+  fail('MODE_CONFLICT', `Esta auditoria está reservada como ${MODE_LABEL[reserved]}: a coleta do outro modo não é misturada a ela; use outro id de auditoria. Nada foi gravado nesta auditoria.`);
+
+/** O marcador gravado, ou `null` se ele comprovadamente não existe. Qualquer outro problema (ilegível, fora de forma, de outra auditoria) ⇒ recusa. */
+async function readAuditMode(ops: FsOps, dir: string, auditId: string): Promise<EvidenceResult<AuditMode | null>> {
+  const read = await readValidated<AuditModeFile>(ops, path.join(dir, AUDIT_MODE_FILE), MAX_AUX_BYTES, auditModeSchema);
+  if (!read.ok) return read.code === 'NOT_FOUND' ? { ok: true, value: null } : fail('CORRUPT', `O marcador de modo desta auditoria não pôde ser lido (${read.code}); nada foi gravado.`);
+  if (read.value.auditId !== auditId) return fail('CORRUPT', 'O marcador de modo não pertence a esta auditoria; nada foi gravado.');
+  return { ok: true, value: read.value.mode };
+}
+
+/** Auditoria anterior ao marcador (capturas sem reserva): o modo vem das próprias capturas, todas legíveis e do mesmo modo; senão, recusa. */
+async function modeOfCaptures(root: string, auditId: string, options: StoreOptions & { readonly fs: FsOps }): Promise<EvidenceResult<AuditMode | null>> {
+  const listing = await listAuditFiles(options.fs, path.join(root, auditId));
+  if (!listing.ok) return listing.code === 'NOT_FOUND' ? { ok: true, value: null } : fail('CORRUPT', 'A pasta desta auditoria não pôde ser listada; nada foi gravado.');
+  const modes = new Set<AuditMode>();
+  for (const n of listing.value.captures) {
+    const capture = await readCapture(root, auditId, n, options);
+    if (!capture.ok) return fail('CORRUPT', `A captura ${n} desta auditoria não pôde ser lida: o modo não pode ser provado; nada foi gravado.`);
+    modes.add(isSimulatedCapture(capture.value) ? 'SIMULATED' : 'LIVE');
+  }
+  if (modes.size > 1) return fail('CORRUPT', 'Esta auditoria já mistura captura simulada e real: nada mais é gravado nela.');
+  return { ok: true, value: modes.values().next().value ?? null };
+}
+
+/** Reserva (ou confere) o modo, com a pasta da auditoria já existente. Sem trava própria: quem chama segura a trava da auditoria. */
+async function reserveMode(loc: Location, auditId: string, mode: AuditMode, options: StoreOptions & { readonly fs: FsOps }): Promise<EvidenceResult<AuditMode>> {
+  const ops = options.fs;
+  const current = await readAuditMode(ops, loc.dir, auditId);
+  if (!current.ok) return current;
+  if (current.value !== null) return current.value === mode ? { ok: true, value: mode } : modeConflict(current.value);
+  const fromCaptures = await modeOfCaptures(loc.root, auditId, options);
+  if (!fromCaptures.ok) return fromCaptures;
+  if (fromCaptures.value !== null && fromCaptures.value !== mode) return modeConflict(fromCaptures.value);
+  const marker = sealed<AuditModeFile>({ schemaVersion: 1, kind: 'LINK_AUDIT_MODE', auditId, mode });
+  const published = await publish(ops, loc, AUDIT_MODE_FILE, 'modo', marker, 'A reserva de modo da auditoria');
+  if (published.ok) return { ok: true, value: mode };
+  if (published.code !== 'CONFLICT') return published;
+  // outro processo reservou no mesmo instante: vale o que ficou gravado (exclusividade do `link()`)
+  const winner = await readAuditMode(ops, loc.dir, auditId);
+  if (!winner.ok) return winner;
+  if (winner.value === null) return fail('CORRUPT', 'A reserva de modo desta auditoria sumiu durante a gravação; nada foi gravado.');
+  return winner.value === mode ? { ok: true, value: mode } : modeConflict(winner.value);
+}
+
+/**
+ * Reserva o MODO da auditoria ANTES da primeira captura (o runtime chama no pré-voo, antes de consumir a autorização e de pagar). Idempotente para o
+ * mesmo modo; o outro modo ⇒ `MODE_CONFLICT`. Cria a pasta da auditoria se preciso.
+ */
+export async function reserveAuditMode(baseDir: string, auditId: string, mode: AuditMode, options: StoreOptions = {}): Promise<EvidenceResult<AuditMode>> {
+  const ops = options.fs ?? nodeFsOps;
+  const located = locate(baseDir, auditId, options.projectRoot ?? process.cwd());
+  if (!located.ok) return located;
+  if (await isTripped(ops, located.value.root)) return fail('STORAGE_FATAL', 'Base bloqueada por erro fatal de disco anterior.');
+  return withLock(await auditLockKey(ops, located.value, auditId), async () => {
+    const state = await ensureDirectory(ops, located.value.dir, true);
+    if (!state.ok) return state;
+    return reserveMode(located.value, auditId, mode, { ...options, fs: ops });
+  });
+}
+
+/** A mesma chave de trava de `writeCapture` (caminho real da base + auditId): reserva e gravação da mesma auditoria se excluem no processo. */
+async function auditLockKey(ops: FsOps, loc: Location, auditId: string): Promise<string> {
+  try {
+    return path.join(await ops.realpath(loc.root), auditId);
+  } catch {
+    return loc.dir; // a base pode ainda não existir
+  }
+}
+
+// ------------------------------------------------------------------------- quarentena da resposta paga (W5.2b)
+/**
+ * QUARENTENA da resposta LIVE paga que não pôde ser gravada na auditoria pedida (W5.2b, spec do P1 §5.7, revisão do PR #62): um arquivo NOVO por
+ * resgate, criado com escrita exclusiva (`wx`), modo 0600 e fsync, numa subpasta reservada da raiz de evidências cujo nome NUNCA é um `auditId`
+ * válido (começa por `_`): o leitor, as listagens e o armazenamento não a tratam como auditoria. Nome com o `auditId` pedido, o carimbo da coleta e
+ * 8 bytes aleatórios: nunca reutiliza nem deduplica nada. A quarentena NUNCA é lida pelos fluxos de auditoria; a recuperação é manual e fica com o
+ * responsável (runbook do custodiante).
+ */
+export const QUARANTINE_DIR = '_quarentena-resgate-live';
+const QUARANTINE_NAME_RETRIES = 3;
+const STAMP_DIGITS = 14;
+
+export interface PaidResponseQuarantineInput {
+  /** A auditoria em que a resposta paga devia ter entrado. */
+  readonly requestedAuditId: string;
+  /** Código da falha da gravação na auditoria pedida (`MODE_CONFLICT`, `CORRUPT`, `WRITE_FAILED`…). */
+  readonly reasonCode: string;
+  readonly collectedAt: string;
+  readonly request: CaptureInput['request'];
+  readonly response: CaptureInput['response'];
+  readonly input: CaptureInput['input'];
+  /** A captura com este número foi publicada na auditoria pedida, mas não conferida (releitura falhou): marca própria no conteúdo. */
+  readonly publishedCaptureNumber?: number;
+}
+
+export interface QuarantinedPaidResponse {
+  readonly fileName: string;
+  readonly contentSha256: string;
+  /** `UNCONFIRMED`: o arquivo foi gravado (com fsync), mas o fsync da PASTA falhou. */
+  readonly durability: 'CONFIRMED' | 'UNCONFIRMED';
+  /** A pasta não pôde ser garantida (chmod 0700 falhou, modo com bits de grupo/outros, outro dono ou sem como conferir); o arquivo é 0600 mesmo assim. */
+  readonly dirPermissionsUnverified?: true;
+}
+
+const PRIVATE_DIR_MODE = 0o700;
+const GROUP_OTHER_BITS = 0o077;
+
+/** A pasta da quarentena é diretório comum (não link), do usuário do processo (quando dá para saber) e sem bits de grupo/outros. */
+function quarantineDirTrusted(info: FileInfo, chmodFailed: boolean, expectedUid: number | undefined): boolean {
+  if (chmodFailed || info.mode === undefined || (info.mode & GROUP_OTHER_BITS) !== 0) return false;
+  return expectedUid === undefined || info.uid === expectedUid;
+}
+
+export async function quarantinePaidResponse(baseDir: string, record: PaidResponseQuarantineInput, options: StoreOptions = {}): Promise<EvidenceResult<QuarantinedPaidResponse>> {
+  const ops = options.fs ?? nodeFsOps;
+  const allowed = assertAllowedBase(baseDir, options.projectRoot ?? process.cwd());
+  if (!allowed.ok) return allowed;
+  if (await isTripped(ops, allowed.value)) return fail('STORAGE_FATAL', 'Base bloqueada por erro fatal de disco anterior: a quarentena também não grava.');
+  const dir = path.join(allowed.value, QUARANTINE_DIR);
+  // mkdir → chmod 0700 → lstat: diretório comum (não link), do usuário do processo e sem bits de grupo/outros. Link ou não diretório ⇒ recusa (o
+  // arquivo iria para outro lugar); permissões que não dá para garantir ⇒ o arquivo AINDA é gravado 0600, com a marca (preservar a resposta paga vem
+  // primeiro). Limite declarado (spec §5.7): a janela entre o lstat e a escrita só é explorável pelo próprio usuário do volume (sem openat).
+  let dirTrusted: boolean;
+  try {
+    await ops.mkdir(dir);
+    let chmodFailed = false;
+    try {
+      await ops.chmod(dir, PRIVATE_DIR_MODE);
+    } catch {
+      chmodFailed = true;
+    }
+    const info = await ops.lstat(dir);
+    if (info.isSymbolicLink() || !info.isDirectory()) return fail('UNSAFE_PATH', 'A pasta da quarentena não é um diretório comum.');
+    dirTrusted = quarantineDirTrusted(info, chmodFailed, options.uid ?? process.getuid?.());
+  } catch (error) {
+    return writeFailure(ops, allowed.value, errorCode(error), [describeError('pasta da quarentena', error)]);
+  }
+  // a chave literal (se ecoada) é trocada por [REDACTED], como na captura; a resposta paga nunca é descartada por suspeita
+  const key = options.apiKey?.trim();
+  const body = record.response.bodyText;
+  const storedBody = body !== null && key && key.length > 10 && body.includes(key) ? body.split(key).join('[REDACTED]') : body;
+  const content = sealed<{ contentSha256: string }>({
+    schemaVersion: 1,
+    kind: 'LINK_AUDIT_PAID_RESPONSE_QUARANTINE',
+    requestedAuditId: record.requestedAuditId,
+    reason: { code: record.reasonCode, ...(record.publishedCaptureNumber !== undefined ? { publishedUnverified: true, publishedCaptureNumber: record.publishedCaptureNumber } : {}) },
+    collectedAt: record.collectedAt,
+    request: { method: 'POST', url: record.request.url, body: record.request.body },
+    response: {
+      httpStatus: record.response.httpStatus,
+      attempts: record.response.attempts,
+      bodyText: storedBody,
+      bodySha256: storedBody === null ? null : sha256Hex(storedBody),
+      bytes: storedBody === null ? 0 : Buffer.byteLength(storedBody, 'utf8'),
+      failure: record.response.failure ?? null,
+      ...(storedBody !== body ? { flags: ['KEY_REDACTED'] } : {}),
+    },
+    input: record.input,
+  });
+  const idPart = AUDIT_ID_PATTERN.test(record.requestedAuditId) ? record.requestedAuditId : 'auditoria-invalida';
+  const stamp = (record.collectedAt.replace(/\D/g, '') + '0'.repeat(STAMP_DIGITS)).slice(0, STAMP_DIGITS);
+  for (let attempt = 0; attempt < QUARANTINE_NAME_RETRIES; attempt++) {
+    const fileName = `${idPart}-${stamp}-${randomBytes(8).toString('hex')}.json`;
+    try {
+      await ops.writeExclusive(path.join(dir, fileName), serialize(content), 0o600);
+    } catch (error) {
+      if (errorCode(error) === 'EEXIST') continue; // nunca sobrescreve: outro nome aleatório
+      return writeFailure(ops, allowed.value, errorCode(error), [describeError('gravação na quarentena', error)]);
+    }
+    let durability: QuarantinedPaidResponse['durability'] = 'CONFIRMED';
+    try {
+      await ops.syncDirectory(dir);
+    } catch {
+      durability = 'UNCONFIRMED'; // o arquivo existe (com fsync), mas a entrada na pasta não foi confirmada no disco
+    }
+    return { ok: true, value: { fileName, contentSha256: content.contentSha256, durability, ...(dirTrusted ? {} : { dirPermissionsUnverified: true as const }) } };
+  }
+  return fail('CONFLICT', 'Não foi possível reservar um nome novo na quarentena.');
+}
+
 // ----------------------------------------------------------------------------------------- pré-voo
 export interface StorageStatus {
   readonly baseDir: string;
@@ -184,7 +391,7 @@ export interface StorageStatus {
 const ACL_NOTE = 'A proteção de acesso (ACL do Windows) não é verificável pelo Node: a pasta deve estar restrita ao operador antes do uso. Cópia no mesmo disco não é backup independente.';
 
 /** Confirma que dá para publicar com segurança ANTES de qualquer consulta paga. Falha ⇒ a operação deve ser bloqueada. */
-export async function checkStorage(baseDir: string, options: StoreOptions & { readonly auditId?: string } = {}): Promise<EvidenceResult<StorageStatus>> {
+export async function checkStorage(baseDir: string, options: StoreOptions & { readonly auditId?: string; readonly simulated?: boolean } = {}): Promise<EvidenceResult<StorageStatus>> {
   const ops = options.fs ?? nodeFsOps;
   const allowed = assertAllowedBase(baseDir, options.projectRoot ?? process.cwd());
   if (!allowed.ok) return fail('STORAGE_NOT_READY', ...allowed.issues);
@@ -209,6 +416,14 @@ export async function checkStorage(baseDir: string, options: StoreOptions & { re
     } catch (error) {
       if (errorCode(error) !== 'ENOENT') return notReady(ops, real, error, 'verificação da pasta da auditoria');
     }
+    const reserved = await readAuditMode(ops, located.value.dir, options.auditId);
+    if (!reserved.ok) return fail('STORAGE_NOT_READY', ...reserved.issues);
+    const wanted: AuditMode = options.simulated === true ? 'SIMULATED' : 'LIVE';
+    if (reserved.value !== null && reserved.value !== wanted) {
+      return fail('STORAGE_NOT_READY', `Esta auditoria está reservada como ${MODE_LABEL[reserved.value]}: a coleta do outro modo não é misturada a ela; use outro id. Nada foi consultado.`);
+    }
+    const mixed = await mixesSimulation(real, options.auditId, options.simulated === true, { ...options, fs: ops });
+    if (mixed) return fail('STORAGE_NOT_READY', mixed);
   }
 
   const probe = path.join(real, `.probe-${randomBytes(8).toString('hex')}`);
@@ -231,6 +446,25 @@ export async function checkStorage(baseDir: string, options: StoreOptions & { re
   await bestEffort(() => ops.unlink(probe));
   if (linkSupported) await bestEffort(() => ops.unlink(probeLink));
   return { ok: true, value: { baseDir: real, linkSupported, notes } };
+}
+
+/**
+ * Captura SIMULADA (ensaio) e captura real nunca dividem uma auditoria (spec do P1 §5.7): o pré-voo recusa ANTES de qualquer consulta. Falha
+ * FECHADA (revisão do PR #62): só a pasta da auditoria comprovadamente inexistente (ENOENT) conta como vazia; listagem que falha por qualquer outro
+ * motivo, ou captura existente que não se lê, é recusa (não dá para provar que não há mistura).
+ */
+async function mixesSimulation(root: string, auditId: string, simulated: boolean, options: StoreOptions & { readonly fs: FsOps }): Promise<string | null> {
+  const listing = await listAuditFiles(options.fs, path.join(root, auditId));
+  if (!listing.ok) return listing.code === 'NOT_FOUND' ? null : 'A pasta desta auditoria existe mas não pôde ser listada: não dá para conferir se há captura simulada e real misturadas. Nada foi consultado.';
+  for (const n of listing.value.captures) {
+    const existing = await readCapture(root, auditId, n, options);
+    if (!existing.ok) return `A captura ${n} desta auditoria não pôde ser lida (${existing.code}): não dá para conferir se há captura simulada e real misturadas. Nada foi consultado.`;
+    if (isSimulatedCapture(existing.value) === simulated) continue;
+    return simulated
+      ? 'Esta auditoria tem captura real: a coleta SIMULADA (ensaio) não é misturada a ela; use outro id de auditoria.'
+      : 'Esta auditoria tem captura SIMULADA (ensaio de homologação): a coleta real não é misturada a ela; use outro id. Nenhuma consulta foi feita e a autorização não foi consumida.';
+  }
+  return null;
 }
 
 async function notReady(ops: FsOps, root: string, error: unknown, step: string): Promise<EvidenceResult<never>> {
@@ -349,6 +583,8 @@ export interface CaptureInput {
     readonly failure?: string | null;
   };
   readonly input: { readonly snapshotId: string; readonly originalLink: string; readonly identity: Record<string, unknown> };
+  /** Coleta SIMULADA do ensaio (W5.2b, spec do P1 §5.7): grava `provider: "SIMULATED"` e `simulated: true`, dentro do hash. */
+  readonly simulated?: true;
 }
 
 export interface WrittenCapture {
@@ -392,23 +628,24 @@ export async function writeCapture(baseDir: string, input: CaptureInput, options
   }
   if (storedBody !== null && AUTH_PATTERNS.test(storedBody)) flags.push('AUTH_PATTERN_IN_BODY');
 
-  let lockKey = located.value.dir;
-  try {
-    lockKey = path.join(await ops.realpath(located.value.root), input.auditId);
-  } catch {
-    // a base pode ainda não existir
-  }
-  return withLock(lockKey, async () => {
+  return withLock(await auditLockKey(ops, located.value, input.auditId), async () => {
     const state = await ensureDirectory(ops, located.value.dir, true);
     if (!state.ok) return state;
     const bodySha = storedBody === null ? null : sha256Hex(storedBody);
+    const simulated = input.simulated === true;
+    // W5.2b (revisão do PR #62): reserva/confere o MODO antes de numerar; o outro modo ⇒ MODE_CONFLICT nos dois sentidos (quem chama preserva a resposta paga)
+    const mode = await reserveMode(located.value, input.auditId, simulated ? 'SIMULATED' : 'LIVE', { ...options, fs: ops });
+    if (!mode.ok) return mode;
     for (let attempt = 0; attempt < WRITE_RETRIES; attempt++) {
       const listing = await listAuditFiles(ops, located.value.dir);
       if (!listing.ok) return listing;
-      if (bodySha !== null) {
+      if (bodySha !== null || simulated) {
         for (const n of listing.value.captures) {
           const existing = await readCapture(baseDir, input.auditId, n, options);
-          if (existing.ok && existing.value.response.bodySha256 === bodySha) {
+          // uma captura SIMULADA nunca entra numa auditoria real (a resposta real paga, ao contrário, nunca é descartada: o pré-voo a barra antes de pagar)
+          if (simulated && !existing.ok) return fail('INVALID', `A captura ${n} desta auditoria não pôde ser lida: a captura simulada (ensaio) não é gravada sem provar que não há mistura; nada foi gravado.`);
+          if (simulated && existing.ok && !isSimulatedCapture(existing.value)) return fail('INVALID', 'Esta auditoria tem captura real: uma captura simulada (ensaio) não é misturada a ela; nada foi gravado.');
+          if (bodySha !== null && existing.ok && existing.value.response.bodySha256 === bodySha) {
             return { ok: true, value: { captureNumber: n, filePath: path.join(located.value.dir, captureName(n)), contentSha256: existing.value.contentSha256, duplicate: true } };
           }
         }
@@ -422,7 +659,8 @@ export async function writeCapture(baseDir: string, input: CaptureInput, options
         captureNumber: number,
         methodologyVersion: input.methodologyVersion ?? METHODOLOGY_VERSION,
         collectedAt: input.collectedAt,
-        provider: 'serper-maps',
+        provider: simulated ? SIMULATED_PROVIDER : 'serper-maps',
+        ...(simulated ? { simulated: true as const } : {}),
         request: { method: 'POST', url: input.request.url, body: input.request.body },
         response: {
           httpStatus: input.response.httpStatus,
@@ -442,9 +680,10 @@ export async function writeCapture(baseDir: string, input: CaptureInput, options
         if (written.code === 'CONFLICT') continue; // outro processo ocupou o número: tenta o próximo
         return written;
       }
+      // publicada: daqui em diante a falha é de CONFERÊNCIA (a captura pode já estar na auditoria), marcada com o número para quem chama
       const reread = await readCapture(baseDir, input.auditId, number, options);
-      if (!reread.ok) return fail(reread.code, `A releitura da captura ${number} falhou: ${reread.issues.join(' ')}`);
-      if (reread.value.contentSha256 !== file.contentSha256) return fail('HASH_MISMATCH', 'A releitura difere do que foi gravado.');
+      if (!reread.ok) return { ...fail(reread.code, `A releitura da captura ${number} falhou: ${reread.issues.join(' ')}`), publishedCapture: number };
+      if (reread.value.contentSha256 !== file.contentSha256) return { ...fail('HASH_MISMATCH', 'A releitura difere do que foi gravado.'), publishedCapture: number };
       return { ok: true, value: { captureNumber: number, filePath: written.value, contentSha256: file.contentSha256, duplicate: false } };
     }
     return fail('CONFLICT', 'Não foi possível reservar um número de captura (disputa persistente).');

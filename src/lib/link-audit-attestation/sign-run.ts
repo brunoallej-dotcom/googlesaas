@@ -50,6 +50,8 @@ export interface SignRunInput {
   readonly expectSeq: number;
   readonly first: boolean;
   readonly keyId: string;
+  /** `--simulated` (W5.2b): repassado ao núcleo; ausente = `false`. */
+  readonly simulated?: boolean;
 }
 /**
  * O leitor de chave (passo 12) devolve a chave aberta OU a recusa da abertura (W4.4: custódia, frase, formato), que `runSign` repassa sem assinar
@@ -146,7 +148,7 @@ export async function runSign(input: SignRunInput, deps: SignRunDeps): Promise<S
   let decided: SignCoreResult<KeyObject | SignRefusal>;
   try {
     const { auditId, custodian, trustKeys, expectSeq, first, keyId } = input;
-    decided = await runSignWithChain({ auditId, custodian, ...bytes, sealsDir: root, trustKeys, expectSeq, first, keyId }, { fs: snapshot, now: deps.now, confirm: deps.confirm, openKey: deps.openKey });
+    decided = await runSignWithChain({ auditId, custodian, ...bytes, sealsDir: root, trustKeys, expectSeq, first, keyId, simulated: input.simulated === true }, { fs: snapshot, now: deps.now, confirm: deps.confirm, openKey: deps.openKey });
   } catch {
     return BEFORE_WRITE; // o objeto de erro nunca sai daqui (pode vir do leitor de chave, RS-13)
   }

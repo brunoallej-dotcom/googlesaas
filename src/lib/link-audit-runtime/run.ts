@@ -2,7 +2,7 @@ import type { CompanyIdentity } from '../link-audit/audit';
 import { CallLedger, evaluateAuthorization, identifiersFingerprint, LIVE_HARD_LIMITS, MAX_AUTHORIZATION_WINDOW_MS, type AuthorizationDenial, type CollectionMode } from '../link-audit/collector/budget';
 import { collectEvidence, planSearch } from '../link-audit/collector/collect';
 import { estimateCost, SECONDARY_SOURCE_ASSUMPTIONS, type CostAssumptions, type CostEstimate } from '../link-audit/collector/cost';
-import { buildCollectionReport, type CollectionReport } from '../link-audit/collector/report';
+import { asSimulatedReport, buildCollectionReport, type CollectionReport } from '../link-audit/collector/report';
 import type { CallBudget, CollectionInput, CollectorProviders, Viewport } from '../link-audit/collector/types';
 import { safeFailureReason, sanitizeUrl } from '../link-audit/url-redaction';
 import { buildReportFromCapture, type CaptureReport } from '../link-audit/collector/capture-report';
@@ -10,18 +10,21 @@ import type { SiteCheckOutcome } from '../link-audit/collector/site-access';
 import type { SiteProvider } from '../link-audit/collector/types';
 import type { FsOps } from '../link-audit/snapshot-store';
 import { containsSecret } from '../link-audit-evidence/secrets';
-import { checkStorage, readCapture, writeCapture, writeReport, writeSiteObservation } from '../link-audit-evidence/store';
+import { checkStorage, quarantinePaidResponse, readCapture, reserveAuditMode, writeCapture, writeReport, writeSiteObservation } from '../link-audit-evidence/store';
 import { AUDIT_ID_PATTERN, captureName } from '../link-audit-evidence/types';
 import type { ProviderCaptureInfo } from './serper-maps-provider';
 import { buildExpectedIdentity } from '../link-audit/identifiers';
 import { buildSerperMapsBody, DEFAULT_SERPER_MAPS_URL } from './serper-maps-provider';
+import { createSimulatedMapsProvider, isSyntheticIdentity } from './simulated-provider';
 import { SITE_MAX_HTTP_REQUESTS } from './site-provider';
 import type { UsedAuthorizationStore } from './used-authorizations';
 
 /*
  * Orquestração da coleta (Onda 4B). Três modos:
  *  - DRY_RUN (padrão): só planeja e estima o custo. Nenhuma chamada, nenhum provedor é sequer criado.
- *  - SIMULATED: provedores injetados (fixtures). Nunca há tráfego externo.
+ *  - SIMULATED: provedores injetados (fixtures), sem gravar nada. Nunca há tráfego externo. COM `evidence` (ensaio da W5 em homologação,
+ *    W5.2b, spec do P1 §5.7): só com `homologation: true`, só o gerador sintético e a identidade sintética; captura e relatório gravados
+ *    com a marca SIMULATED (dentro do hash).
  *  - LIVE: exige TODAS as travas (ambiente ligado, autorização válida e não usada, ciência do custo, identidade
  *    confirmada, limite ≤ 1 chamada ao Serper) e marca a autorização como usada ANTES de chamar.
  * Nada aqui roda ao abrir a página nem ao validar um link: não existe rota HTTP de coleta.
@@ -49,6 +52,8 @@ export interface RunRequest {
   readonly budget?: CallBudget;
   /** Obrigatória no modo LIVE. */
   readonly authorization?: unknown;
+  /** SIMULATED com gravação de evidências: id da auditoria do ensaio (no LIVE é o id da autorização). */
+  readonly auditId?: string;
 }
 
 export interface RunDeps {
@@ -63,6 +68,8 @@ export interface RunDeps {
   /** LIVE: armazenamento das evidências (obrigatório). O pré-voo roda ANTES de a autorização ser consumida. */
   readonly evidence?: { readonly baseDir: string; readonly fs?: FsOps; readonly projectRoot?: string; readonly apiKey?: string };
   readonly costAssumptions?: CostAssumptions;
+  /** Trava de homologação já conferida por quem chama (`--simulated` + `GMN_LINK_AUDIT_HOMOLOGATION=1`): exigida para GRAVAR evidência simulada. */
+  readonly homologation?: boolean;
 }
 
 /** O que foi (ou não) persistido numa coleta LIVE. `errors` não vazio ⇒ a coleta paga NÃO está totalmente preservada. */
@@ -81,7 +88,7 @@ export interface PersistedEvidence {
 export type RunOutcome =
   | { readonly ok: true; readonly kind: 'PLAN'; readonly plan: CollectionPlan }
   | { readonly ok: true; readonly kind: 'REPORT'; readonly report: CollectionReport; readonly persisted?: PersistedEvidence }
-  | { readonly ok: false; readonly persisted?: PersistedEvidence; readonly code: 'STORAGE_NOT_READY' | AuthorizationDenial | 'INVALID_REQUEST' | 'IDENTITY_NOT_CONFIRMED' | 'IDENTITY_MISMATCH' | 'INVALID_BUDGET' | 'NO_PROVIDERS' | 'PROVIDER_SETUP_FAILED'; readonly reason: string };
+  | { readonly ok: false; readonly persisted?: PersistedEvidence; readonly code: 'STORAGE_NOT_READY' | AuthorizationDenial | 'INVALID_REQUEST' | 'IDENTITY_NOT_CONFIRMED' | 'IDENTITY_MISMATCH' | 'INVALID_BUDGET' | 'NO_PROVIDERS' | 'PROVIDER_SETUP_FAILED' | 'HOMOLOGATION_REQUIRED'; readonly reason: string };
 
 function planFor(request: RunRequest, budget: CallBudget, deps: RunDeps): CollectionPlan {
   const search = planSearch(request.input);
@@ -155,7 +162,17 @@ export async function runLinkAuditCollection(request: RunRequest, deps: RunDeps)
   let auditId = '';
   const live: LiveCaptureState = { rawBody: null, httpStatus: null, attempts: 0, collectedAt: null, captureNumber: null, files: {}, siteOutcome: null, errors: [] };
 
-  if (mode === 'SIMULATED') {
+  if (mode === 'SIMULATED' && deps.evidence) {
+    // ---- SIMULATED GRAVADO (ensaio da W5 em homologação): trava, gerador sintético e identidade sintética, antes de qualquer pasta ----
+    if (deps.homologation !== true) return { ok: false, code: 'HOMOLOGATION_REQUIRED', reason: 'A gravação de evidência SIMULADA (ensaio) exige a trava de homologação; nada foi gravado.' };
+    if (deps.providers || deps.createLiveProviders) return { ok: false, code: 'INVALID_REQUEST', reason: 'A coleta simulada gravada usa SÓ o gerador sintético do ensaio: provedor injetado ou real não é aceito.' };
+    if (!isSyntheticIdentity(identity)) return { ok: false, code: 'INVALID_REQUEST', reason: 'A coleta simulada gravada só aceita a identidade sintética do ensaio (Empresa de Ensaio).' };
+    const prepared = await prepareEvidence(request, deps.evidence, String(request.auditId ?? '').toLowerCase(), true);
+    if (!prepared.ok) return prepared;
+    auditId = prepared.auditId;
+    budget = { maps: 1, reviews: 0, site: 0 };
+    providers = { maps: createSimulatedMapsProvider({ now: deps.now, onCapture: captureHook({ base: deps.evidence.baseDir, auditId, request, storageOptions: prepared.storageOptions, live, simulated: true }) }) };
+  } else if (mode === 'SIMULATED') {
     if (!deps.providers) return { ok: false, code: 'NO_PROVIDERS', reason: 'O modo SIMULATED exige provedores de fixture.' };
     if (deps.providers.maps?.live || deps.providers.site?.live) return { ok: false, code: 'INVALID_REQUEST', reason: 'Provedores reais não são aceitos no modo SIMULATED.' };
     providers = deps.providers;
@@ -178,16 +195,10 @@ export async function runLinkAuditCollection(request: RunRequest, deps: RunDeps)
 
     // Armazenamento das evidências: sem publicação segura garantida, nada é gasto e a autorização NÃO é consumida.
     if (!deps.evidence) return { ok: false, code: 'STORAGE_NOT_READY', reason: 'O modo LIVE exige armazenamento de evidências configurado (--evidence-dir).' };
-    const auditIdCandidate = String((request.authorization as { authorizationId?: unknown }).authorizationId ?? '').toLowerCase();
-    if (!AUDIT_ID_PATTERN.test(auditIdCandidate)) return { ok: false, code: 'STORAGE_NOT_READY', reason: 'O id da autorização não pode ser usado como identificador de auditoria (8 a 64 caracteres: letras, números, _ e -).' };
-    const storageOptions = { ...(deps.evidence.fs ? { fs: deps.evidence.fs } : {}), ...(deps.evidence.projectRoot ? { projectRoot: deps.evidence.projectRoot } : {}), ...(deps.evidence.apiKey ? { apiKey: deps.evidence.apiKey } : {}) };
-    // Segredo no link/identidade é erro NOSSO e é detectado ANTES de pagar (a resposta paga nunca é descartada depois).
-    if (containsSecret(JSON.stringify(request.input), 'BROAD', deps.evidence.apiKey)) {
-      return { ok: false, code: 'STORAGE_NOT_READY', reason: 'O link ou a identidade parecem conter chave, token ou cabeçalho de autenticação; nada foi consultado e a autorização não foi consumida.' };
-    }
-    const storage = await checkStorage(deps.evidence.baseDir, { ...storageOptions, auditId: auditIdCandidate });
-    if (!storage.ok) return { ok: false, code: 'STORAGE_NOT_READY', reason: `Armazenamento de evidências indisponível: ${storage.issues.join(' ')} Nenhuma consulta foi feita e a autorização não foi consumida.` };
-    auditId = auditIdCandidate;
+    const prepared = await prepareEvidence(request, deps.evidence, String((request.authorization as { authorizationId?: unknown }).authorizationId ?? '').toLowerCase(), false);
+    if (!prepared.ok) return prepared;
+    const storageOptions = prepared.storageOptions;
+    auditId = prepared.auditId;
 
     const authorization = request.authorization as { authorizationId: string; operator: string; maxMapsCalls: number };
     const marked = deps.usedStore.markUsed({
@@ -201,33 +212,8 @@ export async function runLinkAuditCollection(request: RunRequest, deps: RunDeps)
     if (!marked.ok) return { ok: false, code: 'ALREADY_USED', reason: marked.reason };
 
     budget = { maps: decision.effective.maps, reviews: 0, site: decision.effective.siteHttpRequests > 0 ? 1 : 0 };
-    const evidenceBase = deps.evidence.baseDir;
-    const hooks = {
-      // A resposta paga é gravada IMEDIATAMENTE, antes da verificação do site e de qualquer outro processamento.
-      onCapture: async (info: ProviderCaptureInfo): Promise<void> => {
-        live.rawBody = info.bodyText;
-        live.httpStatus = info.httpStatus;
-        live.attempts = info.attempts;
-        live.collectedAt = info.capturedAt;
-        const written = await writeCapture(
-          evidenceBase,
-          {
-            auditId,
-            collectedAt: info.capturedAt,
-            request: { url: info.url, body: info.requestBody },
-            response: { httpStatus: info.httpStatus, attempts: info.attempts, bodyText: info.bodyText, failure: info.failure },
-            input: { snapshotId: request.input.snapshotId, originalLink: sanitizeUrl(request.input.link.originalLink), identity: { ...(JSON.parse(JSON.stringify(request.input.identity)) as Record<string, unknown>), originalLink: sanitizeUrl(request.input.identity.originalLink) } },
-          },
-          storageOptions,
-        );
-        if (written.ok) {
-          live.captureNumber = written.value.captureNumber;
-          live.files.capture = written.value.filePath;
-        } else {
-          live.errors.push(`A resposta paga NÃO foi persistida (${written.code}): ${written.issues.join(' ')}`);
-        }
-      },
-    };
+    // A resposta paga é gravada IMEDIATAMENTE, antes da verificação do site e de qualquer outro processamento.
+    const hooks = { onCapture: captureHook({ base: deps.evidence.baseDir, auditId, request, storageOptions, live, simulated: false }) };
     try {
       const created = deps.createLiveProviders(hooks);
       const site = created.site;
@@ -249,13 +235,15 @@ export async function runLinkAuditCollection(request: RunRequest, deps: RunDeps)
 
   const ledger = new CallLedger(mode, { 'serper-maps': budget.maps, 'serper-reviews': budget.reviews, 'site-check': budget.site }, deps.now);
   const outcome = await collectEvidence(request.input, providers, { budget, now: deps.now, ledger });
+  // aqui o modo é LIVE (sempre grava) ou SIMULATED (só grava pelo caminho com `evidence`)
+  const persisting = deps.evidence !== undefined;
   if (!outcome.ok) {
     // Depois de consumida a autorização, o que foi (ou não) persistido SEMPRE é informado.
-    const persistedAfterFailure = mode === 'LIVE' && deps.evidence ? await finishPersistence({ deps, request, auditId, live, ledger }) : undefined;
+    const persistedAfterFailure = persisting ? await finishPersistence({ deps, request, auditId, live, ledger, simulated: mode === 'SIMULATED' }) : undefined;
     return { ok: false, code: outcome.code, reason: outcome.issues.join(' '), ...(persistedAfterFailure ? { persisted: persistedAfterFailure } : {}) };
   }
 
-  const report = buildCollectionReport({
+  const built = buildCollectionReport({
     mode,
     input: request.input,
     identity,
@@ -264,8 +252,10 @@ export async function runLinkAuditCollection(request: RunRequest, deps: RunDeps)
     cost: estimateCost(budget, deps.costAssumptions ?? SECONDARY_SOURCE_ASSUMPTIONS),
     generatedAt: deps.now().toISOString(),
   });
-  if (mode !== 'LIVE' || !deps.evidence) return { ok: true, kind: 'REPORT', report };
-  const persisted = await finishPersistence({ deps, request, auditId, live, ledger });
+  // W5.2b: a coleta simulada GRAVADA (ensaio) nunca atribui os dados ao Serper; o SIMULATED de teste da Onda 4B segue como antes
+  const report = mode === 'SIMULATED' && persisting ? asSimulatedReport(built) : built;
+  if (!persisting) return { ok: true, kind: 'REPORT', report };
+  const persisted = await finishPersistence({ deps, request, auditId, live, ledger, simulated: mode === 'SIMULATED' });
   return { ok: true, kind: 'REPORT', report, persisted };
 }
 
@@ -280,9 +270,103 @@ interface LiveCaptureState {
   errors: string[];
 }
 
+type StorageOptionsOf = { fs?: FsOps; projectRoot?: string; apiKey?: string };
+const storageOptionsOf = (evidence: NonNullable<RunDeps['evidence']>): StorageOptionsOf => ({ ...(evidence.fs ? { fs: evidence.fs } : {}), ...(evidence.projectRoot ? { projectRoot: evidence.projectRoot } : {}), ...(evidence.apiKey ? { apiKey: evidence.apiKey } : {}) });
+
+/** Pré-voo do armazenamento (LIVE e SIMULATED gravado): id da auditoria, segredo na entrada e publicação segura, ANTES de qualquer consulta. */
+async function prepareEvidence(
+  request: RunRequest,
+  evidence: NonNullable<RunDeps['evidence']>,
+  auditIdCandidate: string,
+  simulated: boolean,
+): Promise<{ readonly ok: true; readonly auditId: string; readonly storageOptions: StorageOptionsOf } | { readonly ok: false; readonly code: 'STORAGE_NOT_READY'; readonly reason: string }> {
+  const untouched = simulated ? 'Nada foi gravado.' : 'Nenhuma consulta foi feita e a autorização não foi consumida.';
+  if (!AUDIT_ID_PATTERN.test(auditIdCandidate)) {
+    return { ok: false, code: 'STORAGE_NOT_READY', reason: simulated ? 'Informe um id de auditoria válido para o ensaio (8 a 64 caracteres: minúsculas, números, _ e -).' : 'O id da autorização não pode ser usado como identificador de auditoria (8 a 64 caracteres: letras, números, _ e -).' };
+  }
+  const storageOptions = storageOptionsOf(evidence);
+  // Segredo no link/identidade é erro NOSSO e é detectado ANTES de pagar (a resposta paga nunca é descartada depois).
+  if (containsSecret(JSON.stringify(request.input), 'BROAD', evidence.apiKey)) {
+    return { ok: false, code: 'STORAGE_NOT_READY', reason: `O link ou a identidade parecem conter chave, token ou cabeçalho de autenticação; ${simulated ? 'nada foi gravado.' : 'nada foi consultado e a autorização não foi consumida.'}` };
+  }
+  const storage = await checkStorage(evidence.baseDir, { ...storageOptions, auditId: auditIdCandidate, simulated });
+  if (!storage.ok) return { ok: false, code: 'STORAGE_NOT_READY', reason: `Armazenamento de evidências indisponível: ${storage.issues.join(' ')} ${untouched}` };
+  // W5.2b (revisão do PR #62): o MODO da auditoria é reservado com exclusividade AQUI, antes de consumir a autorização e de pagar
+  const reserved = await reserveAuditMode(evidence.baseDir, auditIdCandidate, simulated ? 'SIMULATED' : 'LIVE', storageOptions);
+  if (!reserved.ok) return { ok: false, code: 'STORAGE_NOT_READY', reason: `${reserved.issues.join(' ')} ${untouched}` };
+  return { ok: true, auditId: auditIdCandidate, storageOptions };
+}
+
+/** Gancho de captura: grava a resposta (paga, ou SIMULADA com a marca) assim que ela existe, antes de qualquer processamento. */
+function captureHook(params: { base: string; auditId: string; request: RunRequest; storageOptions: StorageOptionsOf; live: LiveCaptureState; simulated: boolean }): (info: ProviderCaptureInfo) => Promise<void> {
+  const { base, auditId, request, storageOptions, live, simulated } = params;
+  return async (info: ProviderCaptureInfo): Promise<void> => {
+    live.rawBody = info.bodyText;
+    live.httpStatus = info.httpStatus;
+    live.attempts = info.attempts;
+    live.collectedAt = info.capturedAt;
+    const written = await writeCapture(
+      base,
+      {
+        auditId,
+        collectedAt: info.capturedAt,
+        request: { url: info.url, body: info.requestBody },
+        response: { httpStatus: info.httpStatus, attempts: info.attempts, bodyText: info.bodyText, failure: info.failure },
+        input: { snapshotId: request.input.snapshotId, originalLink: sanitizeUrl(request.input.link.originalLink), identity: { ...(JSON.parse(JSON.stringify(request.input.identity)) as Record<string, unknown>), originalLink: sanitizeUrl(request.input.identity.originalLink) } },
+        ...(simulated ? { simulated: true as const } : {}),
+      },
+      storageOptions,
+    );
+    if (written.ok) {
+      live.captureNumber = written.value.captureNumber;
+      live.files.capture = written.value.filePath;
+    } else if (!simulated) {
+      // a resposta PAGA nunca é descartada: QUALQUER falha de gravação vai para a quarentena, e o caso continua saindo como erro (código 5)
+      live.errors.push(await quarantinePaid(base, auditId, request, info, written, storageOptions));
+    } else {
+      live.errors.push(`${simulated ? 'A resposta SIMULADA' : 'A resposta paga'} NÃO foi persistida (${written.code}): ${written.issues.join(' ')}`);
+    }
+  };
+}
+
+/**
+ * A resposta PAGA nunca é descartada (W5.2b, spec do P1 §5.7, revisão do PR #62): se a gravação na auditoria pedida falhar por QUALQUER motivo
+ * (modo trocado numa corrida, marcador ilegível, disco), o corpo e os metadados vão para um arquivo NOVO na quarentena (`QUARANTINE_DIR`, fora das
+ * auditorias, recuperação manual), com o código da falha. Nada entra na auditoria pedida e nenhum relatório é gerado. Se a quarentena também falhar,
+ * a mensagem de sempre ("NÃO foi persistida") traz os dois códigos.
+ */
+async function quarantinePaid(base: string, auditId: string, request: RunRequest, info: ProviderCaptureInfo, written: { readonly code: string; readonly issues: readonly string[]; readonly publishedCapture?: number }, storageOptions: StorageOptionsOf): Promise<string> {
+  const quarantined = await quarantinePaidResponse(
+    base,
+    {
+      requestedAuditId: auditId,
+      reasonCode: written.code,
+      collectedAt: info.capturedAt,
+      request: { url: info.url, body: info.requestBody },
+      response: { httpStatus: info.httpStatus, attempts: info.attempts, bodyText: info.bodyText, failure: info.failure },
+      input: { snapshotId: request.input.snapshotId, originalLink: sanitizeUrl(request.input.link.originalLink), identity: { ...(JSON.parse(JSON.stringify(request.input.identity)) as Record<string, unknown>), originalLink: sanitizeUrl(request.input.identity.originalLink) } },
+      ...(written.publishedCapture !== undefined ? { publishedCaptureNumber: written.publishedCapture } : {}),
+    },
+    storageOptions,
+  );
+  if (quarantined.ok) {
+    const { fileName, durability, dirPermissionsUnverified } = quarantined.value;
+    const what = written.publishedCapture !== undefined
+      ? `A captura ${written.publishedCapture} PODE JÁ ESTAR na auditoria ${auditId}: foi publicada, mas a releitura falhou (${written.code}). Uma cópia da resposta paga`
+      : `A resposta paga NÃO foi gravada na auditoria ${auditId} (${written.code}):`;
+    const where = durability === 'CONFIRMED'
+      ? `foi PRESERVADA na quarentena, fora das auditorias (arquivo ${fileName}; recuperação manual pelo responsável).`
+      : `foi gravada na quarentena, fora das auditorias (arquivo ${fileName}), mas com durabilidade não confirmada (fsync da pasta falhou); recuperação manual pelo responsável.`;
+    const permissions = dirPermissionsUnverified ? ' ATENÇÃO: as permissões da pasta da quarentena não puderam ser garantidas (dono do processo e modo 0700); restrinja a pasta.' : '';
+    const check = written.publishedCapture !== undefined ? ' Confira a auditoria antes de recuperar.' : '';
+    return `${what} ${where}${permissions}${check} Nenhum relatório foi gerado.`;
+  }
+  return `A resposta paga NÃO foi persistida (${written.code}): ${written.issues.join(' ')} A quarentena também falhou (${quarantined.code}): ${quarantined.issues.join(' ')}`;
+}
+
 /** Grava a observação do site e o relatório (mesmo `buildReportFromCapture` do replay offline) depois da captura. */
-async function finishPersistence(params: { deps: RunDeps; request: RunRequest; auditId: string; live: LiveCaptureState; ledger: CallLedger }): Promise<PersistedEvidence> {
-  const { deps, request, auditId, live, ledger } = params;
+async function finishPersistence(params: { deps: RunDeps; request: RunRequest; auditId: string; live: LiveCaptureState; ledger: CallLedger; simulated: boolean }): Promise<PersistedEvidence> {
+  const { deps, request, auditId, live, ledger, simulated } = params;
   const base = (deps.evidence as NonNullable<RunDeps['evidence']>).baseDir;
   const options = { ...(deps.evidence?.fs ? { fs: deps.evidence.fs } : {}), ...(deps.evidence?.projectRoot ? { projectRoot: deps.evidence.projectRoot } : {}), ...(deps.evidence?.apiKey ? { apiKey: deps.evidence.apiKey } : {}) };
   let revision: number | null = null;
@@ -314,6 +398,7 @@ async function finishPersistence(params: { deps: RunDeps; request: RunRequest; a
         site: null,
         siteOutcome: live.siteOutcome,
         generatedAt: deps.now().toISOString(),
+        ...(simulated ? { simulated: true } : {}),
       });
       if (built.ok) {
         const written = await writeReport(base, auditId, live.captureNumber, JSON.parse(JSON.stringify(built.report)) as Record<string, unknown>, deps.now().toISOString(), options);

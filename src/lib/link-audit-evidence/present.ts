@@ -1,4 +1,5 @@
 import type { AuditSummary, AuditView, EvidenceItem, IntegrityInfo, VersionEntry, ViewState } from './reader';
+import { SIMULATED_SOURCE_LABEL } from './simulated';
 
 /*
  * Objetos de apresentação (Onda 5B): o que o SERVIDOR entrega ao navegador. Planos, tipados e sem o corpo bruto
@@ -34,6 +35,8 @@ export interface AuditListItemDto {
   readonly captureCount: number;
   readonly reportRevisions: number;
   readonly integrity: IntegrityDto;
+  /** Coleta SIMULADA do ensaio (W5.2b): presente só nela; o `sourceLabel` diz "SIMULADA — ensaio". */
+  readonly simulated?: true;
 }
 
 export interface EstablishmentDto {
@@ -113,6 +116,8 @@ export interface AuditDetailDto {
     readonly httpAttempts: number | null;
     readonly creditsReportedByApi: number | null;
     readonly resultCount: number | null;
+    /** Coleta SIMULADA do ensaio (W5.2b): presente só nela; o `label` diz "SIMULADA — ensaio". */
+    readonly simulated?: true;
   };
   readonly located: string | null;
   readonly establishment: EstablishmentDto | null;
@@ -187,12 +192,13 @@ export function toListItem(summary: AuditSummary): AuditListItemDto {
     stateCode: cut(summary.company.stateCode, 10),
     confirmedCid: cut(summary.confirmedCid, 30),
     collectedAt: cut(summary.collectedAt, 40),
-    sourceLabel: SOURCE_LABEL,
+    sourceLabel: summary.simulated ? SIMULATED_SOURCE_LABEL : SOURCE_LABEL,
     state: summary.state,
     layout: summary.layout,
     captureCount: summary.captureCount,
     reportRevisions: summary.reportRevisions,
     integrity: integrityDto(summary.integrity),
+    ...(summary.simulated ? { simulated: true as const } : {}),
   };
 }
 
@@ -278,7 +284,8 @@ export function toAuditDetailDto(view: AuditView): AuditDetailDto {
     collectedAt: cut(view.collectedAt, 40),
     methodologyVersion: cut(view.methodologyVersion, 60),
     source: {
-      label: SOURCE_LABEL,
+      label: view.simulated ? SIMULATED_SOURCE_LABEL : SOURCE_LABEL,
+      ...(view.simulated ? { simulated: true as const } : {}),
       officialGoogleApi: false,
       description: cut(view.source.description, 600),
       httpStatus: view.source.httpStatus,

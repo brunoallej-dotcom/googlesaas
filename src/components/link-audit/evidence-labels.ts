@@ -1,5 +1,11 @@
 /* Vocabulário e formatação da área "Auditorias armazenadas" (Onda 5B). Texto puro, sem efeitos. */
 
+/** Coleta SIMULADA do ensaio da W5 (W5.2b): o mesmo rótulo do servidor (`SIMULATED_LABEL`, conferido por teste). */
+export const SIMULATED_BADGE = 'SIMULADA — ensaio';
+export const SIMULATED_NOTICE = 'Dados sintéticos gravados na homologação pelo modo SIMULATED: nenhuma consulta foi feita e nada disto é evidência real de empresa nenhuma.';
+/** Origem das evidências e do perfil na coleta SIMULADA: o gerador sintético (nunca "via Serper"). */
+export const SIMULATED_ORIGIN_LABEL = 'Gerador sintético do ensaio (SIMULADA)';
+
 export const COLLECTION_NOTICE = {
   title: 'Coleta de evidências — não é uma auditoria estratégica finalizada',
   lines: [

@@ -128,6 +128,10 @@ existia ou o `sha256sum -c` falhou). Com `noclobber`, o shell nunca sobrescreve 
   (recusa). As telas da confirmação e da frase saem na saída de erro (`sign-cli.ts:232,246`), e o terminal continua o mesmo.
   Com `--json`, a pública derivada (`<KEY_ID>:<pública>`) também sai na saída de erro.
 
+> **Só no ensaio da W5 (pacote da coleta SIMULADA, spec do P1 §5.7):** acrescente `--simulated` às opções do `sign` (por exemplo, antes de
+> `--json`), com `--key-id <KEY_ID_ENSAIO>` (prefixo `ensaio-`; outra chave dá `SIGN_KEY_MODE_MISMATCH`). Sem ela, o `sign` recusa o pacote simulado (`SIGN_SIMULATED_PACKAGE`, código 3) antes da confirmação e da frase; com ela, a
+> tela da confirmação mostra "ATENÇÃO: SIMULADA — ensaio". `--simulated` com pacote real também é recusado. **Em produção, nunca.**
+
 ### 3.1 O que o custodiante faz durante a execução
 
 1. Confere na tela só `auditId`, `seq` e número de entradas.
@@ -218,7 +222,7 @@ PRF nem cifra. Por isso a conferência completa do §4.4 é obrigatória antes d
 |---|---|---|
 | Quem | quem conduz o ensaio | **somente o responsável (D15.7)** |
 | Quando | no ensaio em homologação | depois do relatório do ensaio aprovado e do aceite formal de risco assinado (D15.1) |
-| `keyId` | `<KEY_ID_ENSAIO>`, que nunca será reutilizado | `<KEY_ID_REAL>`, formato `ek-AAAAMM-a` (contrato P1 §2) |
+| `keyId` | `<KEY_ID_ENSAIO>`, que nunca será reutilizado, **sempre com o prefixo reservado `ensaio-`** (ex.: `ensaio-w5-aaaammdd`): o `sign --simulated` só aceita esse prefixo, o `sign` real o recusa, e o servidor sem a trava de homologação recusa a lista que o contém (spec do P1 §5.7) | `<KEY_ID_REAL>`, formato `ek-AAAAMM-a` (contrato P1 §2), **nunca** com o prefixo `ensaio-` |
 | Lista de chaves | só a da pilha de homologação | a de produção, por deploy do responsável |
 | Cópias | nenhuma além da estação (pode ensaiar o §5 com mídias descartáveis) | duas mídias offline (§5) |
 | Fim | destruída no fim do ensaio, com registro (§10) | aposentada a cada 12 meses (§9) ou revogada por comprometimento |
@@ -338,6 +342,8 @@ coleta LIVE --json ─► export ─► conferência + dossiê A + approval.json
 
    Opções em `scripts/link-audit-seal.ts:31-46`. Um `--collector-hash` por captura nova; `--max-gap-hours 24` (D13); `--out` fora
    da árvore do projeto e da pasta de evidências (`EXPORT_OUT_UNSAFE`). Detalhe da conferência no `p1-runbook-conferente.md`.
+   **No ensaio da W5** a coleta é a SIMULADA (não a LIVE) e o `export` leva `--simulated` com `GMN_LINK_AUDIT_HOMOLOGATION=1` no
+   ambiente do comando (spec do P1 §5.7; comandos no S-02 e no S-03 de `p1-relatorio-ensaio-modelo.md`). Em produção, nunca.
 3. **Conferência e aprovação** (conferente): dossiê parte A congelado (o SHA-256 dos bytes vai para `approval.json`) e
    `approval.json` (§5.4 da spec).
 4. **Transporte para a estação:** pacote, `approval.json`, dossiê A e aceite de risco por mídia, para `<PASTA_DAS_ENTRADAS>`.
@@ -461,6 +467,26 @@ No fim do ensaio da W5.3, antes de arquivar o relatório:
 | `SIGN_WRITE_UNCONFIRMED`, `SIGN_WRITE_FAILED`, `SIGN_SEQ_CONFLICT`, `CLOSE_ALREADY_EXISTS`, qualquer código `4` ou saída incompleta | **caso C do §3.2**: preservar tudo, não repetir, não atualizar a tabela de manifestos do livro, conferir a pasta (o que existe, hashes), registrar o incidente e só então decidir com o responsável |
 
 Todo código `3` desta tabela fora da última linha é do caso B do §3.2 (recusa antes da gravação: nenhum manifesto foi gravado).
+
+### 11.1 Resposta paga na quarentena (coleta LIVE, código 5)
+
+Se a coleta LIVE terminar com código 5 e a mensagem "foi PRESERVADA na quarentena" (ou "gravada na quarentena", spec do P1 §5.7), a resposta
+paga não entrou na auditoria pedida, ou entrou e não pôde ser conferida (modo trocado numa corrida, marcador de modo ilegível, falha de disco ou
+de releitura). Ela está num arquivo próprio em
+`<PASTA_DE_EVIDENCIAS>/_quarentena-resgate-live/<auditId>-<carimbo>-<aleatório>.json` (modo 0600), com o corpo, os metadados, o motivo e o
+`auditId` pedido. **Nenhum fluxo de auditoria lê essa pasta.** A recuperação é **manual e só do responsável**:
+
+1. não apague, não mova e não edite o arquivo; anote nome, `contentSha256` e motivo no livro (incidente);
+2. **confira a auditoria pedida antes de qualquer recuperação.** Se a mensagem disser "PODE JÁ ESTAR na auditoria" (`reason.publishedUnverified:
+   true`), a captura de número `reason.publishedCaptureNumber` foi publicada e só a releitura falhou: confira a integridade da auditoria (leitor de
+   evidências) antes de decidir; a cópia da quarentena é uma salvaguarda, não uma segunda captura a recuperar;
+3. se a mensagem disser "durabilidade não confirmada (fsync da pasta falhou)" ou "permissões da pasta da quarentena não puderam ser garantidas",
+   confira que o arquivo continua lá e restrinja a pasta (`chmod 700`, dono = o usuário da coleta) antes de qualquer outra ação;
+4. não repita a coleta (a autorização já foi consumida) sem decisão escrita do responsável;
+5. o responsável decide o destino: investigar o motivo (`MODE_CONFLICT`, `CORRUPT`, `WRITE_FAILED`…), e, se for o caso, uma auditoria nova
+   com id novo e uma decisão registrada de como a resposta preservada entra nela; nunca por cópia para a pasta de outra auditoria;
+6. se a mensagem for "NÃO foi persistida" com dois códigos, a quarentena também falhou: a resposta paga se perdeu; registre os dois códigos
+   e trate como incidente de armazenamento.
 
 ## 12. Suplente (D15.1, D10)
 

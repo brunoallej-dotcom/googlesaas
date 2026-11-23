@@ -657,6 +657,14 @@ O hash versionado passou a `395d5ba946e3f6b45c9689828947ca49107d3a9940db4f4ca457
   - **Exercitado no CI:** o job `sign-artifact` roda esse arquivo de teste em modo estrito com a linha 22, e o `close-key` em processo real tem de completar. O sucesso prova o `fsync` do temporário e da pasta `_closures`, porque a gravação só devolve sucesso depois dos dois (`SIGN_WRITE_FAILED`/`SIGN_WRITE_UNCONFIRMED` se não). Com o node local (24.22), o caso para na sondagem antecipada (`SIGN_RUNTIME_NO_FSYNC`), antes dos recibos, da confirmação e da frase. Conferência local adicional, fora do repositório: numa cópia descartável do artefato com o `fsync` neutralizado, o `close-key` completou sob `--permission` real no Node 24.22 (fecho gravado em `_closures` e cadeia autenticada). Isso mostra que nada além do `fsync` é negado pela linha decidida.
 - **`.git` que é link simbólico pendente (revisão do PR #59, `wk2`, MENOR):** um grant de leitura terminado em `.git` com `realpath` em ENOENT virava "ausente" sem conferir o próprio caminho. O `realpath` de um link PENDENTE também dá ENOENT, e esse `.git` passava no pré-teste dos grants. A custódia da chave o recusava, mas só depois de ler as entradas e da confirmação. Agora o `.git` só conta como ausente se o `lstat` dele também der ENOENT (`gitTrulyAbsent`). Link pendente, ou qualquer outra resposta do `lstat`, ⇒ `SIGN_RUNTIME_UNSAFE` ("próprio caminho real") no pré-teste, antes de qualquer leitura. O `lstat` vem da mesma porta de disco da custódia (`KeyFileOps`). Sob `--permission`, o `lstat` do próprio caminho concedido é permitido. Testes: em processo (nenhuma entrada lida, nem confirmação nem frase) e em processo real sob `--permission`. Mutação: voltar ao ENOENT sem `lstat` ⇒ os dois testes falham.
 - **Hash do artefato:** o código do grafo do artefato mudou quatro vezes nesta fatia. O build da base reproduziu `395d5ba9…` antes das mudanças. A mudança do D15.6(d) deu `893b9c21edf7765e14879cc6595f9dc40e898c37f2752cafc51e05f5cc36c76b`; a regra dos grants do `close-key`, `a4c2842d4b0105046641a1a41b73a56a2f027f2dd577f3b535017c9b614fc43a`; o mesmo tratamento no `sign`, `26c6aba810f9da1ec5456fb0e2addb79b1f20e0f58ca1dc3338069d493ea0622`; e a correção do `.git` pendente deu o valor final, `d2df18c525de54bab0e241d15b2e12e2d0009e76f6571cf1892fd07adb369a4a` (753 267 bytes), versionado em `docs/phase6-auditoria-link/p1-sign-artifact.sha256`. O teste e o CI recompilam e recusam qualquer diferença.
+- **Hash do artefato depois da W5.2b (22/11/2026):** a W5.2b mudou o esquema da captura (`src/lib/link-audit-evidence/types.ts`, marca da coleta SIMULADA, §5.7), que o artefato empacota; sozinha, sobre `395d5ba9…`, ela dava `08ee1c75dc771c1d6ca5c52afe7b81161068c19fc3d58c00c6b9074989437a03`. No merge com a W5.2a o hash foi REFEITO pelo build reprodutível com as duas mudanças juntas (nenhum dos dois valores foi escolhido): `78de412ec59a944ca75b00d80f2daadd9b511ffe88816059a1942c26469002cb` (753 462 bytes), igual em duas pastas e conferido por `sha256sum -c`. O comportamento do `sign` e do `close-key` não muda com a W5.2b.
+- **Hash do artefato depois da revisão do PR #62 (22/11/2026):** a marca da coleta SIMULADA entrou no pacote (`schemas.ts`) e o `sign` ganhou a opção
+  `--simulated` (`sign-args.ts`, `sign-core.ts`, `sign-terminal.ts`, `sign-run.ts`, `sign-cli.ts`; §5.7). O build reprodutível dá
+  `37797893cdcc5fb64578cc41f08f0b403793ad464b2663a657a5d539eeefb5a1` (754 422 bytes), igual em duas pastas e conferido por `sha256sum -c`; os testes do artefato passam com ele. Para pacote real, o
+  `sign` se comporta exatamente como antes (mesmo plano, mesma tela, mesmo recibo).
+- **Hash do artefato depois da confirmação da revisão do PR #62 (22/11/2026):** o `sign` passou a exigir chave de ensaio (id `ensaio-…`) com
+  `--simulated` e a recusá-la sem ele (`sign-core.ts`, `sign-args.ts`, `sign-chain.ts`; §5.7). O build reprodutível dá
+  `2fbf9851c34b2dd309d082cbb974669a0534eacd0b6aa3b7902d8ac841d440ab` (755 532 bytes), igual em duas pastas e conferido por `sha256sum -c`; os 19 testes do artefato passam.
 - **Teste, isolamento:** a limpeza da estação no HOME dos testes do artefato passou a ser registrada no nível do arquivo. Registrada dentro de um teste antes de qualquer `await`, ela ficava presa àquele teste e apagava a pasta para os seguintes (aparecia só ao rodar parte dos testes). Registrada tarde, numa execução completa, ela não rodava e deixava a pasta no HOME.
 
 ### 5.6 Manifesto `v2` e verificador `v2` (onda W3, contrato próprio)
@@ -681,6 +689,106 @@ O hash versionado passou a `395d5ba946e3f6b45c9689828947ca49107d3a9940db4f4ca457
   5. **anti-rebaixamento (a confirmar):** em produção o último manifesto deve ser `v2`; `v1` só com opção explícita (homologação/testes). Sem isso, uma chave comprometida assinaria um `v1` com `seq` maior e escaparia das checagens 2–3;
   6. novos motivos entram em `EvidenceTrustReason` de forma aditiva (conferir consumidores que fazem `switch` exaustivo).
 - Testes adicionais de RS-20 entram na W3 (manifesto e evidências de A sob B; `auditId` não normalizado).
+
+### 5.7 Coleta SIMULADA para o ensaio da W5 (W5.2b, 22/11/2026; manager sob a D15)
+
+**Problema.** O ensaio da W5 roda numa pilha de homologação sem Serper e sem dados reais (D-G0-12), mas o passo S-02 precisa de uma
+captura `c0001` no layout versionado e do hash `source.capture.sha256` impresso em `--json` (IA-19), que o `export` exige. O coletor
+só tinha DRY_RUN e LIVE; o modo SIMULATED existia só no runtime, sem gravar evidência. Regra que manda: uma evidência simulada **nunca**
+passa por real.
+
+**Comando** (homologação, sem rede):
+`GMN_LINK_AUDIT_HOMOLOGATION=1 npm run link-audit:collect -- --simulated --audit <auditId> --operator <e-mail> --evidence-dir <pasta> --json`.
+Link, identificadores e empresa são **fixos e sintéticos** (`Empresa de Ensaio`, `Cidade de Ensaio`/`ZZ`, FID `0x0:0xe5a10`, CID `940560`,
+sem site nem telefone); `--link`, `--name`, `--city`, `--uf` e as opções do LIVE são recusados. O corpo é gerado em memória; nenhuma rede,
+nenhum arquivo de ambiente lido, nenhum provedor real criado. A captura grava `request.url` = `simulado://ensaio-homologacao/maps`,
+`attempts: 0` e status 200 (não houve HTTP: o status é o que o pipeline exige para gerar o relatório, e a captura inteira vai marcada).
+Códigos de saída como no LIVE (0 ok, 1 uso, 3 recusado antes de gravar, 4/5 falha na gravação).
+
+**Travas, em camadas:**
+
+1. **Defesa principal (já existia).** Em produção a lista de chaves só tem a chave real; o manifesto do ensaio é assinado pela chave
+   descartável, que não está na lista ⇒ `SEAL_INVALID` (verificador `v2`: `verifiedPositions` em `provenance-core.ts`, "a key absent from
+   the list is SEAL_INVALID (V2-30)"; caminho `v1`: `classifyLatestV1`) ⇒ `UNAUTHENTICATED` ⇒ `EVIDENCE_PROVENANCE_UNPROVEN` bloqueia a
+   finalização.
+2. **Coletor.** Só com `--simulated` **e** `GMN_LINK_AUDIT_HOMOLOGATION=1` (exatamente `1`, do ambiente do comando). Sem a trava (com ou
+   sem `NODE_ENV=production`) ⇒ recusa, código 3, antes de qualquer pasta ou provedor. O runtime também só grava evidência simulada com
+   `homologation: true`, só com o gerador sintético (provedor injetado ou real ⇒ recusa) e só com a identidade sintética (defesa em
+   profundidade).
+3. **Marca persistente, dentro do hash.** A captura leva `provider: "SIMULATED"` e `simulated: true` (o esquema exige os dois juntos ou
+   nenhum); o relatório leva `source.provider: "SIMULATED"`, `source.simulated: true` e uma limitação explícita. A marca entra no
+   `contentSha256` da captura, que é o `source.capture.sha256` do `--json`, o `--collector-hash` do `export`, a entrada `capture:c0001`
+   do pacote e do manifesto. **Revisão do PR #62 (decisão do manager):** a marca também ENTRA no pacote, como campo opcional
+   `simulated: true` (só o literal, só no simulado), dentro do `packageSha256`; nos pacotes reais o campo não existe, e a forma e o hash
+   deles não mudam. Aprovação e manifesto `v2` **não mudam de formato** (D15.6(e): `entries[].source` continua fora; nada de `v3`). Captura simulada e captura real não se misturam na mesma auditoria: o pré-voo do armazenamento recusa nos dois sentidos
+   (no LIVE, antes de pagar). A pré-checagem falha fechada (revisão do PR #62): só a pasta da auditoria comprovadamente inexistente (ENOENT)
+   conta como vazia; listagem que falha por outro motivo, ou captura existente que não se lê, é recusa.
+   **Reserva exclusiva do modo (confirmação da revisão do PR #62, decisão do manager):** o modo da auditoria (`LIVE` ou `SIMULATED`) é
+   reservado UMA vez, antes da primeira captura, no marcador `audit-mode.json` da pasta da auditoria, publicado com `publishExclusive`
+   (temporário + `link()` que nunca sobrescreve; selado com `contentSha256`). O runtime reserva no pré-voo, antes de consumir a autorização
+   e de pagar; o pré-voo e cada gravação (`writeCapture`) conferem o marcador e recusam o outro modo nos dois sentidos (`MODE_CONFLICT`;
+   marcador ilegível ⇒ recusa). Duas coletas concorrentes de modos diferentes: exatamente uma reserva, a outra é recusada (testes com duas
+   gravações no mesmo processo, dois processos e dois runtimes). Auditoria antiga sem marcador: o modo vem das capturas (todas legíveis e do
+   mesmo modo). **Resposta paga nunca descartada (QUARENTENA, 3ª rodada da revisão do PR #62, decisão do manager):** se a gravação de uma
+   resposta LIVE paga na auditoria pedida falhar por QUALQUER motivo (modo trocado numa corrida, marcador ilegível depois do pré-voo, disco),
+   o runtime grava o mesmo corpo e os metadados da captura, mais o motivo (código) e o `auditId` pedido, num arquivo NOVO da quarentena: a
+   subpasta reservada `_quarentena-resgate-live` da raiz de evidências (o nome começa por `_` e nunca é um `auditId` válido; o leitor, as
+   listagens e o armazenamento não a tratam como auditoria), criado com escrita exclusiva (`wx`), modo 0600 e fsync, com nome
+   `<auditId>-<carimbo da coleta>-<16 hex aleatórios>.json` (nunca reutiliza, sobrescreve nem deduplica). Nada entra na auditoria pedida,
+   nenhum relatório é gerado e o caso sai como erro (código 5 no CLI), com o nome do arquivo. Se a quarentena também falhar, a mensagem de
+   sempre ("NÃO foi persistida") traz os dois códigos. A quarentena **nunca** é lida pelos fluxos de auditoria; a recuperação é manual e fica
+   com o responsável (runbook do custodiante §11.1). Substitui a auditoria de resgate `<auditId>-resgate-live` da rodada anterior, que tinha
+   id previsível (podia cair numa auditoria existente, ou num `MODE_CONFLICT` que perdia a resposta) e colidia por causa do corte em 64
+   caracteres. **Casos com marca própria (rodada final da revisão do PR #62):** (i) captura PUBLICADA na auditoria pedida cuja releitura falha:
+   a cópia vai igualmente para a quarentena, com `reason.publishedUnverified: true` e `reason.publishedCaptureNumber`, e a mensagem avisa que a
+   captura pode já estar na auditoria (conferir antes de recuperar); "não publicada" mantém o motivo simples; (ii) pasta da quarentena: depois do
+   `mkdir` e do `chmod 0700`, o `lstat` confere diretório comum (link ou não diretório ⇒ recusa: o arquivo iria para outro lugar), dono = usuário do
+   processo (quando há `getuid`) e `mode & 0o077 === 0`; se não der para garantir, o arquivo AINDA é gravado 0600 (preservar a resposta paga vem
+   primeiro) e o retorno leva `dirPermissionsUnverified`, que o runtime informa como erro; (iii) fsync da pasta que falha ⇒ sucesso com
+   `durability: "UNCONFIRMED"` e a mensagem "gravada na quarentena; durabilidade não confirmada (fsync da pasta falhou)", nunca "PRESERVADA". Em
+   todos, o caso sai como erro (código 5). **Limite declarado:** a janela entre o `lstat` da pasta e a criação do arquivo não é fechada (não
+   reproduzimos `openat`); só o próprio usuário do volume de evidências consegue explorá-la, e ele já pode escrever na pasta de qualquer modo.
+   O marcador de modo não é evidência (fica fora do conjunto atestado) nem assinatura.
+4. **`export`.** Auditoria com captura simulada ⇒ `EXPORT_SIMULATED_CAPTURE` (código 3), salvo com `--simulated` **e** a mesma trava,
+   conferida em duas camadas testadas cada uma sozinha (a recusa antecipada do CLI e a montagem pura do `export`, que recebe a opção e a
+   trava separadas);
+   `--simulated` sem a trava, ou numa auditoria sem captura simulada ⇒ a mesma recusa. Com a trava, a saída avisa "SIMULADA — ensaio" e o
+   `--json` traz `simulated: true` (ausente nas exportações reais: a forma estável não muda). A trava é a única leitura do ambiente do
+   processo no `export`, feita em `src/lib/link-audit-evidence/simulated.ts` (só a variável da trava; o CLI e os módulos do `export`
+   continuam sem olhar o ambiente); a lista fechada de imports do CLI ganhou esse módulo (teste de isolamento revisto).
+5. **Leitor e interface.** A fonte aparece como "SIMULADA — ensaio" (lista e detalhe das evidências), com selo próprio. O relatório
+   simulado atribui os dados ao gerador sintético, nunca ao Serper: `data.googleMaps.source: "SIMULATED"`, `verified[].viaSerper: false`
+   e os textos do pipeline que diziam "obtido via Serper" reescritos (revisão do PR #62); o detalhe das evidências troca os rótulos de origem.
+   Na confirmação da revisão: a base de pontuação leva `provider: "SIMULATED"` na evidência simulada (o mapeador só aceita o par coerente
+   `provider SIMULATED` + `simulated: true`), o relatório gravado registra `calls.simulatedMaps` no lugar das chamadas ao Serper, o relatório em
+   memória da coleta simulada gravada é reescrito para o gerador sintético, e a prévia expõe `company.source` ("Gerador sintético do ensaio
+   (SIMULADA)") e `evidence.simulated`, usados pela matriz de critérios e pelo painel da empresa. Nas coletas reais, chaves e textos não mudam.
+5a. **`sign` (revisão do PR #62).** Pacote com `simulated: true` só é assinado com a opção própria `--simulated` (o `sign` roda com `env -i`:
+   nada de variável de ambiente); sem ela ⇒ `SIGN_SIMULATED_PACKAGE` (código 3), e `--simulated` com pacote real também. A recusa vem logo
+   depois de o pacote aprovado e íntegro ser conhecido, antes da confirmação humana e da frase. Com `--simulated`, a tela da confirmação
+   mostra "ATENÇÃO: SIMULADA — ensaio" antes da digitação. O recibo não muda de forma.
+5b. **Chaves de ensaio `ensaio-…` (confirmação da revisão do PR #62, decisão do manager, sem `v3`):** o id da chave descartável do ensaio
+   começa pelo prefixo reservado `ensaio-`, e o modo fica visível no próprio manifesto assinado (o `keyId`). (a) `sign --simulated` só aceita
+   chave `ensaio-…` (a chave ativa de produção é recusada); (b) `sign` sem `--simulated` recusa chave `ensaio-…` (as duas: `SIGN_KEY_MODE_MISMATCH`,
+   código 3, no analisador, antes de ler qualquer entrada, e de novo no núcleo da cadeia); (c) a lista de confiança do servidor
+   (`GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS`, composta em `src/app/api/link-audit/scoring/shared.ts`) com qualquer id `ensaio-` é recusada inteira
+   (política fechada: nada autentica) salvo com `GMN_LINK_AUDIT_HOMOLOGATION=1` no web; (d) o runbook do custodiante e o roteiro do ensaio
+   mandam gerar a chave descartável com id `ensaio-…`. Nenhum teste ou fixture usa `ensaio-` para chave real.
+6. **Prévia e finalização (ponto escolhido: o bloqueio da prévia, que a finalização já respeita).** Base com evidência simulada ⇒
+   bloqueio `SIMULATED_EVIDENCE`: `BLOCKING` sem a trava no servidor (a finalização responde `NOT_FINALIZABLE`; a conclusão de uma
+   pendente também é recusada) e `WARNING` com `GMN_LINK_AUDIT_HOMOLOGATION=1` no web da pilha de homologação (o S-13 depende disso).
+   A `stack.yml` de produção não declara a variável (teste de configuração).
+
+**Limites declarados.** (a) Quem escreve na pasta de evidências pode tirar a marca e recalcular os hashes (o SHA-256 não é assinatura,
+§5.3): a marca é defesa em profundidade; a garantia continua sendo a lista de chaves de produção (camada 1). (b) O resultado gravado
+sobre a captura simulada (só na homologação) não leva a marca no próprio arquivo: ela é alcançável pelo hash da captura citada, e as
+chaves do ensaio não estão na lista de produção (reconferência da R2.2). (c) O artefato do `sign` empacota o esquema da captura
+(`src/lib/link-audit-evidence/types.ts`): o hash versionado do artefato muda nesta fatia, sem mudança de comportamento do `sign`
+(histórico no §5.5.1: `08ee1c75…` sobre a base; `78de412e…` depois do merge com a W5.2a; `37797893…` depois da revisão do
+PR #62; `2fbf9851…` depois da confirmação dela). (d) **Limite declarado (decisão do manager na revisão do PR #62):** o modo SIMULATED do runtime SEM armazenamento e com provedores
+injetados, que vem da Onda 4B e só os testes usam, não exige a trava; ele não grava nada. O runtime antigo não muda; um teste estático garante
+que o único chamador do runtime é o CLI de coleta, que nenhuma chamada dele injeta provedores (o SIMULATED do CLI usa só o gerador
+sintético, com a trava e gravando) e que nenhuma rota, página, componente ou worker importa o runtime.
 
 ## 6. Critérios de aceite (cada item vira ao menos um teste automatizado)
 
@@ -864,6 +972,7 @@ O responsável delegou as decisões da W5 ao manager ("W5: pode decidir por mim 
 | D15.5 | **Quem escreve no volume de manifestos (§13.2 item 3; D7).** Só o canal de entrega pelo CI. O servidor confere a assinatura contra a lista de chaves fixada antes de aceitar, e não há cópia manual. Limite declarado e mantido: o administrador da VPS, que também edita a lista de chaves, continua fora da garantia (§1). Os detalhes do canal fecham na W5. |
 | D15.6 | **§13.3 e a pergunta da W4.1.** (a) A aprovação assinada pelo conferente com um segundo par de chaves (RS-03) **não é adotada agora**: sem segunda pessoa, não acrescenta nada. Volta à mesa quando houver conferente distinto. (b) **Dossiês:** arquivados offline junto do livro de manifestos enquanto o resultado existir. Revisão amostral trimestral (um dossiê ou 10 %, o que for maior), registrada no livro; sem segunda pessoa, a revisão é do próprio titular e fica marcada. (c) **`operator = conferente`:** continua só marcando `requiresLaterReview`, sem bloquear; o aceite formal da D15.1 cobre o acúmulo. (d) **`operator = custodiante`:** passa a marcar `requiresLaterReview: true` (mudança de código na W5). (e) **`entries[].source`:** continua fora (toda entrada é `LIVE`; incluir depois exige `v3`). |
 | D15.7 | **Continua com o responsável (não delegável):** a cerimônia da chave real (gerar e guardar), a assinatura do aceite formal de risco, os locais físicos das cópias e todo deploy de produção. O ensaio da W5 usa **chave descartável** em homologação. |
+| D15.8 | **Coleta SIMULADA do ensaio (W5.2b, 22/11/2026, manager sob a delegação da W5).** O S-02 usa o modo SIMULATED do coletor, só em homologação: dados sintéticos fixos, trava `--simulated` + `GMN_LINK_AUDIT_HOMOLOGATION=1`, marca `simulated: true` e provedor `SIMULATED` gravados dentro do hash da captura, `export` e finalização recusando a captura simulada sem a trava, interface rotulando "SIMULADA — ensaio". Forma, camadas e limites no §5.7. |
 | D16 | **W6 autorizada** pelo responsável em 20/11/2026: **uma** coleta LIVE nova da AUD-001, no escopo da linha da W6 no plano (estimativa de cerca de 3 créditos Serper; nenhuma outra consulta paga). Ela **só roda depois do ensaio da W5 aprovado**, porque depende dele. A consulta usa a chave do Serper do ambiente de dev, que o manager não lê: o responsável executa o comando preparado no runbook. A atestação da coleta usa a chave real, na cerimônia (D15.7). |
 
 ## 14. Fatiamento em ondas

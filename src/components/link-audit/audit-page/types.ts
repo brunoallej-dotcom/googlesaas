@@ -102,6 +102,8 @@ export interface PreviewPayload {
     readonly referenceDateSource: { readonly ref: string; readonly observedAt: string } | null;
     readonly profileSource: { readonly ref: string; readonly observedAt: string } | null;
     readonly bases: readonly EvidenceBase[];
+    /** W5.2b: presente só na coleta SIMULADA do ensaio (a tela rotula a origem como gerador sintético). */
+    readonly simulated?: true;
   };
   readonly decisions: { readonly head: Head | null; readonly count: number; readonly pending: PendingDecisionSummary | null; readonly finalizable: boolean; readonly witness: WitnessInfo; readonly ledger: PreviewLedgerInfo; readonly applied: readonly string[]; readonly held: ReadonlyArray<{ readonly decisionId: string; readonly code: string }> };
   readonly decisionOptions: ReadonlyArray<{ readonly type: 'JUDGEMENT' | 'NOT_APPLICABLE'; readonly subcriterionId: string; readonly code: string | null; readonly available: boolean; readonly reasonCode: string | null }>;
