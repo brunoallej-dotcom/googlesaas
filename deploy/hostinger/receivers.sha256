@@ -2,6 +2,6 @@
 # Refeito no mesmo PR que muda o fonte; conferido pelo job "receivers artifact (build, hash)" do ci.yml. Uma linha por artefato e depois
 # uma por modelo de wrapper (deploy/hostinger/receivers/), na ordem de VERSIONED_FILE_NAMES (scripts/build-receivers-artifact.ts); o build
 # copia os modelos para a pasta de saída. O receptor de manifestos (gmn-seal-receiver.cjs) e o modelo do wrapper dele entram na P9.3b.
-4908b9d3cf5f70b462440b6a2e7c971250e52c5778658a7e0af31212bef799e8  gmn-deploy-receiver.cjs
+e2f1d4f24b87bfa6468a8431ecb774a866dc6c849cc47f572bdfdec8181853bf  gmn-deploy-receiver.cjs
 fd2ba3cb7c15416bfef30d8576b454ac309249defe113841d66a0774b271e85d  gmn-deploy.modelo.sh
 db4fc000ca8437322cf25af24f499062305fddd85ea483367fd6a1b8dd54a2f3  gmn-hml-deploy.modelo.sh

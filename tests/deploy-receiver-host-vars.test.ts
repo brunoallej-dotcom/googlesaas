@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import path from 'node:path';
 import test from 'node:test';
 import { HOST_CONFIG_NAMES, ReceiverError } from '../src/lib/deploy-receiver/codes';
+import { canonicalSupabaseOrigin, supabaseFp12 } from '../src/lib/deploy-receiver/supabase';
 import { checkHostConfig, DATA_FOLDER_NAMES, FORBIDDEN_EVERYWHERE, FORBIDDEN_IN_PRODUCTION, MAX_HOST_VARS_BYTES, parseHostVarsFile, REQUIRED_NON_EMPTY } from '../src/lib/deploy-receiver/host-vars';
 
 /*
@@ -141,4 +145,34 @@ test('P9-D04 homologação: GMN_TRAEFIK_NAME obrigatória e ≠ gmn, GMN_WORKER_
 test('P9-D04: todo detalhe que o parser e as regras podem produzir é um nome da lista fechada do job (HOST_CONFIG_NAMES)', () => {
   const named = [...FORBIDDEN_EVERYWHERE, ...FORBIDDEN_IN_PRODUCTION, ...REQUIRED_NON_EMPTY, ...DATA_FOLDER_NAMES, 'GMN_WORKER_REPLICAS', 'GMN_TRAEFIK_NAME', 'GMN_DATA_ROOT'];
   for (const name of named) assert.ok((HOST_CONFIG_NAMES as readonly string[]).includes(name), name);
+});
+
+const FP12_SCRIPT = path.join(__dirname, '..', 'deploy', 'hostinger', 'supabase-fp12.sh');
+const scriptFp12 = (url: string): string | null => {
+  const run = spawnSync('bash', [FP12_SCRIPT], { input: url, encoding: 'utf8' });
+  return run.status === 0 ? run.stdout.trim() : null;
+};
+
+test('revisão do PR #70 (item 6): impressão do Supabase = 12 hex do sha256 da ORIGEM CANÔNICA https://<host em minúsculas>; barra final, maiúsculas e :443 não mudam a impressão; caminho, porta, http, usuário, consulta ⇒ fora da regra; o receptor e deploy/hostinger/supabase-fp12.sh (job e runbook) concordam em todos os casos', () => {
+  const canonical = 'https://abcdefghijklmnop.supabase.co';
+  const expected = createHash('sha256').update(canonical).digest('hex').slice(0, 12);
+  for (const url of [canonical, `${canonical}/`, 'https://ABCDEFGHIJKLMNOP.Supabase.Co', `${canonical}:443`, `${canonical}:443/`]) {
+    assert.equal(canonicalSupabaseOrigin(url), canonical, url);
+    assert.equal(supabaseFp12(url), expected, url);
+    assert.equal(scriptFp12(url), expected, `script: ${url}`);
+  }
+  const refused = [`${canonical}/rest/v1`, `${canonical}//`, `${canonical}:8443`, `${canonical}:80`, 'http://abcdefghijklmnop.supabase.co', 'https://user:pass@abcdefghijklmnop.supabase.co', `${canonical}?a=1`, `${canonical}/#x`, 'HTTPS://abcdefghijklmnop.supabase.co', ' https://abcdefghijklmnop.supabase.co', 'https://localhost', 'https://-abc.supabase.co', 'https://abc..supabase.co', 'https://abc_def.supabase.co', 'https://xn--bcher-kva.example/x', 'https://ábc.supabase.co', ''];
+  for (const url of refused) {
+    assert.equal(supabaseFp12(url), null, url);
+    assert.equal(scriptFp12(url), null, `script: ${url}`);
+  }
+});
+
+test('revisão do PR #70 (item 6): NEXT_PUBLIC_SUPABASE_URL fora da origem canônica no arquivo do host ⇒ E_HOST_CONFIG NEXT_PUBLIC_SUPABASE_URL (sem o valor); na forma não canônica aceita, a impressão é a da origem canônica', () => {
+  const withUrl = (url: string): Uint8Array => file(baseLines('producao').map((line) => (line.startsWith('NEXT_PUBLIC_SUPABASE_URL=') ? `NEXT_PUBLIC_SUPABASE_URL=${url}` : line)));
+  for (const url of [`https://${SENTINELA}.supabase.invalid/rest`, `https://${SENTINELA}.supabase.invalid:8443`, `http://${SENTINELA}.supabase.invalid`]) {
+    assert.deepEqual(refusal(() => parseAndCheck(withUrl(url))), { code: 'E_HOST_CONFIG', detail: 'NEXT_PUBLIC_SUPABASE_URL' }, url);
+  }
+  const canonicalFp = createHash('sha256').update(`https://${SENTINELA}.supabase.invalid`).digest('hex').slice(0, 12);
+  assert.equal(parseAndCheck(withUrl(`https://${SENTINELA.toUpperCase()}.Supabase.invalid/`)).supabaseFp12, canonicalFp);
 });

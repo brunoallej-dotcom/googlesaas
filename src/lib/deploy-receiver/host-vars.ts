@@ -1,6 +1,7 @@
 import { isCleanAbsolutePath } from './args';
 import { isHostConfigName, ReceiverError, type HostConfigName } from './codes';
 import type { DeployEnvironment } from './grammar';
+import { supabaseFp12 } from './supabase';
 
 /*
  * P9.3a — o arquivo de variáveis do host (spec §5.6 passo 4), lido como DADO por um parser estrito e nunca executado como shell:
@@ -101,7 +102,8 @@ export function parseHostVarsFile(raw: Uint8Array): ReadonlyMap<string, string> 
 /** O que o deploy usa do arquivo, já conferido pelas regras do passo 4. */
 export interface HostConfig {
   readonly vars: ReadonlyMap<string, string>;
-  readonly supabaseUrl: string;
+  /** A impressão (12 hex) da origem canônica de `NEXT_PUBLIC_SUPABASE_URL` (`supabase.ts`). */
+  readonly supabaseFp12: string;
   /** `GMN_WORKER_REPLICAS` (padrão 0). */
   readonly workerReplicas: number;
   /** Os seis `GMN_RAIZ_DADOS_*`, na ordem do `verificar-pastas-fase6.sh`. */
@@ -154,6 +156,8 @@ export const isUnderPrefix = (value: string, prefix: string): boolean => value =
  */
 export function checkHostConfig(vars: ReadonlyMap<string, string>, env: DeployEnvironment, dataPrefix: string | null): HostConfig {
   requireNames(vars, env);
+  const fp12 = supabaseFp12(vars.get('NEXT_PUBLIC_SUPABASE_URL') as string);
+  if (fp12 === null) throw hostConfigError('INVALID', 'NEXT_PUBLIC_SUPABASE_URL');
   const workerReplicas = workerReplicasOf(vars, env);
   const dataRoot = dataRootOf(vars, env);
   const dataFolders = DATA_FOLDER_NAMES.map((name) => vars.get(name) as string);
@@ -162,5 +166,5 @@ export function checkHostConfig(vars: ReadonlyMap<string, string>, env: DeployEn
     homologationRules(vars);
     if (dataPrefix === null || prefixedFolders.some((folder) => !isUnderPrefix(folder, dataPrefix))) throw new ReceiverError('E_DATA_PREFIX', null, 'host-vars folder outside --data-prefix');
   }
-  return { vars, supabaseUrl: vars.get('NEXT_PUBLIC_SUPABASE_URL') as string, workerReplicas, dataFolders, prefixedFolders };
+  return { vars, supabaseFp12: fp12, workerReplicas, dataFolders, prefixedFolders };
 }

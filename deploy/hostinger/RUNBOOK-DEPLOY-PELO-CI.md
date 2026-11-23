@@ -3,7 +3,7 @@
 > **Status: PREPARAÇÃO (fatia P9.4, 23/11/2026).** Nada disto foi executado. Este runbook é do **responsável**: nenhum passo é do
 > manager ou de um worker (spec `docs/specs/ci-deploy-and-seal-delivery.md` §10.1). Repositório **público**: aqui só há marcadores
 > (`<HOST_VPS>`, `<PORTA_SSH>`, `<IP_DA_VPS>`, `<DOMINIO_HML>`, `<DOMINIO_PRODUCAO>`, `<USUARIO_GITHUB>`, `<DONO>/<REPO>`, `<SHA40>`,
-> `<ARQUIVO_DE_VARIAVEIS>`, `<PASTA_FORA_DO_REPO>`, `<PASTA_PRIVADA>`, `<SEU_USUARIO_SSH>`). Os valores reais ficam no cofre e no dossiê offline, nunca
+> `<ARQUIVO_DE_VARIAVEIS>`, `<PASTA_FORA_DO_REPO>`, `<PASTA_PRIVADA>`, `<CLONE_LIMPO>`, `<SEU_USUARIO_SSH>`). Os valores reais ficam no cofre e no dossiê offline, nunca
 > em arquivo versionado, issue, PR, chat ou log.
 >
 > **O que já existe (P9.4):** o workflow `.github/workflows/deploy.yml` (job `deploy`, disparado à mão na `main` e aprovado por você
@@ -155,7 +155,7 @@ conexão dela falha fechada.
      npm run --silent deploy:receivers-artifact -- --out "$D/receptores" --check  # artefato e os dois modelos
      cp deploy/hostinger/receivers.sha256 "$D/receptores/"
      ( cd "$D/receptores" && sha256sum -c --strict receivers.sha256 )            # gmn-deploy-receiver.cjs, gmn-deploy.modelo.sh, gmn-hml-deploy.modelo.sh: OK
-     echo "copie para a VPS: $D/receptores"
+     echo "copie para a VPS: $D/receptores"; echo "clone limpo (<CLONE_LIMPO>): $D/repo"
    )
    ```
 
@@ -197,7 +197,7 @@ conexão dela falha fechada.
      K="/opt/gmn-receivers/$V"; T="$(mktemp -d)"                                 # T: pasta privada (0700)
      ( cd "$K" && sha256sum -c --strict receivers.sha256 )                       # o modelo de novo, antes de usar
      H="$(awk '$2 == "gmn-deploy-receiver.cjs" { print $1 }' "$K/receivers.sha256")"
-     read -rsp 'URL do Supabase de PRODUÇÃO: ' U; echo; FP="$(printf '%s' "$U" | sha256sum | cut -c1-12)"; unset U
+     read -rp 'impressão do projeto de PRODUÇÃO (12 hex, do bloco abaixo): ' FP    # calculada na estação, no clone limpo
      [[ "$V" =~ ^[0-9a-f]{40}$ && "$H" =~ ^[0-9a-f]{64}$ && "$FP" =~ ^[0-9a-f]{12}$ && "$F" =~ ^[A-Za-z0-9._-]+$ ]]
      sed -e "s|<VERSAO>|$V|g" -e "s|<SHA256_DO_ARTEFATO>|$H|g" -e "s|<ARQUIVO_DE_VARIAVEIS>|$F|g" -e "s|<IMPRESSAO_SUPABASE_PRODUCAO>|$FP|g" \
        "$K/gmn-hml-deploy.modelo.sh" > "$T/gmn-hml-deploy"
@@ -223,13 +223,16 @@ conexão dela falha fechada.
 
 **Impressão do projeto de produção no *wrapper* de homologação (`--forbid-supabase`), agora, antes de habilitar a chave do CI (H-05) e
 do primeiro deploy de homologação.** É o que faz o receptor de homologação recusar o projeto Supabase de produção
-(`E_HML_PRODUCTION_PROJECT`). Calcule exatamente como o workflow (sha256 dos bytes da URL, **sem** quebra de linha, 12 primeiros hex),
-sem a URL passar pela linha de comando nem pelo histórico:
+(`E_HML_PRODUCTION_PROJECT`). Calcule exatamente como o workflow e o receptor (revisão do PR #70): os 12 primeiros hex do sha256 da
+**origem canônica** `https://<host em minúsculas>`, pelo `deploy/hostinger/supabase-fp12.sh` do **clone limpo** do passo 1 (a barra
+final, maiúsculas e `:443` não mudam a impressão; URL com caminho, outra porta, `http` ou usuário é recusada, sem imprimir nada). A
+URL não passa pela linha de comando nem pelo histórico. Na estação:
 
 ```bash
 set +x
-read -rsp 'URL do Supabase de PRODUÇÃO: ' U; printf '%s' "$U" | sha256sum | cut -c1-12; unset U     # 12 hex
-read -rsp 'URL do LABORATÓRIO: ' U; printf '%s' "$U" | sha256sum | cut -c1-12; unset U             # tem de ser diferente
+cd '<CLONE_LIMPO>'                                                               # o "$D/repo" do passo 1
+read -rsp 'URL do Supabase de PRODUÇÃO: ' U; echo; printf '%s' "$U" | bash deploy/hostinger/supabase-fp12.sh; unset U   # 12 hex
+read -rsp 'URL do LABORATÓRIO: ' U; echo; printf '%s' "$U" | bash deploy/hostinger/supabase-fp12.sh; unset U            # tem de ser diferente
 ```
 
 A impressão de produção entra no *wrapper* de homologação pelo passo 3 acima (`--forbid-supabase <12 hex>`, o marcador

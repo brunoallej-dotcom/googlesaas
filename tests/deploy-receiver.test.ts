@@ -293,7 +293,7 @@ test('P9-D04 homologação em processo: pasta fora do prefixo ⇒ E_DATA_PREFIX;
   assert.equal(r.runner.calls.length, 0);
 });
 
-test('P9-D05 impressão do Supabase diferente ⇒ E_SUPABASE_MISMATCH; homologação com a impressão de produção (no arquivo ou declarada) ⇒ E_HML_PRODUCTION_PROJECT; nenhum programa chamado', async () => {
+test('P9-D05 impressão do Supabase (origem canônica) diferente ⇒ E_SUPABASE_MISMATCH; homologação com a impressão de produção (no arquivo, em qualquer forma aceita, ou declarada) ⇒ E_HML_PRODUCTION_PROJECT; URL com caminho ⇒ E_HOST_CONFIG NEXT_PUBLIC_SUPABASE_URL; nenhum programa chamado', async () => {
   const prod = world();
   const mismatch = await deploy(prod, { fp: fp12('https://outro-projeto.supabase.invalid') });
   refusedWith(mismatch, 'ERRO E_SUPABASE_MISMATCH');
@@ -308,6 +308,16 @@ test('P9-D05 impressão do Supabase diferente ⇒ E_SUPABASE_MISMATCH; homologa�
   const declared = world({ env: 'homologacao' });
   refusedWith(await deploy(declared, { fp: fp12(PRODUCTION_URL) }), 'ERRO E_HML_PRODUCTION_PROJECT');
   assert.equal((await deploy(world({ env: 'homologacao' }))).outcome.exitCode, 0, 'laboratório ≠ produção passa');
+  // revisão do PR #70 (item 6): a impressão é a da ORIGEM CANÔNICA, dos dois lados
+  const sloppy = world();
+  fs.writeFileSync(sloppy.hostVarsFile, validHostVars('producao', sloppy.dataFolders, path.dirname(sloppy.dataFolders[0] as string), `${SENTINEL_URL.toUpperCase().replace('HTTPS://', 'https://')}:443/`));
+  assert.equal((await deploy(sloppy)).outcome.exitCode, 0, 'maiúsculas, :443 e barra no arquivo do host: mesma impressão');
+  const hmlSloppy = world({ env: 'homologacao' });
+  fs.writeFileSync(hmlSloppy.hostVarsFile, validHostVars('homologacao', hmlSloppy.dataFolders, (hmlSloppy.dataPrefix as string).slice(0, -1), `${PRODUCTION_URL}/`));
+  refusedWith(await deploy(hmlSloppy, { fp: fp12(PRODUCTION_URL) }), 'ERRO E_HML_PRODUCTION_PROJECT');
+  const pathUrl = world();
+  fs.writeFileSync(pathUrl.hostVarsFile, validHostVars('producao', pathUrl.dataFolders, path.dirname(pathUrl.dataFolders[0] as string), `${SENTINEL_URL}/rest/v1`));
+  refusedWith(await deploy(pathUrl), 'ERRO E_HOST_CONFIG NEXT_PUBLIC_SUPABASE_URL');
 });
 
 test('P9-D12 pastas recusadas pelo script ⇒ E_HOST_FOLDERS (script chamado com as seis pastas, na ordem, só com PATH); espaço insuficiente ⇒ E_DISK_LOW; nada carregado', async () => {

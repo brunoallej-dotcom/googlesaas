@@ -414,8 +414,9 @@ dispara e aprova as próprias execuções (risco aceito, §11.2).
 5. **Pacote:** `docker save gmn-web:<tag> gmn-worker:<tag> | gzip -n` em `$RUNNER_TEMP`, com sha256 e tamanho. Nunca vira artefato
    nem vai a registry.
 6. **Hashes declarados:** `deploy/hostinger/stack.yml`; em homologação, também `deploy/hostinger/stack-hml.yml` (§5.11); a lista
-   `link-audit-seals/<amb>/trust-keys.txt`; e a impressão do projeto Supabase (12 primeiros hex do sha256 de
-   `GMN_BUILD_SUPABASE_URL`), que só vai ao receptor e **não** ao resumo.
+   `link-audit-seals/<amb>/trust-keys.txt`; e a impressão do projeto Supabase (12 primeiros hex do sha256 da origem canônica
+   `https://<host em minúsculas>` de `GMN_BUILD_SUPABASE_URL`, `deploy/hostinger/supabase-fp12.sh`), que só vai ao receptor e **não** ao
+   resumo.
 7. **Chave:** só agora (depois do build) a chave e o `known_hosts` são escritos em `$RUNNER_TEMP/ssh` (0700/0600). Opções fixas:
    `-T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=<arquivo>
    -o GlobalKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=20 -o ServerAliveInterval=15`.
@@ -435,8 +436,10 @@ dispara e aprova as próprias execuções (risco aceito, §11.2).
   ambiente (`GH_TOKEN`), sem montar cabeçalho nem pedir máscara ao runner (o SAST bloqueia `::add-mask::` de valor montado no
   workflow, regra `unsafe-add-mask-workflow-command`). Os demais passos chamam scripts pequenos em `deploy/ci/`, testados com comandos
   falsos no `PATH`.
-- **Impressão do projeto Supabase:** os 12 primeiros hex do sha256 dos bytes da URL, **sem** quebra de linha (o receptor calcula
-  igual sobre o `NEXT_PUBLIC_SUPABASE_URL` do arquivo do host). Calculada só no passo do `deploy`, a partir do segredo, e **nunca
+- **Impressão do projeto Supabase:** os 12 primeiros hex do sha256 da **origem canônica** `https://<host em minúsculas>` (revisão do
+  PR #70, `deploy/hostinger/supabase-fp12.sh`: a barra final, maiúsculas e `:443` não mudam a impressão; caminho, outra porta, `http`,
+  usuário, consulta ou fragmento ⇒ `BUILD_CONFIG_INVALID`). O receptor calcula igual sobre o `NEXT_PUBLIC_SUPABASE_URL` do arquivo do
+  host (`src/lib/deploy-receiver/supabase.ts`, conferido contra o script por teste). Calculada só no passo do `deploy`, a partir do segredo, e **nunca
   impressa**: vai só no comando remoto (argv do `ssh`, fora do log), nunca às saídas do passo nem ao resumo (teste). Nenhum passo do
   job usa `::add-mask::`.
 - **`OK DEPLOYED`:** o job aceita os ids das imagens no formato do Docker (`sha256:<64 hex>`), confere tag, stack e sobreposição
@@ -611,8 +614,10 @@ chamador, prazo com `SIGKILL` e teto de saída). A lista de confiança usa o mó
   job). Linha sem nome reconhecível, ou com nome fora da lista, sai como `E_HOST_CONFIG` sem detalhe, que o job aceita e remonta igual
   (`receiver-call.sh`). O log local leva o motivo e o
   número da linha, nunca o valor.
-- **Passo 5:** em homologação, `E_HML_PRODUCTION_PROJECT` vem antes e vale tanto para a impressão do arquivo do host quanto para a
-  declarada pelo CI.
+- **Passo 5:** as impressões são da **origem canônica** `https://<host em minúsculas>` (revisão do PR #70; a mesma regra do
+  `deploy/hostinger/supabase-fp12.sh`, que o job usa e o responsável usa para o `--forbid-supabase`). `NEXT_PUBLIC_SUPABASE_URL` fora
+  dessa forma (caminho, outra porta, `http`, usuário, consulta, fragmento) ⇒ `E_HOST_CONFIG NEXT_PUBLIC_SUPABASE_URL`. Em homologação,
+  `E_HML_PRODUCTION_PROJECT` vem antes e vale tanto para a impressão do arquivo do host quanto para a declarada pelo CI.
 - **Passo 6:** o script é executado direto (`execFile`, sem shell), com as seis pastas na ordem dele e só o `PATH`. Script ausente ⇒
   `E_HOST_FOLDERS`.
 - **Passos 7 e 8:** o Worker ausente ("no such service" no `docker service inspect`) pula a conferência. A raiz do Docker vem de

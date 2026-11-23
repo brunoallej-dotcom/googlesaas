@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import nodePath from 'node:path';
 import type { ReceiverConfig } from './args';
 import { loadBundle, type BundleImages } from './bundle';
@@ -27,9 +26,6 @@ const STACK_CONFIG_TIMEOUT_MS = 120_000;
 const STACK_DEPLOY_TIMEOUT_MS = 10 * 60_000;
 const SMALL_OUTPUT = 256 * 1024;
 const STACK_CONFIG_MAX_OUTPUT = 4 * 1024 * 1024;
-const FP12_LENGTH = 12;
-
-const fp12Of = (value: string): string => createHash('sha256').update(value, 'utf8').digest('hex').slice(0, FP12_LENGTH);
 
 /** Passo 1: o pacote recebido existe com o mesmo `sha40` e o mesmo hash. Devolve o caminho e o tamanho. */
 async function stagedBundle(command: DeployCommand, config: ReceiverConfig, deps: ReceiverDeps): Promise<{ readonly file: string; readonly size: number }> {
@@ -89,9 +85,9 @@ async function readHostConfig(config: ReceiverConfig, deps: ReceiverDeps): Promi
   return host;
 }
 
-/** Passo 5: a imagem foi construída para o projeto que vai rodar; a homologação nunca usa o projeto de produção. */
+/** Passo 5: a imagem foi construída para o projeto que vai rodar; a homologação nunca usa o projeto de produção. Impressões da origem canônica. */
 function checkSupabase(command: DeployCommand, host: HostConfig, config: ReceiverConfig): void {
-  const hostFp12 = fp12Of(host.supabaseUrl);
+  const hostFp12 = host.supabaseFp12;
   if (config.forbidSupabase !== null && (hostFp12 === config.forbidSupabase || command.supabaseFp12 === config.forbidSupabase)) throw new ReceiverError('E_HML_PRODUCTION_PROJECT', null, 'homologation points to the production Supabase project');
   if (hostFp12 !== command.supabaseFp12) throw new ReceiverError('E_SUPABASE_MISMATCH', null, 'image and host point to different Supabase projects');
 }

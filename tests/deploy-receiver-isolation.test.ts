@@ -30,7 +30,8 @@ const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   'codes.ts': new Set([]),
   'grammar.ts': new Set([CHANNEL_PATHS]),
   'args.ts': new Set(['node:path', './grammar']),
-  'host-vars.ts': new Set(['./args', './codes', './grammar']),
+  'host-vars.ts': new Set(['./args', './codes', './grammar', './supabase']),
+  'supabase.ts': new Set(['node:crypto']),
   'ports.ts': new Set([]),
   'input.ts': new Set(['./codes', './ports']),
   'staging.ts': new Set(['node:path', './codes', './ports']),
@@ -41,7 +42,7 @@ const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   'bundle.ts': new Set(['node:crypto', 'zod', './codes', './docker', './grammar', './ports']),
   'converge.ts': new Set(['zod', './codes', './docker', './ports']),
   'postdeploy.ts': new Set(['zod', './codes', './converge', './docker', './grammar', './ports']),
-  'deploy.ts': new Set(['node:crypto', 'node:path', './args', './bundle', './codes', './converge', './docker', './grammar', './host-vars', './ports', './postdeploy', './staging', './trust']),
+  'deploy.ts': new Set(['node:path', './args', './bundle', './codes', './converge', './docker', './grammar', './host-vars', './ports', './postdeploy', './staging', './trust']),
   'receiver.ts': new Set(['node:path', './args', './codes', './deploy', './grammar', './ports', './staging', './upload']),
   // o ÚNICO arquivo com disco, processo filho (execFile, sem shell), relógio, aleatoriedade e stdin
   'node-adapters.ts': new Set(['node:child_process', 'node:crypto', 'node:fs', 'node:fs/promises', './args', './ports']),

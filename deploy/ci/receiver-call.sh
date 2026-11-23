@@ -88,10 +88,11 @@ prepare_deploy() {
   gmn_regular_file "$trust_file" || gmn_fail HASH_INPUT_MISSING trust-keys.txt
   [ "$(gmn_sha256_file "$trust_file")" = "$GMN_TRUST_SHA256" ] || gmn_fail TRUST_LIST_CHANGED
   [ -n "${GMN_BUILD_SUPABASE_URL:-}" ] || gmn_fail BUILD_CONFIG_MISSING GMN_BUILD_SUPABASE_URL
-  # Impressão do projeto: 12 primeiros hex do sha256 dos bytes da URL, sem quebra de linha (o receptor calcula igual sobre o
-  # NEXT_PUBLIC_SUPABASE_URL do arquivo do host). Nunca impressa: só vai no comando remoto (argv do ssh, fora do log), nunca ao resumo
-  # nem às saídas do passo.
-  fp12="$(printf '%s' "$GMN_BUILD_SUPABASE_URL" | sha256sum | cut -c1-12)"
+  # Impressão do projeto (revisão do PR #70): 12 primeiros hex do sha256 da ORIGEM CANÔNICA `https://<host em minúsculas>`
+  # (deploy/hostinger/supabase-fp12.sh; o receptor calcula igual sobre o NEXT_PUBLIC_SUPABASE_URL do arquivo do host). URL fora da regra
+  # (caminho, porta, usuário…) ⇒ BUILD_CONFIG_INVALID. Nunca impressa: só vai no comando remoto (argv do ssh, fora do log), nunca ao
+  # resumo nem às saídas do passo.
+  fp12="$(printf '%s' "$GMN_BUILD_SUPABASE_URL" | bash deploy/hostinger/supabase-fp12.sh)" || gmn_fail BUILD_CONFIG_INVALID GMN_BUILD_SUPABASE_URL
   gmn_is_hex "$fp12" 12 || gmn_fail INTERNAL supabase-fp12
   remote_command="deploy ${GMN_SHA} ${GMN_BUNDLE_SHA256} ${GMN_STACK_SHA256} ${overlay} ${GMN_TRUST_SHA256} ${fp12}"
   stdin_file="$trust_file"

@@ -138,6 +138,8 @@ function makeSandbox(t: { after: (fn: () => void) => void }, scenario: Scenario 
   fs.mkdirSync(ciDir, { recursive: true });
   for (const name of fs.readdirSync(CI_DIR)) fs.copyFileSync(path.join(CI_DIR, name), path.join(ciDir, name));
   fs.mkdirSync(path.join(root, 'deploy', 'hostinger'), { recursive: true });
+  // a impressão canônica do Supabase (revisão do PR #70), a mesma do receptor e do runbook
+  fs.copyFileSync(path.join(ROOT, 'deploy', 'hostinger', 'supabase-fp12.sh'), path.join(root, 'deploy', 'hostinger', 'supabase-fp12.sh'));
   fs.writeFileSync(path.join(root, 'deploy', 'hostinger', 'stack.yml'), 'services: {}\n');
   fs.writeFileSync(path.join(root, 'deploy', 'hostinger', 'stack-hml.yml'), 'services: {}\nsecrets: {}\n');
   for (const amb of ['producao', 'homologacao']) {
@@ -544,6 +546,26 @@ test('P9-D01 (lado do workflow) deploy em homologação: overlay obrigatório; p
     setScenario(fixture.sandbox, { readStdin: ['ssh'] });
     assertRefused(fixture.sandbox, runScript(fixture.sandbox, 'receiver-call.sh', ['deploy'], deployEnv(fixture, amb, extra)), code, detail === '' ? undefined : detail);
     assert.equal(calls(fixture.sandbox, 'ssh').length, 0);
+  }
+});
+
+test('revisão do PR #70 (item 6, lado do workflow): impressão da ORIGEM CANÔNICA https://<host em minúsculas> — barra final, host em maiúsculas e :443 dão a mesma impressão; caminho, outra porta, http, usuário, consulta ⇒ BUILD_CONFIG_INVALID sem ssh e sem eco da URL', (t) => {
+  const canonical = 'https://laboratorio-sentinela.invalid';
+  const fp12 = sha256(canonical).slice(0, 12);
+  for (const url of [canonical, `${canonical}/`, 'https://Laboratorio-SENTINELA.invalid', 'https://laboratorio-sentinela.invalid:443/']) {
+    const fixture = receiverFixture(t, [{ stdout: deployedLine('producao', '-', sha256('')) }]);
+    const result = runScript(fixture.sandbox, 'receiver-call.sh', ['deploy'], deployEnv(fixture, 'producao', { GMN_BUILD_SUPABASE_URL: url }));
+    assert.equal(result.status, 0, `${url}: ${result.stderr}`);
+    const [call] = calls(fixture.sandbox, 'ssh');
+    assert.ok(call?.argv[call.argv.length - 1]?.endsWith(` ${fp12}`), url);
+    assertNoLeak(result, fp12, url);
+  }
+  for (const url of [`${canonical}/rest/v1`, 'https://laboratorio-sentinela.invalid:8443', 'http://laboratorio-sentinela.invalid', 'https://usuario:senha@laboratorio-sentinela.invalid', `${canonical}/?x=1`, `${canonical}#frag`, 'https://laboratorio_sentinela', ` ${canonical}`]) {
+    const fixture = receiverFixture(t, [{ stdout: 'nao-deveria-ser-chamado\n' }]);
+    const result = runScript(fixture.sandbox, 'receiver-call.sh', ['deploy'], deployEnv(fixture, 'producao', { GMN_BUILD_SUPABASE_URL: url }));
+    assertRefused(fixture.sandbox, result, 'BUILD_CONFIG_INVALID', 'GMN_BUILD_SUPABASE_URL');
+    assert.equal(calls(fixture.sandbox, 'ssh').length, 0, url);
+    assertNoLeak(result, url.trim());
   }
 });
 
