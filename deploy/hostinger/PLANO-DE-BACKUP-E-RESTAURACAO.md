@@ -158,12 +158,18 @@ echo "rodada $RODADA válida nos seis destinos"
 - Envio remoto (`rsync` para outra máquina ou `restic` com um repositório **por destino**): as mesmas regras, ou seja, rodada nova e
   exclusiva, hashes da origem conferidos na cópia, **nunca `--delete`**, nunca sobrescrever, nunca `restic forget` de uma rodada que seja a
   única referência.
+- **Reconciliação da guarda logo depois da rodada** (D-G0-2; G1.b.2b), fora da VPS, sobre a cópia do livro desta rodada:
+  `npm run -s link-audit:guard-reconcile -- reconcile --backup <DESTINO_BACKUP_LIVRO>/<RODADA> --records-dir <PASTA_DOS_REGISTROS>`
+  (runbook da guarda §2). Código ≠ 0 é divergência a tratar; o registro novo fica na pasta dos registros do responsável.
 - Conferência no destino, a qualquer momento: `test -f <destino>/<RODADA>/RODADA-VALIDA && test ! -e <destino>/<RODADA>/RODADA-INCOMPLETA && ( cd <destino>/<RODADA>/dados && sha256sum --strict -c ../SHA256SUMS )`.
 - Nada é copiado para **dentro** das pastas vivas fora do código (o leitor recusa arquivo criado à mão; checklist de produção §9).
 
 ### Restauração da Fase 6 (sempre os pares do mesmo instante, em pasta nova irmã da viva)
 1. Consultar a guarda e a reconciliação externa **antes** (G1.b; spec dos portões Q2): restaurar backup mais velho que a guarda congela as
-   auditorias afetadas (`GUARD_MISMATCH`), e sem papel administrativo elas não reabrem pela aplicação.
+   auditorias afetadas (`GUARD_MISMATCH`), e sem papel administrativo elas não reabrem pela aplicação. Fora da VPS, contra a rodada
+   candidata do livro: `npm run -s link-audit:guard-reconcile -- reconcile --backup <DESTINO_BACKUP_LIVRO>/<RODADA> --records-dir
+   <PASTA_DOS_REGISTROS>` (G1.b.2b); `GUARD_HEAD_NOT_IN_BACKUP` numa auditoria = essa rodada a congelaria (runbook da guarda,
+   `docs/phase6-auditoria-link/producao-g1b-runbook-guarda.md` §9).
 2. **Pré-conferência da rodada inteira, antes de restaurar qualquer pasta:** para a rodada escolhida, as **seis** cópias precisam ter
    `RODADA-VALIDA`, nenhuma pode ter `RODADA-INCOMPLETA`, e cada uma confere contra o próprio `SHA256SUMS`. Uma única falha recusa a rodada
    inteira (marcadores parciais de uma morte abrupta caem aqui):
