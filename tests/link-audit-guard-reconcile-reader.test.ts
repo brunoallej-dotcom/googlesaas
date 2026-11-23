@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
+import { GUARD_READER_ROLE } from '../src/lib/link-audit-ledger/config';
 import { GUARD_PUBLISH_SQL } from '../src/lib/link-audit-ledger/guard-postgres';
-import { MAX_GUARD_HEADS, READER_BEGIN_SQL, READER_END_SQL, READER_HEADS_SQL, READER_IDENTITY_SQL, READER_ROWS_SQL, readGuard } from '../src/lib/link-audit-guard-reconcile/reader';
+import { MAX_GUARD_HEADS, READER_BEGIN_SQL, READER_END_SQL, READER_HEADS_SQL, READER_IDENTITY_SQL, READER_ROLE, READER_ROWS_SQL, readGuard } from '../src/lib/link-audit-guard-reconcile/reader';
 import type { GuardRow } from '../src/lib/link-audit-guard-reconcile/model';
 import { PSEUDONYMS_A, type SimulatedHeadRow } from './helpers/link-audit-guard-db-fixtures';
 import { manualTimer, READER_IDENTITY, simulatedReaderDb, WRITER_IDENTITY } from './helpers/link-audit-guard-reconcile-fixtures';
@@ -121,4 +124,21 @@ test('G1.b.2b leitor: PRAZO total esgotado (consulta que não responde) ⇒ GUAR
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual([slow.state.connects, slow.state.open, slow.queries.length], [1, 0, 0]);
+});
+
+test('G1.b.2b leitor × migração 004 (estático): o SQL fixo do leitor cita só o esquema, a tabela, as colunas e a assinatura da função que a migração cria; o papel é o que ela cria com SELECT e sessão somente leitura; nada de `unnest` qualificado com vários argumentos', () => {
+  const migration = fs.readFileSync(path.join(__dirname, '..', 'supabase', 'proposed', '004_link_audit_guard.sql'), 'utf8');
+  assert.equal(READER_ROLE, GUARD_READER_ROLE);
+  assert.match(migration, /create role gmn_guard_reader login/);
+  assert.match(migration, /alter role gmn_guard_reader set default_transaction_read_only = on;/);
+  assert.match(migration, /grant select on table gmn_link_audit_guard\.ledger_heads to gmn_guard_writer, gmn_guard_reader;/);
+  assert.match(migration, /create or replace function gmn_link_audit_guard\.publish_head\(p_audit_ref text, p_key_id text, p_ledger_seq integer, p_sha256 text\)/);
+  assert.match(READER_IDENTITY_SQL, /'gmn_link_audit_guard\.publish_head\(text, text, integer, text\)', 'EXECUTE'/);
+  for (const column of ['audit_ref', 'key_id', 'ledger_seq', 'sha256']) assert.match(migration, new RegExp(`\\n  ${column} (text|integer) not null`), column);
+  for (const sql of [READER_HEADS_SQL, READER_ROWS_SQL]) {
+    assert.match(sql, /from gmn_link_audit_guard\.ledger_heads h /);
+    assert.match(sql, /^select (distinct on \(h\.audit_ref\) )?h\.audit_ref, h\.key_id, h\.ledger_seq, h\.sha256 from /);
+  }
+  assert.ok(!/pg_catalog\.unnest\([^)]*,/.test(READER_ROWS_SQL), 'a forma unnest(a, b) só existe sem o esquema (o Postgres real recusa a qualificada)');
+  assert.match(READER_ROWS_SQL, /rows from \(pg_catalog\.unnest\(\$1::text\[\]\), pg_catalog\.unnest\(\$2::text\[\]\)\)/);
 });
