@@ -410,7 +410,7 @@ test('G1.b.2b documentação: os blocos de sessão do roteiro do laboratório e 
   for (const order of [[lab, runbook], [runbook, lab]]) {
     const out = path.join(tmpDir('lagr-doc-'), 'sessoes.txt');
     const script = `${fill(order[0] as string)}\n${fill(order[1] as string)}\nprintf '%s\\n' "\${GMN_SESSOES[@]}" > ${JSON.stringify(out)}\nfor d in "\${GMN_SESSOES[@]}"; do [ -d "$d" ] || exit 9; done\nexit 0\n`;
-    const result = spawnSync('bash', ['--norc', '--noprofile', '-c', script], { input: 'url-sentinela\nchave-sentinela\n\n', encoding: 'utf8', env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: os.tmpdir() } });
+    const result = spawnSync('bash', ['--norc', '--noprofile', '-c', script], { input: 'url-sentinela\nchave-sentinela\n\n', encoding: 'utf8', env: { NODE_ENV: 'test', PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: os.tmpdir() } });
     assert.equal(result.status, 0, result.stderr);
     const sessions = fs.readFileSync(out, 'utf8').trim().split('\n');
     assert.equal(sessions.length, 2, 'as duas pastas de sessão registradas');
