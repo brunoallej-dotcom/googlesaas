@@ -1,10 +1,10 @@
-import { CircleCheck, CircleDashed, FileClock, History, ShieldAlert } from 'lucide-react';
+import { CircleCheck, CircleDashed, FileClock, History, ShieldAlert, ShieldQuestion } from 'lucide-react';
 import { StatusBadge } from '@/components/ui/status-badge';
-import { formatDateTime, LEVEL_LABELS, OUTCOME_LABELS, safeText } from './labels';
+import { formatDateTime, LEVEL_LABELS, OUTCOME_LABELS, PROVENANCE_NOT_RECORDED_NOTE, PROVENANCE_RECHECK_NOTE, PROVENANCE_STATE_LABELS, safeText } from './labels';
 import { ResultPanel } from './result-panel';
 import type { DetailState } from './state';
 import { latestRun, runObsolescence } from './status';
-import type { ResultsConfirmation, ResultsList, RunDetail, RunSummary } from './types';
+import type { ProvenanceState, ResultsConfirmation, ResultsList, RunDetail, RunSummary } from './types';
 import { BUTTON_QUIET, CopyHash } from './ui-bits';
 
 const pad = (seq: number): string => `s${String(seq).padStart(4, '0')}`;
@@ -14,11 +14,22 @@ function ConfirmationBadge({ confirmation }: { readonly confirmation: ResultsCon
   return confirmation === 'LEDGER' ? <StatusBadge tone="success" label="Confirmado pelo livro" icon={CircleCheck} /> : <StatusBadge tone="warning" label="Confirmado só por recibo (sem prova do livro)" icon={ShieldAlert} dashed />;
 }
 
+/**
+ * R2.2: a proveniência reconferida é um selo PRÓPRIO, separado da confirmação (livro × recibo) e da obsolescência. "A reconferir" pede revisão humana (sem dizer que o resultado é
+ * inválido); o legado diz que a proveniência não foi registrada; o estado normal (`VERIFIED`) não ganha selo.
+ */
+function ProvenanceBadge({ state }: { readonly state: ProvenanceState }): React.JSX.Element | null {
+  if (state === 'RECHECK') return <StatusBadge tone="warning" label={PROVENANCE_STATE_LABELS.RECHECK} icon={ShieldQuestion} />;
+  if (state === 'NOT_RECORDED') return <StatusBadge tone="neutral" label={PROVENANCE_STATE_LABELS.NOT_RECORDED} icon={CircleDashed} dashed />;
+  return null;
+}
+
 function RunBadges({ run, changedAfter, confirmation }: { readonly run: RunSummary; readonly changedAfter: boolean | null; readonly confirmation: ResultsConfirmation }): React.JSX.Element {
   const o = runObsolescence(run, changedAfter);
   return (
     <span className="flex flex-wrap items-center gap-1.5">
       <ConfirmationBadge confirmation={confirmation} />
+      <ProvenanceBadge state={run.provenanceState} />
       {run.superseded && <StatusBadge tone="neutral" label="Substituído" icon={History} dashed />}
       {!run.superseded && o.historical && <StatusBadge tone="warning" label="Histórico" icon={FileClock} dashed />}
       {!run.superseded && run.stale === true && <StatusBadge tone="warning" label="Entrada mudou (stale)" icon={FileClock} dashed />}
@@ -55,6 +66,11 @@ export function ResultsPanel({ results, detail, changedAfter, onSelect }: Result
           Estes resultados estão confirmados só por recibo, sem prova do livro de cabeças (auditoria legada ou sem o livro): a remoção ou a troca coordenada das pastas de resultados e de recibos não seria detectada. Não servem como registro atestado.
         </p>
       )}
+      {runs.some((run) => run.provenanceState === 'RECHECK') && (
+        <p role="note" className="rounded-xl border border-dashed border-gmn-warning/60 bg-gmn-warning/[0.06] p-3 text-xs text-amber-200" data-testid="results-provenance-recheck">
+          {PROVENANCE_RECHECK_NOTE}
+        </p>
+      )}
       {runs.length === 0 ? (
         <p className="rounded-xl border border-dashed border-white/15 p-4 text-center text-xs text-gmn-muted">Nenhum resultado registrado. A prévia acima não é um resultado definitivo.</p>
       ) : (
@@ -87,6 +103,8 @@ function DetailView({ detail }: { readonly detail: DetailState }): React.JSX.Ele
   const { run } = detail.data;
   return (
     <div className="mt-3 space-y-3 border-t border-white/[0.06] pt-3">
+      {detail.data.provenanceState === 'RECHECK' && <p role="note" className="rounded-lg border border-gmn-warning/40 px-3 py-2 text-amber-200">{PROVENANCE_RECHECK_NOTE}</p>}
+      {detail.data.provenanceState === 'NOT_RECORDED' && <p role="note" className="rounded-lg border border-white/15 px-3 py-2 text-gmn-muted">{PROVENANCE_NOT_RECORDED_NOTE}</p>}
       {(detail.data.superseded || detail.data.stale === true || detail.data.decisionsChanged === true) && (
         <p role="note" className="rounded-lg border border-gmn-warning/40 px-3 py-2 text-amber-200">Registro histórico: {detail.data.superseded ? 'existe um registro mais novo.' : 'a entrada ou as decisões mudaram depois dele.'} Ele continua válido para o estado que registrou, mas pode não representar a situação atual.</p>
       )}

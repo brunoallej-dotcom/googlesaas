@@ -3,7 +3,7 @@ import { ledgerDirOf, ledgerForRoutes } from '../decisions/ledger-wiring';
 import { NextResponse } from 'next/server';
 import { isErrorResponse, requireOperator } from '@/lib/auth/require-operator';
 import { AUDIT_ID_PATTERN, createDecisionService, type ResultsLedgerPort } from '@/lib/link-audit-decisions';
-import { createEvidenceReader, EvidenceAccessError, type EvidenceActor } from '@/lib/link-audit-evidence';
+import { createEvidenceReader, createProvenanceRecheck, EvidenceAccessError, type EvidenceActor, type ProvenanceRecheckPort } from '@/lib/link-audit-evidence';
 import { createScoringBasisReader } from '@/lib/link-audit-evidence/scoring-basis';
 import { evidenceProvenanceFromConfig } from '@/lib/link-audit-evidence/provenance';
 import { originConfigFromEnv } from '@/lib/link-audit-origin';
@@ -64,6 +64,11 @@ interface Prepared {
   readonly dirs: { readonly evidence: string; readonly decisions: string; readonly anchors: string };
   /** Porta de ESCRITA do livro para a finalização (R1.3, D-R1-3): o livro grava os `RUN_*`; o serviço de decisões liga o contexto (R1 → guarda → livro → decisões → R2). */
   readonly resultsLedger: ResultsLedgerPort | null;
+  /**
+   * R2.2: porta de RECONFERÊNCIA da proveniência dos resultados, montada NESTA requisição com a MESMA política da prévia (`[2]`) e a MESMA lista de chaves lida agora (nada de
+   * revogação é lembrado entre requisições). Lista inválida ⇒ a porta responde "não configurada" e os resultados ficam "a reconferir", nunca "autenticados".
+   */
+  readonly provenanceRecheck: ProvenanceRecheckPort;
 }
 
 /**
@@ -96,9 +101,10 @@ async function prepare(request: Request, limiter: SlidingWindowLimiter, evidence
   // PROVA de que as evidências vieram da coleta: manifestos assinados FORA da pasta de evidências (somente leitura) + chaves PÚBLICAS de confiança. Sem as duas
   // coisas a política é a FECHADA (nada é autêntico ⇒ nenhuma finalização). Não existe valor que "confie em tudo".
   // Production accepts ONLY v2 manifests, at every position (contract of the v2 verifier §4.2, V2-19): v1 only by an explicit homologation option.
+  const trustKeys = process.env.GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS; // lida UMA vez: a política e a porta de reconferência (R2.2) usam a mesma lista
   const evidenceProvenance = evidenceProvenanceFromConfig({
     sealsDir: configuredDir(process.env.GMN_LINK_AUDIT_EVIDENCE_SEALS_DIR),
-    trustKeys: process.env.GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS,
+    trustKeys,
     otherDirs: [evidenceDir, decisionsDir, anchorDir, configuredDir(process.env.GMN_LINK_AUDIT_RESULTS_DIR), configuredDir(process.env.GMN_LINK_AUDIT_RESULTS_ANCHOR_DIR)],
     acceptedVersions: [2],
   });
@@ -109,7 +115,8 @@ async function prepare(request: Request, limiter: SlidingWindowLimiter, evidence
   // só LEITURA das decisões (sem escrita não há o que assinar), com a TESTEMUNHA dos resultados selados; o MESMO livro grava os RUN_* da finalização pela porta de escrita
   const decisions = createDecisionService({ baseDir: decisionsDir, anchorDir, evidence: reader, evidenceBaseDir: evidenceDir, knownHeads, ledger: ledgerForRoutes([decisionsDir, anchorDir, evidenceDir, resultsDir, resultsAnchorDir]) });
   const preview = createScoringPreviewService({ basisReader, evidenceProvenance, decisions, clock: serverClock });
-  return { actor, preview, basisReader, dirs: { evidence: evidenceDir, decisions: decisionsDir, anchors: anchorDir }, resultsLedger: decisions.resultsLedger };
+  const provenanceRecheck = createProvenanceRecheck({ policy: evidenceProvenance, trustKeys });
+  return { actor, preview, basisReader, dirs: { evidence: evidenceDir, decisions: decisionsDir, anchors: anchorDir }, resultsLedger: decisions.resultsLedger, provenanceRecheck };
 }
 
 const guarded = async (action: () => Promise<NextResponse>): Promise<NextResponse> => {
@@ -182,6 +189,8 @@ export async function withResults(request: Request, mode: 'read' | 'write' | 're
       // R1.3: a finalização grava pelo livro (RUN_INTENT antes do resultado, RUN_CONFIRMED depois do recibo); R1.5: as consultas conferem cada objeto com o livro (`view`).
       // Livro não configurado ⇒ a porta recusa (falha fechada; consultas 503)
       ...(prepared.resultsLedger ? { ledger: prepared.resultsLedger } : {}),
+      // R2.2: a releitura dos resultados reconfere a proveniência gravada pela porta desta requisição (revogados de hoje ∩ keyIds; classify de hoje sobre a base gravada)
+      provenanceRecheck: prepared.provenanceRecheck,
       preview: prepared.preview,
       basisReader: prepared.basisReader,
       baseDir: resultsDir,

@@ -243,8 +243,10 @@ export function isDecisionsPayload(value: unknown, auditId?: string): value is D
   return true;
 }
 
+/** R2.2: o estado da proveniência é obrigatório e fechado (falha fechada: valor ausente ou desconhecido recusa a resposta inteira). */
+const PROVENANCE_STATES = ['VERIFIED', 'RECHECK', 'NOT_RECORDED'] as const;
 const runSummaryOk = (r: unknown): boolean =>
-  isObj(r) && int(r.seq) && (r.seq as number) >= 1 && str(r.finalizedAt) && str(r.finalizedBy) && oneOf(r.outcome, OUTCOMES) && levelOk(r.outcome, r.level) && strN(r.reasonCode) && percent(r.coveragePercent) && isHex64(r.inputSha256) && isHex64(r.resultSha256) && isHex64(r.contentSha256) && headN(r.decisionsHead) && bool(r.superseded) && boolN(r.stale) && boolN(r.decisionsChanged);
+  isObj(r) && int(r.seq) && (r.seq as number) >= 1 && str(r.finalizedAt) && str(r.finalizedBy) && oneOf(r.outcome, OUTCOMES) && levelOk(r.outcome, r.level) && strN(r.reasonCode) && percent(r.coveragePercent) && isHex64(r.inputSha256) && isHex64(r.resultSha256) && isHex64(r.contentSha256) && headN(r.decisionsHead) && bool(r.superseded) && boolN(r.stale) && boolN(r.decisionsChanged) && oneOf(r.provenanceState, PROVENANCE_STATES);
 const pendingRunOk = (p: unknown): boolean =>
   isObj(p) &&
   int(p.seq) &&
@@ -294,7 +296,7 @@ function runOk(run: unknown, auditId?: string): boolean {
 
 const CONFIRMATIONS = ['LEDGER', 'RECEIPT_ONLY'] as const;
 export function isRunDetailPayload(value: unknown, auditId?: string, seq?: number): value is RunDetailResponse {
-  if (!isObj(value) || !oneOf(value.confirmation, CONFIRMATIONS) || !boolN(value.stale) || !boolN(value.decisionsChanged) || !bool(value.superseded) || !runOk(value.run, auditId)) return false;
+  if (!isObj(value) || !oneOf(value.confirmation, CONFIRMATIONS) || !boolN(value.stale) || !boolN(value.decisionsChanged) || !bool(value.superseded) || !oneOf(value.provenanceState, PROVENANCE_STATES) || !runOk(value.run, auditId)) return false;
   return seq === undefined || (value.run as { seq: number }).seq === seq;
 }
 

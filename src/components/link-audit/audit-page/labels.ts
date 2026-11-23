@@ -90,6 +90,16 @@ export const PROVENANCE_REASON_LABELS: Readonly<Record<string, string>> = {
   SEAL_KEY_REVOKED: 'há assinatura autêntica de chave REVOGADA nesta coleta: não vale para nova finalização, e resultados já confirmados com ela exigem revisão humana',
 };
 
+/**
+ * R2.2 — estado da proveniência de um resultado confirmado (recalculado pelo servidor a cada leitura). "A reconferir" pede revisão humana e NÃO diz que o resultado é inválido;
+ * o registro continua íntegro e consultável. Nenhum id de chave nem hash aparece na tela.
+ */
+export const PROVENANCE_STATE_LABELS = { VERIFIED: 'Proveniência conferida', RECHECK: 'A reconferir', NOT_RECORDED: 'Proveniência não registrada' } as const;
+export const PROVENANCE_RECHECK_NOTE =
+  'A reconferir: a proveniência que atestou este resultado (manifestos assinados da coleta e chaves de confiança) não confere mais com a lista de chaves ou com os manifestos de hoje — por exemplo, uma chave revogada, uma cadeia de manifestos trocada ou removida, ou a verificação indisponível. É preciso revisão humana. O registro continua íntegro e consultável; esta marca não altera nem substitui o que foi gravado.';
+export const PROVENANCE_NOT_RECORDED_NOTE =
+  'Proveniência não registrada: este resultado foi gravado antes do registro da proveniência (cadeia de manifestos e chaves que atestaram a coleta) e não pode ser reconferido por ela.';
+
 export const DECISION_STATUS_LABELS: Readonly<Record<string, string>> = { ACTIVE: 'Vigente', SUPERSEDED: 'Substituída', REVOKED: 'Revogada', AMBIGUOUS: 'Em dúvida (operação pendente)' };
 
 /** Meios-pontos do motor exibidos em pontos (só conversão de unidade para leitura; nada é somado nem recalculado no navegador). */

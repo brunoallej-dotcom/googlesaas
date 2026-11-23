@@ -77,7 +77,7 @@ export function decisionsFixture(over: Partial<DecisionsList> = {}): DecisionsLi
   return { auditId: AUDIT, head: null, pending: null, finalizable: true, decisions: [], witness: { status: 'NOT_REQUIRED', knownHeads: 0, coveredSeq: null, unwitnessedAffecting: 0 }, ledger: { state: 'NOT_REQUIRED', reason: null, head: null, confirmedDecisions: 0, openOperation: null, recoverable: false, receiptReissuable: false, externalGuard: 'NOT_CONFIGURED' }, ambiguousDecisionIds: [], history: [], allDecisions: [], ...over };
 }
 export function runSummary(over: Partial<RunSummary> = {}): RunSummary {
-  return { seq: 1, finalizedAt: '2026-10-30T12:00:00.000Z', finalizedBy: 'bia@empresa.com', outcome: 'INCONCLUSIVO', level: null, reasonCode: 'COBERTURA_INSUFICIENTE', coveragePercent: 11, inputSha256: H('2'), resultSha256: H('3'), contentSha256: H('4'), decisionsHead: null, superseded: false, stale: false, decisionsChanged: false, ...over };
+  return { seq: 1, finalizedAt: '2026-10-30T12:00:00.000Z', finalizedBy: 'bia@empresa.com', outcome: 'INCONCLUSIVO', level: null, reasonCode: 'COBERTURA_INSUFICIENTE', coveragePercent: 11, inputSha256: H('2'), resultSha256: H('3'), contentSha256: H('4'), decisionsHead: null, superseded: false, stale: false, decisionsChanged: false, provenanceState: 'VERIFIED', ...over };
 }
 export function resultsFixture(over: Partial<ResultsList> = {}): ResultsList {
   const results = over.results ?? [];
@@ -100,7 +100,7 @@ export function runDetail(over: Partial<RunDetail> = {}): RunDetail {
     ...over,
   };
 }
-export const detailResponse = (over: Partial<RunDetailResponse> = {}): RunDetailResponse => ({ confirmation: 'LEDGER', stale: false, decisionsChanged: false, superseded: false, run: runDetail(), ...over });
+export const detailResponse = (over: Partial<RunDetailResponse> = {}): RunDetailResponse => ({ confirmation: 'LEDGER', stale: false, decisionsChanged: false, superseded: false, provenanceState: 'VERIFIED', run: runDetail(), ...over });
 export const finalizeSuccess = (over: Partial<FinalizeSuccess> = {}): FinalizeSuccess => ({ definitive: true, replayed: false, head: head(1, '4'), anchored: true, stateChangedAfterFinalization: false, recoveredPending: false, run: runDetail(), ...over });
 
 export const ok = <T,>(value: T, status = 200): ApiOutcome<T> => ({ kind: 'ok', status, value });
