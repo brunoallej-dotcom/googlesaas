@@ -279,8 +279,8 @@ docker secret create gmn-hml_link_audit_guard_db_ca - < <PASTA_FORA_DO_REPO>/ca-
 docker secret ls --format '{{.Name}}' | grep '^gmn-hml_' | sort                 # exatamente os 12 nomes
 ```
 
-O `gmn-hml_serper_api_key` guarda um texto fixo **não secreto**: a sobreposição desliga o Serper (`SERPER_API_KEY_FILE: ""`), mas a
-lista de secrets do serviço não se remove por sobreposição. Formatos e regras das chaves: `PROVA-DE-ORIGEM-E-DE-COLETA.md` §1–§2.
+O `gmn-hml_serper_api_key` guarda um texto fixo **não secreto**: o entrypoint não carrega a chave do Serper com a trava de
+homologação ligada, mas a lista de secrets do serviço não se remove por sobreposição, e o secret tem de existir (segunda barreira). Formatos e regras das chaves: `PROVA-DE-ORIGEM-E-DE-COLETA.md` §1–§2.
 
 **P9-O08:** registre no relatório do ensaio W5.3, com a data, a lista dos 12 secrets, as duas chaves SSH e os segredos do ambiente,
 declarando que todos foram gerados ou obtidos de novo para a homologação.
@@ -351,18 +351,17 @@ arquivo de variáveis, como os e-mails dos operadores), confira só as linhas ab
 ```bash
 sudo sh -c 'set -a; . /opt/gmn-hml/<ARQUIVO_DE_VARIAVEIS>; set +a; GMN_IMAGE_TAG=homologacao-<SHA40> GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS= docker stack config -c /opt/gmn-hml/stack.yml -c /opt/gmn-hml/stack-hml.yml > /root/gmn-hml-config.yml'
 sudo grep -cE '^\s+name: gmn-hml_' /root/gmn-hml-config.yml                    # 12
-sudo grep -nE 'GMN_LINK_AUDIT_HOMOLOGATION|SERPER_API_KEY_FILE|replicas:|target: gmn_|routers\.gmn' /root/gmn-hml-config.yml
+sudo grep -nE 'GMN_LINK_AUDIT_HOMOLOGATION|replicas:|target: gmn_|routers\.gmn' /root/gmn-hml-config.yml
 sudo shred -u /root/gmn-hml-config.yml
 ```
 
 Esperado: 12 secrets `gmn-hml_*` (externos), `GMN_LINK_AUDIT_HOMOLOGATION: "1"` só no web, Worker com `replicas: 0`, `target: gmn_*`
-mantidos e routers `gmn-hml`. **`SERPER_API_KEY_FILE`:** a spec pede `""` no web e no Worker, mas a fusão de dois `-c` do Docker não
-sobrescreve uma variável com valor vazio (conferido na P9.4 com o `docker stack config` do Docker CLI 29.10): a linha deve aparecer como
-`/run/secrets/gmn_serper_api_key`. Nesse caso, a garantia é o texto fixo **não secreto** do `gmn-hml_serper_api_key` (nenhuma chave
-válida do Serper chega à homologação; uma busca por ação do operador falha na autenticação do Serper, sem custo). Registre o que
-aparecer e decida antes do ensaio se aceita esse limite ou se pede a correção (por exemplo, a variável do arquivo com padrão no
-`stack.yml`, conferida pelo receptor). Se os secrets de topo não fundirem, a alternativa é a da spec §5.11
-(`name: ${GMN_SECRET_PREFIX:-gmn}_…` no próprio `stack.yml`).
+mantidos e routers `gmn-hml`. O `SERPER_API_KEY_FILE` continua apontando para o secret, e isso é esperado: a fusão de dois `-c` do
+Docker não aplica valor vazio, então o Serper de homologação sai pelo **entrypoint** (decisão do manager de 23/11/2026, spec §5.11):
+com a trava, ele apaga `SERPER_API_KEY` e `SERPER_API_KEY_FILE` antes de carregar os segredos e escreve no log do web a linha fixa
+`[gmn-entrypoint] homologação: chave do Serper não carregada`. O texto fixo não secreto do `gmn-hml_serper_api_key` fica como segunda
+barreira. Se os secrets de topo não fundirem, a alternativa é a da spec §5.11 (`name: ${GMN_SECRET_PREFIX:-gmn}_…` no próprio
+`stack.yml`).
 
 **DNS:** registro A (e AAAA, se houver) de `<DOMINIO_HML>` para `<IP_DA_VPS>`; conferir com `dig +short <DOMINIO_HML>`.
 
@@ -417,12 +416,13 @@ roda as verificações PD-01 a PD-08) e faz a verificação externa (EX-01 a EX-
 
 ```bash
 docker service inspect gmn-hml_gmn-web --format '{{json .Spec.TaskTemplate.ContainerSpec.Secrets}}' | tr '{' '\n' | grep -oE '"(SecretName|Name)":"[^"]+"'
-docker service inspect gmn-hml_gmn-web --format '{{range .Spec.TaskTemplate.ContainerSpec.Env}}{{println .}}{{end}}' | grep -E '^(GMN_LINK_AUDIT_HOMOLOGATION|SERPER_API_KEY_FILE)='
+docker service inspect gmn-hml_gmn-web --format '{{range .Spec.TaskTemplate.ContainerSpec.Env}}{{println .}}{{end}}' | grep -E '^GMN_LINK_AUDIT_HOMOLOGATION='
+docker service logs --tail 200 gmn-hml_gmn-web 2>&1 | grep -F '[gmn-entrypoint] homologação: chave do Serper não carregada'
 docker service ls --filter name=gmn-hml_ --format '{{.Name}} {{.Replicas}}'      # web 1/1, gmn-redis 1/1, worker 0/0
 ```
 
-Esperado: os secrets com `SecretName` `gmn-hml_*` e `File.Name` `gmn_*` (o caminho `/run/secrets/gmn_*`), a trava `=1` e o
-`SERPER_API_KEY_FILE` como registrado no P9-H07. Depois, `VERIFICACAO-POS-DEPLOY.md` inteiro com `STACK=gmn-hml` e `HOST=<DOMINIO_HML>`.
+Esperado: os secrets com `SecretName` `gmn-hml_*` e `File.Name` `gmn_*` (o caminho `/run/secrets/gmn_*`), a trava `=1` e, no log do
+web, a linha fixa de que a chave do Serper não foi carregada. Depois, `VERIFICACAO-POS-DEPLOY.md` inteiro com `STACK=gmn-hml` e `HOST=<DOMINIO_HML>`.
 
 ## 3. Produção: o que muda
 

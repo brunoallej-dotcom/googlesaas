@@ -66,11 +66,12 @@ Na interface: `/auditoria-por-link` lista `aud-001-autorizacao-01` com integrida
 `/api/system/health` (com sessão): Redis OK, Supabase OK, Worker "sem batimento" (esperado enquanto `replicas: 0`).
 ## 9. Custos
 Nenhuma auditoria deve estar `RUNNING`; confirme no painel do Serper que o consumo não mudou desde o deploy. Em homologação não há
-chave válida do Serper (o secret `gmn-hml_serper_api_key` guarda um texto fixo não secreto; ver o §10).
+chave do Serper: o entrypoint não a carrega com a trava ligada (ver o §10), e o secret `gmn-hml_serper_api_key` guarda só um texto fixo
+não secreto.
 ## 10. Trava de homologação e Serper
 ```bash
-docker service inspect "${STACK}_gmn-web" --format '{{range .Spec.TaskTemplate.ContainerSpec.Env}}{{println .}}{{end}}' | grep -E '^(GMN_LINK_AUDIT_HOMOLOGATION|SERPER_API_KEY_FILE)='
+docker service inspect "${STACK}_gmn-web" --format '{{range .Spec.TaskTemplate.ContainerSpec.Env}}{{println .}}{{end}}' | grep -E '^GMN_LINK_AUDIT_HOMOLOGATION=' || echo "sem a trava"
+docker service logs --tail 200 "${STACK}_gmn-web" 2>&1 | grep -cF '[gmn-entrypoint] homologação: chave do Serper não carregada'
 ```
-Esperado em homologação: `GMN_LINK_AUDIT_HOMOLOGATION=1` e o `SERPER_API_KEY_FILE` registrado no P9-H07 (vazio, se a fusão do Docker
-aplicar a sobreposição; senão, o secret `gmn-hml_serper_api_key`, com texto fixo não secreto). Em produção: nenhuma linha
-`GMN_LINK_AUDIT_HOMOLOGATION` e `SERPER_API_KEY_FILE=/run/secrets/gmn_serper_api_key`.
+Esperado em homologação: `GMN_LINK_AUDIT_HOMOLOGATION=1` e a linha fixa do entrypoint no log (a chave do Serper não é carregada). Em
+produção: `sem a trava` e nenhuma linha do entrypoint sobre o Serper (contagem 0).

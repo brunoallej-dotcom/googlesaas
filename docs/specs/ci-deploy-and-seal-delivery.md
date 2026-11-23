@@ -402,9 +402,9 @@ dispara e aprova as próprias execuções (risco aceito, §11.2).
 - **Verificação externa:** até 12 tentativas em até 2 min, `curl --proto =https --tlsv1.2 --max-redirs 0`, sem `-k`, sem cookie.
 - Até a P9.5, `acao = entregar-selos` não roda nenhum job, e o gatilho `push` no caminho dos manifestos ainda não existe.
 - **Fusão da sobreposição (conferida offline com o `docker stack config` do Docker CLI 29.10):** os 12 `name: gmn-hml_*`, o `target`
-  `gmn_*` e o `replicas: 0` do Worker valem; o `SERPER_API_KEY_FILE: ""` **não** sobrescreve a variável (a fusão ignora valor vazio).
-  A garantia de homologação sem Serper é o texto fixo não secreto do `gmn-hml_serper_api_key` (§5.11); a correção definitiva fica para
-  o responsável (P9-H07). Com os padrões, a renderização de produção é a mesma de antes, a menos do `target` explícito igual à origem.
+  `gmn_*` e o `replicas: 0` do Worker valem; um `SERPER_API_KEY_FILE: ""` **não** sobrescreveria a variável (a fusão ignora valor
+  vazio). Por isso o Serper de homologação sai pelo entrypoint (§5.11, decisão do manager de 23/11/2026), e a sobreposição não mexe
+  nessa variável. Com os padrões, a renderização de produção é a mesma de antes, a menos do `target` explícito igual à origem.
 
 #### 5.5.2 Job `seals-deliver`
 
@@ -673,7 +673,7 @@ Mesmo workflow, ambiente `homologacao`, mesma VPS e mesmo nó, como **stack sepa
 | Redis | o serviço `gmn-redis` da stack `gmn-hml`, na rede interna própria (`gmn-hml_gmn_internal`), dados em `/srv/gmn-hml/redis`; o `REDIS_URL` continua passando na regra do entrypoint (`docker-entrypoint.sh:49-52`) |
 | Traefik | os nomes de router, serviço e middlewares viram `${GMN_TRAEFIK_NAME:-gmn}` no `stack.yml` (produção continua `gmn`); homologação usa `gmn-hml` e `GMN_HOST=<DOMINIO_HML>`. Sem isso, as duas stacks definiriam o router `gmn` com regras diferentes, e o Traefik descartaria o router |
 | Worker | `replicas: 0` literal na sobreposição, e o receptor confere (PD-03) |
-| Serper | nenhum: a sobreposição põe `SERPER_API_KEY_FILE: ""` no web e no Worker, e o entrypoint não carrega a chave (`docker-entrypoint.sh:21-28`). O secret `gmn-hml_serper_api_key` tem de existir, porque a lista de secrets do serviço não se remove por sobreposição, e guarda um texto fixo **não secreto**. *P9.4: a fusão do Docker não aplica o valor vazio (§5.5.1, precisões); a garantia efetiva é esse texto fixo* |
+| Serper | nenhum. **Decisão do manager (23/11/2026, P9.4):** a fusão de dois `-c` do Docker ignora valor vazio, então a sobreposição não consegue esvaziar `SERPER_API_KEY_FILE`. A regra fica no `docker-entrypoint.sh`: com `GMN_LINK_AUDIT_HOMOLOGATION=1` (só no web da sobreposição), ele apaga `SERPER_API_KEY` e `SERPER_API_KEY_FILE` antes de carregar os segredos, nunca carrega a chave e imprime uma linha fixa, sem valor. O Worker fica em 0. O secret `gmn-hml_serper_api_key` tem de existir, porque a lista de secrets do serviço não se remove por sobreposição, e guarda um texto fixo **não secreto** (segunda barreira). Produção nunca declara a trava (testes e receptor) |
 | Trava de homologação | `GMN_LINK_AUDIT_HOMOLOGATION: "1"` **só** na sobreposição. O teste `tests/link-audit-simulated-guards.test.ts:279-280` proíbe a trava no `stack.yml`, e continua valendo |
 | Supabase | o laboratório descartável (nunca o projeto de produção): URL e chaves no ambiente `homologacao` do GitHub e nos secrets `gmn-hml_*`; o receptor confere a impressão (passo 5 do §5.6) |
 | Lista de confiança | `link-audit-seals/homologacao/trust-keys.txt`, só ids `ensaio-` |
@@ -820,14 +820,15 @@ relatório indicado.
 
 - [x] **P9-H01** `stack.yml` sem `GMN_LINK_AUDIT_HOMOLOGATION` (o teste existente continua).
 - [x] **P9-H02** `stack-hml.yml` só acrescenta o permitido: a trava `"1"` no web, `SERPER_API_KEY_FILE: ""` no web e no Worker,
-  `replicas: 0` no Worker, `name: gmn-hml_*` nos secrets de topo; nenhuma porta, bind, rede ou imagem nova.
+  `replicas: 0` no Worker, `name: gmn-hml_*` nos secrets de topo; nenhuma porta, bind, rede ou imagem nova. *(P9.4: sem o
+  `SERPER_API_KEY_FILE`, que a fusão não aplica; o Serper sai pelo entrypoint com a trava, §5.11, testado em
+  `tests/deploy-config.test.ts`)*
 - [x] **P9-H03** labels do Traefik com `${GMN_TRAEFIK_NAME:-gmn}` e, com o padrão, exatamente as de hoje.
 - [x] **P9-H04** secrets na sintaxe longa com `target:` igual ao nome lido pelo `*_FILE`.
 - [x] **P9-H05** `stack.yml` mantém `GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS: ${GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS:-}`.
 - [ ] **P9-H06** **[doc]** primeiro deploy de homologação: PD-01 a PD-08 verdes, `docker service inspect` do web com
   `/run/secrets/gmn_*` e a trava; relatório do ensaio W5.3 (pré-condição).
-- [ ] **P9-H07** **[doc]** *(P9.4: pré-conferido offline com o Docker CLI 29.10, §5.5.1, precisões; o `SERPER_API_KEY_FILE: ""` não
-  é aplicado pela fusão)* `docker stack config -c stack.yml -c stack-hml.yml` no host funde os secrets de topo (registrado
+- [ ] **P9-H07** **[doc]** *(P9.4: pré-conferido offline com o Docker CLI 29.10, §5.5.1, precisões)* `docker stack config -c stack.yml -c stack-hml.yml` no host funde os secrets de topo (registrado
   junto com o P9-H06).
 - [ ] **P9-H08** `.dockerignore` exclui `link-audit-seals`; `.gitattributes` tem `link-audit-seals/** -text`.
 - [x] **P9-H09** a sobreposição não declara `networks` (nem no topo nem nos serviços) e dá `name: gmn-hml_*` a **todos** os secrets
