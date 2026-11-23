@@ -745,6 +745,10 @@ Pela spec §10.3 e pelo `PLANO-DE-ROLLBACK.md`:
   instalada; corrija por commit e dispare de novo.
 - **Do pipeline:** corte o acesso (§5) e apague os segredos do ambiente. Sem o pipeline, a produção fica parada até ele voltar.
 - **Receptor com defeito:** reinstale a versão anterior (hash do commit anterior, `sha256sum -c`); o CI nunca atualiza receptor.
+- **Restauração da pasta de manifestos** (backup): a troca inteira roda segurando a trava do kernel do receptor de manifestos
+  (`/var/lib/gmn-receivers-locks/<amb>/seals.flock`, `flock -n`), e o dono, o grupo e os modos voltam a `gmn-seals:10001 2750` (homologação
+  `gmn-hml-seals`), arquivos `0444`: `PLANO-DE-BACKUP-E-RESTAURACAO.md`, "Restauração da Fase 6". Uma entrega que já tinha começado recusa
+  (`E_UNSAFE_PATH`), e a entrega seguinte repete o arquivo (`WRITTEN` ou `ALREADY_PRESENT`).
 
 ## 7. Onde registrar
 

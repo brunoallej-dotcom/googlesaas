@@ -257,7 +257,7 @@ empacotado no receptor de manifestos (P9.3b).
 | S-08 | `auditId` do corpo = pasta; `seq` do corpo = nome; `retiredKeyId` do fecho = nome | `SEAL_NAME_MISMATCH` |
 | S-09 | Os `seq` novos de uma auditoria vêm depois do maior `seq` do commit-base, contíguos | `SEALS_NOT_AT_END` |
 | S-10 | Para cada auditoria com arquivo novo, a cadeia inteira do commit (base + novos) passa pelo verificador `v2` real: lista do commit com estados, fechos de `<amb>/seals/_closures/`, `acceptedVersions: [2]`, evidências = entradas da cabeça (o método de `readSealChain`, `sign-chain.ts:59`), e o resultado é `AUTHENTICATED` com `headSeq` = último `seq` novo e `headSealSha256` = `sealSha256` dele | `SEAL_V2_<RAZÃO>` (as razões fixas de `EvidenceTrustReason`) ou `SEAL_HEAD_MISMATCH` |
-| S-11 | Fecho novo: `parseKeyRetirementClosureText`; signatário na lista e assinatura válida; `retiredKeyId` na lista; cada `heads[]` existe na cadeia do repositório com o mesmo `seq` e `sealSha256` | `CLOSURE_<MOTIVO>` |
+| S-11 | Fecho novo: `parseKeyRetirementClosureText`; signatário na lista **e `active`** (revisão do PR #72) e assinatura válida; `retiredKeyId` na lista; cada `heads[]` existe na cadeia do repositório com o mesmo `seq` e `sealSha256`, numa pasta de auditoria que é diretório comum dentro da raiz (sem link) | `CLOSURE_<MOTIVO>` |
 | S-12 | Lista: gramática, `parseTrustKeyring` não nulo (ou arquivo vazio), regra de ambiente, regras de transição do §5.3. Uma fixação `retired:<sha256>` roda de novo o S-11 sobre o fecho fixado | `TRUST_LIST_FORMAT`, `TRUST_LIST_ENV_PREFIX`, `TRUST_LIST_TRANSITION` |
 | S-13 | Lista e manifestos do mesmo ambiente no mesmo PR | `SEALS_AND_TRUST_LIST_TOGETHER` |
 | S-14 | Resumo do job, uma linha por arquivo novo, por tipo (§5.9). Manifesto: caminho relativo, `sha256sum` dos bytes, `seq`, `sealSha256`. Fecho: caminho relativo, `sha256sum` dos bytes, `retiredKeyId`, `signerKeyId` e as cabeças como `auditId:seq:<prefixo do sealSha256>`. O conferente compara com o livro | — |
@@ -301,7 +301,10 @@ lista, regras S-01 a S-13, resumo e comando), o passo de preparo do job em `.git
   antes de ser materializada: acima de 8 KiB, o preparo sai com `ERRO SEALS_TOO_LARGE`.
 - **Fecho:** formato fora do esquema ⇒ `CLOSURE_FORMAT` (S-11); nome ≠ `retiredKeyId` ⇒ `SEAL_NAME_MISMATCH` (S-08, a regra da
   tabela; o P9-S09 cita `CLOSURE_<MOTIVO>` de modo genérico). Os motivos do S-11 são `CLOSURE_SIGNER_NOT_LISTED`,
-  `CLOSURE_SIGNATURE_INVALID`, `CLOSURE_RETIRED_NOT_LISTED` e `CLOSURE_HEAD_NOT_IN_REPO`.
+  `CLOSURE_SIGNER_NOT_ACTIVE` (revisão do PR #72: o signatário de um fecho NOVO tem de estar `active` na lista do commit),
+  `CLOSURE_SIGNATURE_INVALID`, `CLOSURE_RETIRED_NOT_LISTED` e `CLOSURE_HEAD_NOT_IN_REPO` (também quando a pasta da auditoria da cabeça é link,
+  revisão do PR #72). O fecho HISTÓRICO de uma fixação (S-12) segue a regra de antes (signatário na lista, qualquer estado), como o verificador,
+  que não muda: um signatário aposentado depois não desfaz uma fixação.
 - **S-10 junto com o S-09:** a cadeia é verificada sempre que os arquivos novos da auditoria passaram do S-04 ao S-08, mesmo com o
   S-09 recusado, para o resumo listar as duas recusas (o código continua o da primeira). Leitura da cadeia do repositório que não é
   uma das razões de `EvidenceTrustReason` (pasta ilegível, nome em outra caixa) ⇒ `SEAL_V2_VERIFICATION_ERROR`.
@@ -801,27 +804,42 @@ na fatia, todas de falha fechada:
   retomado. A liberação só apaga o arquivo que ainda é o **mesmo inode** que o processo criou, conferido por uma abertura só de escrita
   (sob `--permission` o receptor não tem leitura da pasta da trava); a mesma prova vale quando a gravação do pid falha logo depois da criação
   (revisão do PR #72). Depois de `SIGKILL`, o responsável apaga à mão segurando a trava do kernel (runbook H-04).
-- **Passo 1:** prazo de 30 s para o stdin **inteiro** (cobre também o tempo sem dados: quem goteja não segura a trava); o primeiro byte além
-  de 256 KiB recusa sem ler o resto; 0 bytes ⇒ `E_INPUT_TRUNCATED` (um manifesto nunca é vazio); bytes a menos dão `E_HASH_MISMATCH`.
+- **Passo 1:** prazo de 30 s para o stdin **inteiro** (cobre também o tempo sem dados: quem goteja não segura a trava), conferido de novo
+  depois de cada espera, o fim (EOF) inclusive: um evento que chega depois do prazo é `E_INPUT_TRUNCATED` (revisão do PR #72); o primeiro byte
+  além de 256 KiB recusa sem ler o resto; 0 bytes ⇒ `E_INPUT_TRUNCATED` (um manifesto nunca é vazio); bytes a menos dão `E_HASH_MISMATCH`.
 - **Passo 2:** a lista instalada é lida **uma vez**, por um único descritor (`O_NOFOLLOW | O_NONBLOCK`, tipo e tamanho no descritor, teto de
   8 KiB), e o hash, o formato, a regra de ambiente e a verificação `v2` usam esses mesmos bytes; um `rename` da instalada no meio nunca entrega
   arquivo parcial (P9-R13). Ausente ⇒ `E_TRUST_LIST_MISMATCH` (falta o deploy); link, não regular, ilegível ou acima do teto ⇒
   `E_TRUST_LIST_INVALID`. A `trust-keys.pending` (P9.3a) nunca é lida: nem há grant para ela.
 - **Passo 3:** além das regras do canal, os bytes têm de ser UTF-8 exato (o texto julgado é o texto gravado). Fecho com nome ≠
   `retiredKeyId` ou fora do esquema ⇒ `E_FORMAT`.
-- **Passo 5:** saída `OK ALREADY_PRESENT <relpath> <sha256>` (mesma forma do `WRITTEN`). Destino maior que o teto ⇒ `E_EXISTS_DIFFERENT`;
-  `ENOTDIR` no caminho ⇒ `E_UNSAFE_PATH`; outra falha de leitura ⇒ `E_INTERNAL` (nada gravado).
+- **Passo 5:** saída `OK ALREADY_PRESENT <relpath> <sha256>` (mesma forma do `WRITTEN`). Ela confirma **só a igualdade dos bytes** com o
+  arquivo já presente, nunca uma verificação no host (o passo 6 não roda; revisão do PR #72): o resumo da entrega a chama de "conteúdo idêntico
+  já presente", nunca "verificado no host" (§5.9). Destino maior que o teto ⇒ `E_EXISTS_DIFFERENT`; `ENOTDIR` no caminho ⇒ `E_UNSAFE_PATH`;
+  outra falha de leitura ⇒ `E_INTERNAL` (nada gravado).
 - **Passo 6:** o detalhe do `E_V2_REFUSED` é uma das 14 razões de `EvidenceTrustReason` ou **`HEAD_MISMATCH`** (a cadeia do host com o
   candidato autentica, mas a cabeça é outra: o host já tem um `seq` maior e falta o do candidato; o análogo do `SEAL_HEAD_MISMATCH` do S-10).
   Os códigos próprios da leitura da cadeia do `sign` (pasta ilegível, nome em outra caixa) caem em `VERIFICATION_ERROR`. Lista instalada vazia
-  (política fechada) ⇒ `E_V2_REFUSED PROOF_NOT_CONFIGURED`. O detalhe do `E_CLOSURE_REFUSED` é um dos quatro motivos do S-11:
-  `SIGNER_NOT_LISTED`, `SIGNATURE_INVALID`, `RETIRED_NOT_LISTED`, `HEAD_NOT_IN_REPO` (o nome do CI foi mantido; no host, "repo" é a cadeia do
-  host). A verificação lê por uma visão da porta sem nenhuma operação de escrita.
+  (política fechada) ⇒ `E_V2_REFUSED PROOF_NOT_CONFIGURED`. O detalhe do `E_CLOSURE_REFUSED` é um dos cinco motivos do S-11:
+  `SIGNER_NOT_LISTED`, `SIGNER_NOT_ACTIVE` (o fecho é novo: o signatário tem de estar `active` na lista instalada; revisão do PR #72),
+  `SIGNATURE_INVALID`, `RETIRED_NOT_LISTED`, `HEAD_NOT_IN_REPO` (o nome do CI foi mantido; no host, "repo" é a cadeia do host; também quando a
+  pasta da auditoria da cabeça é link). A verificação lê por uma visão da porta sem nenhuma operação de escrita. Antes dela, a raiz e a
+  subpasta são fotografadas (dispositivo e inode) para a conferência de antes do `link()`.
 - **Passo 7:** o `0444` é **explícito**: o adaptador faz `chmod` do temporário recém-criado (`O_EXCL`) antes do `fsync`, porque o `umask 027`
   daria `0440` e o modelo de permissões desliga o `fchmod`. A pasta nova nasce `2750` (`umask 027` + setgid herdado da raiz; P9-R12).
   `EEXIST` no `link()` ⇒ volta ao passo 5 uma vez (duas rodadas no máximo; uma terceira ⇒ `E_WRITE_FAILED`). Raiz ou subpasta trocada entre o
   passo 4 e a gravação ⇒ `E_UNSAFE_PATH`. Falha do `fsync` da raiz depois de criar a pasta de uma auditoria nova ⇒ `E_WRITE_FAILED` (a pasta
   vazia fica; nenhum arquivo).
+  **Conferência logo antes do `link()`** (revisão do PR #72, itens 1, 2 e 7; gancho opcional `beforeLink` da gravação compartilhada, com o
+  temporário já gravado e sincronizado; qualquer recusa remove o temporário e nada é gravado):
+  1. a lista INSTALADA é relida pelas mesmas regras e tem de ter o MESMO sha256 lido no passo 2; qualquer troca no meio do `put` (inclusive a
+     revogação da chave que assinou o candidato, ou uma mudança alheia a ele) ⇒ `E_TRUST_LIST_MISMATCH`. O servidor ainda reverifica cada
+     manifesto na leitura, com a lista dele (RC-07): um manifesto que escapasse desta janela não seria aceito por ele;
+  2. a raiz e a subpasta têm o mesmo dispositivo e inode fotografados antes do passo 6 (a subpasta de uma auditoria nova é a que a gravação
+     acabou de criar, pasta comum); uma troca, como uma restauração no meio do `put`, ⇒ `E_UNSAFE_PATH`. A restauração da pasta de manifestos
+     segura a trava do kernel do receptor durante toda a troca (`PLANO-DE-BACKUP-E-RESTAURACAO.md`), o que fecha a janela restante;
+  3. `fsync` da RAIZ: a entrada da subpasta fica durável mesmo quando ela já existia de uma tentativa anterior cujo `fsync` da raiz falhou
+     (retomada; falha ⇒ `E_WRITE_FAILED`).
 - **Passo 8:** releitura dos bytes do destino e nova classificação sem nada em memória (a leitura da cadeia do `sign` pelo S-10, ou o S-11 de
   novo); falha ⇒ `E_POSTWRITE_VERIFY`, e o arquivo fica.
 - **Saída e log:** exatamente uma linha (stdout `OK WRITTEN|ALREADY_PRESENT <relpath> <sha256>`; stderr `ERRO <CÓDIGO>[ <DETALHE>]`), stdout ou
@@ -834,9 +852,12 @@ na fatia, todas de falha fechada:
   repositório: numa cópia descartável do artefato com o `fsync` neutralizado, sob `--permission` com os grants acima, o manifesto, a
   auditoria nova e o fecho gravaram (`0444`, pastas `2750`) e a trava foi liberada: nada além do `fsync` é negado pela linha decidida.
 - **Para o job de entrega (P9.5, `receiver-call.sh`):** sucesso = `OK WRITTEN <relpath> <sha256>` ou `OK ALREADY_PRESENT <relpath> <sha256>`,
-  saída 0, com o `relpath` e o `sha256` do pedido. Recusa = os códigos de saída 10 a 17, 29 e 30 a 37 da tabela do §5.8; detalhe só em
-  `E_V2_REFUSED` (razões de `EvidenceTrustReason` + `HEAD_MISMATCH`) e `E_CLOSURE_REFUSED` (os quatro motivos acima). `E_ARTIFACT`, `E_LOCKED`
-  e o `E_INTERNAL` de pré-condição vêm do *wrapper*.
+  saída 0, com o `relpath` e o `sha256` do pedido. `WRITTEN` = verificado no host e gravado; `ALREADY_PRESENT` = **conteúdo idêntico já
+  presente** (só igualdade de bytes, nunca "verificado no host"). Recusa = os códigos de saída 10 a 17, 29 e 30 a 37 da tabela do §5.8;
+  detalhe só em `E_V2_REFUSED` (razões de `EvidenceTrustReason` + `HEAD_MISMATCH`) e `E_CLOSURE_REFUSED` (`SIGNER_NOT_LISTED`,
+  `SIGNER_NOT_ACTIVE`, `SIGNATURE_INVALID`, `RETIRED_NOT_LISTED`, `HEAD_NOT_IN_REPO`). `E_ARTIFACT`, `E_LOCKED` e o `E_INTERNAL` de pré-condição
+  vêm do *wrapper*, que também transforma em `E_INTERNAL` qualquer stderr fora do conjunto fechado; o filtro do job continua sendo a fronteira
+  pública.
 
 ### 5.8 Códigos de saída e saída pública dos receptores
 
@@ -905,6 +926,9 @@ O resumo (`$GITHUB_STEP_SUMMARY`) é público e só tem campos públicos. O cust
 |---|---|---|---|---|---|---|---|
 | `<run_id>` | `<run_attempt>` | `<sha40>` | `producao` | `aud-…/seal-0003.json` | `<64 hex>` | `WRITTEN` / `ALREADY_PRESENT` / `FALHOU` | `OK` / `E_…` |
 
+`ALREADY_PRESENT` (revisão do PR #72): o host já tinha um arquivo com os MESMOS bytes, e o receptor não o verificou de novo. O resumo o mostra
+como "conteúdo idêntico já presente", nunca como "verificado no host"; a verificação `v2` do host só vale para `WRITTEN`.
+
 O `seals-deliver` não roda código do repositório e não interpreta o JSON. O livro junta as duas tabelas da mesma execução pelo
 caminho e pelo sha256.
 
@@ -928,7 +952,8 @@ O resumo nunca leva host, porta, domínio, URL ou impressão do projeto Supabase
 | Arquivo de variáveis | `/opt/gmn/<ARQUIVO_DE_VARIAVEIS>`, root:`gmn-deploy` `0640`, editado só pelo responsável | `/opt/gmn-hml/…`, root:`gmn-hml-deploy` `0640` |
 | Estado do deploy | `/var/lib/gmn-deploy/producao/` (`0711`; recebimento `0700`; `trust-keys.txt` `0644`) | `/var/lib/gmn-deploy/homologacao/` |
 | Receptores e Node | `/opt/gmn-receivers/` (root, `0755`/`0444`); Node 22.23.2, a versão do `Dockerfile:3`, do tarball oficial conferido por `SHASUMS256.txt` | o mesmo |
-| Pasta de manifestos | dono `gmn-seals`, grupo `10001`, **`2750`**; arquivos `0444` | dono `gmn-hml-seals`, grupo `10001`, `2750` |
+| Pasta de manifestos | dono `gmn-seals`, grupo `10001`, **`2750`**; arquivos `0444`; o caminho configurado é o próprio caminho real (sem link; `verificar-pastas-fase6.sh`, revisão do PR #72) | dono `gmn-hml-seals`, grupo `10001`, `2750` |
+| Travas do kernel dos receptores (revisão do PR #72) | `/var/lib/gmn-receivers-locks/producao/{deploy,seals}.flock`, arquivos do root `0644` numa pasta do root `0755` | `/var/lib/gmn-receivers-locks/homologacao/…` |
 
 **Pasta de manifestos: dono e modo (muda o VC-E8 só para ela).** Hoje as seis pastas da Fase 6 são `10001:10001 0700`
 (`GUIA-DE-IMPLANTACAO.md` §3.3; `verificar-pastas-fase6.sh:25-26` exige `700`). Dar ao usuário de manifestos o uid `10001`

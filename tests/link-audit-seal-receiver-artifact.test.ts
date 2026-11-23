@@ -488,3 +488,14 @@ test('runbook H-04/H-05/H-06 (P9.3b): artefato e modelos de manifestos instalado
   }
   assert.ok(state.includes('log="/var/log/gmn-receivers/homologacao-${pair%%:*}.log"') && state.includes('seals:gmn-hml-seals'), 'o log do modelo é o que o H-06 cria (0600, do usuário de manifestos)');
 });
+
+test('plano de backup e runbook (revisão do PR #72, item 2): a restauração da pasta de manifestos segura a trava do kernel do receptor durante TODA a troca (flock -n antes dos mv, solta só depois da conferência no lugar) e devolve gmn-seals:10001 2750 com arquivos 0444', () => {
+  const plan = fs.readFileSync(path.join(__dirname, '..', 'deploy', 'hostinger', 'PLANO-DE-BACKUP-E-RESTAURACAO.md'), 'utf8');
+  const block = (plan.match(/```bash[\s\S]*?```/g) ?? []).find((text) => text.includes('seals.flock')) ?? '';
+  const at = (needle: string): number => block.indexOf(needle);
+  const order = ['exec 8<"/var/lib/gmn-receivers-locks/producao/seals.flock"', 'flock -n 8 ||', 'mv -- "$P" "$P.antigo-', 'mv -- "$P.restaurado-<RODADA>" "$P"', 'chown -R gmn-seals:10001 -- "$P"', 'find "$P" -type d -exec chmod 2750', 'find "$P" -type f -exec chmod 0444', 'sha256sum --quiet --strict -c "$C/SHA256SUMS"', 'exec 8<&-'].map(at);
+  assert.ok(order.every((index) => index >= 0), `todos os passos no bloco: ${order.join(',')}`);
+  assert.deepEqual([...order].sort((a, b) => a - b), order, 'trava, troca, dono e modos, conferência, e só então solta');
+  const runbook = fs.readFileSync(path.join(__dirname, '..', 'deploy', 'hostinger', 'RUNBOOK-DEPLOY-PELO-CI.md'), 'utf8');
+  assert.match(runbook, /\*\*Restauração da pasta de manifestos\*\* \(backup\): a troca inteira roda segurando a trava do kernel do receptor de manifestos/);
+});
