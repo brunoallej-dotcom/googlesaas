@@ -262,6 +262,81 @@ async function auditLockKey(ops: FsOps, loc: Location, auditId: string): Promise
   }
 }
 
+// ------------------------------------------------------------------------- quarentena da resposta paga (W5.2b)
+/**
+ * QUARENTENA da resposta LIVE paga que não pôde ser gravada na auditoria pedida (W5.2b, spec do P1 §5.7, revisão do PR #62): um arquivo NOVO por
+ * resgate, criado com escrita exclusiva (`wx`), modo 0600 e fsync, numa subpasta reservada da raiz de evidências cujo nome NUNCA é um `auditId`
+ * válido (começa por `_`): o leitor, as listagens e o armazenamento não a tratam como auditoria. Nome com o `auditId` pedido, o carimbo da coleta e
+ * 8 bytes aleatórios: nunca reutiliza nem deduplica nada. A quarentena NUNCA é lida pelos fluxos de auditoria; a recuperação é manual e fica com o
+ * responsável (runbook do custodiante).
+ */
+export const QUARANTINE_DIR = '_quarentena-resgate-live';
+const QUARANTINE_NAME_RETRIES = 3;
+const STAMP_DIGITS = 14;
+
+export interface PaidResponseQuarantineInput {
+  /** A auditoria em que a resposta paga devia ter entrado. */
+  readonly requestedAuditId: string;
+  /** Código da falha da gravação na auditoria pedida (`MODE_CONFLICT`, `CORRUPT`, `WRITE_FAILED`…). */
+  readonly reasonCode: string;
+  readonly collectedAt: string;
+  readonly request: CaptureInput['request'];
+  readonly response: CaptureInput['response'];
+  readonly input: CaptureInput['input'];
+}
+
+export async function quarantinePaidResponse(baseDir: string, record: PaidResponseQuarantineInput, options: StoreOptions = {}): Promise<EvidenceResult<{ readonly fileName: string; readonly contentSha256: string }>> {
+  const ops = options.fs ?? nodeFsOps;
+  const allowed = assertAllowedBase(baseDir, options.projectRoot ?? process.cwd());
+  if (!allowed.ok) return allowed;
+  if (await isTripped(ops, allowed.value)) return fail('STORAGE_FATAL', 'Base bloqueada por erro fatal de disco anterior: a quarentena também não grava.');
+  const dir = path.join(allowed.value, QUARANTINE_DIR);
+  try {
+    await ops.mkdir(dir);
+    const info = await ops.lstat(dir);
+    if (info.isSymbolicLink() || !info.isDirectory()) return fail('UNSAFE_PATH', 'A pasta da quarentena não é um diretório comum.');
+  } catch (error) {
+    return writeFailure(ops, allowed.value, errorCode(error), [describeError('pasta da quarentena', error)]);
+  }
+  await bestEffort(() => ops.chmod(dir, 0o700));
+  // a chave literal (se ecoada) é trocada por [REDACTED], como na captura; a resposta paga nunca é descartada por suspeita
+  const key = options.apiKey?.trim();
+  const body = record.response.bodyText;
+  const storedBody = body !== null && key && key.length > 10 && body.includes(key) ? body.split(key).join('[REDACTED]') : body;
+  const content = sealed<{ contentSha256: string }>({
+    schemaVersion: 1,
+    kind: 'LINK_AUDIT_PAID_RESPONSE_QUARANTINE',
+    requestedAuditId: record.requestedAuditId,
+    reason: { code: record.reasonCode },
+    collectedAt: record.collectedAt,
+    request: { method: 'POST', url: record.request.url, body: record.request.body },
+    response: {
+      httpStatus: record.response.httpStatus,
+      attempts: record.response.attempts,
+      bodyText: storedBody,
+      bodySha256: storedBody === null ? null : sha256Hex(storedBody),
+      bytes: storedBody === null ? 0 : Buffer.byteLength(storedBody, 'utf8'),
+      failure: record.response.failure ?? null,
+      ...(storedBody !== body ? { flags: ['KEY_REDACTED'] } : {}),
+    },
+    input: record.input,
+  });
+  const idPart = AUDIT_ID_PATTERN.test(record.requestedAuditId) ? record.requestedAuditId : 'auditoria-invalida';
+  const stamp = (record.collectedAt.replace(/\D/g, '') + '0'.repeat(STAMP_DIGITS)).slice(0, STAMP_DIGITS);
+  for (let attempt = 0; attempt < QUARANTINE_NAME_RETRIES; attempt++) {
+    const fileName = `${idPart}-${stamp}-${randomBytes(8).toString('hex')}.json`;
+    try {
+      await ops.writeExclusive(path.join(dir, fileName), serialize(content), 0o600);
+    } catch (error) {
+      if (errorCode(error) === 'EEXIST') continue; // nunca sobrescreve: outro nome aleatório
+      return writeFailure(ops, allowed.value, errorCode(error), [describeError('gravação na quarentena', error)]);
+    }
+    await bestEffort(() => ops.syncDirectory(dir));
+    return { ok: true, value: { fileName, contentSha256: content.contentSha256 } };
+  }
+  return fail('CONFLICT', 'Não foi possível reservar um nome novo na quarentena.');
+}
+
 // ----------------------------------------------------------------------------------------- pré-voo
 export interface StorageStatus {
   readonly baseDir: string;
