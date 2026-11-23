@@ -14,7 +14,7 @@
 
 ### P0.1 Provar o estado do código e das imagens
 ```bash
-cd /mnt/d/gmn-intelligence-platform-corrigido/gmn-intelligence-platform
+cd <PASTA_PROJETO_V100>
 npm run typecheck && npm test 2>&1 | grep -E '^# (tests|pass|fail)'      # fail 0
 deploy/hostinger/verify-local.sh 2>&1 | tail -3                          # TUDO OK  (usa valores fictícios, sem rede externa)
 ```
@@ -22,7 +22,7 @@ deploy/hostinger/verify-local.sh 2>&1 | tail -3                          # TUDO 
 
 ### P0.2 Construir as imagens de produção (valores PÚBLICOS do Supabase; nunca a service role)
 ```bash
-cd /mnt/d/gmn-intelligence-platform-corrigido/gmn-intelligence-platform
+cd <PASTA_PROJETO_V100>
 export NEXT_PUBLIC_SUPABASE_URL="$(grep -E '^NEXT_PUBLIC_SUPABASE_URL=' .env.local | cut -d= -f2- | tr -d "\"' \r")"
 export NEXT_PUBLIC_SUPABASE_ANON_KEY="$(grep -E '^NEXT_PUBLIC_SUPABASE_ANON_KEY=' .env.local | cut -d= -f2- | tr -d "\"' \r")"
 echo "URL=${NEXT_PUBLIC_SUPABASE_URL}  anon=$([ -n "$NEXT_PUBLIC_SUPABASE_ANON_KEY" ] && echo definida || echo VAZIA)"
@@ -42,8 +42,8 @@ Esperado: `histórico limpo` e `sem .env na imagem`.
 cd <EVIDENCIAS_PRIVADAS_WSL>/link-audit/aud-001-autorizacao-01
 sha256sum -c SHA256SUMS | grep -vc ': OK$'                               # 0  (nenhuma linha fora de OK)
 find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum   # ANOTE este hash agregado
-mkdir -p /mnt/d/gmn-backups/aud-001-20261024 && rsync -a --checksum ./ /mnt/d/gmn-backups/aud-001-20261024/
-cd /mnt/d/gmn-backups/aud-001-20261024 && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum   # igual ao anterior
+mkdir -p <DESTINO_BACKUP_LOCAL>/aud-001-20261024 && rsync -a --checksum ./ <DESTINO_BACKUP_LOCAL>/aud-001-20261024/
+cd <DESTINO_BACKUP_LOCAL>/aud-001-20261024 && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum   # igual ao anterior
 ```
 O original **não é alterado**. **PARAR** se os dois hashes divergirem.
 
@@ -119,7 +119,7 @@ Esperado: 80/443 do Traefik; **3000 e 6379 livres no host** (a GMN não publica 
 
 ### P2.1 Transferir e conferir as imagens (da sua máquina)
 ```bash
-cd /mnt/d/gmn-intelligence-platform-corrigido/gmn-intelligence-platform/deploy/hostinger
+cd <PASTA_PROJETO_V100>/deploy/hostinger
 cat dist/gmn-images-1.0.0.tar.gz.sha256                                  # compare com o hash anotado no P0.2
 scp dist/gmn-images-1.0.0.tar.gz dist/gmn-images-1.0.0.tar.gz.sha256 USUARIO@IP_DA_VPS:/opt/gmn/
 ```
@@ -161,7 +161,7 @@ Esperado: 6 nomes. Guarde os valores num gerenciador de senhas (o Swarm não dev
 ### P2.5 Arquivos da stack
 Da sua máquina:
 ```bash
-cd /mnt/d/gmn-intelligence-platform-corrigido/gmn-intelligence-platform/deploy/hostinger
+cd <PASTA_PROJETO_V100>/deploy/hostinger
 sha256sum stack.yml .env.production.example
 scp stack.yml .env.production.example USUARIO@IP_DA_VPS:/opt/gmn/
 ```

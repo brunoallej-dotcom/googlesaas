@@ -98,4 +98,4 @@ nomes reais conhecidos (domínio provisório, nome de auditoria-alvo, pasta de e
 
 Outros documentos de `deploy/hostinger/` não tocados nesta onda (roteiro H1, verificação pós-deploy, relatório de implantação, plano de
 migração) ainda citam o domínio provisório real e o nome de uma auditoria-alvo; recomenda-se uma passada de saneamento própria. Os
-caminhos padrão `/srv/gmn`, `/opt/gmn` e `/mnt/d/gmn-backups` são o layout já documentado e travado por testes anteriores à G1.a.
+caminhos padrão `/srv/gmn`, `/opt/gmn` e `<DESTINO_BACKUP_LOCAL>` são o layout já documentado e travado por testes anteriores à G1.a.

@@ -18,9 +18,9 @@
 Rotina semanal, a partir do WSL (puxa da VPS; a VPS não precisa de credenciais do Windows):
 ```bash
 # NUNCA grave em <EVIDENCIAS_PRIVADAS> (é o ORIGINAL da migração): o destino é uma pasta de backup separada.
-rsync -a --checksum --rsync-path='sudo rsync' USUARIO@IP_DA_VPS:/srv/gmn/evidence/   /mnt/d/gmn-backups/vps/evidence/
-rsync -a --checksum --rsync-path='sudo rsync' USUARIO@IP_DA_VPS:/srv/gmn/link-audits/ /mnt/d/gmn-backups/vps/link-audits/
-rsync -a --checksum --rsync-path='sudo rsync' USUARIO@IP_DA_VPS:/srv/gmn/audits/      /mnt/d/gmn-backups/vps/audits/
+rsync -a --checksum --rsync-path='sudo rsync' USUARIO@IP_DA_VPS:/srv/gmn/evidence/   <DESTINO_BACKUP_LOCAL>/vps/evidence/
+rsync -a --checksum --rsync-path='sudo rsync' USUARIO@IP_DA_VPS:/srv/gmn/link-audits/ <DESTINO_BACKUP_LOCAL>/vps/link-audits/
+rsync -a --checksum --rsync-path='sudo rsync' USUARIO@IP_DA_VPS:/srv/gmn/audits/      <DESTINO_BACKUP_LOCAL>/vps/audits/
 ```
 Copie depois para um **segundo dispositivo** (HD externo/armazenamento de objetos).
 

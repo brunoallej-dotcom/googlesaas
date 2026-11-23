@@ -13,7 +13,7 @@ Bucket `gmn-audit-pdfs`: **público**, sem limite de tamanho nem de tipo. Criado
 
 **Achado importante:** a auditoria 859b4021 tem **duas versões distintas**. A pública do bucket é a antiga; a oficial (a que você escolheu como versão de desenvolvimento) só existe em `public/audits`. A migração preserva **as duas**: a oficial vira a cópia principal e a antiga vai para `versao-anterior-do-bucket/`. Nenhuma é descartada.
 
-Total: 338.614 B (0,32 MB). Ponteiros no banco: `pdf_storage_path` com caminho do Windows (`D:\…\public\audits\…`) e `pdf_download_url` com a URL pública do bucket.
+Total: 338.614 B (0,32 MB). Ponteiros no banco: `pdf_storage_path` com caminho do Windows (`<PASTA_PROJETO_V100>\public\audits\…`) e `pdf_download_url` com a URL pública do bucket.
 
 ## 2. Acesso aos links antigos (verificado)
 | Link | Hoje |
@@ -105,11 +105,11 @@ Verificações **antes** de alterar (todas aprovadas): app em execução lê a v
 | Registro | Campo | ANTES | DEPOIS |
 |---|---|---|---|
 | 4323da26 | `pdf_download_url` | `https://…supabase.co/storage/v1/object/public/gmn-audit-pdfs/audits/4323da26…pdf` | `/api/audit/4323da26-b73c-417e-9306-f4330d335bcd/pdf` |
-| | `pdf_storage_path` | `D:\gmn-…\public\audits\auditoria-gmn-goyaz-…-4323da26.pdf` | `<repo>/.data/audits/auditoria-gmn-goyaz-…-4323da26.pdf` |
+| | `pdf_storage_path` | `<PASTA_PROJETO_V100>\public\audits\auditoria-gmn-goyaz-…-4323da26.pdf` | `<repo>/.data/audits/auditoria-gmn-goyaz-…-4323da26.pdf` |
 | 312ebf57 | `pdf_download_url` | URL pública do bucket antigo | `/api/audit/312ebf57-edfc-41c4-ac62-9de45ef1e613/pdf` |
-| | `pdf_storage_path` | `D:\gmn-…\public\audits\…-312ebf57.pdf` | `<repo>/.data/audits/…-312ebf57.pdf` |
+| | `pdf_storage_path` | `<PASTA_PROJETO_V100>\public\audits\…-312ebf57.pdf` | `<repo>/.data/audits/…-312ebf57.pdf` |
 | 859b4021 | `pdf_download_url` | URL pública do bucket antigo (**versão antiga**) | `/api/audit/859b4021-404e-40fc-acba-da21e1fd4746/pdf` |
-| | `pdf_storage_path` | `/mnt/d/…/public/audits/…-859b4021.pdf` | `<repo>/.data/audits/…-859b4021.pdf` (**oficial com mapa, 271.346 B, `fd41a6b3…`**) |
+| | `pdf_storage_path` | `<PASTA_PROJETO_V100>/public/audits/…-859b4021.pdf` | `<repo>/.data/audits/…-859b4021.pdf` (**oficial com mapa, 271.346 B, `fd41a6b3…`**) |
 
 O `diagrammer_payload` mudou **somente** nas chaves `pdfDownloadUrl` e `pdfStoragePath` (mesmos valores acima); `pageCount`, `fileSizeBytes`, `generatedAt`, `pdfFileName` e `auditId` ficaram iguais. A versão histórica antiga da 859b4021 (13.332 B, `a670948b…`) **não é referenciada** por nenhum ponteiro e segue separada em `versao-anterior-do-bucket/` (bucket privado), no bucket antigo e nos backups.
 
@@ -123,7 +123,7 @@ O `diagrammer_payload` mudou **somente** nas chaves `pdfDownloadUrl` e `pdfStora
 ## 12. G4 EXECUTADO em 17/10/2026: originais removidos de `public/audits/`
 **Resultado: APROVADO.** Uma primeira tentativa (16/10) foi interrompida pela trava porque a cópia externa não estava acessível; nada foi removido. Após a reconexão do pendrive, retomado exclusivamente o G4.
 
-**Pré-condições (todas aprovadas antes de excluir):** cópia externa `E:\pdf-migration-2026-10-16T21-36-14-088Z` relida por PowerShell/.NET: **7/7 arquivos com SHA-256 e tamanho iguais ao manifesto**, 0 extras; backup local íntegro; `.env.local` igual; `verify-private` 32/32 (3 PDFs servidos do bucket privado); inventário **idêntico ao aprovado**; cada arquivo confirmado com o mesmo SHA-256 em 6 lugares (public/audits, manifesto, `.data/audits`, bucket privado, backup local, backup externo).
+**Pré-condições (todas aprovadas antes de excluir):** cópia externa `<UNIDADE_EXTERNA>\pdf-migration-2026-10-16T21-36-14-088Z` relida por PowerShell/.NET: **7/7 arquivos com SHA-256 e tamanho iguais ao manifesto**, 0 extras; backup local íntegro; `.env.local` igual; `verify-private` 32/32 (3 PDFs servidos do bucket privado); inventário **idêntico ao aprovado**; cada arquivo confirmado com o mesmo SHA-256 em 6 lugares (public/audits, manifesto, `.data/audits`, bucket privado, backup local, backup externo).
 
 **Inventário removido (3 arquivos, 300.314 B), um por vez, `fs.unlink` por caminho exato:**
 | Arquivo | Tamanho | SHA-256 |
@@ -147,5 +147,5 @@ Registros: `.data/migration/g4-remocao-plano-*.json` (gravado antes de excluir) 
 
 **Git e deploy:** o projeto **não é um repositório Git**; não há `vercel.json`, Dockerfile, `.github`, `.vercel` nem `.next/standalone`, ou seja, **nenhum ambiente publicado**. `.gitignore` já ignora `public/audits/*.pdf` e `.data/`, então nada a refletir. Para um futuro deploy: não copiar `.data/` nem `.env.local` por pipeline público; sem `.data/audits`, a rota serve do bucket privado (verificado), desde que `SUPABASE_PRIVATE_AUDIT_BUCKET` esteja definido. Nada foi publicado.
 
-**Reversão (não necessária):** copiar de `.data/audits/` ou do backup (local ou `E:\`) para `public/audits/` sem sobrescrever (`cp -n`), conferindo o SHA-256. **Efeito colateral esperado:** `pdf:migrate copy/pointers/inventory` passam a acusar ausência dos arquivos públicos (o manifesto é a referência).
+**Reversão (não necessária):** copiar de `.data/audits/` ou do backup (local ou `<UNIDADE_EXTERNA>`) para `public/audits/` sem sobrescrever (`cp -n`), conferindo o SHA-256. **Efeito colateral esperado:** `pdf:migrate copy/pointers/inventory` passam a acusar ausência dos arquivos públicos (o manifesto é a referência).
 **Continuam abertos:** G5 (RLS), G6 (homologação real), correção do metadado da 859b4021 (aguarda sua aprovação).

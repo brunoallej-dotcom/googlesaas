@@ -13,7 +13,7 @@ RE-VERIFICAÇÃO Nº 4 (instantâneo final review-r7d) — relatório PARCIAL
 - Não achei BLOCKER nem MAJOR novo nesta rodada.
 - D1 está fechado (reproduzido).
 - A garantia de 100 revogações vale, mas sem nenhuma folga e só enquanto nenhuma tentativa falha.
-- **O item F (mutações) ficou incompleto.** A rodada de mutações estava em andamento quando o envio foi exigido; sei os 15 mutantes que configurei, mas não os resultados. Registro: /tmp/claude-1000/-mnt-d-gmn-intelligence-platform-corrigido-gmn-intelligence-platform/f5d0e6cd-abcd-4264-b1ea-afee3af963f4/scratchpad/r7b-mut/r7d.log (e results7d.json, quando terminar).
+- **O item F (mutações) ficou incompleto.** A rodada de mutações estava em andamento quando o envio foi exigido; sei os 15 mutantes que configurei, mas não os resultados. Registro: <SCRATCHPAD_DA_REVISAO>/f5d0e6cd-abcd-4264-b1ea-afee3af963f4/scratchpad/r7b-mut/r7d.log (e results7d.json, quando terminar).
 - **Também não rodei a base de N4 sem mutação.** N4 é o conjunto de testes do livro que cada mutante roda: d1, seal-barrier, m2, r711, review7, crash e authority (E4 e E5 também rodam capacity). Sem essa base, um "morto" pode ser falha que já existia. Rode-a antes de confiar nos resultados.
 
 ## Como trabalhei

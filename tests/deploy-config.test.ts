@@ -10,6 +10,18 @@ import test from 'node:test';
 const ROOT = path.join(__dirname, '..');
 const DEPLOY = path.join(ROOT, 'deploy', 'hostinger');
 const read = (name: string): string => fs.readFileSync(path.join(DEPLOY, name), 'utf8');
+/** Pastas de dados privados declaradas no .gitignore (a seção "dados privados"), lidas da própria regra. */
+const gitignorePrivateDirs = (): string[] => {
+  const lines = fs.readFileSync(path.join(ROOT, '.gitignore'), 'utf8').split('\n');
+  const start = lines.findIndex((line) => /^#.*dados privados/i.test(line));
+  const dirs: string[] = [];
+  for (const line of start < 0 ? [] : lines.slice(start + 1)) {
+    if (line.startsWith('#') || line.trim() === '') break;
+    const rule = /^\/([^/*]+)\/$/.exec(line.trim());
+    if (rule?.[1]) dirs.push(rule[1]);
+  }
+  return dirs;
+};
 const stack = read('stack.yml');
 const dockerfile = read('Dockerfile');
 const entrypoint = read('docker-entrypoint.sh');
@@ -238,8 +250,19 @@ test('guias: permissões de /srv/gmn, backup fora do original e hash agregado in
   assert.ok(!/(?<!LC_ALL=C )sort -z/.test(migration), 'sempre LC_ALL=C sort -z');
   assert.match(migration, /--rsync-path='sudo rsync'/);
   const backup = read('PLANO-DE-BACKUP-E-RESTAURACAO.md');
-  assert.ok(!/(gmn-evidencias-privadas|<EVIDENCIAS_PRIVADAS(_WSL)?>)[\\/]link-audit[\\/]\s*$/m.test(backup), 'o backup nunca grava no diretório do original');
-  assert.match(backup, /\/mnt\/d\/gmn-backups\/vps\/evidence\//);
+  // Repositório público: os destinos locais são marcadores, nunca caminhos reais da máquina do responsável.
+  assert.ok(!/\/mnt\/[a-z]\/|\b[A-Za-z]:\\[^\\\s`]/.test(backup), 'nenhum caminho local real versionado no plano de backup');
+  const destinations = [...backup.matchAll(/^rsync\b.*[ \t](\S+)[ \t]*$/gm)].map((m) => m[1] ?? '');
+  assert.equal(destinations.length, 3, 'rotina semanal: evidence, link-audits e audits');
+  // A pasta privada original vem da regra do próprio .gitignore (o teste não repete o nome dela).
+  const privateDirs = gitignorePrivateDirs();
+  assert.ok(privateDirs.length > 0, 'o .gitignore declara as pastas de dados privados');
+  for (const dest of destinations) {
+    assert.match(dest, /^<DESTINO_BACKUP_LOCAL>\/vps\/[a-z-]+\/$/, `destino ${dest}: marcador do backup local`);
+    const localRoot = dest.split('/vps/')[0] ?? '';
+    for (const dir of privateDirs) assert.ok(!localRoot.split(/[\\/]/).includes(dir), 'o backup nunca grava no diretório do original');
+    assert.ok(!/<EVIDENCIAS_PRIVADAS(_WSL)?>/.test(dest), 'o backup nunca grava no diretório do original');
+  }
 });
 
 test('roteiro H1: etapas de leitura primeiro, Worker em 0, sem comandos destrutivos fora do rollback autorizado', () => {
