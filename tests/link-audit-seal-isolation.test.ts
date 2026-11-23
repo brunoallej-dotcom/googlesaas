@@ -333,7 +333,8 @@ test('P1 W4.6: sign-runtime.ts só LÊ (o bloco original do exec em /proc/self e
 
 /** P1 W2: o CLI `scripts/link-audit-seal.ts` é o ÚNICO consumidor, e só destes arquivos; P1 W4.4: o `sign` entra por UM arquivo, sign-cli.ts. */
 const CLI_FILE = path.join(ROOT, 'scripts', 'link-audit-seal.ts');
-const CLI_ALLOWED: ReadonlySet<string> = new Set(['@/lib/link-audit-attestation/export', '@/lib/link-audit-attestation/export-run', '@/lib/link-audit-attestation/schemas', '@/lib/link-audit-attestation/sign-cli']);
+// W5.2b (spec §5.7, decisão do manager): o rótulo e a trava de homologação do `export --simulated` (só a variável da trava; nunca arquivo de ambiente)
+const CLI_ALLOWED: ReadonlySet<string> = new Set(['@/lib/link-audit-attestation/export', '@/lib/link-audit-attestation/export-run', '@/lib/link-audit-attestation/schemas', '@/lib/link-audit-attestation/sign-cli', '@/lib/link-audit-evidence/simulated']);
 /** P1 W4.6: a entrada do ARTEFATO ÚNICO (sign e close-key, sem o export) é o segundo consumidor, e só de sign-cli.ts. */
 const ARTIFACT_ENTRY = path.join(ROOT, 'scripts', 'link-audit-sign-artifact.ts');
 

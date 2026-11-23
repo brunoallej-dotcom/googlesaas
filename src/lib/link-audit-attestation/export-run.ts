@@ -5,7 +5,7 @@ import { MAX_SEAL_BYTES, SEAL_FILE, SEAL_KIND } from '../link-audit-evidence/pro
 import { createEvidenceReader } from '../link-audit-evidence/reader';
 import { createScoringBasisReader } from '../link-audit-evidence/scoring-basis';
 import { assertAllowedBase } from '../link-audit-evidence/store';
-import { buildCandidatePackage, computeDelta, refuse, type CandidateDelta, type CandidateInput, type ExportRefusal } from './export';
+import { basisIsSimulated, buildCandidatePackage, computeDelta, refuse, type CandidateDelta, type CandidateInput, type ExportRefusal } from './export';
 import { candidatePackageSchema, entryRef, MAX_PACKAGE_ENTRIES, type CandidatePackage } from './schemas';
 
 /*
@@ -31,6 +31,8 @@ export interface ExportOptions {
   /** Raiz do projeto: a pasta de evidências não pode estar em `public/`, `src/`, `.next/` nem `node_modules/` dela. */
   readonly projectRoot: string;
   readonly now: () => Date;
+  /** `--simulated` E a trava de homologação (W5.2b, spec §5.7), conferidos pelo CLI. */
+  readonly allowSimulated?: boolean;
 }
 export interface ExportDeps {
   /** Leitura das evidências e dos manifestos (nunca escreve). */
@@ -39,7 +41,7 @@ export interface ExportDeps {
   readonly outFs?: FsOps;
 }
 export type DeltaStatus = 'NOT_REQUESTED' | 'NO_SEALS' | 'COMPUTED' | 'UNREADABLE';
-export type ExportOutcome = { readonly ok: true; readonly package: CandidatePackage; readonly deltaStatus: DeltaStatus; readonly output: 'FILE' | 'STDOUT' } | ExportRefusal;
+export type ExportOutcome = { readonly ok: true; readonly package: CandidatePackage; readonly deltaStatus: DeltaStatus; readonly output: 'FILE' | 'STDOUT'; readonly simulated: boolean } | ExportRefusal;
 
 /** Bytes exatos do arquivo do pacote (e da saída padrão, quando não há `--out`). */
 export const serializePackage = (pkg: CandidatePackage): string => `${JSON.stringify(pkg, null, 2)}\n`;
@@ -61,7 +63,7 @@ export async function exportCandidatePackage(options: ExportOptions, deps: Expor
   if (target !== null && !target.ok) return target;
   const facts = await readEvidence(fs, base.real, options);
   if (!facts.ok) return facts;
-  const built = buildCandidatePackage({ ...facts.value, auditId: options.auditId, collectorHashes: options.collectorHashes, maxGapHours: options.maxGapHours, gapJustification: options.gapJustification, now: options.now() });
+  const built = buildCandidatePackage({ ...facts.value, auditId: options.auditId, collectorHashes: options.collectorHashes, maxGapHours: options.maxGapHours, gapJustification: options.gapJustification, now: options.now(), allowSimulated: options.allowSimulated === true });
   if (!built.ok) return built;
   const delta = options.sealsDir === null ? { status: 'NOT_REQUESTED' as const, delta: null } : await readDelta(fs, options.sealsDir, options.auditId, built.package.entries);
   const pkg = candidatePackageSchema.parse({ ...built.package, delta: delta.delta });
@@ -69,7 +71,7 @@ export async function exportCandidatePackage(options: ExportOptions, deps: Expor
     const written = await writeOut(outFs, target.value, serializePackage(pkg));
     if (written !== null) return written;
   }
-  return { ok: true, package: pkg, deltaStatus: delta.status, output: target === null ? 'STDOUT' : 'FILE' };
+  return { ok: true, package: pkg, deltaStatus: delta.status, output: target === null ? 'STDOUT' : 'FILE', simulated: basisIsSimulated(facts.value.basis) };
 }
 
 async function resolveEvidenceDir(fs: FsOps, dir: string, projectRoot: string): Promise<{ readonly ok: true; readonly real: string } | ExportRefusal> {

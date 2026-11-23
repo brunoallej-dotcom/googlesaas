@@ -20,6 +20,8 @@ export const EXPORT_REFUSAL_CODES = [
   'EXPORT_OUT_UNSAFE',
   'EXPORT_OUT_WRITE_FAILED',
   'EXPORT_TOO_MANY_ENTRIES',
+  // W5.2b (spec §5.7): captura SIMULADA sem a trava de homologação, ou `--simulated` sem trava / sem captura simulada
+  'EXPORT_SIMULATED_CAPTURE',
   'UNEXPECTED',
 ] as const;
 export type ExportRefusalCode = (typeof EXPORT_REFUSAL_CODES)[number];
@@ -46,7 +48,7 @@ export const captureLabel = (n: number): string => `c${String(n).padStart(4, '0'
 /** Forma mínima da base de pontuação (`ScoringBasis` a satisfaz); estrutural para este arquivo não importar o leitor. */
 export interface ExportBasis {
   readonly layout: 'VERSIONED' | 'LEGACY';
-  readonly evidences: ReadonlyArray<{ readonly ref: string; readonly kind: 'CAPTURE' | 'REPORT'; readonly capture: number; readonly observedAt: string; readonly contentSha256: string; readonly legacy: boolean }>;
+  readonly evidences: ReadonlyArray<{ readonly ref: string; readonly kind: 'CAPTURE' | 'REPORT'; readonly capture: number; readonly observedAt: string; readonly contentSha256: string; readonly legacy: boolean; readonly simulated?: true }>;
   readonly artifacts?: ReadonlyArray<{ readonly ref: string; readonly contentSha256: string; readonly legacy: boolean }>;
 }
 /** O que o leitor de evidências expõe por captura (`VersionEntry`). */
@@ -72,6 +74,8 @@ export interface CandidateInput {
   readonly maxGapHours: number | null;
   readonly gapJustification: string | null;
   readonly now: Date;
+  /** `--simulated` E a trava de homologação, conferidos por quem chama: só assim uma captura SIMULADA (ensaio) é exportada. */
+  readonly allowSimulated?: boolean;
 }
 export type CandidateResult = { readonly ok: true; readonly package: CandidatePackage } | ExportRefusal;
 export interface CandidateDelta {
@@ -160,10 +164,23 @@ function legacyChecks(input: CandidateInput): Decided {
   return { ok: true, statuses: {}, gap: null };
 }
 
+/** A base tem evidência da coleta SIMULADA do ensaio (marca da captura, spec §5.7). */
+export const basisIsSimulated = (basis: ExportBasis): boolean => basis.evidences.some((e) => e.simulated === true);
+
+/** W5.2b: captura simulada só com `--simulated` + trava; e `--simulated` só numa auditoria simulada (a opção AFIRMA que ela é simulada). */
+function simulationRefusal(basis: ExportBasis, allowSimulated: boolean): ExportRefusal | null {
+  const simulated = basisIsSimulated(basis);
+  if (simulated && !allowSimulated) return refuse('EXPORT_SIMULATED_CAPTURE', 'Captura SIMULADA (ensaio de homologação): não é evidência real. O export só a aceita com --simulated e a trava de homologação. Nada foi exportado.');
+  if (!simulated && allowSimulated) return refuse('EXPORT_SIMULATED_CAPTURE', '--simulated informado, mas esta auditoria não tem captura simulada. Nada foi exportado.');
+  return null;
+}
+
 /** Monta o pacote candidato ou recusa. Nunca lança por causa do conteúdo lido. */
 export function buildCandidatePackage(input: CandidateInput): CandidateResult {
   const nowMs = input.now.getTime();
   if (!Number.isFinite(nowMs)) return refuse('UNEXPECTED', 'Relógio inválido.');
+  const simulation = simulationRefusal(input.basis, input.allowSimulated === true);
+  if (simulation) return simulation;
   const entries = evidenceToProveFromBasis(input.basis).sort(byRef);
   if (entries.length > MAX_PACKAGE_ENTRIES) return refuse('EXPORT_TOO_MANY_ENTRIES', `Mais de ${MAX_PACKAGE_ENTRIES} entradas; o pacote não é produzido.`);
   const captures = input.basis.evidences.filter((e) => e.kind === 'CAPTURE');

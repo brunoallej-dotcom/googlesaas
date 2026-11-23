@@ -19,5 +19,11 @@ export type EnvReader = Readonly<Record<string, string | undefined>>;
 
 export const isHomologationLockOn = (env: EnvReader): boolean => env[HOMOLOGATION_LOCK_ENV] === HOMOLOGATION_LOCK_ON;
 
+/**
+ * A trava lida do ambiente do PROCESSO: só esta variável, nunca um arquivo de ambiente. É o único acesso ao ambiente de que o `export --simulated`
+ * precisa (o CLI do P1 e os módulos do `export` continuam sem olhar o ambiente; spec do P1 §5.7).
+ */
+export const homologationLockFromProcess = (): boolean => isHomologationLockOn({ [HOMOLOGATION_LOCK_ENV]: process.env[HOMOLOGATION_LOCK_ENV] });
+
 /** Marca de uma captura (qualquer uma das duas basta para tratá-la como simulada: na dúvida, simulada). */
 export const isSimulatedCapture = (file: { readonly provider: string; readonly simulated?: boolean }): boolean => file.simulated === true || file.provider === SIMULATED_PROVIDER;
