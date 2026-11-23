@@ -342,22 +342,26 @@ test('wrapper (os dois modelos): só marcadores; set -eu; confere o sha256 do ar
     assert.match(text, /^ARTIFACT='\/opt\/gmn-receivers\/<VERSAO>\/gmn-deploy-receiver\.cjs'$/m);
     assert.match(text, /^ARTIFACT_SHA256='<SHA256_DO_ARTEFATO>'$/m);
     assert.match(text, /^NODE='\/opt\/gmn-receivers\/node\/bin\/node'$/m);
-    assert.match(text, /^"\$FLOCK" -n -E "\$LOCK_BUSY" "\$LOCK" \/usr\/bin\/env -i PATH=\/usr\/bin:\/bin "SSH_ORIGINAL_COMMAND=\$\{SSH_ORIGINAL_COMMAND-\}" "\$NODE" --disable-sigusr1 "\$ARTIFACT"/m);
+    // revisão do PR #72 (item 5): o stderr do flock/env/node é capturado e filtrado (o stdout segue pelo descritor 3)
+    assert.match(text, /^\{ err="\$\(\/usr\/bin\/env -i PATH=\/usr\/bin:\/bin "SSH_ORIGINAL_COMMAND=\$\{SSH_ORIGINAL_COMMAND-\}" "\$FLOCK" -n -E "\$LOCK_BUSY" "\$LOCK" "\$NODE" --disable-sigusr1 "\$ARTIFACT"/m, 'env -i antes do flock: flock e node com o ambiente limpo');
+    assert.match(text, /2>&1 1>&3 3>&-\)" \|\| status=\$\?; \} 3>&1$/m);
     assert.match(text, /^FLOCK='\/usr\/bin\/flock'$/m);
     assert.match(text, /^LOCK_BUSY=75$/m, 'saída do flock -n que nenhum código do receptor usa');
     assert.match(text, /^\[ "\$status" -ne "\$LOCK_BUSY" \] \|\| fail E_LOCKED 16$/m);
     assert.match(text, /^\[ -x "\$NODE" \] && \[ -x "\$FLOCK" \] && \[ -f "\$LOCK" \] && \[ -r "\$LOCK" \] \|\| fail E_INTERNAL 29$/m);
     assert.match(text, /^\[ "\$actual" = "\$ARTIFACT_SHA256" \] \|\| fail E_ARTIFACT 17$/m);
     assert.match(text, /^fail\(\) \{\n {2}printf '%s\\n' "ERRO \$1" >&2\n {2}exit "\$2"\n\}$/m, 'a única saída do wrapper é ERRO <código>');
-    assert.ok(!/-o\b|--close/.test(/^"\$FLOCK"[^\n]*/m.exec(text)?.[0] ?? ''), 'o filho herda o descritor da trava (sem -o)');
+    const launchLine = /^\{ err="\$\(\/usr\/bin\/env -i [^\n]*/m.exec(text)?.[0] ?? '';
+    assert.ok(launchLine !== '' && !/-o\b|--close/.test(launchLine), 'o filho herda o descritor da trava (sem -o)');
     assert.ok(!/\beval\b|\$SSH_ORIGINAL_COMMAND\b(?!-)|`/.test(text.replace(/^#.*$/gm, '')), 'o comando pedido nunca é interpretado pelo shell');
     assert.ok(!/\b(?:\d{1,3}\.){3}\d{1,3}\b|https?:\/\//.test(text), 'nenhum host, IP ou URL real');
     assert.ok(text.indexOf('sha256sum') < text.indexOf('"$FLOCK" -n'), 'o hash é conferido antes de rodar qualquer coisa');
     assert.ok(!/^\s*exec\b/m.test(text), 'sem exec: o wrapper precisa mapear a saída do flock');
   }
   const prodText = fs.readFileSync(PROD_WRAPPER, 'utf8');
-  assert.match(prodText, /^LOCK='\/var\/lib\/gmn-deploy\/producao\/deploy\.flock'$/m);
-  assert.match(fs.readFileSync(HML_WRAPPER, 'utf8'), /^LOCK='\/var\/lib\/gmn-deploy\/homologacao\/deploy\.flock'$/m);
+  // revisão do PR #72 (item 6): a trava do kernel numa pasta do root que o usuário do receptor não grava
+  assert.match(prodText, /^LOCK='\/var\/lib\/gmn-receivers-locks\/producao\/deploy\.flock'$/m);
+  assert.match(fs.readFileSync(HML_WRAPPER, 'utf8'), /^LOCK='\/var\/lib\/gmn-receivers-locks\/homologacao\/deploy\.flock'$/m);
   const prodArgs = /--env producao[^\n]*\\\n[^\n]*/.exec(prodText)?.[0] ?? '';
   assert.match(prodArgs, /--env producao --stack-name gmn --stack \/opt\/gmn\/stack\.yml --host-vars '\/opt\/gmn\/<ARQUIVO_DE_VARIAVEIS>'/);
   assert.match(prodArgs, /--folders-check \/opt\/gmn\/verificar-pastas-fase6\.sh --state \/var\/lib\/gmn-deploy\/producao --log \/var\/log\/gmn-receivers\/producao-deploy\.log/);

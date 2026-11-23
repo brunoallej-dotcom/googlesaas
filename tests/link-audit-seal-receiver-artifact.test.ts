@@ -121,9 +121,11 @@ function fillWrapper(template: string, w: SealWorld, artifact: string, hash: str
   fs.writeFileSync(lock, '', { mode: 0o644 });
   const values: Readonly<Record<string, string>> = { ARTIFACT: artifact, ARTIFACT_SHA256: hash, NODE: node, LOCK: lock, SEALS_ROOT: w.sealsRoot, TRUST_LIST: w.trustFile, NODE_LOCK: w.lockFile, LOG: w.logFile };
   let text = fs.readFileSync(template, 'utf8');
+  const shared = ['ARTIFACT', 'ARTIFACT_SHA256', 'NODE', 'LOCK'];
   for (const [name, value] of Object.entries(values)) {
     const line = new RegExp(`^${name}='[^']*'$`, 'm');
-    assert.match(text, line, `${name} no modelo`);
+    if (shared.includes(name)) assert.match(text, line, `${name} no modelo`);
+    else if (!line.test(text)) continue; // os modelos de deploy não têm as variáveis do receptor de manifestos
     text = text.replace(line, `${name}='${value}'`);
   }
   const file = path.join(dir, 'wrapper');
@@ -249,12 +251,12 @@ test('wrapper (os dois modelos de manifestos): só marcadores; set -eu; sha256 d
     assert.match(text, /^\[ -x "\$NODE" \] && \[ -x "\$FLOCK" \] && \[ -f "\$LOCK" \] && \[ -r "\$LOCK" \] \|\| fail E_INTERNAL 29$/m);
     assert.match(text, /^\[ "\$status" -ne "\$LOCK_BUSY" \] \|\| fail E_LOCKED 16$/m);
     assert.match(text, /^umask 027$/m);
-    const launch = /^"\$FLOCK" -n -E "\$LOCK_BUSY" "\$LOCK" [\s\S]*?\|\| status=\$\?$/m.exec(text)?.[0] ?? '';
-    assert.ok(launch.startsWith('"$FLOCK" -n -E "$LOCK_BUSY" "$LOCK" /usr/bin/env -i PATH=/usr/bin:/bin "SSH_ORIGINAL_COMMAND=${SSH_ORIGINAL_COMMAND-}" "$NODE" --disable-sigusr1 --permission \\\n'), launch);
+    const launch = /^\{ err="\$\(\/usr\/bin\/env -i [\s\S]*?\|\| status=\$\?; \} 3>&1$/m.exec(text)?.[0] ?? '';
+    assert.ok(launch.startsWith('{ err="$(/usr/bin/env -i PATH=/usr/bin:/bin "SSH_ORIGINAL_COMMAND=${SSH_ORIGINAL_COMMAND-}" "$FLOCK" -n -E "$LOCK_BUSY" "$LOCK" "$NODE" --disable-sigusr1 --permission \\\n'), launch);
     const grants = [...launch.matchAll(/"(--allow-[a-z-]+)=([^"]*)"/g)].map((match) => `${match[1]}=${match[2]}`);
     assert.deepEqual(grants, ['--allow-fs-read=$SEALS_ROOT', '--allow-fs-read=$TRUST_LIST', '--allow-fs-read=$ARTIFACT', '--allow-fs-write=$SEALS_ROOT', '--allow-fs-write=${NODE_LOCK%/*}', '--allow-fs-write=${LOG%/*}'], 'exatamente os grants do §5.7');
     assert.ok(!/--allow-(?:child-process|worker|addons|wasi)|--allow-fs-[a-z]+=\*|,/.test(launch), 'nenhum outro grant, curinga ou lista por vírgula');
-    assert.match(launch, /"\$ARTIFACT" --env (?:producao|homologacao) --seals-root "\$SEALS_ROOT" --trust-list "\$TRUST_LIST" --lock "\$NODE_LOCK" --log "\$LOG" \|\| status=\$\?$/);
+    assert.match(launch, /"\$ARTIFACT" --env (?:producao|homologacao) --seals-root "\$SEALS_ROOT" --trust-list "\$TRUST_LIST" --lock "\$NODE_LOCK" --log "\$LOG" 2>&1 1>&3 3>&-\)" \|\| status=\$\?; \} 3>&1$/, 'o stdout segue pelo descritor 3; o stderr é capturado para o filtro');
     assert.ok(code.indexOf('sha256sum') < code.indexOf('umask 027') && code.indexOf('umask 027') < code.indexOf('"$FLOCK" -n'), 'hash, umask, e só então a trava e o Node');
     assert.ok(!/\beval\b|\$SSH_ORIGINAL_COMMAND\b(?!-)|`/.test(code), 'o comando pedido nunca é interpretado pelo shell');
     assert.ok(!/^\s*exec\b/m.test(code), 'sem exec: o wrapper precisa mapear a saída do flock');
@@ -262,9 +264,9 @@ test('wrapper (os dois modelos de manifestos): só marcadores; set -eu; sha256 d
     assert.ok(!/\b(?:\d{1,3}\.){3}\d{1,3}\b|https?:\/\//.test(text), 'nenhum host, IP ou URL real');
   }
   const prod = fs.readFileSync(PROD_WRAPPER, 'utf8');
-  for (const line of ["LOCK='/var/lib/gmn-seals/producao/seals.flock'", "SEALS_ROOT='<RAIZ_MANIFESTOS>'", "TRUST_LIST='/var/lib/gmn-deploy/producao/trust-keys.txt'", "NODE_LOCK='/var/lib/gmn-seals/producao/lock'", "LOG='/var/log/gmn-receivers/producao-seals.log'"]) assert.ok(prod.split('\n').includes(line), line);
+  for (const line of ["LOCK='/var/lib/gmn-receivers-locks/producao/seals.flock'", "SEALS_ROOT='<RAIZ_MANIFESTOS>'", "TRUST_LIST='/var/lib/gmn-deploy/producao/trust-keys.txt'", "NODE_LOCK='/var/lib/gmn-seals/producao/lock'", "LOG='/var/log/gmn-receivers/producao-seals.log'"]) assert.ok(prod.split('\n').includes(line), line);
   const hml = fs.readFileSync(HML_WRAPPER, 'utf8');
-  for (const line of ["LOCK='/var/lib/gmn-seals/homologacao/seals.flock'", "SEALS_ROOT='/srv/gmn-hml/manifestos'", "TRUST_LIST='/var/lib/gmn-deploy/homologacao/trust-keys.txt'", "NODE_LOCK='/var/lib/gmn-seals/homologacao/lock'", "LOG='/var/log/gmn-receivers/homologacao-seals.log'"]) assert.ok(hml.split('\n').includes(line), line);
+  for (const line of ["LOCK='/var/lib/gmn-receivers-locks/homologacao/seals.flock'", "SEALS_ROOT='/srv/gmn-hml/manifestos'", "TRUST_LIST='/var/lib/gmn-deploy/homologacao/trust-keys.txt'", "NODE_LOCK='/var/lib/gmn-seals/homologacao/lock'", "LOG='/var/log/gmn-receivers/homologacao-seals.log'"]) assert.ok(hml.split('\n').includes(line), line);
   assert.ok(!/trust-keys\.pending/.test(prod + hml), 'a pendente nunca entra nos grants');
 });
 
@@ -287,6 +289,8 @@ test('wrapper em processo (node falso): hash certo ⇒ roda o node com EXATAMENT
     const hostile = 'put $(id) `id` ; rm -rf / && echo "x"';
     const result = spawnSync('/bin/sh', [filled.file], { env: { PATH: '/usr/bin:/bin', SSH_ORIGINAL_COMMAND: hostile, NODE_OPTIONS: '--require /tmp/x.js', LD_PRELOAD: '/tmp/x.so', HOME: '/home/x' } as unknown as NodeJS.ProcessEnv, encoding: 'utf8', timeout: 30_000 });
     assert.equal(result.status, 10, result.stderr);
+    const quiet = spawnSync('/bin/sh', [filled.file], { env: { PATH: '/usr/bin:/bin', SSH_ORIGINAL_COMMAND: hostile, NODE_OPTIONS: '--require /tmp/x.js', HOME: '/home/x', ENV: '/tmp/x.sh', BASH_ENV: '/tmp/x.sh' } as unknown as NodeJS.ProcessEnv, encoding: 'utf8', timeout: 30_000 });
+    assert.deepEqual([quiet.status, quiet.stdout, quiet.stderr], [10, '', 'ERRO E_COMMAND\n'], `${env}: só a linha do receptor, nada do ambiente hostil no stderr`);
     const seen = JSON.parse(fs.readFileSync(record, 'utf8')) as { argv: string[]; env: Record<string, string>; umask: number };
     assert.deepEqual(seen.env, { PATH: '/usr/bin:/bin', SSH_ORIGINAL_COMMAND: hostile }, `${env}: ambiente limpo, comando repassado byte a byte`);
     assert.equal(seen.umask, 0o027, `${env}: umask 027`);
@@ -364,6 +368,51 @@ test('wrapper em processo: trava do kernel (flock -n) ocupada por outra execuç�
   assert.ok(fs.existsSync(record), 'sem disputa, o node roda (debaixo da trava)');
 });
 
+const ALL_WRAPPERS = ['gmn-deploy.modelo.sh', 'gmn-hml-deploy.modelo.sh', 'gmn-seals.modelo.sh', 'gmn-hml-seals.modelo.sh'].map((name) => path.join(RECEIVER_TEMPLATES_DIR, name));
+
+test('wrapper (os quatro modelos; revisão do PR #72, item 5): o próprio wrapper nunca ecoa caminho nem texto livre: só `ERRO <código literal>` pelo fail e a linha do receptor que passa no filtro do conjunto fechado (uma linha, `ERRO E_…`, sem `/`, `.` nem espaço extra); o stderr do flock, do env e do node é capturado; a trava do kernel fica numa pasta do root', () => {
+  for (const template of ALL_WRAPPERS) {
+    const code = fs.readFileSync(template, 'utf8').replace(/^#.*$/gm, '');
+    assert.ok(!/\becho\b/.test(code), 'sem echo');
+    const prints = [...code.matchAll(/printf [^\n]*/g)].map((match) => match[0]);
+    assert.deepEqual(prints, ["printf '%s\\n' \"ERRO $1\" >&2", "printf '%s\\n' \"$1\" | LC_ALL=C /usr/bin/grep -Eqx 'ERRO E_[A-Z0-9_]+( [A-Z0-9_-]+)?' 2>/dev/null", "printf '%s\\n' \"$err\" >&2"], `${path.basename(template)}: só estes printf`);
+    assert.match(code, /actual="\$\(\/usr\/bin\/sha256sum -- "\$ARTIFACT" 2>\/dev\/null\)"/, 'o stderr do sha256sum nunca sai');
+    assert.match(code, /^set -eu\n+unset LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_DEBUG LD_DEBUG_OUTPUT LD_PROFILE LD_PROFILE_OUTPUT$/m, 'variáveis do carregador fora antes de qualquer programa');
+    assert.match(code, /^\{ err="\$\(\/usr\/bin\/env -i PATH=\/usr\/bin:\/bin "SSH_ORIGINAL_COMMAND=\$\{SSH_ORIGINAL_COMMAND-\}" "\$FLOCK" /m, 'env -i antes do flock (flock e node com o ambiente limpo)');
+    for (const call of code.matchAll(/\bfail (\S+) (\S+)/g)) assert.match(`${call[1]} ${call[2]}`, /^E_[A-Z_]+ \d+$/, `${path.basename(template)}: fail só com código literal`);
+    assert.match(code, /\[ "\$status" -ne "\$LOCK_BUSY" \] \|\| fail E_LOCKED 16\n\[ "\$status" -ne 0 \] \|\| exit 0\npublic_error "\$err" \|\| fail E_INTERNAL 29\nprintf '%s\\n' "\$err" >&2\nexit "\$status"\n$/, 'o filtro antes de repassar a linha do receptor');
+    assert.match(code, /case "\$1" in '' \| \*"\$NL"\*\) return 1 ;; esac/, 'vazio ou mais de uma linha não passa');
+    assert.match(code, /^LOCK='\/var\/lib\/gmn-receivers-locks\/(?:producao|homologacao)\/(?:deploy|seals)\.flock'$/m, 'trava do kernel na pasta do root');
+  }
+});
+
+test('wrapper em processo (revisão do PR #72, item 5): node que morre com pilha e caminho no stderr, ou que escreve duas linhas, ⇒ só `ERRO E_INTERNAL` (29); a linha do receptor do conjunto fechado passa com a saída dele; no sucesso, o stdout segue e o ruído do stderr some', () => {
+  const w = sealWorld();
+  for (const template of ALL_WRAPPERS) {
+    const dir = realTmp('sra-noisy-');
+    const artifact = path.join(dir, 'artefato.cjs');
+    fs.writeFileSync(artifact, 'artefato fictício', { mode: 0o444 });
+    const node = path.join(dir, 'node');
+    const filled = fillWrapper(template, w, artifact, sha256('artefato fictício'), node);
+    const behave = (body: string): void => fs.writeFileSync(node, `#!${process.execPath}\n${body}\n`, { mode: 0o755 });
+    const call = () => runWrapper(filled.file, { PATH: '/usr/bin:/bin', SSH_ORIGINAL_COMMAND: 'qualquer-coisa' });
+    behave(`process.stderr.write('Error: Access to this API has been restricted\\n    at Object.openSync (node:fs:573:18)\\n    at /opt/gmn-receivers/x/artefato.cjs:1:1 ' + ${JSON.stringify(w.root)} + '\\n'); process.exit(1);`);
+    assert.deepEqual(Object.values(call()), [29, '', 'ERRO E_INTERNAL\n'], `${path.basename(template)}: pilha com caminho`);
+    behave("process.stderr.write('ERRO E_COMMAND\\nERRO E_INTERNAL\\n'); process.exit(10);");
+    assert.deepEqual(Object.values(call()), [29, '', 'ERRO E_INTERNAL\n'], 'duas linhas');
+    behave("process.stderr.write('ERRO E_COMMAND /tmp/x\\n'); process.exit(10);");
+    assert.deepEqual(Object.values(call()), [29, '', 'ERRO E_INTERNAL\n'], 'linha com caminho');
+    behave("process.exit(3);");
+    assert.deepEqual(Object.values(call()), [29, '', 'ERRO E_INTERNAL\n'], 'saída sem linha');
+    behave("process.stderr.write('ERRO E_V2_REFUSED SEAL_KEY_REVOKED\\n'); process.exit(32);");
+    assert.deepEqual(Object.values(call()), [32, '', 'ERRO E_V2_REFUSED SEAL_KEY_REVOKED\n'], 'a linha do receptor passa');
+    behave("process.stderr.write('ERRO E_POSTDEPLOY_CHECK PD-07\\n'); process.exit(64);");
+    assert.deepEqual(Object.values(call()), [64, '', 'ERRO E_POSTDEPLOY_CHECK PD-07\n'], 'detalhe PD-xx do receptor de deploy');
+    behave("process.stdout.write('OK WRITTEN aud-0123456789abcdef/seal-0001.json ' + 'a'.repeat(64) + '\\n'); process.stderr.write('(node:1) Warning: ' + " + JSON.stringify(w.root) + " + '\\n');");
+    assert.deepEqual(Object.values(call()), [0, `OK WRITTEN aud-0123456789abcdef/seal-0001.json ${'a'.repeat(64)}\n`, ''], 'sucesso: stdout segue, ruído some');
+  }
+});
+
 /* ===================================================================================================================== zod e CI */
 
 test('P9-R11 artefato: a entrada configura o zod SEM JIT antes de qualquer esquema; carregar o artefato real não chama Function nenhuma vez', { timeout: 60_000 }, async () => {
@@ -421,14 +470,19 @@ test('runbook H-04/H-05/H-06 (P9.3b): artefato e modelos de manifestos instalado
   assert.match(h05, /grep -qxE '0\|10001'/, 'e o bloco confere');
   const h06 = blocks(section('### H-06', '### H-07'));
   const folders = h06.find((block) => block.includes('/srv/gmn-hml/manifestos')) ?? '';
-  const state = h06.find((block) => block.includes('seals.flock')) ?? '';
+  const state = h06.find((block) => block.includes('gmn-receivers-locks')) ?? '';
   for (const block of [folders, state]) assert.ok(block.startsWith('( set -euo pipefail'), 'H-06 em subshell');
   assert.match(folders, /sudo install -d -m 2750 -o gmn-hml-seals -g 10001 \/srv\/gmn-hml\/manifestos/);
   assert.match(folders, /\[ "\$\(stat -c '%U:%g %a' \/srv\/gmn-hml\/manifestos\)" = "gmn-hml-seals:10001 2750" \]/);
-  assert.match(state, /sudo install -m 0644 -o root -g root \/dev\/null \/var\/lib\/gmn-seals\/homologacao\/seals\.flock/);
+  assert.match(state, /sudo install -d -m 0755 -o root -g root \/var\/lib\/gmn-receivers-locks \/var\/lib\/gmn-receivers-locks\/homologacao/, 'a pasta das travas do kernel é do root e o usuário do receptor não grava nela');
+  assert.match(state, /for lock in deploy seals; do\n\s+f="\/var\/lib\/gmn-receivers-locks\/homologacao\/\$lock\.flock"\n\s+\[ -e "\$f" \] \|\| sudo install -m 0644 -o root -g root \/dev\/null "\$f"/, 'as duas travas do kernel, do root, 0644');
+  assert.ok(!/gmn-seals\/homologacao\/seals\.flock|gmn-deploy\/homologacao\/deploy\.flock/.test(runbook), 'nenhuma trava do kernel numa pasta do usuário do receptor');
+  const cleanup = section('### H-04', '### H-05');
+  assert.match(cleanup, /sudo flock -n \/var\/lib\/gmn-receivers-locks\/<amb>\/seals\.flock rm -- \/var\/lib\/gmn-seals\/<amb>\/lock/, 'a limpeza manual segura a trava do kernel enquanto apaga');
+  assert.match(cleanup, /sudo flock -n \/var\/lib\/gmn-receivers-locks\/<amb>\/deploy\.flock rm -- \/var\/lib\/gmn-deploy\/<amb>\/deploy\.lock/);
   assert.match(state, /sudo install -d -m 0700 -o gmn-hml-seals -g gmn-hml-seals \/var\/lib\/gmn-seals\/homologacao/);
   const template = fs.readFileSync(HML_WRAPPER, 'utf8');
-  for (const [name, value] of [['LOCK', '/var/lib/gmn-seals/homologacao/seals.flock'], ['SEALS_ROOT', '/srv/gmn-hml/manifestos'], ['NODE_LOCK', '/var/lib/gmn-seals/homologacao/lock'], ['LOG', '/var/log/gmn-receivers/homologacao-seals.log']] as const) {
+  for (const [name, value] of [['LOCK', '/var/lib/gmn-receivers-locks/homologacao/seals.flock'], ['SEALS_ROOT', '/srv/gmn-hml/manifestos'], ['NODE_LOCK', '/var/lib/gmn-seals/homologacao/lock'], ['LOG', '/var/log/gmn-receivers/homologacao-seals.log']] as const) {
     assert.ok(template.split('\n').includes(`${name}='${value}'`), `${name} do modelo`);
     if (name !== 'LOG') assert.ok(runbook.includes(value.replace(/\/lock$/, '')), `${value}: o mesmo caminho no runbook`);
   }

@@ -596,6 +596,14 @@ chamador, prazo com `SIGKILL` e teto de saída). A lista de confiança usa o mó
   existente ⇒ `E_LOCKED`. Ela nunca retoma nem apaga uma trava alheia; a liberação só apaga o arquivo com o próprio pid. Depois de um
   `SIGKILL`, o responsável confere a trava do kernel e apaga o arquivo à mão (runbook H-04). A gramática vem antes: `E_COMMAND` não lê
   o stdin nem cria nada.
+  - *Revisão do PR #72 (P9.3b), nos dois receptores:* o arquivo da trava do kernel saiu da pasta de estado (que o usuário do receptor grava e
+    onde ele poderia apagar ou trocar o arquivo) para `/var/lib/gmn-receivers-locks/<amb>/deploy.flock` (e `seals.flock`), arquivo do root
+    `0644` numa pasta do root `0755`. A limpeza manual da trava de defesa segura a trava do kernel enquanto apaga (`sudo flock -n <trava> rm
+    -- <arquivo>`). O wrapper tira as variáveis do carregador dinâmico (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `LD_DEBUG`…) antes de
+    rodar qualquer programa, põe o `env -i` ANTES do `flock` (o `flock` e o Node nascem com o ambiente limpo) e captura o stderr do `env`, do
+    `flock` e do Node: só uma linha `ERRO E_<CÓDIGO>[ <DETALHE>]` (maiúsculas, dígitos, `_`, `-`) passa; qualquer outra coisa (falha de
+    partida, pilha, aviso, caminho) vira `ERRO E_INTERNAL` (29). No sucesso, o stdout segue direto e o ruído do stderr some. O wrapper nunca
+    ecoa caminho nem texto livre (teste estático e em processo).
 - **Recebimento** `<estado>/incoming` (`0700`, criado pelo receptor; link ou arquivo no lugar ⇒ `E_INTERNAL`). O `upload` grava
   `.bundle-<sha40>.partial-<aleatório>` (`O_EXCL | O_NOFOLLOW`, `0600`) e só renomeia para `bundle-<sha40>.tar.gz` depois do hash conferido
   (`rename` + `fsync` da pasta). Só nomes nesses dois formatos são apagados, e o resto da pasta não é tocado. O stdin tem de terminar
@@ -777,8 +785,10 @@ na fatia, todas de falha fechada:
   `4d16072f87744ab3a1a47ac85e2f331a7b35695342fa4f56631fa0c0d67c8224` (spec do P1 §5.5.1); os testes do `sign` e do `close-key` passam sem
   alteração.
 - **Wrapper.** O padrão da P9.3a: sha256 do artefato a cada execução (`E_ARTIFACT`, 17), `flock -n -E 75` num arquivo do root
-  (`/var/lib/gmn-seals/<amb>/seals.flock`, H-06) ⇒ `E_LOCKED` (16), Node, `flock` ou trava ausentes ⇒ `E_INTERNAL` (29) sem caminho, `env -i
-  PATH=/usr/bin:/bin` e só o `SSH_ORIGINAL_COMMAND` repassado. Mais: `umask 027` antes do Node, e `--disable-sigusr1 --permission` com
+  (`/var/lib/gmn-receivers-locks/<amb>/seals.flock`, numa pasta do root que o usuário do receptor não grava, H-06; revisão do PR #72) ⇒
+  `E_LOCKED` (16), Node, `flock` ou trava ausentes ⇒ `E_INTERNAL` (29) sem caminho, `env -i PATH=/usr/bin:/bin` (antes do `flock`) e só o
+  `SSH_ORIGINAL_COMMAND` repassado; o stderr do `env`, do `flock` e do Node é filtrado (só a linha `ERRO …` do conjunto fechado passa; o
+  resto vira `E_INTERNAL`, ver a nota da revisão do PR #72 no §5.6). Mais: `umask 027` antes do Node, e `--disable-sigusr1 --permission` com
   **exatamente** os grants da linha acima, **um por caminho** (o Node 20.7+ não aceita a lista por vírgula da linha do §5.7):
   `--allow-fs-read` da pasta de manifestos, da lista instalada e do artefato; `--allow-fs-write` da pasta de manifestos, da pasta da trava e
   da pasta do log. Nenhum `--allow-child-process`, `--allow-worker`, `--allow-addons` ou `--allow-wasi`. Produção tem o marcador
@@ -789,8 +799,8 @@ na fatia, todas de falha fechada:
   sobre a lista instalada (RC-09) e com escrita na pasta de manifestos e leitura da lista. Qualquer desvio ⇒ `E_INTERNAL`, antes de ler o stdin. A entrada também aplica `umask 027` (defesa).
 - **Trava de defesa** (`--lock`, como a `deploy.lock` da P9.3a): arquivo `O_EXCL | O_NOFOLLOW` com o pid; existente ⇒ `E_LOCKED`, nunca
   retomado. A liberação só apaga o arquivo que ainda é o **mesmo inode** que o processo criou, conferido por uma abertura só de escrita
-  (sob `--permission` o receptor não tem leitura da pasta da trava). Depois de `SIGKILL`, o responsável confere a trava do kernel e apaga à mão
-  (runbook H-04).
+  (sob `--permission` o receptor não tem leitura da pasta da trava); a mesma prova vale quando a gravação do pid falha logo depois da criação
+  (revisão do PR #72). Depois de `SIGKILL`, o responsável apaga à mão segurando a trava do kernel (runbook H-04).
 - **Passo 1:** prazo de 30 s para o stdin **inteiro** (cobre também o tempo sem dados: quem goteja não segura a trava); o primeiro byte além
   de 256 KiB recusa sem ler o resto; 0 bytes ⇒ `E_INPUT_TRUNCATED` (um manifesto nunca é vazio); bytes a menos dão `E_HASH_MISMATCH`.
 - **Passo 2:** a lista instalada é lida **uma vez**, por um único descritor (`O_NOFOLLOW | O_NONBLOCK`, tipo e tamanho no descritor, teto de

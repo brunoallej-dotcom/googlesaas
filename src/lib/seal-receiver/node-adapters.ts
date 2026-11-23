@@ -64,8 +64,10 @@ async function createLock(path: string): Promise<fsp.FileHandle | null> {
     await handle.writeFile(`${process.pid}\n`, 'ascii');
     return handle;
   } catch (error) {
-    await handle.close();
-    await fsp.unlink(path).catch(() => undefined); // o arquivo acabou de ser criado por este processo (O_EXCL)
+    // revisão do PR #72, item 6: nem aqui se apaga sem provar que o arquivo no caminho ainda é o MESMO inode criado por este processo
+    const own = await handle.stat().catch(() => null);
+    await handle.close().catch(() => undefined);
+    if (own !== null && (await isOwnLock(path, own))) await fsp.unlink(path).catch(() => undefined);
     throw error;
   }
 }
