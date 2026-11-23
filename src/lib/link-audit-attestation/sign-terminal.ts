@@ -224,6 +224,7 @@ function readUntilLine(terminal: SignTerminal, state: LineState, first: Buffer, 
 export function terminalConfirm(input: HiddenInput, say: (line: string) => void): (facts: ConfirmationFacts) => Promise<string> {
   return async (facts) => {
     input.hideEcho(); // revisão da W4.4: o eco sai ANTES da tela (sob carga, uma digitação rápida chegou antes do modo bruto e ecoou)
+    if (facts.simulated === true) say('ATENÇÃO: SIMULADA — ensaio. Este pacote é da coleta SINTÉTICA de homologação (W5.2b): só para o ensaio, nunca evidência real.');
     say(`Confirmação humana (passo 11): auditoria ${facts.auditId}, manifesto seq ${facts.seq}, ${facts.entries} entradas a atestar.`);
     say(`Digite os ${CONFIRM_PREFIX_LENGTH} primeiros caracteres de packageSha256 conforme o DOSSIÊ de aprovação (a digitação não aparece na tela) e tecle Enter:`);
     const typed = await input.readLine(MAX_CONFIRMATION_BYTES);

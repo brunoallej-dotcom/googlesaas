@@ -219,6 +219,8 @@ export function buildCandidatePackage(input: CandidateInput): CandidateResult {
     checks: CHECK_IDS.map((id) => ({ id, status: decided.statuses[id] ?? 'NOT_EXECUTED' })),
     gap: decided.gap,
     entries,
+    // a marca da coleta SIMULADA entra no corpo (e no hash) só quando a exportação simulada foi permitida (opção + trava)
+    ...(basisIsSimulated(input.basis) ? { simulated: true as const } : {}),
   };
   let packageSha256: string;
   try {

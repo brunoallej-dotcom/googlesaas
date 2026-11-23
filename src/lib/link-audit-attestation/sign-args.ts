@@ -28,10 +28,12 @@ export interface SignArgs {
   readonly custodian: string;
   readonly trustKeys: string;
   readonly json: boolean;
+  /** `--simulated` (W5.2b, spec §5.7): só para o pacote da coleta SIMULADA do ensaio; opção própria, nunca variável de ambiente. */
+  readonly simulated: boolean;
 }
 
 const VALUE_FLAGS: ReadonlySet<string> = new Set(['audit', 'package', 'approval', 'dossier', 'risk-acceptance', 'seals-dir', 'expect-seq', 'key-id', 'key-source', 'custodian', 'trust-keys']);
-const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(['first', 'json']);
+const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(['first', 'json', 'simulated']);
 const CLOSE_VALUE_FLAGS: ReadonlySet<string> = new Set(['retired-key-id', 'seals-dir', 'receipts-dir', 'key-id', 'key-source', 'custodian', 'trust-keys']);
 const CLOSE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set(['json']);
 /** As únicas opções com "key" no nome que o `sign` e o `close-key` aceitam: nenhuma recebe segredo (rótulos públicos, caminho e lista de PÚBLICAS). */
@@ -175,7 +177,7 @@ export function parseSignArgs(tokens: readonly string[]): SignArgs | SignRefusal
   if ('ok' in key) return key;
   const custodian = values.get('custodian');
   if (custodian === undefined || !shortLabel.safeParse(custodian).success) return usage('Informe --custodian <rótulo curto> (iniciais ou ID; sem e-mail nem telefone).');
-  return { auditId, ...paths, ...seq, ...key, custodian, json: flags.has('json') };
+  return { auditId, ...paths, ...seq, ...key, custodian, json: flags.has('json'), simulated: flags.has('simulated') };
 }
 
 /* ------------------------------------------------------------------------------------------------------------------- close-key (W4.5) */

@@ -240,9 +240,9 @@ function keyOpener(args: { readonly keySource: KeySource; readonly keyId: string
 async function signWithTerminal(args: SignArgs, out: Line, err: Line, now: () => Date, deps: SignCliDeps, env: Readonly<Record<string, string | undefined>>): Promise<SignRunResult> {
   const input = openHiddenInput(deps.terminal ?? process.stdin);
   try {
-    const { auditId, custodian, packagePath, approvalPath, dossierPath, riskAcceptancePath, sealsDir, trustKeys, expectSeq, first, keyId } = args;
+    const { auditId, custodian, packagePath, approvalPath, dossierPath, riskAcceptancePath, sealsDir, trustKeys, expectSeq, first, keyId, simulated } = args;
     return await runSign(
-      { auditId, custodian, packagePath, approvalPath, dossierPath, riskAcceptancePath, sealsDir, trustKeys, expectSeq, first, keyId },
+      { auditId, custodian, packagePath, approvalPath, dossierPath, riskAcceptancePath, sealsDir, trustKeys, expectSeq, first, keyId, simulated },
       { fs: deps.fs ?? nodeFsOps, now, confirm: terminalConfirm(input, err), openKey: keyOpener(args, input, deps, env, { out, err }), ...(deps.tempSuffix ? { tempSuffix: deps.tempSuffix } : {}) },
     );
   } finally {

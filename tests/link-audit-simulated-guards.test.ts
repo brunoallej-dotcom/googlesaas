@@ -20,6 +20,7 @@ import { makeService, OP_A, resultsEnv, treeOf } from './helpers/link-audit-resu
 import { canonicalJson, sha256Hex } from '../src/lib/link-audit/canonical';
 import { nodeFsOps } from '../src/lib/link-audit/snapshot-store';
 import { exportCandidatePackage } from '../src/lib/link-audit-attestation/export-run';
+import { computePackageSha256 } from '../src/lib/link-audit-attestation/package-hash';
 import { createScoringBasisReader } from '../src/lib/link-audit-evidence/scoring-basis';
 import { registerCleanup, tmpDir } from './helpers/link-audit-evidence-fixtures';
 import { at, HOUR, jsonOf, makeAudit, newOut, readJsonFile, runCli as runSeal, exportArgs } from './helpers/link-audit-seal-export-fixtures';
@@ -87,7 +88,13 @@ test('export (2c): com --simulated E a trava, o pacote sai (formato do pacote in
   assert.match(human.stdout, /SIMULADA — ensaio/);
   const pkg = readJsonFile<Record<string, unknown> & { entries: Array<{ ref: string; contentSha256: string }> }>(out);
   assert.equal(pkg.entries.find((e) => e.ref === 'capture:c0001')?.contentSha256, collectorHash);
-  assert.deepEqual(Object.keys(pkg).sort(), ['attestable', 'auditId', 'checks', 'delta', 'entries', 'gap', 'generatedAt', 'integrity', 'kind', 'layout', 'packageSha256', 'schemaVersion', 'summary'], 'nenhum campo novo no pacote');
+  // a marca ENTRA no pacote (decisão do manager na revisão do PR #62), coberta pelo packageSha256; nos reais o campo não existe
+  assert.deepEqual(Object.keys(pkg).sort(), ['attestable', 'auditId', 'checks', 'delta', 'entries', 'gap', 'generatedAt', 'integrity', 'kind', 'layout', 'packageSha256', 'schemaVersion', 'simulated', 'summary']);
+  assert.equal(pkg.simulated, true);
+  assert.equal(computePackageSha256(pkg), pkg.packageSha256, 'o hash declarado cobre o corpo COM a marca');
+  const { simulated: _mark, ...unmarked } = pkg;
+  void _mark;
+  assert.notEqual(computePackageSha256(unmarked), pkg.packageSha256, 'tirar a marca muda o hash (o sign recusa o pacote como não aprovado ou inconsistente)');
   assert.equal((pkg.summary as { company: { name: string } }).company.name, 'Empresa de Ensaio');
   const json = await runSeal(simExport(evidence, collectorHash, ['--simulated', '--out', newOut(), '--json']), EXPORT_NOW, { getEnv: () => LOCK });
   assert.equal(json.code, 0);
@@ -99,9 +106,11 @@ test('export (2c): --simulated com a trava numa auditoria REAL ⇒ EXPORT_SIMULA
   const refused = await runSeal(exportArgs(audit, ['--simulated', '--json']), undefined, { getEnv: () => LOCK });
   assert.equal(refused.code, 3);
   assert.equal(jsonOf(refused).code, 'EXPORT_SIMULATED_CAPTURE');
-  const ok = await runSeal(exportArgs(audit, ['--json']), undefined, { getEnv: () => LOCK });
+  const realOut = newOut();
+  const ok = await runSeal(exportArgs(audit, ['--json'], realOut), undefined, { getEnv: () => LOCK });
   assert.equal(ok.code, 0, ok.stdout);
   assert.ok(!('simulated' in jsonOf(ok)), 'a forma estável do --json real não muda');
+  assert.ok(!('simulated' in readJsonFile(realOut)), 'o pacote real não ganha o campo (mesma forma e mesmo hash de antes)');
 });
 
 test('hash (2b): tirar a marca da captura e "consertar" todos os hashes (captura e vínculo do relatório) não engana o export: o hash registrado do coletor cobre a marca', async () => {

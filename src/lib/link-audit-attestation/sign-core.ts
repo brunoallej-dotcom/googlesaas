@@ -21,6 +21,8 @@ export const SIGN_REFUSAL_CODES = [
   'SIGN_APPROVAL_INVALID',
   'SIGN_INTEGRITY_NOT_OK',
   'SIGN_LEGACY_NOT_ATTESTABLE',
+  // W5.2b (spec §5.7): pacote SIMULADO sem `--simulated`, ou `--simulated` com pacote real
+  'SIGN_SIMULATED_PACKAGE',
   'SIGN_CHECK_NOT_EXECUTED',
   'SIGN_DOSSIER_MISMATCH',
   'SIGN_SEAL_CHAIN_INVALID',
@@ -132,6 +134,8 @@ export interface SignCoreInput {
   readonly first: boolean;
   /** Estado de `--key-id` na lista `--trust-keys` já parseada (`sign-chain.ts`); só `active` assina (§5.5.1 item 2). */
   readonly signingKeyStatus: SigningKeyStatus;
+  /** `--simulated` (W5.2b, spec §5.7): afirma que o pacote é o da coleta SIMULADA do ensaio. Ausente = `false` (pacote simulado é recusado). */
+  readonly simulated?: boolean;
 }
 
 /**
@@ -150,6 +154,8 @@ export interface ConfirmationFacts {
   readonly seq: number;
   /** Quantas entradas o manifesto vai atestar (o conjunto exato do pacote). */
   readonly entries: number;
+  /** O pacote é o da coleta SIMULADA do ensaio (marca `simulated: true`, W5.2b): a tela mostra "SIMULADA — ensaio". Ausente = real. */
+  readonly simulated?: boolean;
 }
 
 /**
@@ -200,6 +206,8 @@ export interface SignPlan {
   readonly custodian: string;
   readonly roleException: boolean;
   readonly requiresLaterReview: boolean;
+  /** O pacote assinado é o da coleta SIMULADA do ensaio (só com `--simulated`). Ausente = real. */
+  readonly simulated?: boolean;
 }
 export type SignCoreResult<K> = { readonly ok: true; readonly plan: SignPlan; readonly key: K } | SignRefusal;
 
@@ -278,6 +286,17 @@ function humanChecksRefusal(pkg: CandidatePackage, approval: Approval): SignRefu
   if (uncovered) return refuse('SIGN_CHECK_NOT_EXECUTED', `A verificação ${uncovered} não foi executada e a aprovação não traz resultado humano PASS com nota. ${NOTHING_SIGNED}`);
   const extra = approval.humanChecks.find((check) => !notExecuted.includes(check.id));
   if (extra) return refuse('SIGN_APPROVAL_INVALID', `A aprovação traz resultado humano para ${extra.id}, que o pacote não marca NOT_EXECUTED. ${NOTHING_SIGNED}`);
+  return null;
+}
+
+/**
+ * W5.2b (spec §5.7), logo depois de o pacote aprovado e íntegro ser conhecido: pacote SIMULADO só com `--simulated`, e `--simulated` só com pacote
+ * simulado (a opção AFIRMA o que o pacote é). Nada de variável de ambiente: o `sign` roda com `env -i`.
+ */
+function simulationRefusal(pkg: CandidatePackage, simulatedFlag: boolean): SignRefusal | null {
+  const simulated = pkg.simulated === true;
+  if (simulated && !simulatedFlag) return refuse('SIGN_SIMULATED_PACKAGE', `Pacote da coleta SIMULADA (ensaio de homologação): só se assina no ensaio, com --simulated; nunca é evidência real. ${NOTHING_SIGNED}`);
+  if (!simulated && simulatedFlag) return refuse('SIGN_SIMULATED_PACKAGE', `--simulated informado, mas o pacote não é o da coleta simulada do ensaio. ${NOTHING_SIGNED}`);
   return null;
 }
 
@@ -386,7 +405,7 @@ function decide(input: SignCoreInput, now: () => Date): Decision {
   const parsed = usageRefusal(input) ?? parseInputs(input);
   if (!parsed.ok) return parsed;
   const { pkg, approval } = parsed;
-  const refused = approvedPackageRefusal(pkg, approval) ?? checksRefusal(pkg, approval);
+  const refused = approvedPackageRefusal(pkg, approval) ?? simulationRefusal(pkg, input.simulated === true) ?? checksRefusal(pkg, approval);
   if (refused) return refused;
   const dossierSha256 = sha256OfBytes(input.dossierBytes);
   if (dossierSha256 !== approval.dossier.sha256) return refuse('SIGN_DOSSIER_MISMATCH', `O SHA-256 do dossiê não confere com o da aprovação. ${NOTHING_SIGNED}`);
@@ -400,7 +419,7 @@ function decide(input: SignCoreInput, now: () => Date): Decision {
   if (!clock.ok) return clock;
   const entries = pkg.entries.map((entry) => ({ ref: entry.ref, contentSha256: entry.contentSha256 }));
   const { roleException, requiresLaterReview } = roles;
-  const plan: SignPlan = { auditId: input.auditId, sealedAt: clock.sealedAt, seq: chain.seq, prevSealSha256: chain.prevSealSha256, packageSha256: pkg.packageSha256, entries, dossier: { id: approval.dossier.id, sha256: dossierSha256 }, approvedBy: approval.approvedBy, operator: approval.operator, custodian: input.custodian, roleException, requiresLaterReview };
+  const plan: SignPlan = { auditId: input.auditId, sealedAt: clock.sealedAt, seq: chain.seq, prevSealSha256: chain.prevSealSha256, packageSha256: pkg.packageSha256, entries, dossier: { id: approval.dossier.id, sha256: dossierSha256 }, approvedBy: approval.approvedBy, operator: approval.operator, custodian: input.custodian, roleException, requiresLaterReview, ...(pkg.simulated === true ? { simulated: true } : {}) };
   return { ok: true, plan };
 }
 
@@ -431,7 +450,8 @@ const CONFIRMATION_UNAVAILABLE = `A confirmação humana não foi obtida (sem te
 async function confirmationRefusal(plan: SignPlan, confirm: SignCoreDeps<unknown>['confirm']): Promise<SignRefusal | null> {
   let typed: unknown;
   try {
-    typed = await confirm({ auditId: plan.auditId, seq: plan.seq, entries: plan.entries.length });
+    // a marca só aparece no pacote simulado: para o real, a tela recebe exatamente o que recebia antes
+    typed = await confirm({ auditId: plan.auditId, seq: plan.seq, entries: plan.entries.length, ...(plan.simulated === true ? { simulated: true } : {}) });
   } catch {
     return refuse('SIGN_CONFIRMATION_FAILED', CONFIRMATION_UNAVAILABLE);
   }
