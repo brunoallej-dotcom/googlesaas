@@ -532,6 +532,16 @@ test('IA-16: operador = conferente ⇒ assina com requiresLaterReview (sem roleE
   assert.deepEqual([jsonOut(plain).roleException, jsonOut(plain).requiresLaterReview], [false, false]);
 });
 
+test('IA-16, D15.6(d) (W5.2a): operador = custodiante (quem assina) ⇒ assina sem --risk-acceptance; o recibo marca requiresLaterReview, sem roleException', async () => {
+  const pkg = makePackage(E1);
+  const world = cliWorld({ pkg, approval: withRoles(pkg, { operator: 'cust.01' }) });
+  assert.ok(!world.argv().includes('--risk-acceptance'), 'sem aceite de risco: operador = custodiante não bloqueia');
+  const run = await runSign(world.argv({ custodian: 'CUST-01' }, ['--json']), { typed: world.typed() });
+  assert.equal(run.code, 0, run.stderr);
+  const receipt = jsonOut(run);
+  assert.deepEqual([receipt.operator, receipt.custodian, receipt.approvedBy, receipt.roleException, receipt.requiresLaterReview], ['cust.01', 'CUST-01', 'CONF-01', false, true]);
+});
+
 /* =============================================================================================================== IA-02 (5) */
 
 test('IA-02 (5): pelo CLI, o sign só toca pacote, aprovação, dossiê, aceite de risco, a pasta de manifestos e o arquivo de chave (e, pela custódia da IA-22, só METADADOS dos .git ancestrais e das raízes proibidas)', async () => {
