@@ -318,7 +318,7 @@ test('camada 1: o manifesto do ensaio, assinado pela chave DESCARTÁVEL, autenti
   const evidence = tmpDir('lasim-k-');
   await collectSimulated(evidence);
   const sealsDir = tmpDir('lasim-seals-');
-  const disposable = evidenceKeys('ek-ensaio-w5');
+  const disposable = evidenceKeys('ensaio-w5-k1');
   const real = evidenceKeys('ek-real-0001');
   await sealAuditV2ForTests({ evidenceDir: evidence, auditId: SIM_AUDIT_ID, sealsDir, keys: disposable });
   const basis = await createScoringBasisReader({ baseDir: evidence, authorize: () => true }).readScoringBasis({ email: 'leitor@exemplo.invalid' }, SIM_AUDIT_ID);

@@ -28,7 +28,9 @@ import { openHiddenInput, terminalCloseConfirm, terminalConfirm, terminalPassphr
 export const SIGN_USAGE: readonly string[] = [
   'Uso: npm run link-audit:seal -- sign --audit <auditId> --package <pacote.json> --approval <approval.json> --dossier <arquivo>',
   '       [--risk-acceptance <arquivo>] --seals-dir <pasta de manifestos> --expect-seq <N> [--first] --key-id <id>',
-  '       --key-source file:<caminho> --custodian <rótulo> --trust-keys <lista com estado> [--json]',
+  '       --key-source file:<caminho> --custodian <rótulo> --trust-keys <lista com estado> [--simulated] [--json]',
+  '  --simulated: SÓ no ensaio em homologação, para o pacote da coleta SIMULADA (marca simulated:true), com chave de ensaio (id "ensaio-…");',
+  '    sem ela o pacote simulado é recusado, e com ela o pacote real e a chave de produção também. Nunca em produção.',
   '  A frase da chave é pedida SÓ no terminal, sem eco, depois da confirmação dos 12 caracteres; nunca por opção nem por variável de ambiente.',
   '  --key-source external:<id> (token K2) ainda não é suportado. --risk-acceptance: só quando conferente e custodiante coincidem (aceite formal).',
 ];

@@ -23,6 +23,8 @@ export const SIGN_REFUSAL_CODES = [
   'SIGN_LEGACY_NOT_ATTESTABLE',
   // W5.2b (spec §5.7): pacote SIMULADO sem `--simulated`, ou `--simulated` com pacote real
   'SIGN_SIMULATED_PACKAGE',
+  // W5.2b (revisão do PR #62): `--simulated` com chave que não é de ensaio, ou chave de ensaio (`ensaio-…`) sem `--simulated`
+  'SIGN_KEY_MODE_MISMATCH',
   'SIGN_CHECK_NOT_EXECUTED',
   'SIGN_DOSSIER_MISMATCH',
   'SIGN_SEAL_CHAIN_INVALID',
@@ -109,6 +111,21 @@ export type SealChainFacts =
  * (revisão da W4.5): os recibos do `close-key` o usam sem alcançar o verificador; `sign-chain.ts` o reexporta.
  */
 export const SIGN_KEY_ID_PATTERN = /^[a-z0-9][a-z0-9-]{3,31}$/;
+/**
+ * Prefixo RESERVADO do id das chaves de ENSAIO (W5.2b, revisão do PR #62): o modo fica visível no próprio manifesto assinado (o `keyId`), sem `v3`.
+ * Cópia deliberada do prefixo do servidor (`link-audit-evidence/simulated.ts`; o núcleo do `sign` não importa o serviço de evidências); paridade
+ * travada por teste.
+ */
+export const REHEARSAL_KEY_PREFIX = 'ensaio-';
+
+/** `--simulated` só com chave de ensaio; chave de ensaio só com `--simulated` (a chave de produção nunca assina o pacote simulado, e vice-versa). */
+export function keyModeRefusal(keyId: string, simulated: boolean): SignRefusal | null {
+  const rehearsalKey = keyId.startsWith(REHEARSAL_KEY_PREFIX);
+  if (simulated && !rehearsalKey) return { ok: false, code: 'SIGN_KEY_MODE_MISMATCH', message: `Com --simulated (ensaio) só assina chave de ensaio, com id começando por "${REHEARSAL_KEY_PREFIX}"; a chave de produção nunca assina o pacote simulado. Nada foi assinado.` };
+  if (!simulated && rehearsalKey) return { ok: false, code: 'SIGN_KEY_MODE_MISMATCH', message: `Chave de ensaio (id "${REHEARSAL_KEY_PREFIX}…") só assina com --simulated, no ensaio; nunca um pacote real. Nada foi assinado.` };
+  return null;
+}
+
 /** Maior `seq` de um manifesto `v2` (contrato do verificador v2 §2, `MAX_CHAIN_SEALS`). Cópia deliberada (o núcleo não importa o verificador); paridade travada por teste. */
 export const MAX_SEAL_SEQ = 256;
 

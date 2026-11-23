@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { auditId as auditIdSchema, shortLabel } from './schemas';
 import { isTrustKeyringText, SIGN_KEY_ID_PATTERN } from './sign-chain';
-import { MAX_SEAL_SEQ, type SignRefusal } from './sign-core';
+import { keyModeRefusal, MAX_SEAL_SEQ, type SignRefusal } from './sign-core';
 import { bothForms, isInside, parseKeySource, type KeySource } from './sign-key';
 
 /*
@@ -177,6 +177,9 @@ export function parseSignArgs(tokens: readonly string[]): SignArgs | SignRefusal
   if ('ok' in key) return key;
   const custodian = values.get('custodian');
   if (custodian === undefined || !shortLabel.safeParse(custodian).success) return usage('Informe --custodian <rótulo curto> (iniciais ou ID; sem e-mail nem telefone).');
+  // W5.2b (revisão do PR #62): o modo da chave confere com --simulated ANTES de qualquer leitura (chave `ensaio-…` ⇔ --simulated)
+  const keyMode = keyModeRefusal(key.keyId, flags.has('simulated'));
+  if (keyMode) return keyMode;
   return { auditId, ...paths, ...seq, ...key, custodian, json: flags.has('json'), simulated: flags.has('simulated') };
 }
 
