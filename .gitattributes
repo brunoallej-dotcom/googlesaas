@@ -87,3 +87,8 @@ LICENSE       text eol=lf
 docs/**          linguist-documentation
 .claude/**       linguist-vendored=false
 *.md             linguist-detectable
+
+# ─── Canal de manifestos (P9.2; spec docs/specs/ci-deploy-and-seal-delivery.md §5.2) ─
+# Espelho byte a byte da pasta de manifestos: nenhuma conversão de fim de linha. Fica por
+# último para valer sobre *.json e *.txt acima (a última linha que casa decide).
+link-audit-seals/** -text

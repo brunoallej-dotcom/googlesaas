@@ -92,6 +92,41 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+  # P9.2: verificação dos manifestos, fechos e listas de confiança ANTES do merge (spec docs/specs/ci-deploy-and-seal-delivery.md
+  # §5.4, S-01 a S-14). Em todo pull_request e push na main, sem filtro de caminho (check obrigatório). Sem nada sob
+  # link-audit-seals/, termina verde sem instalar nada. Sem segredo; checkout sem credencial e com o histórico completo (a base é
+  # HEAD^1 no PR e github.event.before no push). As entradas do evento vão pelo ambiente, nunca dentro do run:.
+  seals:
+    name: seals (append-only, v2)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Base da comparação e mudanças sob link-audit-seals/
+        id: prepare
+        env:
+          SEALS_EVENT: ${{ github.event_name }}
+          SEALS_BEFORE: ${{ github.event.before }}
+        run: SEALS_OUT="$RUNNER_TEMP/seals" bash .github/scripts/seals-prepare.sh
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.prepare.outputs.changed == 'true'
+        with: { node-version: '22' }
+      - name: Install
+        if: steps.prepare.outputs.changed == 'true'
+        run: npm ci
+      - name: Verificador v2 sobre o que mudou (resumo público no job)
+        if: steps.prepare.outputs.changed == 'true'
+        run: |
+          set -o pipefail
+          npm run --silent link-audit:seals-check -- \
+            --changes "$RUNNER_TEMP/seals/changes" --modes "$RUNNER_TEMP/seals/modes" \
+            --base-trust "$RUNNER_TEMP/seals/base-trust" --repo "$GITHUB_WORKSPACE" | tee -a "$GITHUB_STEP_SUMMARY"
+
   security:
     name: security
     runs-on: ubuntu-latest

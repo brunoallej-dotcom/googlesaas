@@ -742,8 +742,8 @@ Motivos:
 
 | Onda | Entrega | Depende de | Paralela com | Status |
 |------|---------|------------|--------------|--------|
-| P9.1 | Spec, ADR-0004, modelo de ameaças DC-xx, decisão do responsável registrada no p1-canal §6.3, linhas no plano e no P-9 da spec dos portões | decisão do responsável (23/11/2026) | W5.3 (sem código) | 🟡 este PR |
-| P9.2 | Caminho `link-audit-seals/` (dois `trust-keys.txt` vazios, `.gitattributes`, `.dockerignore`); núcleo puro `src/lib/link-audit-seals-channel/` (gramática de caminhos, `auditId` opaco, forma canônica, lista: parser, regras de ambiente e de transição, regras do conjunto de mudanças, cadeia pelo verificador `v2` real); CLI `link-audit:seals-check`; job `seals` no `ci.yml`; runbooks do custodiante e de chaves (fixação por PR, ordem da aposentadoria, `aud-<16 hex>`) | P9.1 | — | ⬜ |
+| P9.1 | Spec, ADR-0004, modelo de ameaças DC-xx, decisão do responsável registrada no p1-canal §6.3, linhas no plano e no P-9 da spec dos portões | decisão do responsável (23/11/2026) | W5.3 (sem código) | ✅ PR #66 |
+| P9.2 | Caminho `link-audit-seals/` (dois `trust-keys.txt` vazios, `.gitattributes`, `.dockerignore`); núcleo puro `src/lib/link-audit-seals-channel/` (gramática de caminhos, `auditId` opaco, forma canônica, lista: parser, regras de ambiente e de transição, regras do conjunto de mudanças, cadeia pelo verificador `v2` real); CLI `link-audit:seals-check`; job `seals` no `ci.yml`; runbooks do custodiante e de chaves (fixação por PR, ordem da aposentadoria, `aud-<16 hex>`) | P9.1 | — | 🟡 em revisão (branch `feat/p9-2-seals-check`; critérios marcados na spec §6 com o teste) |
 | P9.3a | Receptor de deploy (`src/lib/deploy-receiver/`, entrada em `scripts/`), com a regra de transição contra a lista instalada; build reprodutível dos artefatos dos receptores com hash versionado em `deploy/hostinger/receivers.sha256` e job do CI que o confere | P9.2 (módulo da lista: parser do arquivo, regras de ambiente e de transição) | — (pode começar antes, mas mergeia depois da P9.2) | ⬜ |
 | P9.3b | Receptor de manifestos (núcleo do canal + verificador `v2` + gravação exclusiva do `sign` extraída para módulo compartilhado; hash do artefato do `sign` refeito); `verificar-pastas-fase6.sh` com a regra nova da pasta de manifestos; emendas VC-E8, PG-V04 e EN-12 | P9.2, P9.3a (pipeline dos artefatos) | P9.4 | ⬜ |
 | P9.4 | `.github/workflows/deploy.yml` (job `deploy`); `stack.yml` com nomes do Traefik parametrizados e secrets em sintaxe longa; sobreposição `deploy/hostinger/stack-hml.yml`; testes estáticos do workflow e da stack; runbook do responsável `deploy/hostinger/RUNBOOK-DEPLOY-PELO-CI.md` (H-01 a H-10, produção, rotação, incidente); guias, plano de rollback, verificação pós-deploy e `CLAUDE.md` | P9.3a | P9.3b | ⬜ |
@@ -771,7 +771,8 @@ Motivos:
 
 - **Objetivo**: nenhum manifesto ou fecho chega à `main` sem passar pelo verificador `v2` real, e a lista fixada tem fonte única.
 - **Escopo**: spec §5.2, §5.3, §5.4; `tests/link-audit-seals-check.test.ts`, `tests/link-audit-seals-trust-list.test.ts`, teste
-  de isolamento do módulo novo; job `seals` no `ci.yml`; emendas VC-E3 e P-7 (spec dos portões), runbook de chaves §4, runbook do
+  de isolamento do módulo novo (`tests/link-audit-seals-channel-isolation.test.ts`), teste do workflow e do passo de preparo
+  (`tests/link-audit-seals-workflow.test.ts`); job `seals` no `ci.yml`; emendas VC-E3 e P-7 (spec dos portões), runbook de chaves §4, runbook do
   custodiante, exemplo do `docs/security/README.md`.
 - **Critérios de aceite**: P9-S01 a P9-S12, P9-T01 a P9-T07, P9-W10, P9-H08.
 - **Goal command**: `/goal npm test && test -f link-audit-seals/producao/trust-keys.txt && test -f link-audit-seals/homologacao/trust-keys.txt && grep -q "seals (append-only, v2)" .github/workflows/ci.yml, stop after 3 tries`

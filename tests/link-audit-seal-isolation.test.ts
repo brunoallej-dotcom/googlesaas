@@ -337,12 +337,25 @@ const CLI_FILE = path.join(ROOT, 'scripts', 'link-audit-seal.ts');
 const CLI_ALLOWED: ReadonlySet<string> = new Set(['@/lib/link-audit-attestation/export', '@/lib/link-audit-attestation/export-run', '@/lib/link-audit-attestation/schemas', '@/lib/link-audit-attestation/sign-cli']);
 /** P1 W4.6: a entrada do ARTEFATO ÚNICO (sign e close-key, sem o export) é o segundo consumidor, e só de sign-cli.ts. */
 const ARTIFACT_ENTRY = path.join(ROOT, 'scripts', 'link-audit-sign-artifact.ts');
+/**
+ * P9.2 (spec `ci-deploy-and-seal-delivery.md` §5.4, S-07 e S-10): o núcleo do canal de manifestos reaproveita a LEITURA da cadeia do `sign`
+ * (`readSealChain`, o método do verificador v2 real), a forma canônica (`serializeSealFile`) e o nome do arquivo (`sealFileName`), só de
+ * `sign-chain.ts` (somente leitura, sem chave nem gravação). Nada mais do módulo de atestação; a lista fechada de cada arquivo do canal está em
+ * `link-audit-seals-channel-isolation.test.ts`.
+ */
+const CHANNEL_DIR = path.join(ROOT, 'src', 'lib', 'link-audit-seals-channel');
+const CHANNEL_ALLOWED: ReadonlySet<string> = new Set(['../link-audit-attestation/sign-chain']);
 
-test('consumidores: só o CLI link-audit-seal (export, export-run, schemas e sign-cli) e a entrada do artefato (só sign-cli) importam o módulo; src/ e os demais scripts não', () => {
+test('consumidores: só o CLI link-audit-seal (export, export-run, schemas e sign-cli), a entrada do artefato (só sign-cli) e, desde a P9.2, o núcleo do canal de manifestos (só sign-chain) importam o módulo; o resto de src/ e os demais scripts não', () => {
   const walk = (dir: string): string[] => (fs.existsSync(dir) ? fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? (e.name === 'node_modules' || e.name === '.next' ? [] : walk(path.join(dir, e.name))) : /\.(ts|tsx|js|mjs|cjs)$/.test(e.name) ? [path.join(dir, e.name)] : [])) : []);
   assert.deepEqual(importsOf(fs.readFileSync(ARTIFACT_ENTRY, 'utf8')).filter((specifier) => /link-audit-attestation/.test(specifier)), ['../src/lib/link-audit-attestation/sign-cli'], 'a entrada do artefato importa só sign-cli');
   for (const file of [...walk(path.join(ROOT, 'src')), ...walk(path.join(ROOT, 'scripts'))]) {
     if (file.startsWith(LIB + path.sep) || file === CLI_FILE || file === ARTIFACT_ENTRY) continue;
+    if (file.startsWith(CHANNEL_DIR + path.sep)) {
+      const used = importsOf(fs.readFileSync(file, 'utf8')).filter((specifier) => /link-audit-attestation/.test(specifier));
+      assert.ok(used.every((specifier) => CHANNEL_ALLOWED.has(specifier)), `${path.relative(ROOT, file)} importa ${used.join(', ')} do módulo de atestação`);
+      continue;
+    }
     assert.ok(!/link-audit-attestation/.test(strip(fs.readFileSync(file, 'utf8'))), `${path.relative(ROOT, file)} importa o módulo de atestação`);
   }
   const used = importsOf(fs.readFileSync(CLI_FILE, 'utf8')).filter((specifier) => /link-audit-attestation/.test(specifier));

@@ -15,6 +15,8 @@ docs
 scripts
 supabase
 data
+# Canal de manifestos (P9.2): nunca na imagem; o Dockerfile já não o copia (defesa)
+link-audit-seals
 sed
 *.md
 !README.md
