@@ -18,8 +18,8 @@ Provar, uma vez, com dados reais, que: o Worker processa uma auditoria completa;
 | `npm run worker:prod` disponível | OK |
 
 ## 3. Empresa e escopo
-- **Lead:** *<CLIENTE_G>* (Anápolis, campanha "Clínica Odontológica" de 16/10/2026, #16, id `8e8ecb73-0967-42de-bf87-b03e2b9ce8ec`), domínio próprio. **Nenhuma** das 5 linhas dessa empresa (uma por campanha) tem auditoria: como a trava agora casa por empresa (`place_id`), a *<CLIENTE_F>* e as demais já auditadas seriam bloqueadas, como deve ser.
-- **Palavra-chave:** "Clínica Odontológica". Grade 7×7 (49 pontos), passo de 500 m, zoom 15.
+- **Lead:** *<CLIENTE_G>* (`<CIDADE>`, campanha "`<PALAVRA_CHAVE>`" de 16/10/2026, `#<N>`, id `<ID_DO_LEAD>`), domínio próprio. **Nenhuma** das 5 linhas dessa empresa (uma por campanha) tem auditoria: como a trava agora casa por empresa (`place_id`), a *<CLIENTE_F>* e as demais já auditadas seriam bloqueadas, como deve ser.
+- **Palavra-chave:** "`<PALAVRA_CHAVE>`". Grade 7×7 (49 pontos), passo de 500 m, zoom 15.
 
 ## 4. Chamadas e custo
 | Item | Quantidade | Custo |

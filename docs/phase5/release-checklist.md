@@ -24,7 +24,7 @@ Legenda: **APROVADO** (feito e verificado), **PENDENTE** (depende de você/autor
 
 ## Teste operacional real: PROPOSTA (não executado, aguarda sua aprovação)
 - **Quando liberar:** depois dos 4 primeiros itens acima (login funcionando) e do Worker ligado.
-- **Empresa:** *<CLIENTE_G>* (#16, campanha Anápolis / Clínica Odontológica de 16/10/2026, nenhuma auditoria). A *<CLIENTE_F>* seria bloqueada pela idempotência. Plano completo: `homologation-plan.md`.
+- **Empresa:** *<CLIENTE_G>* (`#<N>`, campanha `<CIDADE>` / `<PALAVRA_CHAVE>` de 16/10/2026, nenhuma auditoria). A *<CLIENTE_F>* seria bloqueada pela idempotência. Plano completo: `homologation-plan.md`.
 - **Chamadas externas:** **49** consultas Serper Maps (grade 7×7, passo 500 m) + verificação técnica do site (HTTP público, gratuita). Reviews do Serper **desligado**. Sem LLM pago, sem DataForSEO.
 - **Custo:** 49 créditos do plano atual do Serper (valor em reais conforme seu plano).
 - **O que será gravado:** 1 linha em `gmn_audits`, 1 rodada e 49 pontos do Battlefield, payloads de Reputação/Vitrine/Rivais/Juiz/Estrategista/Revisor, 1 PDF novo em `.data/audits/` (e no bucket privado, se configurado). Nada histórico é alterado.

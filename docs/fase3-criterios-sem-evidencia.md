@@ -10,7 +10,7 @@ O dossiê classifica cada um dos 21 critérios do agente Juiz em três classes:
 - **Não verificado:** não há fonte real, ou o valor é fixo/estimado/apenas inferido. Não é aprovação nem reprovação.
 - **Simulado:** o sistema gerou o dado no lugar de coletá-lo (conjuntos de avaliações e de vitrine).
 
-Na auditoria real `859b4021-404e-40fc-acba-da21e1fd4746` (Anápolis/GO, "Clínica Odontológica"): **7 critérios comprovados (37% do peso)**, **6 simulados** e **8 não verificados**. Ou seja, **14 critérios sem evidência**. A classificação é calculada dos dados a cada geração (`src/lib/pdf/report-evidence.ts`), então muda sozinha quando um agente passar a coletar dado real.
+Na auditoria real `859b4021-404e-40fc-acba-da21e1fd4746` (`<CIDADE>`/GO, "`<PALAVRA_CHAVE>`"): **7 critérios comprovados (37% do peso)**, **6 simulados** e **8 não verificados**. Ou seja, **14 critérios sem evidência**. A classificação é calculada dos dados a cada geração (`src/lib/pdf/report-evidence.ts`), então muda sozinha quando um agente passar a coletar dado real.
 
 O Score Juiz oficial (fórmula do agente, média ponderada normalizada por 102) **não foi alterado**. Ele inclui os critérios sem comprovação com a pontuação que o agente lhes atribui; o PDF destaca por isso o "Desempenho nos critérios verificados" e mostra o Score oficial à parte, com a ressalva.
 
