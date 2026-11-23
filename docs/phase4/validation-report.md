@@ -108,7 +108,7 @@ Executada uma vez (`npm run pdf:regenerate -- 859b4021… --reevaluate --check-s
 
 | Item | Resultado |
 |---|---|
-| Resposta | HTTP 200, URL final `https://www.draannavitoria.com.br/` (sem redirecionamento para fora) |
+| Resposta | HTTP 200, URL final `https://<SITE_CLIENTE_F>/` (sem redirecionamento para fora) |
 | Indexação | Sem `noindex`; `robots.txt` permite a raiz (**a indexação efetiva no Google não foi verificada**) |
 | Dados estruturados | JSON-LD `Dentist` + `LocalBusiness` encontrado no HTML inicial |
 | Contatos públicos | 1 link de WhatsApp no site; nenhum `tel:` nem e-mail |

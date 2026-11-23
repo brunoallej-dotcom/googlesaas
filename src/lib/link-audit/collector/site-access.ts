@@ -31,7 +31,7 @@ export type SiteAccessClass =
   | 'AUTH_REQUIRED_EVIDENCED'
   | 'HTTP_OTHER'
   | 'NOT_HTML'
-  /** Só para a coleta original da TUVAPLAST, cujo código HTTP não foi gravado (ver documentação da Onda 4D). */
+  /** Só para a coleta original da AUD-001, cujo código HTTP não foi gravado (ver documentação da Onda 4D). */
   | 'RESTRICTED_RESPONSE_UNSPECIFIED';
 
 export interface SiteAccessAssessment {

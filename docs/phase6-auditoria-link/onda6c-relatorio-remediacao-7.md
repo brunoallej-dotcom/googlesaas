@@ -2,7 +2,7 @@
 
 **Estado: SEM commit. Onda 6C NÃO encerrada.** Autorização recebida: corrigir R7-01 a R7-06; sem commit, push, merge, rebase, tag, deploy, VPS, `stack.yml`, Dockerfile, entrypoint, P1, D5 ou Onda 7. O registro da revisão está em `onda6c-revisao-adversarial-7.md` (o **texto verbatim do revisor nº 7 não existe neste workspace**; ver lá). Este arquivo é a remediação; o parecer do revisor não foi alterado.
 
-**Contexto de recuperação.** O disco do WSL falhou em 03/11/2026 às 21h12 (último minuto de edição da sessão anterior). A árvore foi conferida em 04/11: idêntica, por hash, ao instantâneo `D:\gmn-recovery-snapshot-20261103` (532 arquivos), `git fsck --full` sem erro e os 74 arquivos antes ilegíveis agora legíveis. O código R7 já estava parcialmente na árvore (R7-01…R7-07); esta rodada o verificou, corrigiu o que faltava e fechou a prova.
+**Contexto de recuperação.** O disco do WSL falhou em 03/11/2026 às 21h12 (último minuto de edição da sessão anterior). A árvore foi conferida em 04/11: idêntica, por hash, ao instantâneo `<INSTANTANEO_DE_RECUPERACAO>` (532 arquivos), `git fsck --full` sem erro e os 74 arquivos antes ilegíveis agora legíveis. O código R7 já estava parcialmente na árvore (R7-01…R7-07); esta rodada o verificou, corrigiu o que faltava e fechou a prova.
 
 ## 1. Causa-raiz de R7-01
 A reserva de R6-01 (4 registros) era **por operação, não por classe**: `CREATE` consumia o espaço até ~4000 e deixava revogações e o `CHECKPOINT` da rotação sem lugar; a "reserva de 100 revogações" da 6B era uma constante anunciada, e 100 entradas de ledger são 50 operações, não 100. Detalhe e números: spec §16.12.

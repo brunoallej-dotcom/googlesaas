@@ -431,11 +431,11 @@ test('o índice de posição é identificado, e a média das posições conhecid
 
 test('nome longo da empresa no mapa: segunda linha curta, cortada em limite de palavra', async () => {
   const { shortBusinessName } = await import('../src/lib/pdf/map/map-render');
-  assert.equal(shortBusinessName('Dra. Anna Vitória | Dentista em Anápolis'), 'Dra. Anna Vitória');
-  assert.equal(shortBusinessName('Clínica de Estética Dra. Rayane Havilla - Botox e Preenchimento Facial'), 'Clínica de Estética Dra. Rayane Havilla'.slice(0, 29).replace(/\s\S*$/, '') + '…');
+  assert.equal(shortBusinessName('Dra. Fictícia de Teste | Dentista em Cidade Exemplo'), 'Dra. Fictícia de Teste');
+  assert.equal(shortBusinessName('Clínica de Estética Dra. Fictícia Teste - Botox e Preenchimento Facial'), 'Clínica de Estética Dra. Fictícia Teste'.slice(0, 29).replace(/\s\S*$/, '') + '…');
   const long = shortBusinessName('Clínica Odontológica Especializada em Implantes Dentários e Reabilitação');
   assert.ok(long.length <= 30 && long.endsWith('…') && !long.slice(0, -1).endsWith(' '));
-  assert.equal(shortBusinessName('Barbearia Goyaz'), 'Barbearia Goyaz');
+  assert.equal(shortBusinessName('Barbearia de Teste'), 'Barbearia de Teste');
 });
 
 test('Inter: a vírgula decimal não é sobreposta ao dígito (script latino forçado na composição)', async () => {

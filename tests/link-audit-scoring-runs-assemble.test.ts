@@ -787,12 +787,12 @@ test('AUDIT ID: com "_" o motor recebe o alias determinístico e o rastro guarda
   const plain = run();
   assert.deepEqual(plain.traceability.auditId, { applied: false, rule: 'IDENTITY', reason: null, sourceAuditId: AUDIT, scoringAuditId: AUDIT });
   assert.equal(inputOf(plain).auditId, AUDIT);
-  const out = run(makeBasis({ auditId: 'tuvaplast_20261022_maps01' }));
+  const out = run(makeBasis({ auditId: 'aud_001_autorizacao_01' }));
   const alias = out.traceability.auditId;
-  assert.deepEqual([alias?.applied, alias?.rule, alias?.reason, alias?.sourceAuditId], [true, 'lumos-audit-id-alias-v1', 'CONTAINS_UNDERSCORE', 'tuvaplast_20261022_maps01']);
+  assert.deepEqual([alias?.applied, alias?.rule, alias?.reason, alias?.sourceAuditId], [true, 'lumos-audit-id-alias-v1', 'CONTAINS_UNDERSCORE', 'aud_001_autorizacao_01']);
   assert.equal(inputOf(out).auditId, alias?.scoringAuditId);
   assert.equal(scoreOf(out).auditId, alias?.scoringAuditId);
-  assert.ok(!JSON.stringify(inputOf(out)).includes('tuvaplast_20261022_maps01'), 'o id real não entra no motor');
+  assert.ok(!JSON.stringify(inputOf(out)).includes('aud_001_autorizacao_01'), 'o id real não entra no motor');
 });
 
 test('AUDIT ID: "a_b" e "a-b" (e o próprio alias como id comum) geram entradas com identificadores distintos', () => {
@@ -1049,6 +1049,6 @@ test('REVISÃO: rastro só com formatos válidos; id de registro validado; TOO_O
 });
 
 test('GOLDEN (M-12): alias e hash de entrada fixados; mudar a política muda estes valores', () => {
-  assert.equal(deriveAuditIdAlias('tuvaplast_20261022_maps01')?.scoringAuditId, 'tuvaplast-20261022-maps01-ux48cf1572f15dc5462676d619ff59df9d');
+  assert.equal(deriveAuditIdAlias('aud_001_autorizacao_01')?.scoringAuditId, 'aud-001-autorizacao-01-ux2121a5e2794eb3c02297e35c9112f09e');
   assert.equal(run(makeBasis(), [c2Judgement()]).inputSha256, '48d6add1ce58a897ecfb99d661b291b338cd8c2a873caaf606c77cc2b0433f0b');
 });

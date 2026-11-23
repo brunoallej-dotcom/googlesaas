@@ -22,8 +22,8 @@ test('listAuditsForLeadKeyword consulta por place_id e filtra a palavra-chave no
   }) as typeof fetch;
   try {
     const { gmnRepository } = await import('../src/lib/supabase');
-    const found = await gmnRepository.listAuditsForLeadKeyword('ChIJjYYImWClXpMRvft2XWMnCPc', 'clínica odontológica');
-    assert.match(urls[0] ?? '', /place_id=eq\.ChIJjYYImWClXpMRvft2XWMnCPc/);
+    const found = await gmnRepository.listAuditsForLeadKeyword('ChIJ_DEDUP_ficticio_place01', 'clínica odontológica');
+    assert.match(urls[0] ?? '', /place_id=eq\.ChIJ_DEDUP_ficticio_place01/);
     assert.doesNotMatch(urls[0] ?? '', /lead_id=/);
     assert.deepEqual(found.map((a) => a.id), ['a-concluida'], 'só a mesma palavra-chave, ignorando caixa e espaços');
     assert.equal(found[0]?.hasBattlefield, true);

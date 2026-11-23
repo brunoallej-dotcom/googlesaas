@@ -198,9 +198,9 @@ test('revisão 5A: pastas proibidas valem sem diferenciar caixa; pasta de audito
   const refused = await checkStorage(path.join(project, 'Public', 'x'), { projectRoot: project });
   assert.ok(!refused.ok && refused.code === 'STORAGE_NOT_READY', 'Public ≡ public (drvfs/Windows)');
   const base = tmpDir();
-  fs.mkdirSync(path.join(base, 'tuvaplast-legado-0001'));
-  fs.writeFileSync(path.join(base, 'tuvaplast-legado-0001', 'MANIFEST.json'), '{}');
-  const mixed = await checkStorage(base, { auditId: 'tuvaplast-legado-0001' });
+  fs.mkdirSync(path.join(base, 'aud-001-legado-0001'));
+  fs.writeFileSync(path.join(base, 'aud-001-legado-0001', 'MANIFEST.json'), '{}');
+  const mixed = await checkStorage(base, { auditId: 'aud-001-legado-0001' });
   assert.ok(!mixed.ok && mixed.code === 'STORAGE_NOT_READY' && /legado/.test(mixed.issues.join(' ')));
   assert.ok((await checkStorage(base, { auditId: 'auditoria-nova-0001' })).ok);
 });

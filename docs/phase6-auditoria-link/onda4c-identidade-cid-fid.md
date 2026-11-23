@@ -3,7 +3,7 @@
 Status: implementada em 21/10/2026. **Nenhuma chamada ao Serper, nenhum crédito consumido, LIVE não executado, `.env.local` não lido nem alterado.** Metodologia: reconstrução `lumos-reconstruida-v1`; D3, D4, D5 pendentes.
 
 ## Problema
-O link da TUVAPLAST COMÉRCIO traz só `fid = 0x0:0x3a3245f75b61e57e`. O coletor comparava o `fid` como texto exato; o prefixo `0x0` nunca bateria com o prefixo real devolvido pelo Serper, então a empresa não seria confirmada mesmo se aparecesse nos resultados.
+O link da AUD-001 traz só `fid = 0x0:<FID_SUFIXO>`. O coletor comparava o `fid` como texto exato; o prefixo `0x0` nunca bateria com o prefixo real devolvido pelo Serper, então a empresa não seria confirmada mesmo se aparecesse nos resultados.
 
 ## O que mudou
 - **`src/lib/link-audit/identifiers.ts` (novo, puro, só BigInt):** `normalizeCid` (só dígitos ASCII, 1–20, `0 < valor ≤ 2^64−1`, zeros à esquerda removidos), `featureIdParts`, `deriveCidFromFeatureId` (2ª metade hexadecimal → decimal; o FID original não é alterado), `buildExpectedIdentity` (CID do link ou **derivado**, com a origem; `cid` e `fid` incompatíveis no link = conflito), `placeEntityCid` (CID de um resultado: `cid` informado e/ou derivado do `fid` dele; se discordam, o resultado é contraditório).
@@ -14,10 +14,10 @@ O link da TUVAPLAST COMÉRCIO traz só `fid = 0x0:0x3a3245f75b61e57e`. O coletor
 - **DRY_RUN:** mostra o FID original, o CID derivado (com a origem), a requisição exata sem chave e o critério de confirmação.
 
 ## Evidências da conversão
-Pares públicos conferidos: Google (Places API) `0x6b12ae665e892fdd:0x3133f8d75a1ac251` ↔ `cid=3545450935484072529`; DataForSEO `28e48b1a90ccf57e` ↔ `2946633002421908862`; TUVAPLAST `0x3a3245f75b61e57e` ↔ **4193491131727734142**.
+Pares públicos conferidos: Google (Places API) `0x6b12ae665e892fdd:0x3133f8d75a1ac251` ↔ `cid=3545450935484072529`; DataForSEO `28e48b1a90ccf57e` ↔ `2946633002421908862`; AUD-001 `<FID_SUFIXO>` ↔ **`<CID>`**.
 
-## TUVAPLAST COMÉRCIO (DRY_RUN)
-- Requisição prevista: `POST https://google.serper.dev/maps`, cabeçalhos `X-API-KEY` (não exibida) e `Content-Type: application/json`, corpo `{"q":"TUVAPLAST COMÉRCIO","gl":"br","hl":"pt-br","page":1}` (sem `ll`: o link não tem coordenadas; sem cidade/UF: não informadas).
+## AUD-001 (DRY_RUN)
+- Requisição prevista: `POST https://google.serper.dev/maps`, cabeçalhos `X-API-KEY` (não exibida) e `Content-Type: application/json`, corpo `{"q":"AUD-001","gl":"br","hl":"pt-br","page":1}` (sem `ll`: o link não tem coordenadas; sem cidade/UF: não informadas).
 - Critério: o perfil só é aceito se um resultado trouxer o mesmo CID (campo `cid` ou 2ª metade do `fid` do próprio resultado) ou o mesmo `placeId`; contradições recusam; sem identificador comparável = não confirmado.
 - Custo máximo: 1 chamada `/maps` × 3 créditos = **3 créditos (não confirmado)**; `/reviews` = 0; site até 8 requisições HTTP, sem custo de API.
 - Limite de prontidão: a busca é só por nome (sem cidade/UF/coordenadas); se o perfil não estiver entre os resultados devolvidos, o resultado é "não localizado" com a chamada já gasta.
