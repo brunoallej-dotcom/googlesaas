@@ -79,7 +79,7 @@ test('export (2c): --simulated SEM a trava de homologação ⇒ EXPORT_SIMULATED
   }
 });
 
-test('export (2c): com --simulated E a trava, o pacote sai (formato do pacote inalterado) com a entrada da captura MARCADA, e a saída avisa "SIMULADA — ensaio"', async () => {
+test('export (2c): com --simulated E a trava, o pacote sai com simulated:true coberto pelo packageSha256 e a entrada da captura MARCADA, e a saída avisa "SIMULADA — ensaio"', async () => {
   const evidence = tmpDir('lasim-g-');
   const { collectorHash } = await collectSimulated(evidence);
   const out = newOut();
