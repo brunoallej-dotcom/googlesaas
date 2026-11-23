@@ -131,11 +131,40 @@ begin
   if v_table is null then
     return;
   end if;
-  -- a tabela, se já existe, tem exatamente as colunas desta migração
-  if (select pg_catalog.string_agg(pg_catalog.format('%s %s %s', a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod), a.attnotnull), ',' order by a.attnum)
-        from pg_catalog.pg_attribute a where a.attrelid = v_table and a.attnum > 0 and not a.attisdropped)
-     is distinct from 'audit_ref text t,key_id text t,ledger_seq integer t,sha256 text t,recorded_at timestamp with time zone t' then
-    raise exception 'GUARDA abortada (%): a tabela ledger_heads existe com outras colunas; %.', p_fase, v_fim;
+  -- DEFINIÇÃO EXATA do que esta migração NÃO recria numa reaplicação (`create table if not exists` não corrige a tabela existente;
+  -- revisão do PR #61): comparada com o texto canônico do próprio PostgreSQL (format_type, pg_get_expr, pg_get_constraintdef,
+  -- pg_get_indexdef, pg_get_triggerdef, com search_path vazio). Qualquer divergência — restrição ausente, CHECK mais permissivo,
+  -- UNIQUE com outras colunas, coluna com outro tipo, NULL, default, collation ou ordem, índice inválido, gatilho com outro evento,
+  -- desligado ou de outra função, tabela UNLOGGED — aborta.
+  if (select c.relpersistence <> 'p' or c.reloftype <> 0 or c.relam <> (select am.oid from pg_catalog.pg_am am where am.amname = 'heap')
+        from pg_catalog.pg_class c where c.oid = v_table) then
+    raise exception 'GUARDA abortada (%): a tabela ledger_heads não é uma tabela comum, registrada e heap; %.', p_fase, v_fim;
+  end if;
+  if (select pg_catalog.array_agg(pg_catalog.format('%s|%s|%s|%s|%s|%s|%s', a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod), a.attnotnull,
+                                  coalesce(pg_catalog.pg_get_expr(d.adbin, d.adrelid), ''), coalesce(co.collname, ''), a.attidentity, a.attgenerated) order by a.attnum)
+        from pg_catalog.pg_attribute a
+        left join pg_catalog.pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
+        left join pg_catalog.pg_collation co on co.oid = a.attcollation and a.attcollation <> 0
+       where a.attrelid = v_table and a.attnum > 0 and not a.attisdropped)
+     is distinct from array['audit_ref|text|t||default||', 'key_id|text|t||default||', 'ledger_seq|integer|t||||', 'sha256|text|t||default||',
+                            'recorded_at|timestamp with time zone|t|now()|||']::text[] then
+    raise exception 'GUARDA abortada (%): a tabela ledger_heads existe com outras colunas (nome, tipo, NULL, default, collation ou ordem); %.', p_fase, v_fim;
+  end if;
+  if (select pg_catalog.array_agg(c.conname::text || ' ' || pg_catalog.pg_get_constraintdef(c.oid) order by c.conname)
+        from pg_catalog.pg_constraint c where c.conrelid = v_table and c.contype <> 'n')
+     is distinct from array[
+       'ledger_heads_audit_ref_format CHECK ((audit_ref ~ ''^[0-9a-f]{64}$''::text))',
+       'ledger_heads_audit_ref_ledger_seq_key UNIQUE (audit_ref, ledger_seq)',
+       'ledger_heads_key_id_format CHECK ((key_id ~ ''^[a-z0-9][a-z0-9-]{3,31}$''::text))',
+       'ledger_heads_ledger_seq_range CHECK (((ledger_seq >= 1) AND (ledger_seq <= 4000)))',
+       'ledger_heads_sha256_format CHECK ((sha256 ~ ''^[0-9a-f]{64}$''::text))']::text[] then
+    raise exception 'GUARDA abortada (%): as restrições da tabela ledger_heads não são exatamente as desta migração; %.', p_fase, v_fim;
+  end if;
+  if (select pg_catalog.array_agg(pg_catalog.format('%s valid=%s ready=%s live=%s', pg_catalog.pg_get_indexdef(i.indexrelid), i.indisvalid, i.indisready, i.indislive)
+                                  order by i.indexrelid::regclass::text)
+        from pg_catalog.pg_index i where i.indrelid = v_table)
+     is distinct from array['CREATE UNIQUE INDEX ledger_heads_audit_ref_ledger_seq_key ON gmn_link_audit_guard.ledger_heads USING btree (audit_ref, ledger_seq) valid=t ready=t live=t']::text[] then
+    raise exception 'GUARDA abortada (%): os índices da tabela ledger_heads não são exatamente os desta migração; %.', p_fase, v_fim;
   end if;
   -- nada que mude o que a leitura vê ou o que a escrita faz: regra, política/RLS, herança, outro gatilho
   if exists (select 1 from pg_catalog.pg_rewrite where ev_class = v_table)
@@ -147,11 +176,20 @@ begin
   select pg_catalog.string_agg(t.tgname, ', ') into v_bad
     from pg_catalog.pg_trigger t
    where t.tgrelid = v_table and not t.tgisinternal
-     and not ((t.tgname::text, t.tgfoid) in (
-       ('ledger_heads_refuse_update_delete', coalesce(pg_catalog.to_regprocedure('gmn_link_audit_guard.refuse_change()')::oid, 0::oid)),
-       ('ledger_heads_refuse_truncate', coalesce(pg_catalog.to_regprocedure('gmn_link_audit_guard.refuse_change()')::oid, 0::oid)),
-       ('ledger_heads_publication_order', coalesce(pg_catalog.to_regprocedure('gmn_link_audit_guard.enforce_publication_order()')::oid, 0::oid))));
+     and t.tgname not in ('ledger_heads_refuse_update_delete', 'ledger_heads_refuse_truncate', 'ledger_heads_publication_order');
   if v_bad is not null then raise exception 'GUARDA abortada (%): gatilho não esperado na tabela: %; %.', p_fase, v_bad, v_fim; end if;
+  -- os três gatilhos: tabela, momento, eventos, nível, função e ligados (a aplicação é atômica: tabela existente sem eles foi adulterada)
+  select pg_catalog.string_agg(t.tgname, ', ') into v_bad
+    from pg_catalog.pg_trigger t
+   where t.tgrelid = v_table and not t.tgisinternal
+     and pg_catalog.pg_get_triggerdef(t.oid) || ' enabled=' || t.tgenabled::text not in (
+       'CREATE TRIGGER ledger_heads_publication_order BEFORE INSERT ON gmn_link_audit_guard.ledger_heads FOR EACH ROW EXECUTE FUNCTION gmn_link_audit_guard.enforce_publication_order() enabled=O',
+       'CREATE TRIGGER ledger_heads_refuse_truncate BEFORE TRUNCATE ON gmn_link_audit_guard.ledger_heads FOR EACH STATEMENT EXECUTE FUNCTION gmn_link_audit_guard.refuse_change() enabled=O',
+       'CREATE TRIGGER ledger_heads_refuse_update_delete BEFORE DELETE OR UPDATE ON gmn_link_audit_guard.ledger_heads FOR EACH ROW EXECUTE FUNCTION gmn_link_audit_guard.refuse_change() enabled=O');
+  if v_bad is not null then raise exception 'GUARDA abortada (%): gatilho com definição diferente da desta migração (%); %.', p_fase, v_bad, v_fim; end if;
+  if (select pg_catalog.count(*) from pg_catalog.pg_trigger t where t.tgrelid = v_table and not t.tgisinternal) <> 3 then
+    raise exception 'GUARDA abortada (%): os três gatilhos da guarda não estão todos presentes; %.', p_fase, v_fim;
+  end if;
 end
 $inv$;
 
@@ -382,6 +420,16 @@ begin
     end if;
   end loop;
   if not (select prosecdef from pg_catalog.pg_proc where oid = v_publish) then raise exception 'GUARDA falhou: publish_head sem SECURITY DEFINER; tudo foi desfeito.'; end if;
+  -- as três funções acabaram de ser RECRIADAS por esta transação (CREATE OR REPLACE substitui corpo e atributos, então nenhuma versão
+  -- preexistente sobrevive); confere o resultado: linguagem, volatilidade, estrita, leakproof, paralelismo, retorno, segurança e search_path
+  select pg_catalog.string_agg(p.proname, ', ') into v_bad
+    from pg_catalog.pg_proc p
+   where p.oid in (v_publish, v_refuse, v_order)
+     and not (p.prolang = (select l.oid from pg_catalog.pg_language l where l.lanname = 'plpgsql') and p.provolatile = 'v' and not p.proisstrict
+              and not p.proleakproof and p.proparallel = 'u' and not p.proretset and p.proconfig = array['search_path=""']::text[]
+              and p.prosecdef = (p.oid = v_publish)
+              and p.prorettype = case when p.oid = v_publish then 'pg_catalog.text'::pg_catalog.regtype else 'pg_catalog.trigger'::pg_catalog.regtype end);
+  if v_bad is not null then raise exception 'GUARDA falhou: função recriada com atributos fora do desenho (%); tudo foi desfeito.', v_bad; end if;
   if (select prosecdef from pg_catalog.pg_proc where oid = v_refuse) or (select prosecdef from pg_catalog.pg_proc where oid = v_order) then
     raise exception 'GUARDA falhou: função de gatilho com SECURITY DEFINER; tudo foi desfeito.';
   end if;

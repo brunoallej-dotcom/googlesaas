@@ -43,11 +43,12 @@ export function simulatedGuardDb() {
     rows.push({ audit_ref: auditRef, key_id: keyId, ledger_seq: ledgerSeq, sha256 });
     return 'RECORDED';
   }
-  /** `distinct on (audit_ref) … order by audit_ref, ledger_seq desc`: a maior linha de cada pseudônimo pedido. */
+  /** `… and h.ledger_seq = (select max(...) …) order by audit_ref`: TODAS as linhas na maior posição de cada pseudônimo pedido. */
   function latest(refs: readonly string[]): SimulatedHeadRow[] {
     return [...new Set(refs)].sort().flatMap((ref) => {
-      const mine = rows.filter((row) => row.audit_ref === ref).sort((a, b) => b.ledger_seq - a.ledger_seq);
-      return mine[0] ? [{ ...mine[0] }] : [];
+      const mine = rows.filter((row) => row.audit_ref === ref);
+      const top = Math.max(0, ...mine.map((row) => row.ledger_seq));
+      return mine.filter((row) => row.ledger_seq === top).map((row) => ({ ...row }));
     });
   }
 

@@ -185,6 +185,20 @@ test('PG-G06 (adaptador): resposta fora do esquema ⇒ indisponível — linhas 
   }
 });
 
+test('PG-G06 (adaptador, revisão do PR #61): duas linhas na MESMA posição máxima do mesmo pseudônimo (restrição única ausente ou errada no provedor) ⇒ indisponível, nunca um sha256 escolhido ao acaso; uma linha antiga duplicada abaixo da máxima não altera a cabeça', async () => {
+  const db = simulatedGuardDb();
+  const guard = guardOver(db);
+  await guard.publish({ auditId: AUD, ledgerSeq: 5, sha256: H('a') });
+  db.rows.push({ audit_ref: GOLDEN_A_07, key_id: 'gk-test-a', ledger_seq: 5, sha256: H('b') }); // o provedor sem a unicidade aceitou outra linha na posição 5
+  assert.deepEqual(await guard.latest(AUD), { ok: false });
+  const older = simulatedGuardDb();
+  const olderGuard = guardOver(older);
+  await olderGuard.publish({ auditId: AUD, ledgerSeq: 2, sha256: H('a') });
+  older.rows.push({ audit_ref: GOLDEN_A_07, key_id: 'gk-test-a', ledger_seq: 2, sha256: H('b') });
+  await olderGuard.publish({ auditId: AUD, ledgerSeq: 6, sha256: H('c') });
+  assert.deepEqual(await olderGuard.latest(AUD), { ok: true, head: { ledgerSeq: 6, sha256: H('c') } });
+});
+
 test('PG-G06 (adaptador): prazo de 3 s por chamada TAMBÉM no adaptador — consulta ou conexão penduradas ⇒ indisponível no prazo, e a conexão é encerrada (nunca fica aberta)', async () => {
   // consulta que nunca responde
   const hung = simulatedGuardDb();
@@ -355,6 +369,13 @@ test('migração 004 ↔ adaptador: a função e a tabela que o SQL fixo usa exi
   assert.match(sql, /perform pg_temp\.gmn_guard_inventory\('pré'\);[\s\S]+perform pg_temp\.gmn_guard_inventory\('final'\);[\s\S]+drop function pg_temp\.gmn_guard_inventory\(text\);\s+commit;/);
   for (const catalog of ['pg_class', 'pg_proc', 'pg_type', 'pg_constraint', 'pg_operator', 'pg_default_acl', 'pg_policy', 'pg_rewrite', 'pg_inherits', 'pg_publication_rel', 'pg_publication_namespace']) assert.ok(sql.includes(`pg_catalog.${catalog}`), `inventário consulta ${catalog}`);
   assert.match(sql, /m\.grantor = 10 and m\.admin_option and not m\.set_option and not m\.inherit_option/, 'só a associação administrativa do criador');
+  // revisão do PR #61: a DEFINIÇÃO EXATA (não só o nome) de colunas, restrições, índice e gatilhos, pelo texto canônico do PostgreSQL
+  for (const fn of ['pg_get_constraintdef', 'pg_get_indexdef', 'pg_get_triggerdef', 'pg_get_expr', 'format_type']) assert.ok(sql.includes(`pg_catalog.${fn}(`), `confere ${fn}`);
+  assert.ok(sql.includes("'ledger_heads_audit_ref_ledger_seq_key UNIQUE (audit_ref, ledger_seq)'"), 'a UNIQUE pelas colunas');
+  assert.ok(sql.includes(`'ledger_heads_ledger_seq_range CHECK (((ledger_seq >= 1) AND (ledger_seq <= ${MAX_LEDGER_RECORDS})))'`), 'o CHECK da faixa pelo texto, com MAX_LEDGER_RECORDS');
+  assert.ok(sql.includes("'CREATE UNIQUE INDEX ledger_heads_audit_ref_ledger_seq_key ON gmn_link_audit_guard.ledger_heads USING btree (audit_ref, ledger_seq) valid=t ready=t live=t'"));
+  assert.ok(sql.includes('BEFORE DELETE OR UPDATE ON gmn_link_audit_guard.ledger_heads FOR EACH ROW EXECUTE FUNCTION gmn_link_audit_guard.refuse_change() enabled=O'));
+  assert.ok(!/distinct on/i.test(GUARD_LATEST_SQL), 'o latest devolve todas as linhas da posição máxima (duplicata ⇒ indisponível), nunca uma escolhida');
   assert.equal((sql.match(/security definer/g) ?? []).length, 1, 'só a publicação é SECURITY DEFINER');
   assert.ok(!/\bpublic\.|schema public\b/i.test(sql.replace(/from public,/g, '').replace(/revoke all on [^;]+ from public/g, '')), 'nenhum objeto em public');
   assert.match(sql, /^begin;$/m);

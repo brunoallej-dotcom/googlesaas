@@ -30,8 +30,13 @@ export type GuardDbConnect = () => Promise<GuardDbSession>;
 
 /** As duas ÚNICAS consultas do adaptador (SQL fixo; dados só por parâmetro). Mudar aqui exige mudar a migração e o teste local dela. */
 export const GUARD_PUBLISH_SQL = 'select gmn_link_audit_guard.publish_head($1, $2, $3, $4) as outcome';
+/**
+ * Todas as linhas na MAIOR posição de cada pseudônimo pedido (não `distinct on`): se a restrição única do provedor faltasse ou fosse outra, duas
+ * linhas na mesma posição máxima do mesmo pseudônimo chegariam ambas e o adaptador responderia indisponível, nunca um `sha256` escolhido ao acaso
+ * (revisão do PR #61; a migração também confere a definição exata da restrição).
+ */
 export const GUARD_LATEST_SQL =
-  'select distinct on (h.audit_ref) h.audit_ref, h.key_id, h.ledger_seq, h.sha256 from gmn_link_audit_guard.ledger_heads h where h.audit_ref = any($1::text[]) order by h.audit_ref, h.ledger_seq desc';
+  'select h.audit_ref, h.key_id, h.ledger_seq, h.sha256 from gmn_link_audit_guard.ledger_heads h where h.audit_ref = any($1::text[]) and h.ledger_seq = (select pg_catalog.max(m.ledger_seq) from gmn_link_audit_guard.ledger_heads m where m.audit_ref = h.audit_ref) order by h.audit_ref';
 
 export interface PostgresGuardOptions {
   /** Pseudônimos da auditoria (chave atual e aposentadas), montados pela configuração. */
@@ -72,12 +77,12 @@ function closeQuietly(session: GuardDbSession): void {
 
 /** Maior cabeça entre os pseudônimos pedidos; resposta incoerente ⇒ indisponível. */
 function headOf(refs: readonly GuardRef[], rows: readonly unknown[]): GuardLatestResult {
-  const parsed = z.array(headRowSchema).max(refs.length).safeParse(rows);
+  const parsed = z.array(headRowSchema).safeParse(rows);
   if (!parsed.success) return LATEST_UNAVAILABLE;
   const asked = new Set(refs.map((ref) => ref.auditRef));
   const seen = new Set<string>();
   for (const row of parsed.data) {
-    if (!asked.has(row.audit_ref) || seen.has(row.audit_ref)) return LATEST_UNAVAILABLE; // pseudônimo não pedido ou repetido
+    if (!asked.has(row.audit_ref) || seen.has(row.audit_ref)) return LATEST_UNAVAILABLE; // pseudônimo não pedido, ou duas linhas na posição máxima dele
     seen.add(row.audit_ref);
   }
   if (parsed.data.length === 0) return { ok: true, head: null };

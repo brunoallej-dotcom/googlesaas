@@ -283,6 +283,38 @@ reapply_refused "esquema numa publicação" 'estão numa publicação' \
 eq "cabeças intactas depois das recusas do inventário" "6" "$(rows)"
 ok "inventário fechado (revisão do PR #61): função, procedimento, view, sequência, tipo, operador e índice extras, privilégio padrão (no esquema e global do dono), coluna com privilégio, política, RLS, gatilho extra e publicação (da tabela e do esquema) ⇒ a reaplicação aborta e nada muda"
 
+# revisão do PR #61: DEFINIÇÃO EXATA do que a reaplicação não recria (colunas, restrições, índice) e dos gatilhos — nome certo, semântica errada aborta
+T=gmn_link_audit_guard.ledger_heads
+reapply_refused "restrição ausente" 'as restrições da tabela ledger_heads não são exatamente as desta migração' \
+  "alter table $T drop constraint ledger_heads_sha256_format" "alter table $T add constraint ledger_heads_sha256_format check (sha256 ~ '^[0-9a-f]{64}\$')"
+reapply_refused "CHECK mais permissivo com o mesmo nome" 'as restrições da tabela ledger_heads não são exatamente as desta migração' \
+  "alter table $T drop constraint ledger_heads_ledger_seq_range; alter table $T add constraint ledger_heads_ledger_seq_range check (ledger_seq between 1 and 40000)" \
+  "alter table $T drop constraint ledger_heads_ledger_seq_range; alter table $T add constraint ledger_heads_ledger_seq_range check (ledger_seq between 1 and 4000)"
+reapply_refused "CHECK com o mesmo nome e NOT VALID" 'as restrições da tabela ledger_heads não são exatamente as desta migração' \
+  "alter table $T drop constraint ledger_heads_key_id_format; alter table $T add constraint ledger_heads_key_id_format check (key_id ~ '^[a-z0-9][a-z0-9-]{3,31}\$') not valid" \
+  "alter table $T drop constraint ledger_heads_key_id_format; alter table $T add constraint ledger_heads_key_id_format check (key_id ~ '^[a-z0-9][a-z0-9-]{3,31}\$')"
+reapply_refused "UNIQUE com o mesmo nome e outras colunas" 'as restrições da tabela ledger_heads não são exatamente as desta migração' \
+  "alter table $T drop constraint ledger_heads_audit_ref_ledger_seq_key; alter table $T add constraint ledger_heads_audit_ref_ledger_seq_key unique (audit_ref, ledger_seq, sha256)" \
+  "alter table $T drop constraint ledger_heads_audit_ref_ledger_seq_key; alter table $T add constraint ledger_heads_audit_ref_ledger_seq_key unique (audit_ref, ledger_seq)"
+reapply_refused "coluna com outro tipo" 'a tabela ledger_heads existe com outras colunas' \
+  "alter table $T alter column recorded_at type timestamp without time zone" "alter table $T alter column recorded_at type timestamp with time zone"
+reapply_refused "coluna aceitando NULL" 'a tabela ledger_heads existe com outras colunas' \
+  "alter table $T alter column key_id drop not null" "alter table $T alter column key_id set not null"
+reapply_refused "coluna com outro default" 'a tabela ledger_heads existe com outras colunas' \
+  "alter table $T alter column recorded_at set default '2000-01-01'" "alter table $T alter column recorded_at set default now()"
+reapply_refused "gatilho com um evento a menos" 'gatilho com definição diferente da desta migração \(ledger_heads_refuse_update_delete\)' \
+  "set role gmn_guard_owner; create or replace trigger ledger_heads_refuse_update_delete before update on $T for each row execute function gmn_link_audit_guard.refuse_change()" \
+  "set role gmn_guard_owner; create or replace trigger ledger_heads_refuse_update_delete before update or delete on $T for each row execute function gmn_link_audit_guard.refuse_change()"
+reapply_refused "gatilho desligado" 'gatilho com definição diferente da desta migração \(ledger_heads_refuse_truncate\)' \
+  "alter table $T disable trigger ledger_heads_refuse_truncate" "alter table $T enable trigger ledger_heads_refuse_truncate"
+reapply_refused "gatilho ausente" 'os três gatilhos da guarda não estão todos presentes' \
+  "drop trigger ledger_heads_publication_order on $T" "set role gmn_guard_owner; create trigger ledger_heads_publication_order before insert on $T for each row execute function gmn_link_audit_guard.enforce_publication_order()"
+reapply_refused "tabela UNLOGGED" 'não é uma tabela comum, registrada e heap' \
+  "alter table $T set unlogged" "alter table $T set logged"
+eq "cabeças intactas depois das recusas da definição" "6" "$(rows)"
+as_postgres_file "$MIGRATION"
+ok "definição exata (revisão do PR #61): restrição ausente, CHECK mais permissivo ou NOT VALID com o mesmo nome, UNIQUE com outras colunas, coluna com outro tipo, NULL ou default, gatilho com um evento a menos, desligado ou ausente e tabela UNLOGGED ⇒ a reaplicação aborta e nada muda; desfeitos, a reaplicação volta a passar"
+
 admin -c "set role gmn_guard_owner" -c "grant select (sha256) on gmn_link_audit_guard.ledger_heads to anon"
 as_postgres_file "$MIGRATION"
 eq "privilégio de coluna dos papéis da Data API revogado" "f" "$(admin -c "select has_column_privilege('anon', 'gmn_link_audit_guard.ledger_heads', 'sha256', 'SELECT')")"
