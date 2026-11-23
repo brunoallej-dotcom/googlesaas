@@ -669,7 +669,9 @@ passa por real.
 `GMN_LINK_AUDIT_HOMOLOGATION=1 npm run link-audit:collect -- --simulated --audit <auditId> --operator <e-mail> --evidence-dir <pasta> --json`.
 Link, identificadores e empresa são **fixos e sintéticos** (`Empresa de Ensaio`, `Cidade de Ensaio`/`ZZ`, FID `0x0:0xe5a10`, CID `940560`,
 sem site nem telefone); `--link`, `--name`, `--city`, `--uf` e as opções do LIVE são recusados. O corpo é gerado em memória; nenhuma rede,
-nenhum arquivo de ambiente lido, nenhum provedor real criado.
+nenhum arquivo de ambiente lido, nenhum provedor real criado. A captura grava `request.url` = `simulado://ensaio-homologacao/maps`,
+`attempts: 0` e status 200 (não houve HTTP: o status é o que o pipeline exige para gerar o relatório, e a captura inteira vai marcada).
+Códigos de saída como no LIVE (0 ok, 1 uso, 3 recusado antes de gravar, 4/5 falha na gravação).
 
 **Travas, em camadas:**
 
@@ -679,14 +681,19 @@ nenhum arquivo de ambiente lido, nenhum provedor real criado.
    finalização.
 2. **Coletor.** Só com `--simulated` **e** `GMN_LINK_AUDIT_HOMOLOGATION=1` (exatamente `1`, do ambiente do comando). Sem a trava (com ou
    sem `NODE_ENV=production`) ⇒ recusa, código 3, antes de qualquer pasta ou provedor. O runtime também só grava evidência simulada com
-   `homologation: true` (defesa em profundidade).
+   `homologation: true`, só com o gerador sintético (provedor injetado ou real ⇒ recusa) e só com a identidade sintética (defesa em
+   profundidade).
 3. **Marca persistente, dentro do hash.** A captura leva `provider: "SIMULATED"` e `simulated: true` (o esquema exige os dois juntos ou
    nenhum); o relatório leva `source.provider: "SIMULATED"`, `source.simulated: true` e uma limitação explícita. A marca entra no
    `contentSha256` da captura, que é o `source.capture.sha256` do `--json`, o `--collector-hash` do `export`, a entrada `capture:c0001`
    do pacote e do manifesto. Pacote, aprovação e manifesto `v2` **não mudam de formato** (D15.6(e): `entries[].source` continua fora;
-   nada de `v3`). Captura simulada e captura real não se misturam na mesma auditoria (recusa na gravação).
+   nada de `v3`). Captura simulada e captura real não se misturam na mesma auditoria: o pré-voo do armazenamento recusa nos dois sentidos
+   (no LIVE, antes de pagar); a gravação recusa a simulada numa auditoria real e nunca descarta uma resposta paga.
 4. **`export`.** Auditoria com captura simulada ⇒ `EXPORT_SIMULATED_CAPTURE` (código 3), salvo com `--simulated` **e** a mesma trava;
-   `--simulated` sem a trava, ou numa auditoria sem captura simulada ⇒ a mesma recusa. Com a trava, a saída avisa "SIMULADA — ensaio".
+   `--simulated` sem a trava, ou numa auditoria sem captura simulada ⇒ a mesma recusa. Com a trava, a saída avisa "SIMULADA — ensaio" e o
+   `--json` traz `simulated: true` (ausente nas exportações reais: a forma estável não muda). A trava é a única leitura do ambiente do
+   processo no `export`, feita em `src/lib/link-audit-evidence/simulated.ts` (só a variável da trava; o CLI e os módulos do `export`
+   continuam sem olhar o ambiente); a lista fechada de imports do CLI ganhou esse módulo (teste de isolamento revisto).
 5. **Leitor e interface.** A fonte aparece como "SIMULADA — ensaio" (lista e detalhe das evidências), com selo próprio.
 6. **Prévia e finalização (ponto escolhido: o bloqueio da prévia, que a finalização já respeita).** Base com evidência simulada ⇒
    bloqueio `SIMULATED_EVIDENCE`: `BLOCKING` sem a trava no servidor (a finalização responde `NOT_FINALIZABLE`; a conclusão de uma
@@ -697,7 +704,8 @@ nenhum arquivo de ambiente lido, nenhum provedor real criado.
 §5.3): a marca é defesa em profundidade; a garantia continua sendo a lista de chaves de produção (camada 1). (b) O resultado gravado
 sobre a captura simulada (só na homologação) não leva a marca no próprio arquivo: ela é alcançável pelo hash da captura citada, e as
 chaves do ensaio não estão na lista de produção (reconferência da R2.2). (c) O artefato do `sign` empacota o esquema da captura
-(`src/lib/link-audit-evidence/types.ts`): o hash versionado do artefato muda nesta fatia.
+(`src/lib/link-audit-evidence/types.ts`): o hash versionado do artefato muda nesta fatia (de `395d5ba9…` para
+`08ee1c75dc771c1d6ca5c52afe7b81161068c19fc3d58c00c6b9074989437a03`), sem mudança de comportamento do `sign`.
 
 ## 6. Critérios de aceite (cada item vira ao menos um teste automatizado)
 
@@ -881,8 +889,8 @@ O responsável delegou as decisões da W5 ao manager ("W5: pode decidir por mim 
 | D15.5 | **Quem escreve no volume de manifestos (§13.2 item 3; D7).** Só o canal de entrega pelo CI. O servidor confere a assinatura contra a lista de chaves fixada antes de aceitar, e não há cópia manual. Limite declarado e mantido: o administrador da VPS, que também edita a lista de chaves, continua fora da garantia (§1). Os detalhes do canal fecham na W5. |
 | D15.6 | **§13.3 e a pergunta da W4.1.** (a) A aprovação assinada pelo conferente com um segundo par de chaves (RS-03) **não é adotada agora**: sem segunda pessoa, não acrescenta nada. Volta à mesa quando houver conferente distinto. (b) **Dossiês:** arquivados offline junto do livro de manifestos enquanto o resultado existir. Revisão amostral trimestral (um dossiê ou 10 %, o que for maior), registrada no livro; sem segunda pessoa, a revisão é do próprio titular e fica marcada. (c) **`operator = conferente`:** continua só marcando `requiresLaterReview`, sem bloquear; o aceite formal da D15.1 cobre o acúmulo. (d) **`operator = custodiante`:** passa a marcar `requiresLaterReview: true` (mudança de código na W5). (e) **`entries[].source`:** continua fora (toda entrada é `LIVE`; incluir depois exige `v3`). |
 | D15.7 | **Continua com o responsável (não delegável):** a cerimônia da chave real (gerar e guardar), a assinatura do aceite formal de risco, os locais físicos das cópias e todo deploy de produção. O ensaio da W5 usa **chave descartável** em homologação. |
-| D16 | **W6 autorizada** pelo responsável em 20/11/2026: **uma** coleta LIVE nova da TUVAPLAST, no escopo da linha da W6 no plano (estimativa de cerca de 3 créditos Serper; nenhuma outra consulta paga). Ela **só roda depois do ensaio da W5 aprovado**, porque depende dele. A consulta usa a chave do Serper do ambiente de dev, que o manager não lê: o responsável executa o comando preparado no runbook. A atestação da coleta usa a chave real, na cerimônia (D15.7). |
 | D15.8 | **Coleta SIMULADA do ensaio (W5.2b, 22/11/2026, manager sob a delegação da W5).** O S-02 usa o modo SIMULATED do coletor, só em homologação: dados sintéticos fixos, trava `--simulated` + `GMN_LINK_AUDIT_HOMOLOGATION=1`, marca `simulated: true` e provedor `SIMULATED` gravados dentro do hash da captura, `export` e finalização recusando a captura simulada sem a trava, interface rotulando "SIMULADA — ensaio". Forma, camadas e limites no §5.7. |
+| D16 | **W6 autorizada** pelo responsável em 20/11/2026: **uma** coleta LIVE nova da TUVAPLAST, no escopo da linha da W6 no plano (estimativa de cerca de 3 créditos Serper; nenhuma outra consulta paga). Ela **só roda depois do ensaio da W5 aprovado**, porque depende dele. A consulta usa a chave do Serper do ambiente de dev, que o manager não lê: o responsável executa o comando preparado no runbook. A atestação da coleta usa a chave real, na cerimônia (D15.7). |
 
 ## 14. Fatiamento em ondas
 
