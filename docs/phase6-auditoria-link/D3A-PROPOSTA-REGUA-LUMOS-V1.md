@@ -1,12 +1,12 @@
 # D3A — Proposta da Régua de Pontuação Lumos v1 (Fase 6 · Auditoria por Link)
 
 Status: **PROPOSTA PARA APROVAÇÃO** · documento escrito em 22/10/2026 · metodologia `lumos-reconstruida-v1`.
-Nada aqui está implementado: nenhum código de pontuação, nenhuma interface, nenhum PDF, nenhuma IA, nenhuma consulta externa, nenhum crédito, nenhuma alteração em Supabase/Redis/migrations, nos arquivos privados da TUVAPLAST ou na prospecção.
+Nada aqui está implementado: nenhum código de pontuação, nenhuma interface, nenhum PDF, nenhuma IA, nenhuma consulta externa, nenhum crédito, nenhuma alteração em Supabase/Redis/migrations, nos arquivos privados da AUD-001 ou na prospecção.
 
 ## 0. Aviso de fidelidade (leia primeiro)
 
 - **A régua de pontos por subcritério NÃO foi recuperada.** O prompt original do agente nunca foi encontrado. As instruções fornecidas (mestre, executáveis, lacunas, manual, guia, JSON, PDFs) dão: os nove critérios, os pesos, as fórmulas gerais, a regra "Não verificado ≠ zero" e a separação nativo × site × redes. Elas **não** dão a divisão interna dos pesos nem as faixas de atribuição de pontos (lacunas R-13 a R-17 do documento de lacunas).
-- Portanto **tudo o que for marcado `PROPOSTA PARA APROVAÇÃO` é regra nova**, escrita para este projeto, e **não pertence ao agente original**. Não se deve afirmar que reproduz o Lumos original. As auditorias em PDF do agente original (Lumos Marketing, Rio Radical, TUVAPLAST, VRA, Daniele Cardoso, Paz Universal) foram usadas só como **hipótese de calibração** (§10), nunca como regra.
+- Portanto **tudo o que for marcado `PROPOSTA PARA APROVAÇÃO` é regra nova**, escrita para este projeto, e **não pertence ao agente original**. Não se deve afirmar que reproduz o Lumos original. As auditorias em PDF do agente original (Lumos Marketing, Rio Radical, AUD-001, VRA, <CLIENTE_B>, <CLIENTE_C>) foram usadas só como **hipótese de calibração** (§10), nunca como regra.
 - O que é **comprovado nas fontes** está marcado `FONTE`. O que é um indício (aparece só nos PDFs de saída do agente, não nas instruções) está marcado `INDÍCIO`.
 
 ## 1. Fontes lidas integralmente
@@ -19,11 +19,11 @@ Nada aqui está implementado: nenhum código de pontuação, nenhuma interface, 
 | `LEIA_ME_PRIMEIRO.md`, `PROMPT_ENTREGA_CLAUDE_CODE_FASE6.md` | restrições e ordem de trabalho |
 | Referências 01 (JSON), 02 (manual visual/qualidade), 03 (guia de espelhar modelos) | fórmulas, exemplo numérico, limiares de cobertura |
 | PDFs 04 (Lumos Marketing) e 05 (Rio Radical) | exemplos de saída |
-| Auditorias Lumos em PDF: TUVAPLAST, VRA, Estética Daniele Cardoso, Funerária Paz Universal (2) | calibração (hipótese) |
+| Auditorias Lumos em PDF: AUD-001, VRA, <CLIENTE_B>, <CLIENTE_C> (2) | calibração (hipótese) |
 | `src/lib/link-audit/methodology.ts` | nomes e pesos preservados (inalterado) |
-| `E0-CONTRATO-DE-FIDELIDADE.md`, docs das ondas 1–5B, `report.json` preservado da TUVAPLAST (somente leitura) | estado do projeto e dados reais disponíveis |
+| `E0-CONTRATO-DE-FIDELIDADE.md`, docs das ondas 1–5B, `report.json` preservado da AUD-001 (somente leitura) | estado do projeto e dados reais disponíveis |
 
-Os 16 PDFs de unidades da Paz Universal (ZIP) foram apenas listados; as duas já lidas têm o mesmo gabarito.
+Os 16 PDFs de unidades da <CLIENTE_C> (ZIP) foram apenas listados; as duas já lidas têm o mesmo gabarito.
 
 ## 2. Regras gerais (valem para todos os critérios)
 
@@ -84,7 +84,7 @@ Comparação de N6 determinística (telefone só dígitos; endereço sem acentos
 | C1 | Categoria principal definida | 4 | definida = 4 | — | ausente = 0 |
 | C2 | Aderência da principal ao negócio (confirmação do operador) | 3 | aderente = 3 | parcialmente = 1,5 | não aderente = 0 |
 | C3 | Categorias adicionais (lista nativa lida; coerência confirmada) | 3 | 2–4 coerentes = 3 | 1 = 2; > 4 ou parte incoerente = 1,5 | 0 comprovado = 0 |
-Sem lista nativa lida: C3 `NOT_VERIFIED`. Sem referência do negócio confirmada: C2 `NOT_VERIFIED`. **Exemplo:** principal "Fabricante de brinquedos" (C1 = 4); adicionais não lidas (C3 N/V); operador não confirmou aderência (C2 N/V) → 4/4 avaliados.
+Sem lista nativa lida: C3 `NOT_VERIFIED`. Sem referência do negócio confirmada: C2 `NOT_VERIFIED`. **Exemplo:** principal "Padaria" (C1 = 4); adicionais não lidas (C3 N/V); operador não confirmou aderência (C2 N/V) → 4/4 avaliados.
 
 ### 3.3 SERVICES — Serviços, produtos, descrição e atributos (peso 12) · Nat.
 | Id | Subcritério | Máx. | Integral | Parcial | Zero comprovado |
@@ -203,7 +203,7 @@ Cai **um nível** se houver `CONFLICT_OPEN`. A confiança nunca sobe por haver m
 | Índice exibido | Classificação | Origem |
 |---|---|---|
 | 0–39 | Crítico | `FONTE` |
-| **40–59** | **Fraco** | `PROPOSTA`; `INDÍCIO`: o nome "Fraco" aparece nos PDFs TUVAPLAST/VRA/Daniele, não nas instruções |
+| **40–59** | **Fraco** | `PROPOSTA`; `INDÍCIO`: o nome "Fraco" aparece nos PDFs AUD-001/VRA/<CLIENTE_B>, não nas instruções |
 | 60–74 | Em desenvolvimento | `FONTE` |
 | 75–89 | Forte | `FONTE` |
 | 90–100 | Referência local | `FONTE` |
@@ -223,8 +223,8 @@ Mínimo recomendado para exibir o número: **cobertura ≥ 40 % e ≥ 3 critéri
 ## 6. Quadro-resumo dos critérios (nomes e pesos preservados)
 Dados essenciais e consistência NAP (15) · Categorias e relevância comercial (10) · Serviços, produtos, descrição e atributos (12) · Avaliações e reputação (18) · Respostas às avaliações (8) · Fotos, vídeos e identidade visual (10) · Publicações e atividade (8) · Conversão e jornada (10) · Autoridade local e competitividade (9) = 100.
 
-## 7. Aplicação à TUVAPLAST COMÉRCIO (somente dados já preservados; **sem nota**)
-Base: `tuvaplast-20261022-maps01` (`report.json`, somente leitura; 8 evidências Verificadas, 11 Não verificadas, 1 chamada `/maps` já consumida). **Nenhum número de índice é calculado ou publicado aqui.**
+## 7. Aplicação à AUD-001 (somente dados já preservados; **sem nota**)
+Base: `aud-001-autorizacao-01` (`report.json`, somente leitura; 8 evidências Verificadas, 11 Não verificadas, 1 chamada `/maps` já consumida). **Nenhum número de índice é calculado ou publicado aqui.**
 
 | Subcrit. | Situação | Evidência preservada | Lacuna / como fechar |
 |---|---|---|---|
@@ -252,7 +252,7 @@ Base: `tuvaplast-20261022-maps01` (`report.json`, somente leitura; 8 evidências
 | L1/L2 | não verificado | sem concorrentes | decisão D5 |
 | L3 | não verificado | `external-presence` N/V | site/rede lidos |
 
-Pontos potencialmente avaliáveis: NAP 12 + CATEGORIES 4 + REVIEWS 12 + CONVERSION 2 (+2 se X5 confirmar) = **30 a 32 de 100** → cobertura prevista **30–32 %** em **4 de 9 critérios**. Isso é apenas o teto de cobertura com os dados atuais. Pelo mínimo recomendado (§5.6, 40 %), o resultado seria `INSUFFICIENT`: a TUVAPLAST **não teria número publicado** hoje, só os critérios avaliáveis e as lacunas; pelo mínimo alternativo (25 %) seria `PROVISIONAL`, confiança baixa. As 8 evidências verificadas não equivalem a 8 critérios avaliados: elas cobrem 4 critérios, e a cobertura se mede em pontos.
+Pontos potencialmente avaliáveis: NAP 12 + CATEGORIES 4 + REVIEWS 12 + CONVERSION 2 (+2 se X5 confirmar) = **30 a 32 de 100** → cobertura prevista **30–32 %** em **4 de 9 critérios**. Isso é apenas o teto de cobertura com os dados atuais. Pelo mínimo recomendado (§5.6, 40 %), o resultado seria `INSUFFICIENT`: a AUD-001 **não teria número publicado** hoje, só os critérios avaliáveis e as lacunas; pelo mínimo alternativo (25 %) seria `PROVISIONAL`, confiança baixa. As 8 evidências verificadas não equivalem a 8 critérios avaliados: elas cobrem 4 critérios, e a cobertura se mede em pontos.
 
 ## 8. Casos de teste e exemplos matemáticos (valores conferidos por cálculo exato)
 | # | Cenário | Entrada | Resultado esperado |
@@ -277,14 +277,14 @@ Pontos potencialmente avaliáveis: NAP 12 + CATEGORIES 4 + REVIEWS 12 + CONVERSI
 | T18 | Regressão: PDF Lumos pág. 4 | 8/15, 5/10, 9/12, 7/10, 6/8, 6/10, 6/9; N/V em 2 | O = 47, E = 74 → 63,51 → **64** Em desenv.; cobertura **74 %** (o PDF mostra 58 %: inconsistência do original) |
 | T19 | Regressão: JSON de exemplo | declarado 54/75; tabela soma 68 | `INVALID_INPUT` (soma divergente) |
 | T20 | Violações | obtidos > avaliados; avaliados > peso; pontos em item N/V | recusado |
-| T21 | Calibração PDFs (informativo) | TUVAPLAST 47,5/57 → 83 · Paz 47,5/55 → 86 · VRA 14/26 → 54 · Rio Radical 84 | a aritmética dos PDFs de unidades fecha; não são calibradores automáticos |
+| T21 | Calibração PDFs (informativo) | AUD-001 47,5/57 → 83 · <CLIENTE_C> 47,5/55 → 86 · VRA 14/26 → 54 · Rio Radical 84 | a aritmética dos PDFs de unidades fecha; não são calibradores automáticos |
 | T22 | Provisório na borda | cobertura 64 % → provisória; 65 % → não | idem |
 
 ## 9. Fronteiras desta proposta
 Prospecção, Juiz (21 critérios), grade de 49 pontos, campanhas e PDFs históricos **não são tocados**; o Lumos não se mistura com o Juiz. A régua só vive em `link-audit` quando aprovada. Pontuação continua `NOT_AVAILABLE_PENDING_D3` na leitura e na interface até a aprovação.
 
 ## 10. Calibração com os PDFs do agente original (hipótese, não regra)
-Os PDFs dão pontos por critério, com divisões internas visíveis (ex.: REVIEWS "12 avaliados" quando só nota+volume foram lidos; CATEGORIES "6 avaliados" na Paz Universal, "10" na TUVAPLAST). Isso sugere sub-réguas, mas sem tabela de faixas. Comparação com esta proposta: REVIEWS desta proposta daria TUVAPLAST 10/12 (PDF 10,5/12), Paz 11/12 (10,5) e Daniele 8/12 (7); NAP 15 avaliados no PDF contra 12 aqui (N6 N/V). **Divergências pequenas, porém a régua do PDF não é reproduzida e não deve ser descrita como idêntica.** Os PDFs também contêm erros de cobertura (Lumos 58 % × 74 %; Rio Radical 81 % × 100 %), o que reforça a validação de §5.7.
+Os PDFs dão pontos por critério, com divisões internas visíveis (ex.: REVIEWS "12 avaliados" quando só nota+volume foram lidos; CATEGORIES "6 avaliados" na <CLIENTE_C>, "10" na AUD-001). Isso sugere sub-réguas, mas sem tabela de faixas. Comparação com esta proposta: REVIEWS desta proposta daria AUD-001 10/12 (PDF 10,5/12), <CLIENTE_C> 11/12 (10,5) e <CLIENTE_B> 8/12 (7); NAP 15 avaliados no PDF contra 12 aqui (N6 N/V). **Divergências pequenas, porém a régua do PDF não é reproduzida e não deve ser descrita como idêntica.** Os PDFs também contêm erros de cobertura (Lumos 58 % × 74 %; Rio Radical 81 % × 100 %), o que reforça a validação de §5.7.
 
 ## 11. Riscos
 1. Faixas numéricas (R1–R3, P1–P2, V2, S2…) são julgamento do projeto, não do Lumos.
