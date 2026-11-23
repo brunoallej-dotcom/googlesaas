@@ -354,7 +354,8 @@ test('revisão independente da W4.6 (3): no artefato, --allow-fs-write só na ra
   const signWith = (extra: readonly string[], on = world) => runAsArtifact('sign', file, on.argv(), { typed: on.typed(), nodeOptions: [...base, ...extra] });
   const passing: ReadonlyArray<(root: string) => string[]> = [
     (root) => [`--allow-fs-write=${root}`, `--allow-fs-read=${root}`],
-    (root) => [`--allow-fs-write=${path.join(root, AUD)}`],
+    // W5.2a: o grant de escrita tem de existir (o Node só concede a subárvore de uma pasta que já existe): a subpasta da auditoria é criada antes
+    (root) => (fs.mkdirSync(path.join(root, AUD)), [`--allow-fs-write=${path.join(root, AUD)}`]),
     () => ['--allow-fs-read=/tmp', '--allow-fs-read=/.git', '--allow-fs-read=/home/.git', '--allow-fs-read=/var/tmp', '--allow-fs-read=/dev/shm', '--allow-fs-read=/proc/self/fd'],
   ];
   for (const grants of passing) {
@@ -466,6 +467,7 @@ const GRANT_MESSAGES = {
   writeOutside: /--allow-fs-write só na raiz real de --seals-dir/,
   readShallow: /leitura com pelo menos dois componentes/,
   closuresAbsent: /_closures tem de existir antes/,
+  writeAbsent: /--allow-fs-write tem de existir antes da execução/,
 } as const;
 type GrantMessage = keyof typeof GRANT_MESSAGES;
 
@@ -535,8 +537,31 @@ test('W5.2a: no artefato, o grant de escrita do close-key tem de EXISTIR (_closu
   await assertGrants('close-key', seals, ['--allow-fs-read=/', `--allow-fs-write=${path.join(closures, 'sub')}`], 'closuresAbsent');
   fs.mkdirSync(closures);
   await assertGrants('close-key', seals, ['--allow-fs-read=/', `--allow-fs-write=${closures}`], null);
-  // o sign não muda (a subpasta da auditoria ainda inexistente continua aceita; fora do escopo da W5.2a)
-  await assertGrants('sign', seals, [`--allow-fs-read=${seals}`, `--allow-fs-write=${path.join(seals, AUD)}`], null);
+});
+
+test('W5.2a (decisão do manager, mesmo tratamento no sign): no artefato, grant de escrita do sign que não existe (ex.: a subpasta da auditoria ainda não criada) ⇒ SIGN_RUNTIME_UNSAFE; a raiz de --seals-dir, que existe, passa', async () => {
+  const seals = homeSealsDir();
+  const audit = path.join(seals, AUD);
+  await assertGrants('sign', seals, [`--allow-fs-read=${seals}`, `--allow-fs-write=${audit}`], 'writeAbsent');
+  await assertGrants('sign', seals, [`--allow-fs-read=${seals}`, `--allow-fs-write=${seals}`, `--allow-fs-write=${path.join(audit, 'sub')}`], 'writeAbsent');
+  await assertGrants('sign', seals, [`--allow-fs-read=${seals}`, `--allow-fs-write=${seals}`], null);
+  fs.mkdirSync(audit);
+  await assertGrants('sign', seals, [`--allow-fs-read=${seals}`, `--allow-fs-write=${audit}`], null);
+});
+
+test('W5.2a (mesmo tratamento no sign), em processo: no sign do artefato, grant de escrita inexistente ⇒ SIGN_RUNTIME_UNSAFE antes de ler qualquer entrada, da confirmação e da frase; nada criado', async () => {
+  const file = await custodiedCopy();
+  const world = homeWorld();
+  const audit = path.join(world.sealsDir, AUD);
+  const data: string[] = [];
+  const spy = new Proxy(nodeFsOps, { get: (target, property, receiver) => (typeof Reflect.get(target, property, receiver) === 'function' ? (...args: unknown[]) => (data.push(String(property)), (Reflect.get(target, property, receiver) as (...a: unknown[]) => unknown).apply(target, args)) : Reflect.get(target, property, receiver)) });
+  const run = await runAsArtifact('sign', file, world.argv(), { typed: world.typed(), fs: spy, nodeOptions: [...RUNBOOK_FLAGS, `--allow-fs-read=${path.dirname(file)}`, `--allow-fs-write=${audit}`] });
+  assert.equal(run.code, 3, run.err.join('\n'));
+  assert.equal(codeOf(run), 'SIGN_RUNTIME_UNSAFE');
+  assert.match(String((JSON.parse(run.out[0] ?? '{}') as Record<string, unknown>).message), GRANT_MESSAGES.writeAbsent);
+  assert.deepEqual(data, [], 'nenhuma entrada lida');
+  assert.ok(!run.err.some((text) => /12 primeiros caracteres|Frase-senha/.test(text)), 'nem confirmação nem frase');
+  assert.ok(!fs.existsSync(audit), 'a subpasta da auditoria não foi criada');
 });
 
 /** X com duas posições de R, recibadas; a cópia do servidor no HOME (fora das temporárias) e S gravada CIFRADA (custódia K1). */
@@ -656,6 +681,10 @@ test('decisão 3 em processo REAL: com a linha do runbook, a sondagem de fsync n
   // revisão independente da W4.6 (3): escrita fora de --seals-dir (aqui, a raiz inteira) ⇒ recusa antes da sondagem e de qualquer entrada
   const wide = viaEnvI([...line, '--allow-fs-write=/'], artifact.file, args);
   refusedBarrier(wide, '--allow-fs-write=/', /grants/);
+  // W5.2a (mesmo tratamento no sign): grant de escrita inexistente (a subpasta da auditoria) ⇒ recusa antes da sondagem, sob o modelo de permissões real
+  const absentWrite = viaEnvI([...line.filter((option) => !option.startsWith('--allow-fs-write=')), `--allow-fs-write=${path.join(seals, AUD)}`], artifact.file, args);
+  refusedBarrier(absentWrite, 'grant de escrita inexistente no sign', /--allow-fs-write tem de existir antes da execução/);
+  assert.deepEqual(fs.readdirSync(seals), [], 'grant de escrita inexistente: nada criado');
   // segunda confirmação (b) sob --permission: o pai de um .git ausente não é concedido; ele só vale como ancestral de um grant conferido real
   // num lugar NÃO concedido (o HOME da estação), para a leitura do pai ser negada pelo modelo de permissões
   const holder = homeSealsDir();
