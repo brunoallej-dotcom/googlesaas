@@ -449,6 +449,62 @@ test('P9.5 resumo: parada no primeiro erro (FALHOU com o código; os seguintes "
   assert.deepEqual(summaryRows(injected).map((row) => [row[2], row[3], row[7]]), [['`-`', '`-`', '`-`']]);
 });
 
+/* ------------------------------------------------------------------------------------------------ seals-verify: detect (push em toda a main) */
+
+const detect = (sandbox: Sandbox, env: Record<string, string>): RunResult => runScript(sandbox, 'seals-detect.sh', [], withHome(sandbox, env));
+
+test('P9.5 detect (revisão do PR #74, item 2): o push vale para toda a main; o diff local before..sha decide; sem mudança em link-audit-seals/*/seals/ ⇒ changed=false, ambientes=[] e "nada a entregar", sem npm', (t) => {
+  const sandbox = sandboxOf(t);
+  const before = commitAll(sandbox, 'base');
+  put(sandbox, 'homologacao/trust-keys.txt', TRUST_LIST.replace('active', 'revoked'));
+  for (let i = 0; i < 310; i += 1) fs.writeFileSync(path.join(sandbox.root, 'link-audit-seals', `outro-${i}.txt`), 'x');
+  git(sandbox.root, 'add', '-A', '--', 'link-audit-seals');
+  git(sandbox.root, 'commit', '-q', '-m', 'sem manifestos');
+  const unrelated = git(sandbox.root, 'rev-parse', 'HEAD');
+  const quiet = detect(sandbox, { GMN_SHA: unrelated, GMN_EVENT: 'push', GMN_BEFORE: before });
+  assert.equal(quiet.status, 0, quiet.stderr);
+  assert.deepEqual(outputs(sandbox), { changed: 'false', ambientes: '[]' });
+  assert.match(fs.readFileSync(sandbox.summaryFile, 'utf8'), /Nada mudou sob `link-audit-seals\/\*\/seals\/` neste push: nada a entregar/);
+  assert.equal(calls(sandbox, 'npm').length, 0);
+
+  // um push com mais de 300 arquivos e UM manifesto no fim: o filtro `paths` do GitHub poderia não vê-lo; o diff local vê
+  for (let i = 0; i < 310; i += 1) fs.writeFileSync(path.join(sandbox.root, 'link-audit-seals', `outro-${i}.txt`), 'y');
+  put(sandbox, `producao/seals/${seal(AUD_B, 1)}`, content('p'));
+  const big = commitAll(sandbox, 'grande');
+  setScenario(sandbox, {});
+  assert.equal(detect(sandbox, { GMN_SHA: big, GMN_EVENT: 'push', GMN_BEFORE: unrelated }).status, 0);
+  assert.deepEqual(outputs(sandbox), { changed: 'true' });
+
+  // apagar um manifesto também é mudança (o seals-check recusa depois, S-01)
+  fs.rmSync(path.join(sandbox.root, 'link-audit-seals', 'producao', 'seals', AUD_B, 'seal-0001.json'));
+  const removed = commitAll(sandbox, 'remove');
+  setScenario(sandbox, {});
+  assert.equal(detect(sandbox, { GMN_SHA: removed, GMN_EVENT: 'push', GMN_BEFORE: big }).status, 0);
+  assert.equal(outputs(sandbox).changed, 'true');
+});
+
+test('P9.5 detect: base inutilizável (before todo zero, fora do histórico, fora da forma) ⇒ SEALS_NO_BASE; dispatch ⇒ changed=true só com ambiente válido; evento desconhecido ou checkout de outro commit ⇒ recusa', (t) => {
+  const sandbox = sandboxOf(t);
+  const sha = commitAll(sandbox, 'base');
+  for (const bad of ['0'.repeat(40), 'a'.repeat(40), 'main', '']) {
+    setScenario(sandbox, {});
+    assertRefused(sandbox, detect(sandbox, { GMN_SHA: sha, GMN_EVENT: 'push', GMN_BEFORE: bad }), 'SEALS_NO_BASE');
+  }
+  setScenario(sandbox, {});
+  assert.equal(detect(sandbox, { GMN_SHA: sha, GMN_EVENT: 'workflow_dispatch', GMN_DISPATCH_AMB: 'producao' }).status, 0);
+  assert.deepEqual(outputs(sandbox), { changed: 'true' });
+  const cases: Array<[Record<string, string>, string, string | undefined]> = [
+    [{ GMN_EVENT: 'workflow_dispatch', GMN_DISPATCH_AMB: 'staging' }, 'INPUT_INVALID', 'GMN_DISPATCH_AMB'],
+    [{ GMN_EVENT: 'schedule' }, 'INPUT_INVALID', 'GMN_EVENT'],
+    [{ GMN_EVENT: 'push', GMN_BEFORE: sha, GMN_SHA: 'f'.repeat(40) }, 'CHECKOUT_MISMATCH', undefined],
+  ];
+  for (const [extra, code, detail] of cases) {
+    setScenario(sandbox, {});
+    const env: Record<string, string> = { GMN_SHA: sha, ...extra };
+    assertRefused(sandbox, detect(sandbox, env), code, detail);
+  }
+});
+
 /* ------------------------------------------------------------------------------------------------ seals-verify: matriz de ambientes */
 
 /** Sandbox do seals-verify: git real, `npm` falso, o preparo do ci.yml copiado (o mesmo do job `seals`). */

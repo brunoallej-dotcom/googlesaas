@@ -95,10 +95,11 @@ test('yaml-subset: o leitor dos testes recusa o que não cobre (âncora, alias, 
   });
 });
 
-test('P9-W01 gatilhos e permissões: exatamente os do §5.5 (dispatch com ambiente e ação; push na main só no caminho dos manifestos); topo contents: read; todo job declara permissões, deploy = contents + actions de leitura, seals-verify e seals-deliver = contents de leitura; nenhum write', () => {
+test('P9-W01 gatilhos e permissões: exatamente os do §5.5 (dispatch com ambiente e ação; push em TODA a main, sem filtro paths, revisão do PR #74 item 2); topo contents: read; todo job declara permissões, deploy = contents + actions de leitura, seals-verify e seals-deliver = contents de leitura; nenhum write', () => {
   const on = mapAt(workflow.on, 'on');
   assert.deepEqual(Object.keys(on), ['workflow_dispatch', 'push']);
-  assert.deepEqual(on.push, { branches: ['main'], paths: ['link-audit-seals/*/seals/**'] }, 'push só na main e só no caminho dos manifestos (nunca trust-keys.txt)');
+  assert.deepEqual(on.push, { branches: ['main'] }, 'push na main, sem paths (o GitHub só avalia o filtro sobre 300 arquivos do diff)');
+  assert.ok(!/^\s*(?:paths|paths-ignore|branches-ignore|tags):/m.test(withoutComments(workflowText)), 'nenhum filtro de caminho, de tag ou de exclusão');
   assert.deepEqual(Object.keys(jobs), ['deploy', 'seals-verify', 'seals-deliver'], 'os três jobs do §5.5');
   const inputs = mapAt(mapAt(on.workflow_dispatch, 'workflow_dispatch').inputs, 'inputs');
   assert.deepEqual(Object.keys(inputs), ['ambiente', 'acao']);
@@ -135,7 +136,7 @@ test('P9-W02 (P9.5) seals-verify sem ambiente nem segredo, só na main, no push 
   assert.equal(verifyJob.if, "github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.acao == 'entregar-selos'))");
   assert.equal(verifyJob.environment, undefined, 'seals-verify sem ambiente (sem segredo)');
   assert.equal(verifyJob['timeout-minutes'], 15);
-  assert.deepEqual(verifyJob.outputs, { ambientes: '${{ steps.verify.outputs.ambientes }}' });
+  assert.deepEqual(verifyJob.outputs, { ambientes: '${{ steps.verify.outputs.ambientes || steps.detect.outputs.ambientes }}' }, 'sem mudança no caminho dos manifestos, o [] do detect');
   assert.equal(deliverJob.needs, 'seals-verify');
   assert.equal(deliverJob.environment, '${{ matrix.ambiente }}');
   assert.equal(deliverJob['timeout-minutes'], 20, 'spec §5.5: 20 min no seals-deliver');
@@ -206,13 +207,13 @@ test('P9-W05 nenhuma expressão ${{ }} dentro de run:, sem rastreamento do shell
   assert.equal(workflowText.split('${{ secrets.').length - 1, declared, 'nenhum segredo fora do env: de um passo');
   assert.ok(!workflowText.includes('secrets.GITHUB_TOKEN'), 'o token do job entra como github.token, só onde é usado');
   const inputUses = [...withoutComments(workflowText).matchAll(/\$\{\{ inputs\.[a-z]+ \}\}/g)].length;
-  assert.equal(inputUses, 5, 'inputs só no nome, ambiente, grupo de concorrência e env do job deploy e no env do passo do seals-verify (e nas condições sem ${{ }})');
-  assert.deepEqual(verifySteps.find((step) => step.id === 'verify')?.env, {
+  assert.equal(inputUses, 6, 'inputs só no nome, ambiente, grupo de concorrência e env do job deploy e no env dos passos detect e verify do seals-verify (e nas condições sem ${{ }})');
+  for (const id of ['detect', 'verify']) assert.deepEqual(verifySteps.find((step) => step.id === id)?.env, {
     GMN_SHA: '${{ github.sha }}',
     GMN_EVENT: '${{ github.event_name }}',
     GMN_BEFORE: '${{ github.event.before }}',
     GMN_DISPATCH_AMB: '${{ inputs.ambiente }}',
-  }, 'seals-verify: as entradas do evento só pelo ambiente do passo');
+  }, `seals-verify.${id}: as entradas do evento só pelo ambiente do passo`);
   assert.deepEqual(deliverStep('deliver').env, { GMN_TRUST_SHA256: '${{ steps.files.outputs.trust_sha256 }}' });
 });
 
@@ -314,14 +315,18 @@ test('P9.5 NOT_MAIN_HEAD no seals-deliver (revisão do PR #74, item 1): o commit
   assert.deepEqual(secretSteps, ['ssh'], 'segredos só no passo da chave');
 });
 
-test('P9.5 seals-verify: sem segredo, Node 22 sem cache, npm ci do commit e o script do passo; nada de artefato nem de escrita', () => {
-  assert.deepEqual(verifySteps.map((step) => step.id ?? step.name), ['checkout', 'Node 22 (sem cache)', 'install', 'verify']);
-  const setup = verifySteps[1] as YamlMap;
+test('P9.5 seals-verify: sem segredo; primeiro o detect (só git, diff local: nada mudou em link-audit-seals/*/seals/ ⇒ verde sem instalar nada), depois Node 22 sem cache, npm ci do commit e o script do passo, só com mudança', () => {
+  assert.deepEqual(verifySteps.map((step) => step.id ?? step.name), ['checkout', 'detect', 'Node 22 (sem cache)', 'install', 'verify']);
+  assert.equal(runOf(verifySteps[1] as YamlMap), 'bash deploy/ci/seals-detect.sh');
+  assert.equal(verifySteps[1]?.if, undefined, 'o detect sempre roda');
+  for (const step of verifySteps.slice(2)) assert.equal(step.if, "steps.detect.outputs.changed == 'true'", `${String(step.name)}: só com mudança`);
+  const setup = verifySteps[2] as YamlMap;
   assert.match(String(setup.uses), /^actions\/setup-node@[0-9a-f]{40}$/);
   assert.deepEqual(setup.with, { 'node-version': '22' }, 'sem cache:');
-  assert.equal(runOf(verifySteps[2] as YamlMap), 'npm ci');
-  assert.equal(runOf(verifySteps[3] as YamlMap), 'bash deploy/ci/seals-verify.sh');
-  assert.deepEqual(scriptsOf(verifySteps), ['seals-verify.sh']);
+  assert.equal(runOf(verifySteps[3] as YamlMap), 'npm ci');
+  assert.equal(runOf(verifySteps[4] as YamlMap), 'bash deploy/ci/seals-verify.sh');
+  assert.deepEqual(scriptsOf(verifySteps), ['seals-detect.sh', 'seals-verify.sh']);
+  assert.ok(!/(?:^|[^A-Za-z0-9_.\/-])(?:npm|npx|node)(?=$|[^A-Za-z0-9_-])/m.test(withoutComments(scriptText('seals-detect.sh'))), 'o detect não usa npm nem node');
   const verify = scriptText('seals-verify.sh');
   assert.ok(verify.includes('bash .github/scripts/seals-prepare.sh'), 'push: o mesmo preparo do job seals do ci.yml');
   assert.ok(verify.includes('npm run --silent link-audit:seals-check -- "$@" | tee -a "$GITHUB_STEP_SUMMARY"'), 'o mesmo comando da P9.2');

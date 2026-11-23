@@ -6,7 +6,8 @@ name: deploy
 # P9.4: o job `deploy`, disparado à mão na `main` e aprovado pelo responsável no ambiente protegido (`homologacao` ou `producao`).
 # P9.5: os jobs `seals-verify` (sem segredo e sem ambiente: o mesmo seals-check do ci.yml sobre o commit, e a matriz de ambientes) e
 # `seals-deliver` (um por ambiente com arquivos, no ambiente protegido: só git, sha256sum e ssh, um `put` por arquivo, para no primeiro erro),
-# no push na `main` que toca o caminho dos manifestos (`link-audit-seals/*/seals/**`) ou por dispatch com `acao = entregar-selos`.
+# no push na `main` (sem filtro `paths`: o seals-verify decide pelo diff local se o push mexeu em `link-audit-seals/*/seals/`; revisão do
+# PR #74, item 2) ou por dispatch com `acao = entregar-selos`.
 #
 # Regras (tests/deploy-workflow.test.ts): permissões declaradas por job, só de leitura; segredos só de AMBIENTE, no `env:` do passo
 # que os usa; nenhuma expressão `${{ }}` dentro de `run:`; sem rastreamento do shell nem ssh verboso; actions só as do ci.yml, fixadas
@@ -27,9 +28,9 @@ on:
         required: true
         default: deploy
         options: [deploy, entregar-selos]
+  # Sem `paths`: o GitHub avalia o filtro só sobre os primeiros 300 arquivos do diff, e um push grande pularia a entrega em silêncio.
   push:
     branches: [main]
-    paths: ['link-audit-seals/*/seals/**']
 
 permissions:
   contents: read
@@ -224,7 +225,7 @@ jobs:
       run:
         shell: bash
     outputs:
-      ambientes: ${{ steps.verify.outputs.ambientes }}
+      ambientes: ${{ steps.verify.outputs.ambientes || steps.detect.outputs.ambientes }}
     steps:
       - name: Checkout do SHA (histórico completo, sem credencial persistida)
         id: checkout
@@ -234,17 +235,29 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: O push mexeu em link-audit-seals/*/seals/? (diff local, só git; nada mudou = nada a entregar)
+        id: detect
+        env:
+          GMN_SHA: ${{ github.sha }}
+          GMN_EVENT: ${{ github.event_name }}
+          GMN_BEFORE: ${{ github.event.before }}
+          GMN_DISPATCH_AMB: ${{ inputs.ambiente }}
+        run: bash deploy/ci/seals-detect.sh
+
       - name: Node 22 (sem cache)
+        if: steps.detect.outputs.changed == 'true'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
 
       - name: Install (dependências do commit, sem segredo)
         id: install
+        if: steps.detect.outputs.changed == 'true'
         run: npm ci
 
       - name: seals-check sobre o commit e matriz de ambientes (S-01 a S-14 no push; S-03 a S-08 em toda a árvore do ambiente)
         id: verify
+        if: steps.detect.outputs.changed == 'true'
         env:
           GMN_SHA: ${{ github.sha }}
           GMN_EVENT: ${{ github.event_name }}
