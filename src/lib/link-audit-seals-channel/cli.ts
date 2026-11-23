@@ -4,13 +4,16 @@ import { errorCode, type BytesFsOps } from '../link-audit/fs-ops';
 import { parseNameStatus, parseTreeModes } from './changes';
 import { runSealsCheck, type SealsCheckReport } from './check';
 import { refusal } from './codes';
-import { CHANNEL_ENVIRONMENTS, TRUST_LIST_FILE, type ChannelEnvironment } from './paths';
-import { firstRefusalCode, summaryLines } from './summary';
+import { CHANNEL_ENVIRONMENTS, SEALS_ROOT, TRUST_LIST_FILE, type ChannelEnvironment } from './paths';
+import { firstRefusalCode, summaryLines, type SummaryOptions } from './summary';
+import { runSealsTreeCheck } from './tree';
 import { MAX_TRUST_LIST_BYTES } from './trust-list';
 import type { BaseTrustList } from './trust-rules';
 
 /*
  * P9.2 — o comando `npm run link-audit:seals-check -- --changes <arquivo> --modes <arquivo> --base-trust <pasta> --repo <raiz>` (spec §5.4).
+ * P9.5 — o modo árvore do job `seals-verify` (§5.5): `npm run link-audit:seals-check -- --tree <amb> --modes <arquivo> --repo <raiz>`, S-03 a
+ * S-08 sobre todos os arquivos de `link-audit-seals/<amb>/` do commit (`tree.ts`).
  * Entrada validada por zod (estrito) na fronteira; disco só pela porta `BytesFsOps` que o script entrega (`nodeFsOps`). Não chama git nem rede.
  * Saída: o resumo público em Markdown no stdout (o job o acrescenta a `$GITHUB_STEP_SUMMARY`) e, na recusa, UMA linha `ERRO <CÓDIGO>` no
  * stderr. Nunca conteúdo de arquivo, caminho de disco ou valor recebido.
@@ -25,7 +28,11 @@ export const SEALS_CHECK_EXIT = { OK: 0, REFUSED: 1, USAGE: 2, UNEXPECTED: 3 } a
 export const MAX_CHANGES_BYTES = 8 * 1024 * 1024;
 /** Os modos da árvore inteira sob `link-audit-seals/` (cresce com o histórico de manifestos). */
 export const MAX_MODES_BYTES = 64 * 1024 * 1024;
-export const USAGE_LINES = ['Uso: npm run link-audit:seals-check -- --changes <arquivo> --modes <arquivo> --base-trust <pasta> --repo <raiz>'] as const;
+export const USAGE_LINES = [
+  'Uso: npm run link-audit:seals-check -- --changes <arquivo> --modes <arquivo> --base-trust <pasta> --repo <raiz>',
+  '     npm run link-audit:seals-check -- --tree <producao|homologacao> --modes <arquivo> --repo <raiz>',
+] as const;
+const TREE_FLAG = '--tree';
 const MAX_ARG_LENGTH = 4096;
 
 type Line = (line: string) => void;
@@ -52,6 +59,23 @@ export function parseSealsCheckArgs(argv: readonly string[]): SealsCheckArgs | n
     collected[key] = argv[index + 1] as string;
   }
   const parsed = argsSchema.safeParse(collected);
+  return parsed.success ? parsed.data : null;
+}
+
+const treeArgsSchema = z.object({ tree: z.enum(CHANNEL_ENVIRONMENTS), modes: pathArg, repo: pathArg }).strict();
+type SealsTreeArgs = z.infer<typeof treeArgsSchema>;
+const TREE_FLAGS: Readonly<Record<string, keyof SealsTreeArgs>> = { [TREE_FLAG]: 'tree', '--modes': 'modes', '--repo': 'repo' };
+
+/** Modo árvore (P9.5): `--tree <amb> --modes <arquivo> --repo <raiz>`, cada opção exatamente uma vez; qualquer outra coisa ⇒ `null`. */
+export function parseSealsTreeArgs(argv: readonly string[]): SealsTreeArgs | null {
+  if (argv.length % 2 !== 0) return null;
+  const collected: Record<string, string> = {};
+  for (let index = 0; index < argv.length; index += 2) {
+    const key = TREE_FLAGS[argv[index] ?? ''];
+    if (key === undefined || key in collected) return null;
+    collected[key] = argv[index + 1] as string;
+  }
+  const parsed = treeArgsSchema.safeParse(collected);
   return parsed.success ? parsed.data : null;
 }
 
@@ -112,22 +136,39 @@ async function buildReport(args: SealsCheckArgs, fs: BytesFsOps): Promise<SealsC
   return runSealsCheck({ repoRoot, changes: changes.entries, modes, baseTrust }, { fs });
 }
 
+async function buildTreeReport(args: SealsTreeArgs, fs: BytesFsOps): Promise<SealsCheckReport> {
+  const repoRoot = await repoRootOf(fs, args.repo);
+  const modesRaw = await readInput(fs, args.modes, MAX_MODES_BYTES);
+  const modes = modesRaw === 'TOO_LARGE' ? null : parseTreeModes(modesRaw);
+  if (modes === null) throw new InputError();
+  return runSealsTreeCheck({ repoRoot, modes, env: args.tree }, { fs });
+}
+
+/** O resumo do modo árvore: título e textos próprios (o ambiente vem do enum validado, nunca da entrada crua). */
+const treeSummary = (env: ChannelEnvironment): SummaryOptions => ({
+  title: `### seals-verify (${env}): árvore inteira, S-03 a S-08`,
+  emptyText: `Nenhum arquivo sob \`${SEALS_ROOT}/${env}/\`: nada a verificar nem a entregar.`,
+  rules: 'S-03 a S-08',
+});
+
 /** O comando inteiro: devolve o código de saída. Nunca lança. */
 export async function runSealsCheckCli(argv: readonly string[], out: Line, err: Line, deps: SealsCheckCliDeps): Promise<number> {
-  const args = parseSealsCheckArgs(argv);
-  if (args === null) {
+  const isTree = argv.includes(TREE_FLAG);
+  const changesArgs = isTree ? null : parseSealsCheckArgs(argv);
+  const treeArgs = isTree ? parseSealsTreeArgs(argv) : null;
+  if (changesArgs === null && treeArgs === null) {
     USAGE_LINES.forEach(err);
     err('ERRO SEALS_USAGE');
     return SEALS_CHECK_EXIT.USAGE;
   }
   let report: SealsCheckReport;
   try {
-    report = await buildReport(args, deps.fs);
+    report = treeArgs !== null ? await buildTreeReport(treeArgs, deps.fs) : await buildReport(changesArgs as SealsCheckArgs, deps.fs);
   } catch (error) {
     err(error instanceof InputError ? 'ERRO SEALS_INPUT_INVALID' : 'ERRO SEALS_INTERNAL');
     return error instanceof InputError ? SEALS_CHECK_EXIT.USAGE : SEALS_CHECK_EXIT.UNEXPECTED;
   }
-  summaryLines(report).forEach(out);
+  summaryLines(report, treeArgs !== null ? treeSummary(treeArgs.tree) : {}).forEach(out);
   const first = firstRefusalCode(report);
   if (first !== null) {
     err(`ERRO ${first}`);

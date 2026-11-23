@@ -61,15 +61,25 @@ function environmentSection(report: SealsCheckReport, env: ChannelEnvironment): 
 /** O código fixo da primeira recusa (ordem das regras), ou `null` se nada foi recusado. */
 export const firstRefusalCode = (report: SealsCheckReport): string | null => report.refusals[0]?.code ?? null;
 
+/** Título e textos do resumo; o modo árvore do `seals-verify` (P9.5) passa os seus, o job `seals` usa os padrões. */
+export interface SummaryOptions {
+  readonly title?: string;
+  /** O texto quando não há nada sob o escopo verificado. */
+  readonly emptyText?: string;
+  /** As regras aplicadas, para o texto da recusa (`S-01 a S-13` no job `seals`). */
+  readonly rules?: string;
+}
+
 /** O resumo completo em Markdown (linhas). */
-export function summaryLines(report: SealsCheckReport): string[] {
-  if (!report.touched) return [SUMMARY_TITLE, '', 'Nada mudou sob `link-audit-seals/`: nada a verificar.'];
+export function summaryLines(report: SealsCheckReport, options: SummaryOptions = {}): string[] {
+  const title = options.title ?? SUMMARY_TITLE;
+  if (!report.touched) return [title, '', options.emptyText ?? 'Nada mudou sob `link-audit-seals/`: nada a verificar.'];
   const first = firstRefusalCode(report);
-  const result = first === null ? 'Resultado: `OK`' : `Resultado: \`ERRO ${first}\` (${report.refusals.length} recusa(s); o código é o da primeira, na ordem das regras S-01 a S-13)`;
+  const result = first === null ? 'Resultado: `OK`' : `Resultado: \`ERRO ${first}\` (${report.refusals.length} recusa(s); o código é o da primeira, na ordem das regras ${options.rules ?? 'S-01 a S-13'})`;
   const shown = report.refusals.slice(0, MAX_REFUSAL_ROWS).map(refusalLine);
   const hidden = report.refusals.length - shown.length;
   return [
-    SUMMARY_TITLE,
+    title,
     '',
     result,
     ...(report.incomplete ? ['', 'Verificação INCOMPLETA: uma etapa falhou de forma inesperada (falha fechada; as recusas abaixo valem).'] : []),

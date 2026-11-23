@@ -5,6 +5,7 @@
  */
 export { runSealsCheckCli, SEALS_CHECK_EXIT } from './cli';
 export { runSealsCheck, type SealsCheckInput, type SealsCheckReport } from './check';
+export { MAX_TREE_FILES, runSealsTreeCheck, type SealsTreeInput } from './tree';
 export type { SealsRefusal, SealsRefusalCode, SealsRuleId } from './codes';
 export { AUDIT_ID_CHANNEL_PATTERN, CHANNEL_ENVIRONMENTS, classifyChannelPath, SEALS_ROOT, TRUST_LIST_FILE, type ChannelEnvironment, type ChannelPath } from './paths';
 export {

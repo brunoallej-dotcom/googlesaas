@@ -78,7 +78,7 @@ const isSealFile = (file: ReadFile): file is ReadFile & { readonly channel: Seal
 const isClosureFile = (file: ReadFile): file is ReadFile & { readonly channel: ClosurePath } => file.channel.kind === 'closure';
 const isTrustFile = (file: ReadFile): file is ReadFile & { readonly channel: TrustPath } => file.channel.kind === 'trust-list';
 
-const EMPTY_REPORT: SealsCheckReport = { touched: false, refusals: [], manifests: [], closures: [], trustLists: [], chains: [], chainsTruncated: false, incomplete: false };
+export const EMPTY_REPORT: SealsCheckReport = { touched: false, refusals: [], manifests: [], closures: [], trustLists: [], chains: [], chainsTruncated: false, incomplete: false };
 
 function classify(changes: readonly ChangeEntry[]): ClassifiedChange[] {
   return changes.flatMap((entry) => {
@@ -166,7 +166,7 @@ async function commitTrustByEnvironment(repoRoot: string, fs: BytesFsOps): Promi
   return trust;
 }
 
-function manifestLines(candidates: readonly Candidate[], judged: readonly JudgedSeal[]): ManifestLine[] {
+export function manifestLines(candidates: readonly Candidate[], judged: readonly JudgedSeal[]): ManifestLine[] {
   return candidates.flatMap((candidate) => {
     if (candidate.channel.kind !== 'seal') return [];
     const found = judged.find((item) => item.repoPath === candidate.repoPath);
@@ -175,7 +175,7 @@ function manifestLines(candidates: readonly Candidate[], judged: readonly Judged
   });
 }
 
-function closureLines(candidates: readonly Candidate[], judged: readonly JudgedClosure[]): ClosureLine[] {
+export function closureLines(candidates: readonly Candidate[], judged: readonly JudgedClosure[]): ClosureLine[] {
   return candidates.flatMap((candidate) => {
     if (candidate.channel.kind !== 'closure') return [];
     const found = judged.find((item) => item.repoPath === candidate.repoPath);
@@ -232,7 +232,7 @@ function addedClosuresByEnvironment(candidates: readonly Candidate[]): Record<Ch
 }
 
 /** Roda uma etapa sem deixar uma falha inesperada apagar as recusas já coletadas: a falha só marca a execução como incompleta. */
-async function guarded(state: { incomplete: boolean }, stage: () => Promise<void>): Promise<void> {
+export async function guarded(state: { incomplete: boolean }, stage: () => Promise<void>): Promise<void> {
   try {
     await stage();
   } catch {

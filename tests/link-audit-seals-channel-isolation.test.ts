@@ -50,9 +50,11 @@ const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   'budget.ts': new Set([PORT]),
   'check.ts': new Set([PORT, VERIFIER, './budget', './chains', './changes', './closures', './codes', './files', './paths', './trust-rules', './trust-list']),
   'summary.ts': new Set(['./check', './codes', './paths']),
+  // P9.5: o modo árvore do `seals-verify` (S-03 a S-08 sobre todos os arquivos do ambiente), com as mesmas peças do job `seals`
+  'tree.ts': new Set(['./budget', './check', './codes', './files', './paths']),
   // o comando: zod na fronteira, a porta de disco (o script entrega o adaptador), node:path
-  'cli.ts': new Set(['node:path', 'zod', PORT, './changes', './check', './codes', './paths', './summary', './trust-list', './trust-rules']),
-  'index.ts': new Set(['./cli', './check', './codes', './paths', './trust-list']),
+  'cli.ts': new Set(['node:path', 'zod', PORT, './changes', './check', './codes', './paths', './summary', './tree', './trust-list', './trust-rules']),
+  'index.ts': new Set(['./cli', './check', './codes', './paths', './tree', './trust-list']),
 };
 
 test('isolamento: lista fechada de arquivos do núcleo do canal e de imports por arquivo', () => {
