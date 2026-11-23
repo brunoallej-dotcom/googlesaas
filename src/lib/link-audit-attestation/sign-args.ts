@@ -433,8 +433,10 @@ const grantsRefusal = (why: string): SignRefusal => ({
   code: 'SIGN_RUNTIME_UNSAFE',
   message: `O artefato único só aceita grants estreitos do modelo de permissões: ${why}. Rode pela linha fixada no runbook. ${RUNTIME_NOTHING}`,
 });
-const GRANT_SHAPE = grantsRefusal('cada --allow-fs-read/--allow-fs-write é um caminho absoluto, normalizado, sem vírgula, diferente de / e sem *');
+const GRANT_SHAPE = grantsRefusal('cada --allow-fs-read/--allow-fs-write é um caminho absoluto, normalizado, sem vírgula, diferente de / e sem * (única exceção: --allow-fs-read=/ como o único grant de leitura do close-key)');
+const GRANT_ROOT_NOT_ALONE = grantsRefusal('no close-key, --allow-fs-read=/ só vale como o ÚNICO grant de leitura (o / é prefixo de texto de qualquer outro caminho, e o Node nega o grant mais curto)');
 const GRANT_WRITE_OUTSIDE = grantsRefusal('--allow-fs-write só na raiz real de --seals-dir ou dentro dela (no close-key, só em <seals-dir>/_closures)');
+const GRANT_CLOSURES_ABSENT = grantsRefusal('no close-key, <seals-dir>/_closures tem de existir antes da execução (mkdir -p da linha do runbook): o Node só concede a subárvore de uma pasta que já existe, e o fecho não poderia ser gravado nela');
 const GRANT_READ_SHALLOW = grantsRefusal('leitura com pelo menos dois componentes (/a/b), salvo /tmp e os .git que a custódia da chave consulta');
 const GRANT_ROOT_UNPROVEN = grantsRefusal('o caminho real de --seals-dir não pôde ser resolvido para conferir os grants de escrita');
 const GRANT_NOT_REAL = grantsRefusal('cada caminho concedido tem de existir e ser o próprio caminho real (nenhum componente é link simbólico), salvo /proc/self/*, as raízes temporárias e os .git da custódia, que podem não existir');
@@ -492,22 +494,41 @@ async function hasRealParent(git: string, verified: readonly string[], realpath:
 /** Um grant aceitável na forma: absoluto, normalizado (sem `..`, sem barra final), sem vírgula (lista) e sem `*` (curinga), diferente de `/`. */
 const isNarrowPath = (value: string): boolean => value.length > 1 && path.isAbsolute(value) && path.resolve(value) === value && !/[,*\0]/.test(value);
 const depthOf = (value: string): number => value.split('/').filter(Boolean).length;
+const FS_ROOT = '/';
+type Grant = { readonly kind: 'read' | 'write'; readonly value: string };
+const isRootRead = (grant: Grant): boolean => grant.kind === 'read' && grant.value === FS_ROOT;
+
+/**
+ * Forma dos grants. W5.2a (decisão do manager sob a D15, linha do `close-key` no runbook): `--allow-fs-read=/` é aceito SÓ no `close-key` e SÓ como o
+ * único grant de leitura (o mesmo texto repetido, como em `execArgv` e na linha original, conta como um). A conferência das pastas ACIMA dos recibos
+ * e da cópia do servidor faz `lstat` até `/`, e o Node concede a subárvore inteira de um grant; `/` é prefixo de texto de qualquer outro caminho, e o
+ * Node nega o grant mais curto quando um é prefixo de outro, por isso nada mais de leitura. `/` como escrita, `/` no `sign` ou `*` ⇒ recusa de forma.
+ */
+function grantsShapeRefusal(subcommand: 'sign' | 'close-key', grants: readonly Grant[]): SignRefusal | null {
+  const reads = new Set(grants.filter((grant) => grant.kind === 'read').map((grant) => grant.value));
+  const rootAlone = subcommand === 'close-key' && reads.size === 1 && reads.has(FS_ROOT);
+  const malformed = grants.filter((grant) => !isNarrowPath(grant.value) && !(rootAlone && isRootRead(grant)));
+  if (malformed.length === 0) return null;
+  return subcommand === 'close-key' && malformed.every(isRootRead) ? GRANT_ROOT_NOT_ALONE : GRANT_SHAPE;
+}
 
 /**
  * Revisão independente da W4.6 (3), só no ARTEFATO, depois do analisador: os grants de `execArgv` E da linha original do exec. Critério simples que
- * falha fechado: forma estreita (acima); cada grant é o próprio caminho real (`isOwnRealPath`, confirmação da revisão); escrita só na raiz REAL de
- * `--seals-dir` ou dentro dela (`close-key`: só `_closures`); leitura no `sign` com
- * pelo menos dois componentes, salvo `/tmp` (raiz temporária da custódia) e caminhos que terminam em `.git` (os `lstat` da custódia da chave). No
- * `close-key`, a leitura ampla continua limite declarado até a W5 (as pastas acima dos recibos), mas `/` e `*` são recusados também lá.
+ * falha fechado: forma estreita (`grantsShapeRefusal`; no `close-key`, `/` como único grant de leitura, W5.2a); cada grant é o próprio caminho real
+ * (`isOwnRealPath`, confirmação da revisão); escrita só na raiz REAL de `--seals-dir` ou dentro dela (`close-key`: só `_closures`, que tem de EXISTIR:
+ * para um caminho inexistente o Node concede só o próprio caminho, não a subárvore, e o fecho não seria gravado dentro dela, W5.2a); leitura no `sign`
+ * com pelo menos dois componentes, salvo `/tmp` (raiz temporária da custódia) e caminhos que terminam em `.git` (os `lstat` da custódia da chave).
+ * Limite declarado (W5.2a, D15.3): a leitura larga do `close-key` não amplia a escrita; a estação é dedicada e sem rede.
  */
 export async function artifactGrantsRefusal(input: { readonly subcommand: 'sign' | 'close-key'; readonly sealsDir: string; readonly execArgv: readonly string[]; readonly execBlock: ExecBlockReader; readonly realpath: (target: string) => Promise<string>; readonly tempRoots: readonly string[] }): Promise<SignRefusal | null> {
   const original = await originalExec(input.execBlock);
   if (original === null) return EXEC_BLOCK_UNREADABLE;
-  const grants = [...input.execArgv, ...original.options].flatMap((token) => {
+  const grants = [...input.execArgv, ...original.options].flatMap((token): Grant[] => {
     const match = GRANT.exec(token);
-    return match ? [{ kind: match[1] as 'read' | 'write', value: match[2] as string }] : [];
+    return match ? [{ kind: match[1] as Grant['kind'], value: match[2] as string }] : [];
   });
-  if (grants.some((grant) => !isNarrowPath(grant.value))) return GRANT_SHAPE;
+  const shape = grantsShapeRefusal(input.subcommand, grants);
+  if (shape) return shape;
   let root: string;
   try {
     root = await input.realpath(path.resolve(input.sealsDir));
@@ -520,18 +541,20 @@ export async function artifactGrantsRefusal(input: { readonly subcommand: 'sign'
   if (temps.some((temp) => overlaps(root, temp))) return SEALS_IN_TEMP;
   const verified: string[] = [];
   const absentGit: string[] = [];
+  let absentWrite = false;
   for (const grant of grants) {
     const check = await isOwnRealPath(grant, input.realpath);
     if (check === 'NOT_REAL') return GRANT_NOT_REAL;
     if (check === 'VERIFIED') verified.push(grant.value);
     if (check === 'ABSENT_GIT') absentGit.push(grant.value);
+    if (check === 'ABSENT_WRITE') absentWrite = true;
   }
   for (const git of absentGit) if (!(await hasRealParent(git, verified, input.realpath))) return GRANT_NOT_REAL;
   // a comparação é entre caminhos REAIS: cada grant já é o próprio caminho real, e a raiz vem do realpath de --seals-dir
   const writable = input.subcommand === 'sign' ? root : path.join(root, CLOSURES_SUBDIR);
   if (grants.some((grant) => grant.kind === 'write' && !isInside(grant.value, writable))) return GRANT_WRITE_OUTSIDE;
   if (grants.some((grant) => grant.kind === 'write' && temps.some((temp) => overlaps(grant.value, temp)))) return SEALS_IN_TEMP;
-  if (input.subcommand === 'close-key') return null;
+  if (input.subcommand === 'close-key') return absentWrite ? GRANT_CLOSURES_ABSENT : null;
   const shallow = (value: string): boolean => depthOf(value) < MIN_READ_DEPTH && !SHALLOW_READS_ALLOWED.has(value) && path.basename(value) !== GIT_NAME;
   return grants.some((grant) => grant.kind === 'read' && shallow(grant.value)) ? GRANT_READ_SHALLOW : null;
 }

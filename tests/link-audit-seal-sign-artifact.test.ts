@@ -854,7 +854,7 @@ test('W5.2a, close-key completo em processo REAL: env -i + node absoluto + --dis
     if (fsyncUnderPermission === 'denied') {
       // decisão 3 da W4.6: a sondagem antecipada recusa ANTES de ler os recibos, da confirmação, da custódia e da frase; nada gravado
       assert.equal(run.code, 3, run.screen);
-      assert.match(run.screen, /Código: SIGN_RUNTIME_NO_FSYNC/);
+      assert.match(run.screen, /"code":"SIGN_RUNTIME_NO_FSYNC"/, 'com --json, o objeto da recusa');
       assert.ok(!/chave a aposentar|Frase-senha|Chave aberta/.test(run.screen), 'nem confirmação, nem frase, nem chave');
       assert.deepEqual(fs.readdirSync(closures), [], 'nada gravado em _closures');
       if (STRICT) assert.fail(`LINK_AUDIT_ARTIFACT_STRICT=1: o node ${process.version} bloqueia fsync sob --permission (nodejs/node#65431); a estação e o CI usam a linha 22 (notas da W4.6)`);
