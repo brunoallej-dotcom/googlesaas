@@ -121,6 +121,8 @@ export interface DockerScenario {
   afterDeploy?: (services: Map<string, FakeService>) => void;
   /** `docker service ls` falha. */
   serviceLsFails?: boolean;
+  /** Saída do `tar -tvzf` (linhas do GNU tar); sem ela, montada do `manifest` e dos `configs` (`listingFor`). */
+  listing?: string;
   /** Chamado antes de cada programa (ex.: trocar a stack instalada no meio do deploy). */
   beforeCall?: (request: RunRequest) => void;
 }
@@ -171,6 +173,29 @@ export const bundleConfigs = (): Map<string, Buffer> =>
     [WORKER_CONFIG_PATH, WORKER_CONFIG],
   ]);
 
+/** Uma linha do `tar -tv` do GNU tar. */
+export const listLine = (type: string, size: number, name: string): string => `${type}${type === 'd' ? 'rwxr-xr-x' : 'rw-r--r--'} 0/0 ${String(size).padStart(12)} 1970-01-01 00:00 ${name}`;
+const LAYER_BYTES = 1024 * 1024;
+
+/** A listagem que o `docker save` produziria para o manifesto e os Config dados (formato OCI + os nomes do manifesto). */
+export function listingFor(manifest: string, configs: ReadonlyMap<string, Buffer>): string {
+  let entries: Array<{ Config?: unknown; Layers?: unknown }> = [];
+  try {
+    const parsed: unknown = JSON.parse(manifest);
+    if (Array.isArray(parsed)) entries = parsed as typeof entries;
+  } catch {
+    entries = [];
+  }
+  const files = new Map<string, number>([['index.json', 300], ['manifest.json', Buffer.byteLength(manifest)], ['oci-layout', 30]]);
+  for (const [name, bytes] of configs) files.set(name, bytes.length);
+  for (const entry of entries) {
+    if (typeof entry.Config === 'string' && !files.has(entry.Config)) files.set(entry.Config, 1000);
+    for (const layer of Array.isArray(entry.Layers) ? entry.Layers : []) if (typeof layer === 'string') files.set(layer, LAYER_BYTES);
+  }
+  const lines = [listLine('d', 0, 'blobs/'), listLine('d', 0, 'blobs/sha256/'), ...[...files].map(([name, size]) => listLine('-', size, name))];
+  return `${lines.join('\n')}\n`;
+}
+
 export function manifestFor(tag: string, overrides: { web?: string; worker?: string; extra?: boolean; drop?: boolean } = {}): string {
   const entries = [
     { Config: WEB_CONFIG_PATH, RepoTags: [overrides.web ?? `gmn-web:${tag}`], Layers: [`blobs/sha256/${'1'.repeat(64)}`] },
@@ -210,7 +235,7 @@ export class FakeRunner implements ProcessRunner {
     if (request.program === 'docker' && request.args[0] === 'stack') this.recordCompose(request);
     if (typeof request.program !== 'string') return this.scenario.foldersOk ? result(0, `ok ${DOCKER_NOISE}`) : result(1, '', `[verificar-pastas-fase6] RECUSADO: ${DOCKER_NOISE}`);
     if (request.program === 'gzip') return result(this.scenario.gzipOk ? 0 : 1, '', this.scenario.gzipOk ? '' : `gzip: ${DOCKER_NOISE}: invalid`);
-    if (request.program === 'tar') return this.tar(request.args[2] as string);
+    if (request.program === 'tar') return request.args[0] === '-tvzf' ? this.list_() : this.tar(request.args[2] as string);
     return this.docker(request);
   }
 
@@ -274,6 +299,11 @@ export class FakeRunner implements ProcessRunner {
       return JSON.stringify({ ID: service.ID, Name: service.Spec.Name, Replicas: service.running === 'down' ? `0/${desired}` : `${desired}/${desired}`, Ports: '' });
     });
     return result(0, `${lines.join('\n')}\n`);
+  }
+
+  private list_(): RunResult {
+    if (!this.scenario.tarOk) return result(2, '', `tar: ${DOCKER_NOISE}`);
+    return result(0, this.scenario.listing ?? listingFor(this.scenario.manifest, this.scenario.configs));
   }
 
   private tar(member: string): RunResult {

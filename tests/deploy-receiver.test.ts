@@ -11,6 +11,8 @@ import {
   CONTAINERD_ID_WORKER,
   containerdImages,
   DERIVED_BIND_FOLDERS,
+  listingFor,
+  listLine,
   WEB_CONFIG,
   WEB_CONFIG_PATH,
   WEB_DIFF_IDS,
@@ -355,14 +357,16 @@ test('P9-D06 réplicas do Worker diferentes do arquivo ⇒ E_WORKER_REPLICAS_DRI
   assert.equal((await deploy(aligned)).outcome.exitCode, 0);
 });
 
-test('§5.6: até o passo 8 o Docker só é CONSULTADO (service inspect, info); o pacote só é tocado no passo 9, depois de todas as conferências', async () => {
+test('§5.6: até o passo 8 o Docker só é CONSULTADO (service inspect, info) e o pacote só é LISTADO (tar -tvzf); a leitura e a carga vêm no passo 9, depois de todas as conferências', async () => {
   const w = world();
   const r = await deploy(w);
   assert.equal(r.outcome.exitCode, 0, String(r.outcome.stderr));
   const calls = r.runner.calls.map((call) => (typeof call.program === 'string' ? [call.program, ...call.args.slice(0, 2)].join(' ') : 'folders-check'));
   const firstLoadStep = calls.findIndex((call) => call.startsWith('gzip'));
   assert.ok(firstLoadStep > 0);
-  for (const call of calls.slice(0, firstLoadStep)) assert.match(call, /^(docker service inspect|docker info|folders-check)/, call);
+  for (const call of calls.slice(0, firstLoadStep)) assert.match(call, /^(docker service inspect|docker info|folders-check|tar -tvzf)/, call);
+  const listedAt = calls.indexOf(`tar -tvzf ${bundlePath(w)}`);
+  assert.ok(listedAt >= 0 && listedAt < calls.findIndex((call) => call.startsWith('docker info')), 'a listagem do pacote vem antes do espaço livre (que usa o total descompactado)');
   assert.deepEqual(calls.slice(firstLoadStep, firstLoadStep + 3), ['gzip -t ' + bundlePath(w), `tar -xzOf ${bundlePath(w)}`, 'docker load -i']);
 });
 
@@ -400,6 +404,64 @@ test('P9-D07 pacote com tag de outro ambiente, de outro commit, imagem a mais ou
   }
 });
 
+test('revisão do PR #70 (item 8): antes de qualquer carga, a listagem do pacote (tar -tvzf) recusa caminho absoluto, .., link simbólico, link físico, dispositivo, FIFO, nome inesperado, pasta sem barra, membro repetido e expansão acima de 8 GiB; camada ou Config do manifesto fora da gramática ou fora da listagem ⇒ E_BUNDLE_TAGS sem docker load', async () => {
+  const tag = `producao-${SHA40}`;
+  const base = (w: World): string => listingFor(w.scenario.manifest, w.scenario.configs);
+  const hex = 'a'.repeat(64);
+  const listings: ReadonlyArray<readonly [string, (w: World) => string]> = [
+    ['caminho absoluto', (w) => `${base(w)}${listLine('-', 10, '/etc/cron.d/x')}\n`],
+    ['..', (w) => `${base(w)}${listLine('-', 10, `blobs/sha256/../../${hex}`)}\n`],
+    ['.. no começo', (w) => `${base(w)}${listLine('-', 10, '../manifest.json')}\n`],
+    ['link simbólico', (w) => `${base(w)}lrwxrwxrwx 0/0            0 1970-01-01 00:00 blobs/sha256/${hex} -> /etc/shadow\n`],
+    ['link simbólico com nome aceito', (w) => `${base(w)}${listLine('l', 0, `blobs/sha256/${hex}`)}\n`],
+    ['link físico', (w) => `${base(w)}hrw-r--r-- 0/0            0 1970-01-01 00:00 blobs/sha256/${hex} link to manifest.json\n`],
+    ['dispositivo', (w) => `${base(w)}${listLine('c', 0, `blobs/sha256/${hex}`)}\n`],
+    ['FIFO', (w) => `${base(w)}${listLine('p', 0, `blobs/sha256/${hex}`)}\n`],
+    ['nome inesperado', (w) => `${base(w)}${listLine('-', 10, 'run.sh')}\n`],
+    ['pasta sem barra', (w) => `${base(w)}${listLine('d', 0, hex)}\n`],
+    ['arquivo com nome de pasta', (w) => `${base(w)}${listLine('-', 10, 'blobs/')}\n`],
+    ['membro repetido', (w) => `${base(w)}${listLine('-', 10, 'manifest.json')}\n`],
+    ['expansão acima de 8 GiB', (w) => `${base(w)}${listLine('-', 8 * 1024 ** 3, `blobs/sha256/${hex}`)}\n`],
+    ['linha fora do formato', (w) => `${base(w)}lixo sem formato\n`],
+    ['vazio', () => ''],
+  ];
+  for (const [label, listing] of listings) {
+    const w = world();
+    w.scenario.listing = listing(w);
+    const r = await deploy(w);
+    refusedWith(r, 'ERRO E_BUNDLE_TAGS');
+    assert.ok(!loaded(r) && !r.runner.called(['info']), `${label}: nem docker load nem o espaço livre`);
+  }
+  const manifests: ReadonlyArray<readonly [string, (w: World) => void]> = [
+    ['camada fora da gramática', (w) => void (w.scenario.manifest = manifestFor(tag).replace(`blobs/sha256/${'1'.repeat(64)}`, '../../etc/passwd'))],
+    ['camada que não está no tar', (w) => {
+      w.scenario.listing = listingFor(w.scenario.manifest, w.scenario.configs).split('\n').filter((line) => !line.endsWith(`blobs/sha256/${'2'.repeat(64)}`)).join('\n');
+    }],
+    ['Config que não está no tar', (w) => {
+      w.scenario.listing = listingFor(w.scenario.manifest, w.scenario.configs).split('\n').filter((line) => !line.endsWith(WORKER_CONFIG_PATH)).join('\n');
+    }],
+    ['imagem sem camadas', (w) => void (w.scenario.manifest = JSON.stringify((JSON.parse(manifestFor(tag)) as Array<Record<string, unknown>>).map((entry, index) => (index === 0 ? { ...entry, Layers: [] } : entry))))],
+  ];
+  for (const [label, breaker] of manifests) {
+    const w = world();
+    breaker(w);
+    const r = await deploy(w);
+    refusedWith(r, 'ERRO E_BUNDLE_TAGS');
+    assert.ok(!loaded(r), `${label}: sem docker load`);
+  }
+});
+
+test('revisão do PR #70 (item 8): o espaço livre do passo 8 usa o total DESCOMPACTADO da listagem (≥ max(10 GiB, 2 × total))', async () => {
+  const big = (w: World): string => `${listingFor(w.scenario.manifest, w.scenario.configs)}${listLine('-', 6 * 1024 ** 3, `blobs/sha256/${'b'.repeat(64)}`)}\n`;
+  const low = world({ freeBytes: 12 * 1024 ** 3 });
+  low.scenario.listing = big(low);
+  refusedWith(await deploy(low), 'ERRO E_DISK_LOW');
+  const enough = world({ freeBytes: 13 * 1024 ** 3 });
+  enough.scenario.listing = big(enough);
+  const ok = await deploy(enough);
+  assert.equal(ok.outcome.exitCode, 0, String(ok.outcome.stderr));
+});
+
 test('passo 9: docker load que falha, imagem que não aparece depois do load, ou id ≠ digest do Config com camadas diferentes ⇒ E_DOCKER_LOAD, sem stack deploy nem lista instalada', async () => {
   const failed = world();
   failed.scenario.loadOk = false;
@@ -418,7 +480,7 @@ test('passo 9: docker load que falha, imagem que não aparece depois do load, ou
   assert.ok(!fs.existsSync(installedPath(otherId)));
 });
 
-const tarMembers = (r: Run): string[] => r.runner.calls.filter((call) => call.program === 'tar').map((call) => call.args[2] as string);
+const tarMembers = (r: Run): string[] => r.runner.calls.filter((call) => call.program === 'tar' && call.args[0] === '-xzOf').map((call) => call.args[2] as string);
 
 test('passo 9, armazenamento CLÁSSICO: id da tag = sha256 do Config ⇒ aceito sem ler o Config do pacote (só o manifest.json)', async () => {
   const w = world();
@@ -436,7 +498,7 @@ test('passo 9, armazenamento CONTAINERD (id = digest do manifesto): tag exata, C
     assert.equal(r.outcome.exitCode, 0, String(r.outcome.stderr));
     assert.match(r.outcome.stdout ?? '', new RegExp(`^OK DEPLOYED ${env}-${SHA40} ${CONTAINERD_ID_WEB} ${CONTAINERD_ID_WORKER} `));
     assert.deepEqual(tarMembers(r), ['manifest.json', WEB_CONFIG_PATH, WORKER_CONFIG_PATH], 'o Config de cada imagem lido do pacote pelo caminho do manifesto');
-    for (const call of r.runner.calls.filter((item) => item.program === 'tar')) assert.equal(call.args[0], '-xzOf', 'sempre para o stdout, nada extraído');
+    for (const call of r.runner.calls.filter((item) => item.program === 'tar')) assert.ok(['-xzOf', '-tvzf'].includes(call.args[0] as string), 'só listagem e leitura para o stdout, nada extraído');
     assert.ok(r.log.entries.some((entry) => entry.event === 'bundle.loaded' && entry.fields.webVerification === 'diff-ids' && entry.fields.workerVerification === 'diff-ids'));
   }
 });

@@ -1,6 +1,6 @@
 import nodePath from 'node:path';
 import type { ReceiverConfig } from './args';
-import { loadBundle } from './bundle';
+import { listBundle, loadBundle } from './bundle';
 import { ReceiverError } from './codes';
 import { updateMarkOf, waitForConvergence } from './converge';
 import { dockerRootDir, inspectService, runProgram } from './docker';
@@ -19,9 +19,9 @@ import { installTrustList, receiveTrustList } from './trust';
  */
 
 const GIB = 1024 * 1024 * 1024;
-/** Passo 8: livre na raiz do Docker ≥ max(10 GiB, 3 × pacote). */
+/** Passo 8: livre na raiz do Docker ≥ max(10 GiB, 2 × pacote DESCOMPACTADO, pela listagem; revisão do PR #70). */
 export const MIN_FREE_BYTES = 10 * GIB;
-export const BUNDLE_FREE_FACTOR = 3;
+export const BUNDLE_FREE_FACTOR = 2;
 const FOLDERS_CHECK_TIMEOUT_MS = 120_000;
 const STACK_CONFIG_TIMEOUT_MS = 120_000;
 const STACK_DEPLOY_TIMEOUT_MS = 10 * 60_000;
@@ -98,11 +98,11 @@ async function checkWorkerDrift(config: ReceiverConfig, host: HostConfig, deps: 
   if (worker.Spec.Mode.Replicated?.Replicas !== host.workerReplicas) throw new ReceiverError('E_WORKER_REPLICAS_DRIFT', null, 'worker replicas differ from the host-vars file');
 }
 
-/** Passo 8: espaço livre na raiz do Docker. */
-async function checkDisk(bundleSize: number, deps: ReceiverDeps): Promise<void> {
+/** Passo 8: espaço livre na raiz do Docker, pelo tamanho descompactado da listagem. */
+async function checkDisk(uncompressedBytes: number, deps: ReceiverDeps): Promise<void> {
   const root = await dockerRootDir(deps);
   const available = await deps.fs.availableBytes(root);
-  if (available < Math.max(MIN_FREE_BYTES, BUNDLE_FREE_FACTOR * bundleSize)) throw new ReceiverError('E_DISK_LOW', null, 'not enough free space in the Docker root');
+  if (available < Math.max(MIN_FREE_BYTES, BUNDLE_FREE_FACTOR * uncompressedBytes)) throw new ReceiverError('E_DISK_LOW', null, 'not enough free space in the Docker root');
 }
 
 /** Os `-c` na ordem das cópias privadas: a stack e, em homologação, a sobreposição. */
@@ -147,8 +147,9 @@ export async function runDeploy(command: DeployCommand, config: ReceiverConfig, 
   checkSupabase(command, host, config); // 5
   await checkFolders(config, host, deps); // 6
   await checkWorkerDrift(config, host, deps); // 7
-  await checkDisk(bundle.size, deps); // 8
-  const images = await loadBundle(bundle.file, config.env, command.sha40, deps); // 9
+  const listing = await listBundle(bundle.file, deps); // 8: membros do pacote, sem carregar nada
+  await checkDisk(listing.uncompressedBytes, deps); // 8
+  const images = await loadBundle(bundle.file, listing, config.env, command.sha40, deps); // 9
   const webService = `${config.stackName}_gmn-web`;
   const before = updateMarkOf(await inspectService(webService, 'E_INTERNAL', deps));
   await configureAndDeploy(config, stack, stackEnvironment(host, stack, images.tag, trust.value, deps.childPath), deps); // 10, 11

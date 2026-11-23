@@ -8,7 +8,7 @@ import { ArtifactBuildError, type BuiltArtifact } from '../scripts/build-sign-ar
 import { buildReceiverArtifact, buildReceiverArtifacts, DEPLOY_RECEIVER_FILE_NAME, DEPLOY_RECEIVER_NODE_MODULES, RECEIVER_ARTIFACTS, RECEIVER_TEMPLATES, RECEIVER_TEMPLATES_DIR, RECEIVERS_HASH_FILE, receiverHashLine, VERSIONED_FILE_NAMES, versionedReceiverHashes } from '../scripts/build-receivers-artifact';
 import { parseReceiverArgs } from '../src/lib/deploy-receiver/args';
 import { registerCleanup, tmpDir } from './helpers/link-audit-evidence-fixtures';
-import { bundleConfigs, classicImages, containerdImages, DOCKER_NOISE, fp12, manifestFor, SENTINEL_EMAIL, SENTINEL_HOST, SENTINEL_URL, SHA40, sha256, testKey, trustFile, trustLine, validHostVars } from './helpers/deploy-receiver-fakes';
+import { bundleConfigs, classicImages, containerdImages, DOCKER_NOISE, fp12, listingFor, manifestFor, SENTINEL_EMAIL, SENTINEL_HOST, SENTINEL_URL, SHA40, sha256, testKey, trustFile, trustLine, validHostVars } from './helpers/deploy-receiver-fakes';
 
 /*
  * P9.3a — o ARTEFATO ÚNICO do receptor de deploy e o wrapper do comando forçado (spec §5.6 "Instalação"; P9-O04 depende deste hash):
@@ -116,7 +116,7 @@ function fakeTools(dir: string, rootDir: string, tag: string, store: ImageStore)
   const callsFile = path.join(dir, 'calls.jsonl');
   const images = Object.fromEntries(store === 'classic' ? classicImages(tag) : containerdImages(tag));
   const configs = Object.fromEntries([...bundleConfigs()].map(([member, bytes]) => [member, bytes.toString('base64')]));
-  fs.writeFileSync(stateFile, JSON.stringify({ deployed: false, env: {}, manifest: manifestFor(tag), tag, rootDir, images, configs }));
+  fs.writeFileSync(stateFile, JSON.stringify({ deployed: false, env: {}, manifest: manifestFor(tag), listing: listingFor(manifestFor(tag), bundleConfigs()), tag, rootDir, images, configs }));
   const source = `#!${process.execPath}
 'use strict';
 const fs = require('fs');
@@ -138,6 +138,7 @@ const service = (name) => {
 const names = ['web', 'worker', 'redis'].map((kind) => state.stack + '_gmn-' + kind);
 if (tool === 'gzip') done(0, '', '');
 if (tool === 'tar') {
+  if (args[0] === '-tvzf') done(0, state.listing, '');
   const member = args[2];
   if (member === 'manifest.json') done(0, state.manifest, '');
   if (state.configs[member]) { process.stdout.write(Buffer.from(state.configs[member], 'base64')); process.exit(0); }
@@ -255,7 +256,8 @@ async function realProcessDeploy(artifact: BuiltArtifact, store: ImageStore): Pr
   for (const sentinel of [SENTINEL_URL, SENTINEL_EMAIL, SENTINEL_HOST]) assert.ok(!log.includes(sentinel), `${sentinel} no log local`);
   assert.ok(log.split('\n').filter(Boolean).every((line) => JSON.parse(line) !== null), 'uma linha JSON por evento');
   if (deployed.status === 0) {
-    const tarMembers = calls.filter((call) => call.tool === 'tar').map((call) => call.args[2]);
+    const tarMembers = calls.filter((call) => call.tool === 'tar' && call.args[0] === '-xzOf').map((call) => call.args[2]);
+    assert.ok(calls.some((call) => call.tool === 'tar' && call.args[0] === '-tvzf'), `${store}: a listagem rodou`);
     assert.deepEqual(tarMembers, store === 'classic' ? ['manifest.json'] : ['manifest.json', ...bundleConfigs().keys()], `${store}: o que o receptor leu do pacote`);
   }
 }

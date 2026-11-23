@@ -631,12 +631,20 @@ chamador, prazo com `SIGKILL` e teto de saída). A lista de confiança usa o mó
   `E_HML_PRODUCTION_PROJECT` vem antes e vale tanto para a impressão do arquivo do host quanto para a declarada pelo CI.
 - **Passo 6:** o script é executado direto (`execFile`, sem shell), com as seis pastas na ordem dele e só o `PATH`. Script ausente ⇒
   `E_HOST_FOLDERS`.
-- **Passos 7 e 8:** o Worker ausente ("no such service" no `docker service inspect`) pula a conferência. A raiz do Docker vem de
-  `docker info --format '{{json .DockerRootDir}}'`, e o espaço livre do `statfs` dela (`bavail × bsize`).
+- **Passos 7 e 8:** o Worker ausente ("no such service" no `docker service inspect`) pula a conferência.
+  - **Listagem do pacote** (revisão do PR #70, item 8), antes do espaço livre e de qualquer carga: `tar -tvzf <pacote>` em fluxo, com
+    teto de saída. Valem só arquivos regulares e pastas com os nomes que o `docker save` grava nos dois armazenamentos (`manifest.json`,
+    `index.json`, `oci-layout`, `repositories`, `blobs/sha256/<64 hex>`, `<64 hex>.json`, `<64 hex>/{VERSION,json,layer.tar}` e as pastas
+    `blobs/`, `blobs/sha256/`, `<64 hex>/`).
+  - Caminho absoluto, `..`, link simbólico ou físico, dispositivo, FIFO, nome inesperado, membro repetido, linha fora do formato ou total
+    descompactado acima de 8 GiB ⇒ `E_BUNDLE_TAGS`.
+  - **Espaço livre:** a raiz do Docker vem de `docker info --format '{{json .DockerRootDir}}'`, e o espaço livre do `statfs` dela
+    (`bavail × bsize`) tem de ser ≥ max(10 GiB, 2 × o total **descompactado** da listagem).
 - **Passo 9:** `gzip -t <pacote>` e `tar -xzOf <pacote> manifest.json` (o `manifest.json` vai para o stdout, com teto de 1 MiB, e nada é
   extraído para o disco). Qualquer falha nesses dois ou no esquema do manifesto ⇒ `E_BUNDLE_TAGS`, antes de qualquer `docker load`.
   O `Config` de cada imagem tem de estar num dos dois caminhos (`^blobs/sha256/[0-9a-f]{64}$` do formato OCI, `^[0-9a-f]{64}\.json$` do
-  antigo). Depois do load, `docker image inspect --format '{{json .}}'` de cada tag confere a imagem nos **dois** armazenamentos do Docker
+  antigo), e cada `Layers` em `^blobs/sha256/[0-9a-f]{64}$` ou `^[0-9a-f]{64}/layer\.tar$`; `Config` e camadas têm de ser arquivos da
+  listagem. Depois do load, `docker image inspect --format '{{json .}}'` de cada tag confere a imagem nos **dois** armazenamentos do Docker
   (revisão do PR #70: o Docker Engine 29 liga o *containerd image store* nas instalações novas, e a VPS pode usá-lo):
   - **clássico:** o id é `sha256:<digest do Config>`, e basta isso;
   - **containerd** (o id é o digest do manifesto, não o do `Config`; vale para todo id diferente do digest do `Config`): os `RepoTags`
@@ -768,7 +776,7 @@ fecho ou o **nome** de uma variável. Nunca conteúdo de arquivo, caminho real, 
 | 55 | `E_HML_PRODUCTION_PROJECT` | deploy | homologação apontando para o projeto de produção |
 | 56 | `E_WORKER_REPLICAS_DRIFT` | deploy | réplicas do Worker ≠ arquivo do host |
 | 57 | `E_DISK_LOW` | deploy | pouco espaço na raiz do Docker |
-| 58 | `E_BUNDLE_TAGS` | deploy | pacote com outras imagens ou tags |
+| 58 | `E_BUNDLE_TAGS` | deploy | pacote fora do formato: membros (listagem), imagens ou tags |
 | 59 | `E_DOCKER_LOAD` | deploy | `docker load` falhou ou ids não conferem |
 | 60 | `E_STACK_CONFIG` | deploy | `docker stack config` recusou |
 | 61 | `E_STACK_DEPLOY` | deploy | `docker stack deploy` falhou |
