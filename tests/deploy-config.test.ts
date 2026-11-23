@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
+import { isYamlMap, parseYamlSubset, type YamlMap, type YamlValue } from './helpers/yaml-subset';
 
 /**
  * Teste ESTÁTICO dos arquivos de implantação (deploy/hostinger): nada aqui sobe container, abre rede ou lê segredos.
@@ -27,6 +28,9 @@ const dockerfile = read('Dockerfile');
 const entrypoint = read('docker-entrypoint.sh');
 const dockerignore = fs.readFileSync(path.join(ROOT, '.dockerignore'), 'utf8');
 const stripComments = (text: string): string => text.replace(/^\s*#.*$/gm, '').replace(/\s+#\s.*$/gm, '');
+/** P9.4: os nomes do Traefik são `${GMN_TRAEFIK_NAME:-gmn}`; com o padrão (produção), viram `gmn`. */
+const TRAEFIK_NAME_VAR = '${GMN_TRAEFIK_NAME:-gmn}';
+const renderTraefikName = (text: string, name = 'gmn'): string => text.split(TRAEFIK_NAME_VAR).join(name);
 
 /** Bloco de um serviço da stack (do cabeçalho `  nome:` até o próximo serviço ou seção de topo). */
 function serviceBlock(name: string): string {
@@ -77,7 +81,7 @@ test('Traefik: labels exclusivas em deploy.labels, TLS, resolver, rede e porta c
   const labelsAt = web.indexOf('labels:');
   const deployAt = web.indexOf('\n    deploy:');
   assert.ok(deployAt >= 0 && labelsAt > deployAt, 'labels dentro de deploy');
-  const labels = web.slice(labelsAt);
+  const labels = renderTraefikName(web.slice(labelsAt));
   for (const expected of [
     'traefik.enable=true',
     `traefik.swarm.network=${EXTERNAL_NETWORK}`,
@@ -336,10 +340,18 @@ interface BindMount {
 function bindMounts(block: string): BindMount[] {
   return [...block.matchAll(/- type: bind\n\s+source: ([^\n]+)\n\s+target: (\S+)(\n\s+read_only: true)?/g)].map((m) => ({ source: m[1] ?? '', target: m[2] ?? '', readOnly: m[3] !== undefined }));
 }
-/** Itens de uma lista YAML curta (`secrets:` de um serviço). */
-function serviceList(block: string, key: string): string[] {
-  const match = block.match(new RegExp(`\\n {4}${key}:\\n((?: {6}- [^\\n]+\\n?)+)`));
-  return match ? [...(match[1] ?? '').matchAll(/- (\S+)/g)].map((m) => m[1] ?? '') : [];
+/**
+ * Secrets de um serviço, na sintaxe longa da P9.4 (`- source: X` + `target: X`): devolve as origens e exige `target` igual à origem,
+ * para o caminho no contêiner continuar /run/secrets/<nome> (spec P-9 §5.11).
+ */
+function serviceSecrets(block: string): string[] {
+  const match = block.match(/\n {4}secrets:\n((?: {6}- source: [^\n]+\n {8}target: [^\n]+\n?)+)/);
+  return match
+    ? [...(match[1] ?? '').matchAll(/- source: (\S+)\n\s+target: (\S+)/g)].map((m) => {
+        assert.equal(m[2], m[1], `secret ${m[1]}: target igual à origem`);
+        return m[1] ?? '';
+      })
+    : [];
 }
 /** Lista fixa do entrypoint (`for name in … ; do`, com continuação de linha). */
 function entrypointSecretNames(): string[] {
@@ -387,7 +399,7 @@ test('PG-V01 stack: evidências e manifestos só leitura; decisões, recibos, re
 test('PG-V01 stack: chaves da Fase 6 só por Swarm secret externo, com *_FILE; nenhum valor no YAML (VC-E2)', () => {
   const code = stripComments(stack);
   const web = serviceBlock('gmn-web');
-  const webSecrets = serviceList(web, 'secrets');
+  const webSecrets = serviceSecrets(web);
   const section = code.slice(code.indexOf('\nsecrets:'));
   for (const [variable, secret] of Object.entries(PHASE6_SECRETS)) {
     assert.match(web, new RegExp(`\\n {6}${variable}_FILE: /run/secrets/${secret}\\n`), `${variable} por arquivo de secret`);
@@ -440,7 +452,7 @@ test('PG-V01 Worker: nenhuma variável GMN_LINK_AUDIT_*, nenhum secret e nenhum 
   const worker = serviceBlock('gmn-worker');
   assert.ok(!/GMN_LINK_AUDIT_|GMN_RAIZ_DADOS_|gmn_link_audit_/.test(worker), 'o Worker não recebe nada da Fase 6');
   assert.deepEqual(bindMounts(worker).map((mount) => mount.target), ['/app/.data/audits'], 'o Worker só monta a pasta de PDFs');
-  assert.deepEqual(serviceList(worker, 'secrets').sort(), [...ORIGINAL_SECRETS].sort(), 'o Worker continua só com os quatro secrets originais (a service_role grava as auditorias no Supabase)');
+  assert.deepEqual(serviceSecrets(worker).sort(), [...ORIGINAL_SECRETS].sort(), 'o Worker continua só com os quatro secrets originais (a service_role grava as auditorias no Supabase)');
   for (const variable of ORIGINAL_SECRET_VARS) assert.match(worker, new RegExp(`${variable}_FILE: /run/secrets/`));
 });
 
@@ -484,4 +496,145 @@ test('PG-V04 guia: a conferência executável das seis pastas é pré-requisito 
   const markers = [...(call[1] ?? '').matchAll(/\$(GMN_RAIZ_DADOS_[A-Z_]+)/g)].map((m) => m[1]);
   assert.deepEqual(markers, ['GMN_RAIZ_DADOS_DECISOES', 'GMN_RAIZ_DADOS_RECIBOS_DECISOES', 'GMN_RAIZ_DADOS_RESULTADOS', 'GMN_RAIZ_DADOS_RECIBOS_RESULTADOS', 'GMN_RAIZ_DADOS_LIVRO', 'GMN_RAIZ_DADOS_MANIFESTOS']);
   assert.match(guide, /NÃO implantar[\s\S]{0,80}EN-12/, 'saída diferente de 0 bloqueia a implantação e fica registrada no EN-12');
+});
+
+/*
+ * P9.4 (spec docs/specs/ci-deploy-and-seal-delivery.md §5.11; critérios P9-H01 a P9-H05 e P9-H09): nomes do Traefik parametrizados com o
+ * padrão de produção (`gmn`), secrets em sintaxe longa com `target` explícito e a sobreposição de homologação `stack-hml.yml` (stack
+ * gmn-hml) só com o permitido. A estrutura vem do leitor de YAML restrito dos testes (tests/helpers/yaml-subset.ts; sem dependência nova).
+ */
+const overlayText = read('stack-hml.yml');
+const mapAt = (value: YamlValue | undefined, label: string): YamlMap => {
+  assert.ok(isYamlMap(value), `${label}: mapa`);
+  return value;
+};
+const listAt = (value: YamlValue | undefined, label: string): YamlValue[] => {
+  assert.ok(Array.isArray(value), `${label}: lista`);
+  return value;
+};
+const stackDoc = mapAt(parseYamlSubset(stack), 'stack.yml');
+const overlayDoc = mapAt(parseYamlSubset(overlayText), 'stack-hml.yml');
+const stackServices = mapAt(stackDoc.services, 'services');
+const stackSecretNames = Object.keys(mapAt(stackDoc.secrets, 'secrets'));
+
+/** As labels do Traefik de ANTES da P9.4, na ordem. Com o padrão de GMN_TRAEFIK_NAME, a produção fica exatamente assim (P9-H03). */
+const PRODUCTION_TRAEFIK_LABELS = [
+  'traefik.enable=true',
+  `traefik.swarm.network=${EXTERNAL_NETWORK}`,
+  'traefik.http.routers.gmn.rule=Host(`${GMN_HOST}`)',
+  'traefik.http.routers.gmn.entrypoints=websecure',
+  'traefik.http.routers.gmn.tls=true',
+  'traefik.http.routers.gmn.tls.certresolver=letsencryptresolver',
+  'traefik.http.routers.gmn.service=gmn',
+  'traefik.http.routers.gmn.middlewares=gmn-headers',
+  'traefik.http.services.gmn.loadbalancer.server.port=3000',
+  'traefik.http.services.gmn.loadbalancer.passhostheader=true',
+  'traefik.http.middlewares.gmn-headers.headers.stsSeconds=31536000',
+  'traefik.http.middlewares.gmn-headers.headers.stsIncludeSubdomains=false',
+  'traefik.http.middlewares.gmn-headers.headers.stsPreload=false',
+  'traefik.http.middlewares.gmn-headers.headers.contentTypeNosniff=true',
+  'traefik.http.routers.gmn-http.rule=Host(`${GMN_HOST}`)',
+  'traefik.http.routers.gmn-http.entrypoints=${GMN_HTTP_ENTRYPOINT:-web}',
+  'traefik.http.routers.gmn-http.middlewares=gmn-redirect-https',
+  'traefik.http.routers.gmn-http.service=gmn',
+  'traefik.http.middlewares.gmn-redirect-https.redirectscheme.scheme=https',
+  'traefik.http.middlewares.gmn-redirect-https.redirectscheme.permanent=true',
+] as const;
+/** Nomes de router, serviço e middleware de uma label (na chave e nos valores `service=`/`middlewares=`). */
+const traefikNames = (label: string): string[] => {
+  const names = [...label.matchAll(/^traefik\.http\.(?:routers|services|middlewares)\.([^.]+)\./g)].map((m) => m[1] ?? '');
+  const value = /\.(?:service|middlewares)=(.+)$/.exec(label)?.[1];
+  return value === undefined ? names : [...names, value];
+};
+const webLabels = (): string[] => listAt(mapAt(mapAt(stackServices['gmn-web'], 'gmn-web').deploy, 'gmn-web.deploy').labels, 'labels').map(String);
+const containsKey = (value: YamlValue, key: string): boolean =>
+  Array.isArray(value) ? value.some((item) => containsKey(item, key)) : isYamlMap(value) && Object.entries(value).some(([k, v]) => k === key || containsKey(v, key));
+
+test('P9-H01 stack: produção nunca declara GMN_LINK_AUDIT_HOMOLOGATION; a trava "1" existe só no web da sobreposição de homologação', () => {
+  assert.ok(!stack.includes('GMN_LINK_AUDIT_HOMOLOGATION'), 'stack.yml de produção sem a trava (o teste da 2c continua)');
+  const offenders: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (!entry.name.endsWith('.md') && fs.readFileSync(full, 'utf8').includes('GMN_LINK_AUDIT_HOMOLOGATION')) offenders.push(path.relative(ROOT, full));
+    }
+  };
+  walk(path.join(ROOT, 'deploy'));
+  assert.deepEqual(offenders, ['deploy/hostinger/stack-hml.yml'], 'nenhum outro arquivo de implantação liga a trava');
+  const webEnv = mapAt(mapAt(mapAt(overlayDoc.services, 'services')['gmn-web'], 'gmn-web').environment, 'environment');
+  assert.equal(webEnv.GMN_LINK_AUDIT_HOMOLOGATION, '1');
+});
+
+test('P9-H02 stack-hml.yml: só a trava no web, Serper desligado no web e no Worker, Worker em 0 e os nomes dos secrets; nada de porta, bind, rede ou imagem', () => {
+  assert.deepEqual(Object.keys(overlayDoc).sort(), ['secrets', 'services']);
+  assert.deepEqual(overlayDoc.services, {
+    'gmn-web': { environment: { GMN_LINK_AUDIT_HOMOLOGATION: '1', SERPER_API_KEY_FILE: '' } },
+    'gmn-worker': { environment: { SERPER_API_KEY_FILE: '' }, deploy: { replicas: 0 } },
+  });
+  for (const service of ['gmn-web', 'gmn-worker']) {
+    const env = mapAt(mapAt(stackServices[service], service).environment, `${service}.environment`);
+    assert.equal(env.SERPER_API_KEY_FILE, '/run/secrets/gmn_serper_api_key', `${service}: a sobreposição sobrescreve uma variável existente`);
+  }
+  const code = stripComments(overlayText);
+  for (const forbidden of [/^\s*ports:/m, /^\s*volumes:/m, /^\s*networks:/m, /^\s*image:/m, /^\s*build:/m, /type: bind/, /^\s*configs:/m, /^\s*labels:/m, /privileged|cap_add|pid:|network_mode|docker\.sock/]) {
+    assert.ok(!forbidden.test(code), `a sobreposição não pode ter ${forbidden}`);
+  }
+});
+
+test('P9-H03 stack: labels do Traefik com ${GMN_TRAEFIK_NAME:-gmn}; com o padrão, exatamente as de antes; em homologação, nomes que não colidem com os de produção', () => {
+  const labels = webLabels();
+  assert.deepEqual(labels.map((label) => renderTraefikName(label)), [...PRODUCTION_TRAEFIK_LABELS], 'produção inalterada com o padrão');
+  const names = labels.flatMap(traefikNames);
+  assert.ok(names.length > 0 && names.every((name) => name.startsWith(TRAEFIK_NAME_VAR)), 'todo nome de router, serviço e middleware parametrizado');
+  const production = new Set(PRODUCTION_TRAEFIK_LABELS.flatMap(traefikNames));
+  const homologation = labels.map((label) => renderTraefikName(label, 'gmn-hml')).flatMap(traefikNames);
+  assert.ok(homologation.every((name) => name.startsWith('gmn-hml') && !production.has(name)), 'gmn-hml não redefine nenhum router de produção');
+  const code = stripComments(stack);
+  const occurrences = code.split('GMN_TRAEFIK_NAME').length - 1;
+  assert.equal(occurrences, code.split(TRAEFIK_NAME_VAR).length - 1, 'a variável só aparece na forma com o padrão gmn');
+  assert.equal(occurrences, labels.join('\n').split(TRAEFIK_NAME_VAR).length - 1, 'e só nas labels do Traefik');
+});
+
+test('P9-H04 stack: secrets na sintaxe longa, target = origem = nome lido pelo *_FILE (/run/secrets/gmn_*), e todo target usado', () => {
+  for (const [name, value] of Object.entries(stackServices)) {
+    const service = mapAt(value, name);
+    const targets = listAt(service.secrets, `${name}.secrets`).map((item) => {
+      const entry = mapAt(item, `${name}.secrets[]`);
+      assert.deepEqual(Object.keys(entry).sort(), ['source', 'target'], `${name}: sintaxe longa com target explícito`);
+      assert.equal(entry.target, entry.source, `${name}: target igual à origem`);
+      assert.match(String(entry.source), /^gmn_[a-z_]+$/);
+      assert.ok(stackSecretNames.includes(String(entry.source)), `${name}: ${String(entry.source)} declarado no topo`);
+      return String(entry.target);
+    });
+    const env = isYamlMap(service.environment) ? service.environment : {};
+    for (const [variable, file] of Object.entries(env).filter(([variable]) => variable.endsWith('_FILE'))) {
+      const target = /^\/run\/secrets\/(gmn_[a-z_]+)$/.exec(String(file))?.[1];
+      assert.ok(target !== undefined && targets.includes(target), `${name}: ${variable} lê um target montado no serviço`);
+    }
+    const serialized = JSON.stringify(service);
+    for (const target of targets) assert.ok(serialized.includes(`/run/secrets/${target}`), `${name}: o target ${target} é lido pelo serviço`);
+  }
+});
+
+test('P9-H05 stack: a lista de confiança continua vindo da variável GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS (o receptor de deploy a define) e a tag pela GMN_IMAGE_TAG', () => {
+  const env = mapAt(mapAt(stackServices['gmn-web'], 'gmn-web').environment, 'environment');
+  assert.equal(env.GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS, '${GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS:-}');
+  for (const service of ['gmn-web', 'gmn-worker']) assert.match(String(mapAt(stackServices[service], service).image), /:\$\{GMN_IMAGE_TAG:\?[^}]+\}$/);
+  assert.ok(!overlayText.includes('GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS') && !overlayText.includes('GMN_IMAGE_TAG'), 'a sobreposição não mexe na lista nem na tag');
+});
+
+test('P9-H09 stack-hml.yml: nenhuma rede (topo ou serviço) e TODO secret de topo do stack.yml mapeado para gmn-hml_*, nenhum para nome de produção', () => {
+  assert.ok(!containsKey(overlayDoc, 'networks'), 'a sobreposição não declara networks');
+  const productionSecrets = mapAt(stackDoc.secrets, 'stack.secrets');
+  for (const [name, value] of Object.entries(productionSecrets)) assert.deepEqual(value, { external: true }, `produção: ${name} externo, com o próprio nome`);
+  const overlaySecrets = mapAt(overlayDoc.secrets, 'stack-hml.secrets');
+  assert.deepEqual(Object.keys(overlaySecrets).sort(), [...stackSecretNames].sort(), 'as duas listas de secrets de topo são as mesmas');
+  const names = Object.entries(overlaySecrets).map(([key, value]) => {
+    const secret = mapAt(value, key);
+    assert.deepEqual(secret, { external: true, name: `gmn-hml_${key.slice('gmn_'.length)}` }, `${key}: só o nome de homologação (e external repetido)`);
+    return String(secret.name);
+  });
+  assert.equal(new Set(names).size, names.length);
+  assert.ok(names.every((name) => !stackSecretNames.includes(name) && !name.startsWith('gmn_')), 'nenhum secret de homologação aponta para um nome de produção');
 });

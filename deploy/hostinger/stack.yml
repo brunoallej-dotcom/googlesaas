@@ -2,9 +2,10 @@
 # Não altera Traefik, n8n, Evolution, Portainer, PostgreSQL nem o VRA Worker: só se conecta à rede externa já existente
 # (e SOMENTE o serviço web). Usa imagens PRÉ-CONSTRUÍDAS (sem `build:`).
 #
-# Uso (ver GUIA-DE-IMPLANTACAO.md):  set -a; . ./.env.production; set +a
-#   docker stack config -c stack.yml > /dev/null            # validação
-#   docker stack deploy --resolve-image never -c stack.yml gmn
+# Implantação (P-9, desde a P9.4): só pelo workflow .github/workflows/deploy.yml, aprovado pelo responsável. O receptor de deploy roda
+#   docker stack deploy --resolve-image never -c stack.yml [-c stack-hml.yml] <gmn | gmn-hml>
+# com esta stack INSTALADA pelo responsável a partir do commit (hash conferido a cada deploy). Homologação: sobreposição stack-hml.yml e
+# stack gmn-hml (spec docs/specs/ci-deploy-and-seal-delivery.md §5.11; RUNBOOK-DEPLOY-PELO-CI.md). Deploy manual em produção: proibido.
 #
 # Os segredos NÃO ficam aqui: são `docker secret` externos criados antes do deploy.
 # Fase 6 (G1.a; spec dos portões de produção §5.3): esta versão exige, ANTES do deploy, as seis pastas novas no host (marcadores
@@ -56,17 +57,29 @@ services:
       GMN_LINK_AUDIT_GUARD_DB_URL_FILE: /run/secrets/gmn_link_audit_guard_db_url
       GMN_LINK_AUDIT_GUARD_DB_CA_FILE: /run/secrets/gmn_link_audit_guard_db_ca
       GMN_LINK_AUDIT_GUARD_KEY_FILE: /run/secrets/gmn_link_audit_guard_key
+    # Sintaxe longa com `target` explícito (P9.4): o caminho no contêiner é sempre /run/secrets/gmn_*, também quando a sobreposição
+    # de homologação aponta os secrets de topo para os nomes gmn-hml_* do Swarm.
     secrets:
-      - gmn_supabase_service_role
-      - gmn_supabase_anon
-      - gmn_serper_api_key
-      - gmn_redis_url
-      - gmn_link_audit_origin_key
-      - gmn_link_audit_ledger_key
-      - gmn_link_audit_log_key
-      - gmn_link_audit_guard_db_url
-      - gmn_link_audit_guard_db_ca
-      - gmn_link_audit_guard_key
+      - source: gmn_supabase_service_role
+        target: gmn_supabase_service_role
+      - source: gmn_supabase_anon
+        target: gmn_supabase_anon
+      - source: gmn_serper_api_key
+        target: gmn_serper_api_key
+      - source: gmn_redis_url
+        target: gmn_redis_url
+      - source: gmn_link_audit_origin_key
+        target: gmn_link_audit_origin_key
+      - source: gmn_link_audit_ledger_key
+        target: gmn_link_audit_ledger_key
+      - source: gmn_link_audit_log_key
+        target: gmn_link_audit_log_key
+      - source: gmn_link_audit_guard_db_url
+        target: gmn_link_audit_guard_db_url
+      - source: gmn_link_audit_guard_db_ca
+        target: gmn_link_audit_guard_db_ca
+      - source: gmn_link_audit_guard_key
+        target: gmn_link_audit_guard_key
     volumes:
       - type: bind
         source: ${GMN_DATA_ROOT:-/srv/gmn}/audits
@@ -155,27 +168,29 @@ services:
         # Provider SWARM do Traefik (v3.5): a rede é escolhida pela label `traefik.swarm.network` (o web está em 2 redes;
         # sem ela o Traefik escolheria uma ao acaso). A label `traefik.docker.network` é do provider Docker e não vale aqui.
         - traefik.swarm.network=automacaotrafegopagoredeinterna
+        # Nomes de router, serviço e middlewares: ${GMN_TRAEFIK_NAME:-gmn} (P9.4). Produção usa o padrão `gmn`; a homologação (stack gmn-hml,
+        # mesma VPS e mesmo Traefik) usa `gmn-hml`, senão as duas stacks definiriam o mesmo router com regras diferentes.
         # HTTPS (router exclusivo da GMN)
-        - traefik.http.routers.gmn.rule=Host(`${GMN_HOST}`)
-        - traefik.http.routers.gmn.entrypoints=websecure
-        - traefik.http.routers.gmn.tls=true
-        - traefik.http.routers.gmn.tls.certresolver=letsencryptresolver
-        - traefik.http.routers.gmn.service=gmn
-        - traefik.http.routers.gmn.middlewares=gmn-headers
-        - traefik.http.services.gmn.loadbalancer.server.port=3000
-        - traefik.http.services.gmn.loadbalancer.passhostheader=true
+        - traefik.http.routers.${GMN_TRAEFIK_NAME:-gmn}.rule=Host(`${GMN_HOST}`)
+        - traefik.http.routers.${GMN_TRAEFIK_NAME:-gmn}.entrypoints=websecure
+        - traefik.http.routers.${GMN_TRAEFIK_NAME:-gmn}.tls=true
+        - traefik.http.routers.${GMN_TRAEFIK_NAME:-gmn}.tls.certresolver=letsencryptresolver
+        - traefik.http.routers.${GMN_TRAEFIK_NAME:-gmn}.service=${GMN_TRAEFIK_NAME:-gmn}
+        - traefik.http.routers.${GMN_TRAEFIK_NAME:-gmn}.middlewares=${GMN_TRAEFIK_NAME:-gmn}-headers
+        - traefik.http.services.${GMN_TRAEFIK_NAME:-gmn}.loadbalancer.server.port=3000
+        - traefik.http.services.${GMN_TRAEFIK_NAME:-gmn}.loadbalancer.passhostheader=true
         # Cabeçalhos de segurança (HSTS só deste host; o Next acrescenta os demais)
-        - traefik.http.middlewares.gmn-headers.headers.stsSeconds=31536000
-        - traefik.http.middlewares.gmn-headers.headers.stsIncludeSubdomains=false
-        - traefik.http.middlewares.gmn-headers.headers.stsPreload=false
-        - traefik.http.middlewares.gmn-headers.headers.contentTypeNosniff=true
+        - traefik.http.middlewares.${GMN_TRAEFIK_NAME:-gmn}-headers.headers.stsSeconds=31536000
+        - traefik.http.middlewares.${GMN_TRAEFIK_NAME:-gmn}-headers.headers.stsIncludeSubdomains=false
+        - traefik.http.middlewares.${GMN_TRAEFIK_NAME:-gmn}-headers.headers.stsPreload=false
+        - traefik.http.middlewares.${GMN_TRAEFIK_NAME:-gmn}-headers.headers.contentTypeNosniff=true
         # Redirecionamento HTTP -> HTTPS (nome do entrypoint HTTP configurável; ver o guia)
-        - traefik.http.routers.gmn-http.rule=Host(`${GMN_HOST}`)
-        - traefik.http.routers.gmn-http.entrypoints=${GMN_HTTP_ENTRYPOINT:-web}
-        - traefik.http.routers.gmn-http.middlewares=gmn-redirect-https
-        - traefik.http.routers.gmn-http.service=gmn
-        - traefik.http.middlewares.gmn-redirect-https.redirectscheme.scheme=https
-        - traefik.http.middlewares.gmn-redirect-https.redirectscheme.permanent=true
+        - traefik.http.routers.${GMN_TRAEFIK_NAME:-gmn}-http.rule=Host(`${GMN_HOST}`)
+        - traefik.http.routers.${GMN_TRAEFIK_NAME:-gmn}-http.entrypoints=${GMN_HTTP_ENTRYPOINT:-web}
+        - traefik.http.routers.${GMN_TRAEFIK_NAME:-gmn}-http.middlewares=${GMN_TRAEFIK_NAME:-gmn}-redirect-https
+        - traefik.http.routers.${GMN_TRAEFIK_NAME:-gmn}-http.service=${GMN_TRAEFIK_NAME:-gmn}
+        - traefik.http.middlewares.${GMN_TRAEFIK_NAME:-gmn}-redirect-https.redirectscheme.scheme=https
+        - traefik.http.middlewares.${GMN_TRAEFIK_NAME:-gmn}-redirect-https.redirectscheme.permanent=true
 
   gmn-worker:
     image: gmn-worker:${GMN_IMAGE_TAG:?defina GMN_IMAGE_TAG}
@@ -193,10 +208,14 @@ services:
       SERPER_API_KEY_FILE: /run/secrets/gmn_serper_api_key
       REDIS_URL_FILE: /run/secrets/gmn_redis_url
     secrets:
-      - gmn_supabase_service_role
-      - gmn_supabase_anon
-      - gmn_serper_api_key
-      - gmn_redis_url
+      - source: gmn_supabase_service_role
+        target: gmn_supabase_service_role
+      - source: gmn_supabase_anon
+        target: gmn_supabase_anon
+      - source: gmn_serper_api_key
+        target: gmn_serper_api_key
+      - source: gmn_redis_url
+        target: gmn_redis_url
     volumes:
       - type: bind
         source: ${GMN_DATA_ROOT:-/srv/gmn}/audits
@@ -261,8 +280,10 @@ services:
       - --save
       - ""
     secrets:
-      - gmn_redis_conf
-      - gmn_redis_password
+      - source: gmn_redis_conf
+        target: gmn_redis_conf
+      - source: gmn_redis_password
+        target: gmn_redis_password
     cap_drop:
       - ALL
     volumes:
