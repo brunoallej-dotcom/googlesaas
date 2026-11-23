@@ -747,7 +747,7 @@ Motivos:
 | P9.3a | Receptor de deploy (`src/lib/deploy-receiver/`, entrada em `scripts/`), com a regra de transição contra a lista instalada; build reprodutível dos artefatos dos receptores com hash versionado em `deploy/hostinger/receivers.sha256` e job do CI que o confere | P9.2 (módulo da lista: parser do arquivo, regras de ambiente e de transição) | — (pode começar antes, mas mergeia depois da P9.2) | 🟡 em revisão (branch `feat/p9-3a-deploy-receiver`; P9-D01 a P9-D14 marcados na spec §6; instalação no runbook H-04) |
 | P9.3b | Receptor de manifestos (núcleo do canal + verificador `v2` + gravação exclusiva do `sign` extraída para módulo compartilhado; hash do artefato do `sign` refeito); `verificar-pastas-fase6.sh` com a regra nova da pasta de manifestos; emendas VC-E8, PG-V04 e EN-12 | P9.2, P9.3a (pipeline dos artefatos) | P9.4 | 🟡 em revisão (branch `feat/p9-3b-seal-receiver`; P9-R01 a P9-R13 e P9-F01 marcados na spec §6; instalação no runbook H-04 a H-06) |
 | P9.4 | `.github/workflows/deploy.yml` (job `deploy`); `stack.yml` com nomes do Traefik parametrizados e secrets em sintaxe longa; sobreposição `deploy/hostinger/stack-hml.yml`; testes estáticos do workflow e da stack; runbook do responsável `deploy/hostinger/RUNBOOK-DEPLOY-PELO-CI.md` (H-01 a H-10, produção, rotação, incidente); guias, plano de rollback, verificação pós-deploy e `CLAUDE.md` | P9.3a | P9.3b | ⬜ |
-| P9.5 | Jobs `seals-verify` e `seals-deliver` no `deploy.yml`; registro RC-08 no resumo; procedimento final do p1-canal §3 e campos do livro de manifestos | P9.3b, P9.4 (mesmo arquivo `deploy.yml`) | W5.3 (código só; o ensaio não usa o canal enquanto ela não estiver na `main`) | ⬜ |
+| P9.5 | Jobs `seals-verify` e `seals-deliver` no `deploy.yml`; registro RC-08 no resumo; procedimento final do p1-canal §3 e campos do livro de manifestos | P9.3b, P9.4 (mesmo arquivo `deploy.yml`) | W5.3 (código só; o ensaio não usa o canal enquanto ela não estiver na `main`) | 🟡 em revisão (branch `feat/p9-5-seal-delivery`; gatilho `push` no caminho dos manifestos, modo árvore do `seals-check`, entrega só com git/sha256sum/ssh; P9-W01 e P9-W09 marcados na spec §6; primeira entrega no runbook §8). Com ela, o código do P-9 fica completo |
 
 Ordem prática: P9.1 → P9.2 → P9.3a → {P9.3b ∥ P9.4} → P9.5. Depois da P9.4: ações H-01 a H-10 do responsável → primeiro
 deploy de homologação pelo workflow → W5.3 (entrega manual como desvio D-01, salvo se a P9.5 já estiver na `main`) → G2 (ensaio
@@ -812,6 +812,8 @@ Motivos:
   CE-5 resolvidos); `p1-livro-de-manifestos.md` §2; `p1-relatorio-ensaio-modelo.md` (desvio D-01 só se a W5.3 rodar antes desta
   fatia).
 - **Critérios de aceite**: P9-W09 e os de entrega do teste estático; P9-O06 na G2.
+- **Testes**: `tests/deploy-workflow.test.ts` (P9-W01, W02, W06, W08, W09), `tests/deploy-seals-delivery.test.ts` (scripts da entrega com git
+  real e `ssh`/`gh`/`npm` falsos) e `tests/link-audit-seals-tree.test.ts` (modo árvore do comando).
 - **Goal command**: `/goal npm test && grep -q "seals-deliver" .github/workflows/deploy.yml, stop after 3 tries`
 
 ## Notas de execução

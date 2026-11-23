@@ -1,5 +1,6 @@
 import type { BytesFsOps } from '../link-audit/fs-ops';
 import { sealSha256 as sealDigestOf } from '../link-audit-evidence/provenance-core';
+import { archivePaths, archiveRefusals } from './archive';
 import { budgetedFs, readBudget } from './budget';
 import { auditDirOf, chainRefusalCode, chainVerdicts, isAtEnd, seqsOnDisk, type ChainVerdict } from './chains';
 import type { ChangeEntry } from './changes';
@@ -78,7 +79,7 @@ const isSealFile = (file: ReadFile): file is ReadFile & { readonly channel: Seal
 const isClosureFile = (file: ReadFile): file is ReadFile & { readonly channel: ClosurePath } => file.channel.kind === 'closure';
 const isTrustFile = (file: ReadFile): file is ReadFile & { readonly channel: TrustPath } => file.channel.kind === 'trust-list';
 
-const EMPTY_REPORT: SealsCheckReport = { touched: false, refusals: [], manifests: [], closures: [], trustLists: [], chains: [], chainsTruncated: false, incomplete: false };
+export const EMPTY_REPORT: SealsCheckReport = { touched: false, refusals: [], manifests: [], closures: [], trustLists: [], chains: [], chainsTruncated: false, incomplete: false };
 
 function classify(changes: readonly ChangeEntry[]): ClassifiedChange[] {
   return changes.flatMap((entry) => {
@@ -166,7 +167,7 @@ async function commitTrustByEnvironment(repoRoot: string, fs: BytesFsOps): Promi
   return trust;
 }
 
-function manifestLines(candidates: readonly Candidate[], judged: readonly JudgedSeal[]): ManifestLine[] {
+export function manifestLines(candidates: readonly Candidate[], judged: readonly JudgedSeal[]): ManifestLine[] {
   return candidates.flatMap((candidate) => {
     if (candidate.channel.kind !== 'seal') return [];
     const found = judged.find((item) => item.repoPath === candidate.repoPath);
@@ -175,7 +176,7 @@ function manifestLines(candidates: readonly Candidate[], judged: readonly Judged
   });
 }
 
-function closureLines(candidates: readonly Candidate[], judged: readonly JudgedClosure[]): ClosureLine[] {
+export function closureLines(candidates: readonly Candidate[], judged: readonly JudgedClosure[]): ClosureLine[] {
   return candidates.flatMap((candidate) => {
     if (candidate.channel.kind !== 'closure') return [];
     const found = judged.find((item) => item.repoPath === candidate.repoPath);
@@ -232,7 +233,7 @@ function addedClosuresByEnvironment(candidates: readonly Candidate[]): Record<Ch
 }
 
 /** Roda uma etapa sem deixar uma falha inesperada apagar as recusas já coletadas: a falha só marca a execução como incompleta. */
-async function guarded(state: { incomplete: boolean }, stage: () => Promise<void>): Promise<void> {
+export async function guarded(state: { incomplete: boolean }, stage: () => Promise<void>): Promise<void> {
   try {
     await stage();
   } catch {
@@ -255,6 +256,10 @@ export async function runSealsCheck(input: SealsCheckInput, deps: SealsCheckDeps
   const budget = readBudget(deps.readBudgetBytes);
   const run: Run = { input, fs: budgetedFs(deps.fs, budget), refusals, trust: new Map() };
   const state = { incomplete: false };
+  // revisão do PR #74, item 9: o arquivo inteiro do ambiente com manifesto novo cabe numa entrega (SEALS_ARCHIVE_FULL)
+  await guarded(state, async () => {
+    for (const env of CHANNEL_ENVIRONMENTS) if (touched.seals.has(env)) refusals.push(...(await archiveRefusals(env, archivePaths(input.modes.keys(), env), input.repoRoot, deps.fs)));
+  });
   const out = { files: [] as ReadFile[], seals: [] as JudgedSeal[], closures: [] as JudgedClosure[], lines: [] as TrustListLine[], chains: [] as ChainInfoLine[], truncated: false, next: new Map<ChannelEnvironment, string>() };
   await guarded(state, async () => {
     const moded = await checkModes(candidates, input.modes, input.repoRoot, run.fs);

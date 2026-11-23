@@ -19,8 +19,10 @@
 > H-06. A pasta de manifestos passa a ser `gmn-hml-seals:10001 2750` (`gmn-seals:10001 2750` em produção), e o `verificar-pastas-fase6.sh` a
 > confere.
 >
-> **O que ainda não existe:** a **entrega de manifestos** pelo CI (jobs `seals-verify` e `seals-deliver`, P9.5). Até a P9.5, um dispatch com
-> `acao = entregar-selos` não roda nenhum job.
+> **Entrega de manifestos pelo CI (P9.5):** os jobs `seals-verify` (sem segredo) e `seals-deliver` (no ambiente protegido, com a chave de
+> manifestos `GMN_SEALS_SSH_KEY`) do mesmo `deploy.yml`, em todo push na `main` (sem mudança em `link-audit-seals/*/seals/`, termina verde com
+> "nada a entregar") ou por dispatch com `acao = entregar-selos`. Primeira entrega, códigos e incidentes no §8. **Com a P9.5, o código do P-9 está completo:** o que falta são as
+> ações deste runbook.
 
 ## 0. Regras que valem em todo o runbook
 
@@ -40,7 +42,8 @@
 ### 0.1 Códigos que o job imprime
 
 O log do Actions é público: o job só imprime `ERRO <CÓDIGO>[ <DETALHE>]`, hashes e campos públicos. O resumo do job traz uma linha
-por execução (spec §5.9), que vai para o `RELATORIO-DE-IMPLANTACAO.md` (e, na P9.5, para o livro de manifestos).
+por execução (spec §5.9), que vai para o `RELATORIO-DE-IMPLANTACAO.md`. Os códigos da **entrega de manifestos** (`seals-verify`,
+`seals-deliver`) estão no §8.3; as linhas do resumo da entrega vão para o livro de manifestos.
 
 | Código | Passo | O que fazer |
 |---|---|---|
@@ -685,8 +688,8 @@ A cada 12 meses (junto da rotação da chave de assinatura, D12) ou na hora, sob
 
 1. Gere o par novo na estação, fora do repositório (H-05).
 2. Acrescente a linha nova (`restrict,command="…" ssh-ed25519 …`) ao `/etc/ssh/authorized_keys/<usuário>`, mantendo a antiga.
-3. Troque o segredo do ambiente (`gh secret set … < <PASTA_FORA_DO_REPO>/<arquivo>`), rode um deploy (ou, na P9.5, uma entrega) e
-   confira o resumo verde.
+3. Troque o segredo do ambiente (`gh secret set … < <PASTA_FORA_DO_REPO>/<arquivo>`), rode um deploy (ou, para a chave de manifestos,
+   uma entrega por dispatch, §8.2) e confira o resumo verde.
 4. Remova a linha antiga do `authorized_keys` e apague a privada local com `shred -u`. Registre a data no relatório.
 
 Chave de host da VPS trocada (reinstalação, por exemplo): repita o H-09 nos dois ambientes; até lá o job falha com
@@ -761,3 +764,135 @@ Pela spec §10.3 e pelo `PLANO-DE-ROLLBACK.md`:
 | P9-O07 primeiro deploy de produção; P9-O08 nenhum segredo em comum | `RELATORIO-DE-IMPLANTACAO.md`; relatório do ensaio W5.3 |
 | P9-H06 e P9-H07 primeiro deploy de homologação | relatório do ensaio W5.3 |
 | Linha do resumo de cada deploy (spec §5.9) | `RELATORIO-DE-IMPLANTACAO.md` (e livro de manifestos, a partir da P9.5) |
+
+## 8. Entrega de manifestos pelo CI (P9.5)
+
+Spec §5.5.2 e "Implementação (P9.5)"; procedimento do custodiante em `docs/phase6-auditoria-link/p1-canal-de-entrega-manifestos.md` §3;
+registro no livro em `p1-livro-de-manifestos.md` §2.1. Nenhum passo daqui é do manager ou de um worker.
+
+### 8.1 O que precisa existir antes
+
+| Item | Onde |
+|---|---|
+| `GMN_SEALS_SSH_KEY` no ambiente do GitHub (a privada de `gmn-hml-seals`; em produção, a de `gmn-seals`), junto dos de conexão `GMN_SSH_HOST`, `GMN_SSH_PORT` e `GMN_SSH_KNOWN_HOSTS`, que o deploy também usa. Só segredo **de ambiente**; o job de entrega nunca vê a chave de deploy, e o de deploy nunca vê a de manifestos | H-03 e H-05 |
+| Receptor de manifestos e *wrapper* `gmn-hml-seals` instalados e conferidos (`sha256sum -c`) | H-04 |
+| Usuário `gmn-hml-seals` com `restrict,command=` e o `Match User` do `sshd`; prova P9-O03 (`E_COMMAND`) | H-05, H-09 |
+| Pasta de manifestos `gmn-hml-seals:10001 2750`, pasta da trava e log | H-06 |
+| A lista de confiança **instalada** no host igual à do commit: o deploy de homologação já rodou com a `link-audit-seals/homologacao/trust-keys.txt` atual (a coluna "lista instalada sha256" do resumo do deploy). Sem isso, toda entrega recusa `E_TRUST_LIST_MISMATCH` | §2 |
+
+### 8.2 Primeira entrega em homologação (G2, P9-O06)
+
+1. **Lista de confiança:** PR com a chave de ensaio (`ensaio-…`, só ids com esse prefixo em homologação) em
+   `link-audit-seals/homologacao/trust-keys.txt`, sozinho (lista e manifestos do mesmo ambiente nunca no mesmo PR); merge; deploy de
+   homologação (§2). Confira no resumo do deploy que a lista instalada tem o sha256 do arquivo do commit.
+2. **Manifesto:** o custodiante abre o PR do `seal-NNNN.json` (auditoria sintética `aud-<16 hex>`); o check `seals (append-only, v2)` fica
+   verde e o conferente compara a linha do resumo com o livro; merge.
+3. **`seals-verify`:** o push na `main` dispara o `deploy.yml` (todo push dispara; sem mudança em `link-audit-seals/*/seals/` ele termina
+   verde com "nada a entregar"). Confira no resumo a tabela da verificação e a linha "ambientes a entregar" (`["homologacao"]`).
+4. **Aprovação:** *Actions → a execução → Review deployments → homologacao*. Se a `main` andou desde o push (até por outro PR), o job para
+   em `NOT_MAIN_HEAD` sem enviar nada, no primeiro passo (antes de qualquer segredo) ou logo antes do primeiro `put`: dispare a entrega da
+   cabeça atual (passo 6).
+5. **Resumo da entrega:** uma linha por arquivo com `WRITTEN` (gravado, verificado no host). Copie as linhas da verificação e da entrega
+   para o livro (§2.1).
+6. **Segunda execução (idempotência):**
+
+   ```bash
+   gh workflow run deploy.yml --repo <DONO>/<REPO> --ref main -f ambiente=homologacao -f acao=entregar-selos
+   gh run list --repo <DONO>/<REPO> --workflow deploy.yml --limit 1
+   ```
+
+   Aprove de novo. O mesmo arquivo volta `ALREADY_PRESENT`, que o resumo mostra como **conteúdo idêntico já presente**: o host já tinha os
+   mesmos bytes e o receptor só os comparou. Isso **não** é uma verificação no host; ela vale só para `WRITTEN`.
+7. **Recusa de bytes diferentes (`E_EXISTS_DIFFERENT`), só em homologação e só numa auditoria sintética combinada:** antes de mesclar o PR
+   de um manifesto novo `<AUD>/seal-0001.json`, crie no host, no mesmo caminho, um arquivo com **outros** bytes, do dono certo; mescle e
+   aprove a entrega; confira a recusa e que o arquivo do host ficou intacto. Registre no relatório da G2. Depois, com a sua decisão
+   registrada, mova o arquivo de teste para uma pasta de evidências fora da pasta de manifestos (nunca apague) e dispare a entrega de novo
+   (`WRITTEN`).
+
+   ```bash
+   RAIZ=/srv/gmn-hml/manifestos; AUD='<AUD_SINTETICA>'
+   ( set -eu
+     sudo -u gmn-hml-seals install -d -m 2750 "$RAIZ/$AUD"
+     printf '{"teste":"bytes diferentes"}\n' | sudo -u gmn-hml-seals tee "$RAIZ/$AUD/seal-0001.json" >/dev/null
+     sudo chmod 0444 "$RAIZ/$AUD/seal-0001.json"
+     sudo sha256sum "$RAIZ/$AUD/seal-0001.json"          # antes; repita depois da entrega recusada: o mesmo hash
+   )
+   ```
+8. **Recusa de manifesto não assinado:** um PR com um manifesto sem assinatura válida é recusado pelo check `seals` (`SEAL_FORMAT` ou
+   `SEAL_V2_<RAZÃO>`) e nunca chega à `main` nem ao host; a recusa do próprio receptor está nos testes P9-R05 e na prova local do H-04.
+9. **P9-O06:** registre no relatório da G2 as execuções (`WRITTEN`, `ALREADY_PRESENT`, `E_EXISTS_DIFFERENT`), os ids das execuções e a
+   recusa do PR não assinado. É critério de entrada da produção.
+
+Em produção, a entrega é a mesma, com o ambiente `producao` e o usuário `gmn-seals`, **sem** o passo 7 (nunca se escreve à mão na pasta de
+manifestos de produção). Deploy e entrega do mesmo ambiente podem correr ao mesmo tempo (filas separadas): uma entrega durante um deploy
+que troca a lista recusa `E_TRUST_LIST_MISMATCH` sem gravar nada; repita a entrega depois do deploy.
+
+### 8.3 Códigos da entrega
+
+| Código | Job | O que fazer |
+|---|---|---|
+| `SEALS_NO_BASE` | `seals-verify` (push) | o push não tem uma base utilizável (ramo novo, histórico reescrito): dispare a entrega por dispatch |
+| `SEALS_REFUSED` | `seals-verify` | o `seals-check` recusou (o código da recusa está na linha `ERRO` logo antes e no resumo). Na `main` isso não deveria acontecer, porque o check `seals` barra o PR: trate como incidente (§8.4) |
+| `SEALS_PREPARE_FAILED` / `CHECKOUT_MISMATCH` / `INPUT_INVALID` | os dois | o preparo, o checkout ou uma entrada fora do padrão: dispare de novo; se repetir, incidente |
+| `SEALS_ARCHIVE_FULL <amb> FILES` / `<amb> BYTES` | check `seals` do PR e `seals-verify` | o arquivo do ambiente chegou ao teto de uma entrega (1000 arquivos ou 64 MiB − 8 KiB): manifesto novo só depois de uma mudança planejada do canal (spec §5.5.2), com a sua decisão registrada |
+| `SEALS_TOO_MANY` | os dois | mais de 1000 manifestos e fechos no ambiente (teto por execução da spec §5.5.2): não deveria chegar aqui (a admissão recusa antes, `SEALS_ARCHIVE_FULL`); decisão sua, registrada |
+| `SEALS_EMPTY` | `seals-deliver` | o ambiente não tem arquivo para entregar (não deveria chegar aqui; o `seals-verify` o deixa fora da matriz) |
+| `SEALS_UNEXPECTED_PATH` / `SEALS_BAD_MODE` / `SEALS_TOO_LARGE` | `seals-deliver` | um arquivo da `main` fora das regras (caminho, modo, tamanho): o check `seals` deveria tê-lo barrado; incidente |
+| `HASH_INPUT_MISSING` / `TRUST_LIST_TOO_LARGE` | `seals-deliver` | a lista de confiança do ambiente ausente, link ou acima de 8 KiB no commit |
+| `SSH_CONFIG_MISSING GMN_SEALS_SSH_KEY` / `SSH_CONFIG_INVALID <NOME>` | `seals-deliver` | segredo do ambiente ausente ou fora do formato (§8.1) |
+| `SSH_CONNECT_FAILED HOST_KEY` / `AUTH` / `OTHER` | `seals-deliver` | como no deploy (§0.1); `AUTH` costuma ser a chave pública de `gmn-*-seals` ausente no `authorized_keys` |
+| `NOT_MAIN_HEAD` | `seals-deliver` | a `main` andou desde o push ou o disparo: dispare a entrega da cabeça atual (§8.2 passo 6); nada foi enviado |
+| `SEALS_LIST_MISSING` / `SEALS_LIST_INVALID` / `SEALS_FILE_CHANGED` | `seals-deliver` | a lista ou a cópia privada de um blob mudou entre passos do job (os bytes vêm dos objetos do git do commit, nunca do checkout): investigar o runner; disparar de novo |
+| `SUMMARY_TOO_LARGE` | `seals-deliver` | o resumo passaria de 900 KiB (não deveria acontecer com o teto de 1000 arquivos): as linhas `OK` do log do passo têm os mesmos campos |
+| `E_TRUST_LIST_MISMATCH` | receptor | a lista instalada não é a do commit: faça o deploy da lista e depois a entrega por dispatch |
+| `E_TRUST_LIST_INVALID` | receptor | a lista instalada está ilegível ou fora das regras: incidente |
+| `E_LOCKED` | receptor | outra entrega ou uma restauração segura a trava: espere e dispare de novo (trava órfã depois de `SIGKILL`: H-04) |
+| `E_ARTIFACT` | receptor | o artefato não tem o hash fixado no *wrapper*: reinstale o receptor (H-04) |
+| `E_V2_REFUSED <RAZÃO>` / `E_CLOSURE_REFUSED <MOTIVO>` | receptor | a cadeia do host não aceita o arquivo (por exemplo `HEAD_MISMATCH` ou `SEAL_CHAIN_BROKEN`: falta no host um `seq` anterior, ou o host tem outro; `SEAL_KEY_REVOKED` num manifesto antigo que falta no host). Confira a pasta do host contra o livro (`p1-livro-de-manifestos.md` §5); arquivo histórico ausente: §8.4; sem explicação, incidente |
+| `E_UNSAFE_PATH` | receptor | raiz ou subpasta que não é diretório real, ou trocada no meio (restauração): `verificar-pastas-fase6.sh` e o plano de backup |
+| `E_WRITE_FAILED` | receptor | nada gravado antes do `link()` (disco, permissão): corrija e dispare de novo |
+| `E_EXISTS_DIFFERENT` / `E_WRITE_UNCONFIRMED` / `E_POSTWRITE_VERIFY` | receptor | incidente (§8.4) |
+| `E_COMMAND` / `E_INPUT_TOO_LARGE` / `E_INPUT_TRUNCATED` / `E_HASH_MISMATCH` / `E_FORMAT` | receptor | o job e o receptor não concordam (o CI já conferiu tudo isso): versões diferentes ou rede cortando o stdin; incidente se repetir |
+| `E_INTERNAL` | receptor | erro inesperado do receptor, nada gravado antes do `link()`: leia o log local do receptor (`/var/log/gmn-receivers/<amb>-seals.log`) e dispare de novo |
+| `RECEIVER_UNKNOWN_ERROR EXIT_<n>` | receptor | resposta fora do conjunto fechado (a resposta é conferida inteira: linha a mais, ruído no stderr ou eco errado também caem aqui; o job não repete nada): o arquivo fica "resultado indeterminado (conferir no host)"; confira no host (§8.4) e leia o log local do receptor |
+
+### 8.4 Incidentes da entrega
+
+Registre todo incidente no livro (`p1-livro-de-manifestos.md` §8) com o id da execução, o caminho e o sha256 do resumo. **Nada se corrige à
+mão na pasta de manifestos:** o canal só acrescenta, e uma divergência é decisão sua, registrada. Conferências no host, só leitura:
+
+```bash
+AMB=homologacao; RAIZ=/srv/gmn-hml/manifestos          # produção: AMB=producao; RAIZ=<RAIZ_MANIFESTOS>
+REL='<CAMINHO_RELATIVO_DO_RESUMO>'
+sudo sha256sum -- "$RAIZ/$REL"                          # compare com o sha256 do resumo e do livro
+sudo stat -c '%U:%g %a %s' -- "$RAIZ/$REL"              # esperado: gmn-hml-seals:10001 444 (produção gmn-seals)
+sudo find "$RAIZ/$(dirname "$REL")" -maxdepth 1 -name '.*.tmp-*' -printf '%f %s\n'
+sudo tail -n 20 "/var/log/gmn-receivers/${AMB}-seals.log"
+```
+
+- **`E_WRITE_UNCONFIRMED`:** o arquivo foi criado no nome final, mas a durabilidade não foi confirmada (falhou o `fsync` da pasta ou a
+  remoção do temporário). O receptor **nunca** apaga o arquivo. Pare as entregas do ambiente, confira o sha256 do arquivo (tem de ser o do
+  resumo), o dono e o modo, o temporário que sobrou e a saúde do disco (`dmesg`, `df`). Se o sha256 confere, dispare a entrega de novo: o
+  arquivo volta `ALREADY_PRESENT` (conteúdo idêntico já presente) e os seguintes seguem; a verificação no host desse arquivo fica para a
+  verificação pós-entrega (a prévia) e para a conferência do livro. Se o arquivo sumiu depois de um reinício, a entrega seguinte o grava de
+  novo (`WRITTEN`). Se os bytes forem outros, siga o `E_EXISTS_DIFFERENT`. O temporário que sobrou (fora do padrão `seal-NNNN.json`; o
+  verificador o ignora) só sai com a sua decisão registrada, movido para uma pasta de evidências.
+- **`E_EXISTS_DIFFERENT`:** o host já tem, no mesmo caminho, um arquivo com **outros** bytes (RC-04). O canal nunca sobrescreve nem apaga.
+  Não dispare de novo (recusaria igual). Descubra a origem: entrega manual da W5.3 em homologação (desvio D-01), dois custodiantes com o
+  mesmo `seq` (spec §7) ou escrita por fora do canal (DC-19). Compare o sha256 do host com o do livro e o do resumo. Em homologação, com a
+  sua decisão registrada, o arquivo do host pode ser movido para uma pasta de evidências e a entrega repetida. Em **produção**, é incidente
+  com a sua decisão registrada antes de qualquer ação; nunca se "corrige" o servidor à mão (`p1-livro-de-manifestos.md` §5).
+- **`E_POSTWRITE_VERIFY`:** o arquivo foi gravado, mas a releitura não autentica. Ele fica; confira o disco e a cadeia do host contra o livro
+  e trate como incidente.
+- **"Resultado indeterminado (conferir no host)"** no resumo: a chamada começou e não houve resposta confirmada (conexão perdida, resposta fora
+  do conjunto fechado, execução cancelada ou estourada no meio). O receptor pode ter gravado. Confira o arquivo no host (sha256, dono, modo,
+  temporário que sobrou) antes de registrar no livro; depois, dispare a entrega de novo: se ele foi gravado, volta `ALREADY_PRESENT`.
+- **Arquivo histórico ausente no host bloqueia todas as entregas** (spec §5.5.2): a entrega reenvia o arquivo inteiro do ambiente e para no
+  primeiro erro, então um manifesto antigo que falte no host (restauração ruim, cópia apagada por fora) recusa (`E_V2_REFUSED HEAD_MISMATCH`
+  quando o host já tem um `seq` maior, ou `SEAL_KEY_REVOKED` num manifesto de chave hoje revogada) e **nada depois dele** é entregue. O
+  resumo mostra qual arquivo parou e os anteriores. Recuperação: restaure o conjunto **completo** da pasta de manifestos a partir do backup,
+  conferido arquivo a arquivo contra o livro de manifestos (§5 do livro), segurando a trava do kernel do receptor durante toda a troca
+  (`/var/lib/gmn-receivers-locks/<amb>/seals.flock`, `flock -n`; `PLANO-DE-BACKUP-E-RESTAURACAO.md`, "Restauração da Fase 6"), com dono,
+  grupo e modos de volta; depois, dispare a entrega. **Nunca** copie um manifesto avulso à mão para "destravar" (isso é exatamente o que o
+  canal impede, D15.5); sem um conjunto completo conferido, é incidente com a sua decisão registrada.
+- **Chave de manifestos sob suspeita:** corte o acesso (§5, com `gmn-hml-seals` / `gmn-seals`) e troque o par (§4).

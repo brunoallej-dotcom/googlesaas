@@ -8,7 +8,11 @@
 > ambiente protegido, com aprovação, por chave SSH restrita a um comando receptor que verifica de novo e grava com criação
 > exclusiva e `fsync`). O desenho completo está em **`docs/specs/ci-deploy-and-seal-delivery.md`** (ADR-0004; ameaças
 > `docs/security/threats/deploy-pelo-ci.md`), e o código, nas fatias P9.2 a P9.5 do plano. Os pontos em aberto do §4 estão
-> resolvidos por referência lá. **O canal continua não existindo até a P9.5**; até lá, o que vale para o ensaio é o §6.1.
+> resolvidos por referência lá.
+> **Atualização 23/11/2026 — P9.5.** O código do canal está completo: job `seals` do `ci.yml` (P9.2), receptor de manifestos (P9.3b) e jobs
+> `seals-verify` e `seals-deliver` do `.github/workflows/deploy.yml` (P9.5). O §3 é o procedimento final e o §5 está resolvido. O canal
+> **passa a valer depois das ações do responsável no host** (runbook `deploy/hostinger/RUNBOOK-DEPLOY-PELO-CI.md`, H-01 a H-10 e §8);
+> enquanto a homologação não tiver o usuário de manifestos, o receptor e o ambiente do GitHub, o que vale para o ensaio é o §6.1.
 >
 > **Decisões aplicadas:** D7 (o canal é o pipeline de CI, nunca cópia manual) e **D15.5** (só o canal do CI escreve no volume
 > de manifestos; o servidor confere a assinatura contra a lista de chaves fixada antes de aceitar; o administrador da VPS fica
@@ -38,20 +42,43 @@ assinatura. A chave, o pacote, a aprovação, o dossiê e os recibos **nunca** p
 | RC-09 | O canal não recebe nem guarda segredo de assinatura; a credencial que ele usa para escrever no volume é exclusiva desse fim (não é a do deploy da aplicação, se puder ser separada) e só escreve na pasta de manifestos | menor privilégio |
 | RC-10 | O canal falha fechado: qualquer recusa do RC-04 ou do RC-06 ⇒ nada gravado, execução vermelha, motivo em código fixo (sem conteúdo de arquivo) | spec §5.2 (padrão do CLI) |
 
-## 3. Procedimento (alvo, depois da W5.2)
+## 3. Procedimento (final, P9.5)
+
+Desenho e códigos: spec `docs/specs/ci-deploy-and-seal-delivery.md` §5.4, §5.5.2, §5.7 e §5.9; o que o responsável faz em cada código:
+runbook `deploy/hostinger/RUNBOOK-DEPLOY-PELO-CI.md` §8.
 
 1. **Custodiante, fora da estação de assinatura** (a estação fica sem rede): leva por mídia o `seal-NNNN.json` e o recibo;
-   confere `sha256sum` do manifesto igual ao anotado no livro.
-2. **Submete ao canal** pela entrada decidida na W5.2 (§4, ponto em aberto), sem abrir nem editar o arquivo.
-3. **CI:** confere os RC-03 a RC-06, grava pelo RC-05 e publica o registro do RC-08. Recusa ⇒ nada gravado; o custodiante
-   registra no livro (incidente, se não for erro de uso) e não tenta outro caminho.
-4. **Servidor:** a prévia da auditoria passa a mostrar a origem da coleta autenticada (RC-07).
-5. **Custodiante / conferente:** registram no livro (§2) e no dossiê B o identificador da execução, o `sha256sum` gravado e a
-   verificação pós-entrega.
+   confere `sha256sum` do manifesto igual ao anotado no livro (§2).
+2. **PR:** abre um PR que só **acrescenta** o arquivo, sem abrir nem editar os bytes, em
+   `link-audit-seals/<ambiente>/seals/<auditId>/seal-NNNN.json` (`auditId` opaco `aud-<16 hex>`; runbook do custodiante §6). Um PR não muda
+   a lista de confiança e os manifestos do mesmo ambiente juntos.
+3. **Verificação antes do merge (job `seals` do `ci.yml`, sem segredo, check obrigatório):** S-01 a S-14 (RC-03, RC-04 e RC-06 no CI).
+   O conferente compara a linha do resumo (caminho, `sha256sum`, `seq`, `sealSha256`) com o livro antes de aprovar. Recusa ⇒ nada entra
+   na `main`; o custodiante registra no livro e não tenta outro caminho.
+4. **Merge** na `main` pelo responsável.
+5. **`seals-verify`** (job do `deploy.yml`, disparado por todo push na `main`, sem segredo): pelo diff local, vê se o push mexeu em
+   `link-audit-seals/*/seals/`; se mexeu, roda de novo o verificador sobre o push (S-10 nas auditorias tocadas) e S-03 a S-08 sobre a árvore
+   inteira do ambiente, e diz quais ambientes têm arquivos novos.
+6. **Aprovação do `seals-deliver`** pelo responsável no ambiente protegido (*Review deployments*). O job manda **todos** os arquivos do
+   ambiente, em ordem (manifestos por `auditId` e `seq`, depois os fechos), um `put` por arquivo, ao receptor de manifestos, que verifica
+   de novo no host (RC-06, `seq` = último + 1 no volume) e grava pelo RC-05. Para no primeiro erro (RC-10). Se a `main` andou desde o push
+   (`NOT_MAIN_HEAD`) ou a entrega falhou, o responsável dispara `acao = entregar-selos` para o ambiente, da cabeça atual da `main`: mandar
+   tudo de novo é idempotente.
+7. **Resumo do job (RC-08):** uma linha por arquivo com a execução, a tentativa, o commit, o ambiente, o caminho relativo, o `sha256sum` e
+   o resultado: `WRITTEN` (gravado, verificado no host), `ALREADY_PRESENT` (**conteúdo idêntico já presente**: o host já tinha os mesmos
+   bytes e o receptor só os comparou; nunca é "verificado no host"), `FALHOU` com o código, "resultado indeterminado (conferir no host)"
+   ou "não enviado".
+8. **Servidor:** a prévia da auditoria passa a mostrar a origem da coleta autenticada (RC-07).
+9. **Livro:** o custodiante copia para o livro (§2) as linhas da verificação (passo 5) e da entrega (passo 7) da mesma execução, juntadas
+   pelo id da execução, pelo caminho e pelo `sha256sum`; o conferente registra a verificação pós-entrega (a prévia) e, no dossiê B, o id da
+   execução.
 
-**Fecho de aposentadoria:** mesmo caminho para `_closures/<R>.json`. Depois da entrega, o responsável fixa
-`<R>:<pública>:retired:<closureSha256>` na lista do servidor (configuração e deploy dele; `onda6c-runbook-chaves.md` §4).
-Até a fixação, o fecho não vale nada (o verificador ignora fecho sem hash fixado).
+**Fecho de aposentadoria:** mesmo caminho para `_closures/<R>.json`. Depois da entrega (`WRITTEN` ou `ALREADY_PRESENT` no resumo), o
+responsável fixa `<R>:<pública>:retired:<closureSha256>` por PR em `link-audit-seals/<ambiente>/trust-keys.txt` e faz o deploy (ordem da
+spec §5.3; `onda6c-runbook-chaves.md` §4). Até a fixação, o fecho não vale nada (o verificador ignora fecho sem hash fixado).
+
+**Lista de confiança diferente no host** (`E_TRUST_LIST_MISMATCH`): normalmente falta o deploy da lista nova; faz-se o deploy e depois a
+entrega por dispatch.
 
 **Dois custodiantes:** quem chega segundo com o mesmo `seq` é recusado (RC-04/RC-06); refaz a partir da cadeia atualizada, com
 novo `--expect-seq` do livro (spec §7.3).
@@ -82,7 +109,13 @@ novo `--expect-seq` do livro (spec §7.3).
   livro. Texto original: precisa ser a mesma lista do servidor de destino; se ela for versionada no repositório, a edição desse
   arquivo passa a ser mais um ponto de controle a conferir no livro.
 
-## 5. Pendências de código (W5.2)
+## 5. Pendências de código (W5.2) — resolvidas na P-9
+
+**Atualização 23/11/2026 (P9.5):** as cinco pendências estão resolvidas no código. CE-1: `.github/workflows/deploy.yml` (jobs `deploy`,
+`seals-verify` e `seals-deliver`, P9.4 e P9.5); CE-2: job `seals` do `ci.yml` e `npm run link-audit:seals-check` (P9.2; modo árvore na
+P9.5); CE-3: receptor de manifestos `gmn-seal-receiver.cjs` (P9.3b); CE-4: G1.a, com dono e modo da pasta emendados (P9.3b); CE-5:
+`tests/link-audit-seals-check.test.ts`, `tests/link-audit-seal-receiver*.test.ts`, `tests/deploy-seals-delivery.test.ts`. A tabela abaixo
+fica como registro do que faltava na W5.1.
 
 | # | O que falta | Onde hoje |
 |---|---|---|

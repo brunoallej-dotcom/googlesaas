@@ -252,7 +252,9 @@ não guardam estado.
 - **Mitigação**: grupos por operação e ambiente (`gmn-<amb>-deploy`, `gmn-<amb>-seals`, P9-W06). Na mesma operação, o mais novo
   substituir o pendente é seguro: o deploy antigo falharia em `NOT_MAIN_HEAD`, e a entrega manda todos os arquivos
   (idempotente). Deploy e entrega correndo juntos: a lista é instalada de forma atômica no fim do deploy, e uma entrega com outra
-  lista falha fechada com `E_TRUST_LIST_MISMATCH` e se repete (P9-R13).
+  lista falha fechada com `E_TRUST_LIST_MISMATCH` e se repete (P9-R13). Desde a P9.5, a entrega também confere `NOT_MAIN_HEAD` antes do
+  primeiro `put`: uma entrega aprovada depois que a `main` andou não envia nada, e o dispatch `acao = entregar-selos` da cabeça atual manda
+  tudo de novo.
 - **Status**: aceito.
 
 ### DC-17 [BAIXA] Adulteração — conversão de fim de linha ou editor mudam os bytes

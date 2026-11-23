@@ -90,16 +90,17 @@ export const readCap = (channel: FilePath): number => (channel.kind === 'seal' ?
 
 /**
  * S-05: acima do teto por arquivo ⇒ `SEALS_TOO_LARGE` SEM abrir o arquivo; a soma acima de 16 MiB ⇒ `SEALS_TOO_MANY` sem ler nada. A leitura
- * em si também tem teto (no descritor, `readFileBytes`): um arquivo que cresceu depois do `lstat` é recusado, nunca lido inteiro.
+ * em si também tem teto (no descritor, `readFileBytes`): um arquivo que cresceu depois do `lstat` é recusado, nunca lido inteiro. O modo árvore
+ * do `seals-verify` (P9.5, `tree.ts`) passa o próprio teto da soma (`maxTotalBytes`); o job `seals` usa o padrão.
  */
-export async function readWithinLimits(sized: ReadonlyArray<Candidate & { readonly size: number }>, repoRoot: string, fs: BytesFsOps): Promise<{ readonly refusals: SealsRefusal[]; readonly files: ReadFile[] }> {
+export async function readWithinLimits(sized: ReadonlyArray<Candidate & { readonly size: number }>, repoRoot: string, fs: BytesFsOps, maxTotalBytes: number = MAX_RUN_BYTES): Promise<{ readonly refusals: SealsRefusal[]; readonly files: ReadFile[] }> {
   const refusals: SealsRefusal[] = [];
   const fitting = sized.filter((candidate) => {
     const fits = candidate.size <= readCap(candidate.channel);
     if (!fits) refusals.push(refusal('S-05', 'SEALS_TOO_LARGE', candidate.publicPath));
     return fits;
   });
-  if (fitting.reduce((total, candidate) => total + candidate.size, 0) > MAX_RUN_BYTES) return { refusals: [...refusals, refusal('S-05', 'SEALS_TOO_MANY')], files: [] };
+  if (fitting.reduce((total, candidate) => total + candidate.size, 0) > maxTotalBytes) return { refusals: [...refusals, refusal('S-05', 'SEALS_TOO_MANY')], files: [] };
   const files: ReadFile[] = [];
   for (const candidate of fitting) {
     try {
