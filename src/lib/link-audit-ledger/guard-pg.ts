@@ -19,6 +19,13 @@ import type { ExternalGuardPort } from './guard';
  * papel (`statement_timeout`/`lock_timeout` de 3 s na migração 004) e o adaptador encerra a conexão no prazo de 3 s da chamada.
  */
 export const GUARD_DB_APPLICATION_NAME = 'gmn-link-audit-guard';
+/**
+ * LEITOR da reconciliação externa (G1.b.2b, GE-E5): o MESMO TLS verificado, com nome de aplicação próprio e prazos de leitura próprios (roda FORA da
+ * VPS, numa rede qualquer, e lê a guarda inteira de uma vez): 10 s para conectar e por consulta. O prazo TOTAL é da reconciliação; o servidor tem o seu
+ * pelo papel (`statement_timeout` de 30 s do `gmn_guard_reader` na migração 004). Sessão somente leitura: o papel e a transação da reconciliação.
+ */
+export const GUARD_READER_APPLICATION_NAME = 'gmn-link-audit-guard-reconcile';
+export const GUARD_READER_TIMEOUT_MS = 10_000;
 
 /** Destino validado da guarda (montado por `config.ts`). A senha é propriedade NÃO enumerável (não aparece num JSON nem num `inspect`). */
 export interface GuardDbTarget {
@@ -62,11 +69,30 @@ export function pgClientConfig(target: GuardDbTarget): ClientConfig {
   };
 }
 
+/** Configuração do `Client` do LEITOR: a do escritor (TLS idêntico) com os prazos e o nome de aplicação da reconciliação. */
+export function pgReaderClientConfig(target: GuardDbTarget): ClientConfig {
+  return { ...pgClientConfig(target), connectionTimeoutMillis: GUARD_READER_TIMEOUT_MS, query_timeout: GUARD_READER_TIMEOUT_MS, application_name: GUARD_READER_APPLICATION_NAME };
+}
+
+type ClientFactory = (config: ClientConfig) => Client;
+const NEW_CLIENT: ClientFactory = (config) => new Client(config);
+
 /** Abre uma conexão por chamada. `factory` é injetável só em teste. */
-export function pgGuardConnector(target: GuardDbTarget, factory: (config: ClientConfig) => Client = (config) => new Client(config)): GuardDbConnect {
+export function pgGuardConnector(target: GuardDbTarget, factory: ClientFactory = NEW_CLIENT): GuardDbConnect {
   assertTarget(target);
+  return connectorWith(() => pgClientConfig(target), factory);
+}
+
+/** Conector do LEITOR da reconciliação (uma conexão por chamada, sem pool). `factory` é injetável só em teste. */
+export function pgGuardReaderConnector(target: GuardDbTarget, factory: ClientFactory = NEW_CLIENT): GuardDbConnect {
+  assertTarget(target);
+  return connectorWith(() => pgReaderClientConfig(target), factory);
+}
+
+/** Uma configuração NOVA por conexão (o `Client` nunca compartilha o objeto com a chamada seguinte). */
+function connectorWith(configOf: () => ClientConfig, factory: ClientFactory): GuardDbConnect {
   return async () => {
-    const client = factory(pgClientConfig(target));
+    const client = factory(configOf());
     // Erro de soquete depois da conexão: a consulta em curso já rejeita (e o adaptador responde indisponível); sem ouvinte, o `pg` emitiria
     // `error` sem tratamento e derrubaria o processo.
     client.on('error', () => undefined);

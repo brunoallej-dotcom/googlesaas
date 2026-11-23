@@ -159,6 +159,25 @@ function validCa(pem: string): boolean {
   }
 }
 
+/** Chaves do pseudônimo: a atual e as aposentadas (lista estrita), cada uma `<id>:<64 hex>`. Malformada ⇒ `null`. */
+function guardKeysOf(key: string, retiredRaw: string | undefined): { readonly current: KeyMaterial; readonly retired: readonly KeyMaterial[] } | null {
+  const current = keyMaterialOf(key, false);
+  const retiredList = strictList(retiredRaw);
+  if (!current || retiredList === null) return null;
+  const retired = retiredList.map((spec) => keyMaterialOf(spec, false));
+  if (retired.some((item) => item === null)) return null;
+  return { current, retired: retired as KeyMaterial[] };
+}
+
+/** Pseudônimos das chaves já validadas; id repetido ou o mesmo material sob dois ids ⇒ `null`. */
+function settingsOf(target: GuardDbTarget, keys: { readonly current: KeyMaterial; readonly retired: readonly KeyMaterial[] }): GuardSettings | null {
+  try {
+    return Object.freeze({ target, pseudonyms: createGuardPseudonyms(keys.current, keys.retired) });
+  } catch {
+    return null;
+  }
+}
+
 /** Lê a guarda do ambiente informado (puro). Nenhum código de erro nem resposta cita senha, URL ou material. */
 export function guardConfigFromEnv(env: Env): GuardConfig {
   const url = env[GUARD_DB_URL_ENV];
@@ -171,18 +190,49 @@ export function guardConfigFromEnv(env: Env): GuardConfig {
   const target = targetOf(url.trim(), ca);
   if (typeof target === 'string') return { status: 'INVALID', code: target };
   if (!validCa(ca)) return { status: 'INVALID', code: 'GUARD_DB_CA_INVALID' };
-  const current = keyMaterialOf(key, false);
-  const retiredList = strictList(retiredRaw);
-  if (!current || retiredList === null) return { status: 'INVALID', code: 'GUARD_KEY_WEAK' };
-  const retired = retiredList.map((spec) => keyMaterialOf(spec, false));
-  if (retired.some((item) => item === null)) return { status: 'INVALID', code: 'GUARD_KEY_WEAK' };
-  const mine: KeyMaterial[] = [current, ...(retired as KeyMaterial[])];
+  const keys = guardKeysOf(key, retiredRaw);
+  if (!keys) return { status: 'INVALID', code: 'GUARD_KEY_WEAK' };
+  const mine: KeyMaterial[] = [keys.current, ...keys.retired];
   // EXCLUSIVA (padrão das impressões digitais da G1.a): nenhuma chave da guarda repete id ou material de origem, livro (atuais e aposentadas) ou log
   const others = [...originMaterials(env), ...ledgerMaterials(env), ...specs(env[LOG_KEY_ENV_NAME], false)].map((other) => ({ id: other.id, digest: fingerprintOf(other.hex) }));
   if (mine.some((own) => others.some((other) => other.id === own.id || other.digest === fingerprintOf(own.hex)))) return { status: 'INVALID', code: 'GUARD_KEY_REUSED' };
-  try {
-    return { status: 'READY', settings: Object.freeze({ target, pseudonyms: createGuardPseudonyms(current, retired as KeyMaterial[]) }) };
-  } catch {
-    return { status: 'INVALID', code: 'GUARD_CONFIG_INVALID' }; // id repetido ou o mesmo material sob dois ids na própria guarda
-  }
+  const settings = settingsOf(target, keys);
+  return settings ? { status: 'READY', settings } : { status: 'INVALID', code: 'GUARD_CONFIG_INVALID' }; // id repetido ou o mesmo material sob dois ids na própria guarda
+}
+
+/* ------------------------------------------------------------------ leitor da reconciliação externa (G1.b.2b, GE-E5) */
+
+/*
+ * A RECONCILIAÇÃO EXTERNA roda FORA da VPS, com a credencial do papel de leitura `gmn_guard_reader` (spec §5.1.6; D-G0-2), que NUNCA fica na VPS.
+ * Variáveis PRÓPRIAS para a URL e a CA (nunca as do escritor); a chave do pseudônimo usa os MESMOS nomes do web (é a mesma chave, sob custódia do
+ * responsável), e a lista de aposentadas da reconciliação guarda TODA chave já usada (as cabeças antigas continuam na guarda, que é append-only).
+ * A credencial de ESCRITA no mesmo ambiente (valor ou arquivo) é recusada, e a URL precisa ser do papel de leitura (direto: `gmn_guard_reader`;
+ * pooler do Supabase: `gmn_guard_reader.<ref do projeto>`). Mesma política de URL (`verify-full`, sem outro parâmetro) e de CA do web. Puro.
+ */
+export const GUARD_READER_DB_URL_ENV = 'GMN_LINK_AUDIT_GUARD_READER_DB_URL';
+export const GUARD_READER_DB_CA_ENV = 'GMN_LINK_AUDIT_GUARD_READER_DB_CA';
+/** Papel de leitura criado pela migração 004 (só USAGE e SELECT, sessão somente leitura). */
+export const GUARD_READER_ROLE = 'gmn_guard_reader';
+export type GuardReaderConfigCode = GuardConfigCode | 'GUARD_READER_ROLE_REQUIRED' | 'GUARD_WRITER_CREDENTIAL_PRESENT';
+export type GuardReaderConfig = { readonly status: 'NOT_CONFIGURED' } | { readonly status: 'READY'; readonly settings: GuardSettings } | { readonly status: 'INVALID'; readonly code: GuardReaderConfigCode };
+
+const isReaderUser = (user: string): boolean => user === GUARD_READER_ROLE || (user.startsWith(`${GUARD_READER_ROLE}.`) && user.length > GUARD_READER_ROLE.length + 1);
+
+/** Lê a configuração do LEITOR do ambiente informado (puro). Nenhum código de erro cita senha, URL ou material. */
+export function guardReaderConfigFromEnv(env: Env): GuardReaderConfig {
+  if (present(env[GUARD_DB_URL_ENV]) || present(env[`${GUARD_DB_URL_ENV}_FILE`])) return { status: 'INVALID', code: 'GUARD_WRITER_CREDENTIAL_PRESENT' };
+  const url = env[GUARD_READER_DB_URL_ENV];
+  const ca = env[GUARD_READER_DB_CA_ENV];
+  const key = env[GUARD_KEY_ENV];
+  const retiredRaw = env[GUARD_RETIRED_KEYS_ENV];
+  if ([url, ca, key, retiredRaw].filter(present).length === 0) return { status: 'NOT_CONFIGURED' };
+  if (!present(url) || !present(ca) || !present(key)) return { status: 'INVALID', code: 'GUARD_CONFIG_PARTIAL' };
+  const target = targetOf(url.trim(), ca);
+  if (typeof target === 'string') return { status: 'INVALID', code: target };
+  if (!isReaderUser(target.user)) return { status: 'INVALID', code: 'GUARD_READER_ROLE_REQUIRED' };
+  if (!validCa(ca)) return { status: 'INVALID', code: 'GUARD_DB_CA_INVALID' };
+  const keys = guardKeysOf(key, retiredRaw);
+  if (!keys) return { status: 'INVALID', code: 'GUARD_KEY_WEAK' };
+  const settings = settingsOf(target, keys);
+  return settings ? { status: 'READY', settings } : { status: 'INVALID', code: 'GUARD_CONFIG_INVALID' };
 }

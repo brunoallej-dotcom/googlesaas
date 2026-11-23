@@ -19,7 +19,7 @@ cp <repo>/supabase/proposed/local-test/run.mjs . && node run.mjs <caminho-do-rep
 `--network none` (sem rede, nenhuma porta publicada) e `--rm`. A imagem tem os papéis `anon`, `authenticated`,
 `service_role`, `authenticator` e `supabase_admin` e o `postgres` **sem superusuário**, como no projeto real
 (PostgreSQL 17.11). A migração roda como `postgres`; as conferências, como `supabase_admin` com `SET ROLE`, ou com login
-real pelo loopback **do contêiner** quando o que se confere é ajuste de papel. 33 verificações: pré-validação e
+real pelo loopback **do contêiner** quando o que se confere é ajuste de papel. 33 verificações na G1.b.2a (39 com a etapa da reconciliação da G1.b.2b, abaixo): pré-validação e
 conferência final que abortam e desfazem tudo (inclusive privilégio vazado por `pg_read_all_data`), o catálogo do PG-G08,
 a regra 7 na função, a trava consultiva com duas sessões, 42501 para `anon`/`authenticated`/`service_role`/`authenticator`,
 os gatilhos mesmo para quem tem o privilégio, o prazo de 3 s no servidor, NOLOGIN do dono, idempotência, associações
@@ -34,13 +34,26 @@ definição exata do que a reaplicação não recria (colunas, cada restrição,
 PostgreSQL: nome certo com semântica errada aborta), ACL de todos os objetos e associação administrativa só do criador. Pré-requisitos **obrigatórios** (faltando, o script falha;
 nenhuma etapa é pulada): a imagem já presente, o Node e o `pg` (`npm ci`).
 
+**G1.b.2b:** a etapa seguinte, `guard-reconcile-run.ts`, reaplica a migração e roda a **reconciliação externa de verdade** (o
+CLI `runGuardReconcileCli`, com o SQL fixo do leitor) contra ela: o adaptador real publica como `gmn_guard_writer`, uma rodada de
+backup sintética é gerada numa pasta temporária, e o CLI lê como `gmn_guard_reader` (a imagem só confia no `supabase_admin`
+pelo soquete, então cada conexão faz `SET SESSION AUTHORIZATION` aplicando os ajustes do papel gravados pela migração, como um
+login; o login real do leitor, somente leitura por padrão, é conferido na etapa 8). Confere: conciliação limpa (código 0) e
+registro 1; o portão G-1 operante; a sessão do escritor recusada sem ler cabeças (código 3); e o **limite declarado** — o
+superusuário apaga uma cabeça com `session_replication_role = replica` e a reconciliação seguinte acusa `GUARD_REGRESSED`
+(código 2). Foi esta etapa que pegou o `pg_catalog.unnest(a, b)` qualificado (a forma de vários argumentos só existe sem o
+esquema); a consulta usa `rows from (...)`. Etapa obrigatória como as outras (sem `openssl`, o script falha). Total do script: 39 verificações.
+
 ```bash
 bash supabase/proposed/local-test/guard-run.sh            # imagem padrão, por digest: public.ecr.aws/supabase/postgres:17.11.0.018
 bash supabase/proposed/local-test/guard-run.sh <imagem>   # outra imagem já presente localmente
 ```
 
 **No CI:** `.github/workflows/guard-migration.yml` puxa a imagem pelo mesmo digest e roda este script, só quando mudam a 004, esta
-pasta ou `src/lib/link-audit-ledger/guard-*`. A saída verde desse job no SHA exato da 004 é **evidência obrigatória** antes de
+pasta ou algum arquivo do **fecho transitivo real** dos imports do que o script executa e do CLI da reconciliação (as pastas do livro,
+da reconciliação, das decisões, das evidências, da origem, do armazenamento e do núcleo da Fase 6, quatro arquivos soltos de
+`src/lib`, as fixtures de teste usadas, `tests/register-typescript.cjs` e o `package-lock.json`; revisão do PR #64). Um import novo
+sem gatilho no workflow faz `tests/link-audit-guard-reconcile-reader.test.ts` falhar. A saída verde desse job no SHA exato da 004 é **evidência obrigatória** antes de
 aplicá-la (spec dos portões, GE-E4 e PG-G08).
 
 Não substitui o PG-G08 no laboratório: a prova pela Data API (REST) e o *Exposed schemas* só existem num projeto
