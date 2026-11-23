@@ -14,7 +14,8 @@
 #   A imagem padrão é a do teste local, FIXADA POR DIGEST (a mesma do projeto: PostgreSQL 17.11). No CI, o workflow
 #   `.github/workflows/guard-migration.yml` a puxa por esse digest antes e chama este script (que continua sem baixar nada).
 # Saída: uma linha "OK …" por verificação e "TODOS OS N TESTES LOCAIS DA GUARDA APROVADOS"; qualquer falha ⇒ código ≠ 0.
-# PRÉ-REQUISITOS OBRIGATÓRIOS (faltando, FALHA — nunca pula etapa): a imagem já presente, o Node e o `pg` instalados (`npm ci`).
+# PRÉ-REQUISITOS OBRIGATÓRIOS (faltando, FALHA — nunca pula etapa): a imagem já presente, o Node e o `pg` instalados (`npm ci`)
+# e o `openssl` (a etapa da reconciliação, G1.b.2b, gera a CA de teste na hora).
 # Não faz parte do `npm test` (precisa de Docker). Não lê nenhum arquivo de ambiente e não usa senha real.
 set -euo pipefail
 
@@ -46,6 +47,7 @@ fail() { echo "FALHOU: $1" >&2; exit 1; }
 docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "imagem $IMAGE ausente (o teste não baixa nada: puxe-a antes, pelo digest)"
 command -v node >/dev/null 2>&1 || fail "node ausente (a etapa do adaptador real é obrigatória)"
 [ -f "$ROOT/node_modules/pg/package.json" ] || fail "node_modules/pg ausente (rode npm ci; a etapa do adaptador real é obrigatória)"
+command -v openssl >/dev/null 2>&1 || fail "openssl ausente (a etapa da reconciliação, obrigatória, gera a CA de teste na hora)"
 docker run -d --rm --pull never --network none --name "$NAME" -v "$SOCK:/var/run/postgresql" -e POSTGRES_PASSWORD=sentinela-local "$IMAGE" >/dev/null
 for _ in $(seq 1 90); do
   if docker exec "$NAME" psql -h /var/run/postgresql -U supabase_admin -d postgres -Atc 'select 1' >/dev/null 2>&1; then break; fi
@@ -354,6 +356,16 @@ COUNT=$((COUNT + $(echo "$ADAPTER_OUT" | grep -c '^OK')))
 docker exec -i "$NAME" psql -h /var/run/postgresql -U postgres -d postgres -v ON_ERROR_STOP=1 -q -c "set gmn.guard_rollback_confirm = 'APAGAR-CABECAS-DA-GUARDA'" -f - < "$ROLLBACK"
 eq "catálogo final" "$BEFORE" "$(catalog_snapshot)"
 ok "depois da etapa do adaptador, o rollback confirmado volta ao catálogo original"
+
+# ---------------------------------------------------------------- 12. a RECONCILIAÇÃO externa de verdade (CLI + leitor) contra a migração aplicada (G1.b.2b; obrigatória)
+as_postgres_file "$MIGRATION"
+RECON_OUT="$(cd "$ROOT" && node --require ./tests/register-typescript.cjs supabase/proposed/local-test/guard-reconcile-run.ts "$SOCK" 2>&1)" || fail "reconciliação real: $RECON_OUT"
+echo "$RECON_OUT" | grep '^OK' || true
+[ "$(echo "$RECON_OUT" | grep -c '^OK')" -ge 5 ] || fail "reconciliação real: verificações a menos: $RECON_OUT"
+COUNT=$((COUNT + $(echo "$RECON_OUT" | grep -c '^OK')))
+docker exec -i "$NAME" psql -h /var/run/postgresql -U postgres -d postgres -v ON_ERROR_STOP=1 -q -c "set gmn.guard_rollback_confirm = 'APAGAR-CABECAS-DA-GUARDA'" -f - < "$ROLLBACK"
+eq "catálogo final depois da reconciliação" "$BEFORE" "$(catalog_snapshot)"
+ok "depois da etapa da reconciliação, o rollback confirmado volta ao catálogo original"
 
 echo
 echo "TODOS OS $COUNT TESTES LOCAIS DA GUARDA APROVADOS"

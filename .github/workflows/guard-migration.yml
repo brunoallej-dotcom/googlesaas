@@ -2,8 +2,15 @@ name: guard-migration
 
 # Migração proposta da guarda externa do livro (supabase/proposed/004_link_audit_guard.sql) e o rollback dela, executados de
 # verdade num PostgreSQL do Supabase descartável (supabase/proposed/local-test/guard-run.sh): regra 7, privilégios, inventário
-# fechado do esquema, gatilhos, rollback e o adaptador real (pg). Workflow PRÓPRIO, fora do ci.yml (não mexe nos checks
-# obrigatórios), disparado só quando muda o que ele cobre. Sem secrets; o contêiner do banco roda com --network none.
+# fechado do esquema, gatilhos, rollback, o adaptador real (pg) e a reconciliação externa de verdade (CLI + leitor, G1.b.2b).
+# Workflow PRÓPRIO, fora do ci.yml (não mexe nos checks obrigatórios), disparado só quando muda o que ele cobre: a 004, o teste local
+# e o FECHO TRANSITIVO REAL dos imports do que ele executa (guard-adapter-run.ts, guard-reconcile-run.ts) e do CLI da reconciliação
+# (scripts/link-audit-guard-reconcile.ts), mais o carregador TS (tests/register-typescript.cjs) e o package-lock.json (a versão do pg e
+# do typescript exercitada). Fora das pastas da guarda e da reconciliação, o fecho passa pelo serviço do livro (decisões,
+# armazenamento, origem, núcleo da Fase 6) e pelas fixtures de teste do livro (evidências, coletor): por isso essas pastas inteiras e
+# quatro arquivos soltos de src/lib. A cobertura é TRAVADA em teste (tests/link-audit-guard-reconcile-reader.test.ts, que também é gatilho):
+# import novo sem gatilho aqui, ou import(...)/require(...) não literal no fecho, faz o teste falhar.
+# Sem secrets; o contêiner do banco roda com --network none.
 # A saída deste job no SHA exato da 004 é EVIDÊNCIA OBRIGATÓRIA antes de o responsável aplicá-la (spec dos portões, GE-E4 e PG-G08).
 on:
   pull_request:
@@ -11,14 +18,56 @@ on:
     paths:
       - 'supabase/proposed/004*'
       - 'supabase/proposed/local-test/**'
-      - 'src/lib/link-audit-ledger/guard-*'
+      - 'src/lib/link-audit-ledger/**'
+      - 'src/lib/link-audit-guard-reconcile/**'
+      - 'scripts/link-audit-guard-reconcile.ts'
+      - 'src/lib/link-audit/**'
+      - 'src/lib/link-audit-decisions/**'
+      - 'src/lib/link-audit-evidence/**'
+      - 'src/lib/link-audit-origin/**'
+      - 'src/lib/link-audit-storage/**'
+      - 'src/lib/redact.ts'
+      - 'src/lib/serper-reviews.ts'
+      - 'src/lib/site-check.ts'
+      - 'src/lib/url-safety.ts'
+      - 'tests/register-typescript.cjs'
+      - 'tests/link-audit-guard-reconcile-reader.test.ts'
+      - 'tests/helpers/link-audit-collect-fixtures.ts'
+      - 'tests/helpers/link-audit-decisions-fixtures.ts'
+      - 'tests/helpers/link-audit-evidence-fixtures.ts'
+      - 'tests/helpers/link-audit-guard-db-fixtures.ts'
+      - 'tests/helpers/link-audit-guard-reconcile-fixtures.ts'
+      - 'tests/helpers/link-audit-ledger-fixtures.ts'
+      - 'tests/helpers/link-audit-origin-fixtures.ts'
+      - 'package-lock.json'
       - '.github/workflows/guard-migration.yml'
   push:
     branches: [main]
     paths:
       - 'supabase/proposed/004*'
       - 'supabase/proposed/local-test/**'
-      - 'src/lib/link-audit-ledger/guard-*'
+      - 'src/lib/link-audit-ledger/**'
+      - 'src/lib/link-audit-guard-reconcile/**'
+      - 'scripts/link-audit-guard-reconcile.ts'
+      - 'src/lib/link-audit/**'
+      - 'src/lib/link-audit-decisions/**'
+      - 'src/lib/link-audit-evidence/**'
+      - 'src/lib/link-audit-origin/**'
+      - 'src/lib/link-audit-storage/**'
+      - 'src/lib/redact.ts'
+      - 'src/lib/serper-reviews.ts'
+      - 'src/lib/site-check.ts'
+      - 'src/lib/url-safety.ts'
+      - 'tests/register-typescript.cjs'
+      - 'tests/link-audit-guard-reconcile-reader.test.ts'
+      - 'tests/helpers/link-audit-collect-fixtures.ts'
+      - 'tests/helpers/link-audit-decisions-fixtures.ts'
+      - 'tests/helpers/link-audit-evidence-fixtures.ts'
+      - 'tests/helpers/link-audit-guard-db-fixtures.ts'
+      - 'tests/helpers/link-audit-guard-reconcile-fixtures.ts'
+      - 'tests/helpers/link-audit-ledger-fixtures.ts'
+      - 'tests/helpers/link-audit-origin-fixtures.ts'
+      - 'package-lock.json'
       - '.github/workflows/guard-migration.yml'
 
 permissions:
@@ -48,7 +97,7 @@ jobs:
         run: npm ci
       - name: Pull the Postgres image by digest
         run: docker pull "$GUARD_PG_IMAGE"
-      - name: Migration 004, rollback and real adapter (container without network)
+      - name: Migration 004, rollback, real adapter and real reconciliation (container without network)
         run: |
           set -o pipefail
           bash supabase/proposed/local-test/guard-run.sh "$GUARD_PG_IMAGE" 2>&1 | tee "$RUNNER_TEMP/guard-run.log"
@@ -63,7 +112,10 @@ jobs:
             echo "- sha256 dos arquivos testados:"
             echo '```'
             sha256sum supabase/proposed/004_link_audit_guard.sql supabase/proposed/004_link_audit_guard.rollback.sql \
-              supabase/proposed/local-test/guard-run.sh supabase/proposed/local-test/guard-adapter-run.ts
+              supabase/proposed/local-test/guard-run.sh supabase/proposed/local-test/guard-adapter-run.ts \
+              supabase/proposed/local-test/guard-reconcile-run.ts scripts/link-audit-guard-reconcile.ts \
+              src/lib/link-audit-guard-reconcile/*.ts src/lib/link-audit-ledger/guard*.ts src/lib/link-audit-ledger/config.ts \
+              tests/link-audit-guard-reconcile-reader.test.ts package-lock.json
             echo '```'
             echo "- resultado: $(grep -E '^(TODOS OS|FALHOU)' "$RUNNER_TEMP/guard-run.log" 2>/dev/null | tail -1 || echo 'sem saída')"
           } >> "$GITHUB_STEP_SUMMARY"
