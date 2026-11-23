@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { buildRecord, readRecords, recordFileName, RECORD_KIND, RECORD_VERSION, serializeRecord, writeRecord, type ReconcileRecord } from '../src/lib/link-audit-guard-reconcile/records';
@@ -16,8 +17,13 @@ import { ROUND } from './helpers/link-audit-guard-reconcile-fixtures';
  */
 registerCleanup();
 const ROOT = path.resolve(__dirname, '..');
-/** A pasta dos registros fica FORA do repositório (público) e é do usuário, sem escrita para grupo ou outros. */
-const OPTS = { projectRoot: ROOT } as const;
+/**
+ * A pasta dos registros fica FORA do repositório (público), é do usuário, sem escrita para grupo ou outros, e cada ancestral é do usuário ou
+ * do root, sem escrita de grupo/outros salvo o sticky bit (`/tmp`). Sob `scripts/run-isolated.sh` (namespace de usuário), o root real aparece
+ * com o uid de transbordo: os testes aceitam também o dono de `/` e da pasta temporária do sistema como "root" (só nos testes).
+ */
+const TRUSTED = [...new Set([0, fs.statSync('/').uid, fs.statSync(os.tmpdir()).uid])];
+const OPTS = { projectRoot: ROOT, trustedAncestorOwners: TRUSTED } as const;
 const sha256 = (bytes: Buffer | string): string => createHash('sha256').update(bytes).digest('hex');
 const H = (c: string): string => c.repeat(64);
 const ROW: GuardRow = { auditRef: H('a'), keyId: 'gk-test-a', ledgerSeq: 3, sha256: H('3') };
@@ -106,6 +112,11 @@ test('G1.b.2b registro: pasta com lacuna, encadeamento quebrado, registro editad
   const looseTemp = await chain();
   fs.writeFileSync(path.join(looseTemp, '.tmp-reconcile-000003-abc.json'), 'nome que o gravador não gera');
   assert.equal(await codeOf(looseTemp), 'RECORDS_INVALID', 'temporário fora do padrão estrito');
+  for (const make of [(file: string) => fs.symlinkSync('/dev/null', file), (file: string) => fs.mkdirSync(file)]) {
+    const fake = await chain();
+    make(path.join(fake, `.tmp-reconcile-000003-${'0b'.repeat(8)}.json`));
+    assert.equal(await codeOf(fake), 'RECORDS_INVALID', 'nome de temporário que não é arquivo regular (link simbólico ou diretório)');
+  }
   const orphan = await chain();
   fs.writeFileSync(path.join(orphan, `.tmp-reconcile-000003-${'0a'.repeat(8)}.json`), 'sobra de uma tentativa interrompida');
   const read = await readRecords(orphan, OPTS);
@@ -134,7 +145,10 @@ test('G1.b.2b registro (revisão do PR #64): pasta DENTRO do repositório (inclu
   assert.ok((await readRecords(readable, OPTS)).ok, 'leitura para outros não é escrita: aceita');
   const mine = tmpDir('lagr-rec-');
   assert.deepEqual(await readRecords(mine, { ...OPTS, uid: (process.getuid?.() ?? 0) + 1 }), { ok: false, code: 'RECORDS_DIR_UNSAFE' }, 'dono diferente do usuário');
-  assert.ok((await readRecords(mine, { ...OPTS, uid: null })).ok, 'sem conferência de dono (plataforma sem uid)');
+  // revisão final do PR #64: sem como conferir dono e modo (plataforma sem getuid) ⇒ insegura, nunca "pula a conferência"
+  assert.deepEqual(await readRecords(mine, { ...OPTS, uid: null }), { ok: false, code: 'RECORDS_DIR_UNSAFE' }, 'não dá para verificar');
+  assert.deepEqual(await writeRecord(mine, { ...OPTS, uid: null }, recordFor(null)), { ok: false, code: 'RECORDS_DIR_UNSAFE' });
+  assert.deepEqual(fs.readdirSync(mine), []);
 });
 
 test('G1.b.2b registro: pasta ausente, que não é diretório ou que é link simbólico ⇒ RECORDS_DIR_INVALID', async () => {
@@ -152,4 +166,74 @@ test('G1.b.2b registro: forma estável (ordem fixa das chaves; linhas em ordem d
   assert.deepEqual(Object.keys(record), ['kind', 'version', 'sequence', 'createdAt', 'previousRecordSha256', 'backup', 'keyIds', 'outcome', 'findings', 'heads']);
   assert.deepEqual(record.heads.map((row) => [row.auditRef[0], row.ledgerSeq]), [['a', 1], ['a', 3], ['b', 3]]);
   assert.equal(record.createdAt, '2026-11-22T04:00:00.000Z');
+});
+
+test('G1.b.2b registro (revisão final do PR #64): cadeia de ancestrais no estilo StrictModes — ancestral com escrita para outros e SEM sticky ⇒ RECORDS_DIR_UNSAFE; com sticky ⇒ aceito; ancestral de dono não confiável ⇒ RECORDS_DIR_UNSAFE', async () => {
+  const base = tmpDir('lagr-anc-');
+  const dir = path.join(base, 'registros');
+  fs.mkdirSync(dir, { mode: 0o700 });
+  fs.chmodSync(base, 0o777);
+  assert.deepEqual(await readRecords(dir, OPTS), { ok: false, code: 'RECORDS_DIR_UNSAFE' }, 'pai gravável por todos, sem sticky: dá para trocar a pasta');
+  assert.deepEqual(await writeRecord(dir, OPTS, recordFor(null)), { ok: false, code: 'RECORDS_DIR_UNSAFE' });
+  fs.chmodSync(base, 0o1777);
+  assert.ok((await readRecords(dir, OPTS)).ok, 'com sticky (como /tmp), ninguém troca a pasta de outro dono');
+  assert.ok((await writeRecord(dir, OPTS, recordFor(null))).ok);
+  fs.chmodSync(base, 0o775);
+  assert.deepEqual(await readRecords(dir, OPTS), { ok: false, code: 'RECORDS_DIR_UNSAFE' }, 'escrita de grupo no pai');
+  fs.chmodSync(base, 0o700);
+  assert.deepEqual(await readRecords(dir, { ...OPTS, trustedAncestorOwners: [] }), { ok: false, code: 'RECORDS_DIR_UNSAFE' }, 'a raiz e a pasta temporária do sistema não são do usuário nem de um dono aceito');
+});
+
+test('G1.b.2b registro (revisão final do PR #64, TOCTOU): a pasta trocada entre a conferência e a publicação nunca sai com sucesso — reconferência antes da publicação e, depois, caminho real, dono/modo e dev/ino do registro publicado contra o descritor do temporário', async () => {
+  const fresh = (): { dir: string; base: string } => {
+    const base = tmpDir('lagr-toctou-');
+    const dir = path.join(base, 'registros');
+    fs.mkdirSync(dir, { mode: 0o700 });
+    return { dir, base };
+  };
+  // 1) troca antes da reconferência (modo aberto) ⇒ recusa antes de publicar
+  const early = fresh();
+  const recheck = await writeRecord(early.dir, { ...OPTS, onStage: (stage) => { if (stage === 'BEFORE_RECHECK') fs.chmodSync(early.dir, 0o777); } }, recordFor(null));
+  assert.deepEqual(recheck, { ok: false, code: 'RECORDS_DIR_UNSAFE' });
+  assert.ok(!fs.readdirSync(early.dir).some((name) => name.startsWith('reconcile-')), 'nada publicado');
+  // 2) a pasta vira link simbólico (para a original, agora em outro caminho) logo antes do link() ⇒ o registro cai fora do destino: recusa
+  const swapped = fresh();
+  const moved = path.join(swapped.base, 'outro-lugar');
+  const viaLink = await writeRecord(swapped.dir, {
+    ...OPTS,
+    onStage: (stage) => {
+      if (stage !== 'BEFORE_LINK') return;
+      fs.renameSync(swapped.dir, moved);
+      fs.symlinkSync(moved, swapped.dir);
+    },
+  }, recordFor(null));
+  assert.deepEqual(viaLink, { ok: false, code: 'RECORDS_DIR_UNSAFE' });
+  assert.ok(fs.lstatSync(swapped.dir).isSymbolicLink());
+  assert.deepEqual(fs.readdirSync(moved).filter((name) => name.startsWith('.tmp-')), [], 'o próprio temporário (conferido por dev/ino) foi removido');
+  // 3) mesma pasta pelo nome, mas recriada com um arquivo ALHEIO no nome do temporário ⇒ o registro publicado não é o nosso inode: recusa, e o alheio não é apagado
+  const foreign = fresh();
+  const aside = path.join(foreign.base, 'original');
+  let planted = '';
+  const viaInode = await writeRecord(foreign.dir, {
+    ...OPTS,
+    onStage: (stage) => {
+      if (stage !== 'BEFORE_LINK') return;
+      const temp = fs.readdirSync(foreign.dir).find((name) => name.startsWith('.tmp-reconcile-')) as string;
+      fs.renameSync(foreign.dir, aside);
+      fs.mkdirSync(foreign.dir, { mode: 0o700 });
+      planted = path.join(foreign.dir, temp);
+      fs.writeFileSync(planted, 'conteúdo alheio');
+    },
+  }, recordFor(null));
+  assert.deepEqual(viaInode, { ok: false, code: 'RECORDS_DIR_UNSAFE' });
+  assert.equal(fs.readFileSync(planted, 'utf8'), 'conteúdo alheio', 'nunca apaga o que não é o próprio temporário');
+  // 4) modo aberto depois do link() ⇒ a conferência posterior recusa
+  const late = fresh();
+  const afterLink = await writeRecord(late.dir, { ...OPTS, onStage: (stage) => { if (stage === 'BEFORE_LINK') fs.chmodSync(late.dir, 0o757); } }, recordFor(null));
+  assert.deepEqual(afterLink, { ok: false, code: 'RECORDS_DIR_UNSAFE' });
+  // e sem troca, o mesmo caminho publica normalmente
+  const calm = fresh();
+  const stages: string[] = [];
+  assert.ok((await writeRecord(calm.dir, { ...OPTS, onStage: (stage) => { stages.push(stage); } }, recordFor(null))).ok);
+  assert.deepEqual(stages, ['BEFORE_RECHECK', 'BEFORE_LINK']);
 });

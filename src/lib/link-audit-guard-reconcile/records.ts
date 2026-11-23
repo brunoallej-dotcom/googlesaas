@@ -16,7 +16,15 @@ import { FINDING_CODES, type Analysis, type GuardRow } from './model';
  * registro); qualquer outro nome (um LEIA-ME, um registro renomeado) ⇒ `RECORDS_INVALID` — senão, renomear todos os registros faria a pasta parecer
  * vazia e a cadeia recomeçar. A primeira reconciliação (`--first`) exige a pasta TOTALMENTE vazia (`entries` = 0, conferido pelo CLI). E a pasta
  * precisa ser SEGURA (`RECORDS_DIR_UNSAFE`): o caminho real fora do repositório (que é público), dona do usuário atual e sem escrita para grupo ou
- * outros (POSIX).
+ * outros, e CADA ancestral até `/` do usuário ou do root, sem escrita de grupo/outros salvo o sticky bit (o StrictModes do ssh; revisão final do
+ * PR #64). Sem `getuid` (não dá para verificar) ⇒ insegura.
+ *
+ * CORRIDA ENTRE CONFERÊNCIA E ESCRITA (TOCTOU): o Node não tem operações relativas a um descritor de diretório, então não se tenta imitar o
+ * `openat`. Em vez disso: (1) a cadeia de ancestrais impede que outro usuário troque a pasta (nenhum pai gravável por ele); (2) as operações usam
+ * o caminho REAL conferido; (3) a pasta é conferida de novo logo antes da publicação; (4) DEPOIS do `link()`, o caminho real, o dono/modo/ancestrais
+ * e o `dev`/`ino` do registro publicado são comparados com o `fstat` do descritor do temporário — qualquer diferença ⇒ `RECORDS_DIR_UNSAFE`, nunca
+ * sucesso. O temporário só é removido se ainda for o nosso (mesmo `dev`/`ino`). LIMITE DECLARADO: a corrida feita pelo próprio usuário dono da
+ * pasta (ou pelo root) fica fora do escopo.
  *
  * Conteúdo: só pseudônimos, posições, hashes, ids PÚBLICOS de chave, o rótulo da rodada e o hash do manifesto dela. NUNCA `auditId`, caminho, URL
  * ou material de chave. As linhas são a marca d'água da análise (`model.ts`): as cabeças de agora mais as linhas que regrediram.
@@ -29,6 +37,8 @@ const TEMP_PREFIX = '.tmp-reconcile-';
 /** O temporário que `writeRecord` gera (e que pode sobrar de uma execução interrompida): exatamente `.tmp-reconcile-NNNNNN-<16 hex>.json`. */
 export const TEMP_FILE = /^\.tmp-reconcile-\d{6}-[0-9a-f]{16}\.json$/;
 const GROUP_OR_OTHER_WRITE = 0o022;
+const STICKY = 0o1000;
+const ROOT_UID = 0;
 const MAX_SEQUENCE = 999_999;
 const MAX_RECORD_BYTES = 32 * 1024 * 1024;
 export const recordFileName = (sequence: number): string => `${RECORD_PREFIX}${String(sequence).padStart(6, '0')}.json`;
@@ -58,11 +68,17 @@ export interface StoredRecord {
   readonly fileName: string;
 }
 export type RecordsRefusal = 'RECORDS_DIR_INVALID' | 'RECORDS_DIR_UNSAFE' | 'RECORDS_INVALID' | 'RECORD_EXISTS' | 'RECORD_WRITE_FAILED';
+/** Pontos da gravação em que os testes simulam a troca da pasta (gancho só de teste; a produção não passa nada). */
+export type RecordWriteStage = 'BEFORE_RECHECK' | 'BEFORE_LINK';
 export interface RecordsDirOptions {
   /** Raiz do repositório: a pasta dos registros nunca fica dentro dela (o repositório é público). */
   readonly projectRoot: string;
-  /** Dono exigido da pasta (padrão: o usuário do processo; `null` = sem conferência de dono e de modo, plataforma sem uid). Só testes passam. */
+  /** Dono exigido da pasta (padrão: o usuário do processo; `null` = não dá para verificar ⇒ `RECORDS_DIR_UNSAFE`). Só testes passam. */
   readonly uid?: number | null;
+  /** Donos aceitos para os ANCESTRAIS além do próprio usuário (padrão: só o root, `[0]`). Só testes passam (namespace de usuário). */
+  readonly trustedAncestorOwners?: readonly number[];
+  /** Gancho de teste da gravação (simula a troca da pasta sem depender de tempo). */
+  readonly onStage?: (stage: RecordWriteStage) => void | Promise<void>;
 }
 
 const sha256 = (bytes: Buffer | string): string => createHash('sha256').update(bytes).digest('hex');
@@ -106,23 +122,51 @@ const inside = (child: string, parent: string): boolean => {
   return c === p || c.startsWith(p.endsWith(path.sep) ? p : p + path.sep);
 };
 
-/** A pasta existe, é diretório comum (não link), fica FORA do repositório pelo caminho real e, em POSIX, é do usuário sem escrita de grupo/outros. */
-async function dirRefusal(dir: string, options: RecordsDirOptions): Promise<RecordsRefusal | null> {
+const groupOrOtherWritable = (mode: number): boolean => (mode & GROUP_OR_OTHER_WRITE) !== 0;
+
+/** Cada ancestral do caminho real até `/`: diretório do usuário ou de um dono aceito, sem escrita de grupo/outros salvo o sticky bit. */
+async function ancestorsSafe(real: string, uid: number, trusted: readonly number[]): Promise<boolean> {
+  let current = path.dirname(real);
+  for (;;) {
+    let info: Awaited<ReturnType<typeof fs.lstat>>;
+    try {
+      info = await fs.lstat(current);
+    } catch {
+      return false;
+    }
+    const mode = Number(info.mode);
+    if (!info.isDirectory() || (Number(info.uid) !== uid && !trusted.includes(Number(info.uid))) || (groupOrOtherWritable(mode) && (mode & STICKY) === 0)) return false;
+    const parent = path.dirname(current);
+    if (parent === current) return true;
+    current = parent;
+  }
+}
+
+/** A pasta existe, é diretório comum (não link), fica FORA do repositório pelo caminho real, é do usuário sem escrita de grupo/outros e tem ancestrais seguros. */
+async function checkedDir(dir: string, options: RecordsDirOptions): Promise<{ readonly real: string } | { readonly code: RecordsRefusal }> {
   let info: Awaited<ReturnType<typeof fs.lstat>>;
   let real: string;
   let root: string;
   try {
     info = await fs.lstat(dir);
-    if (!info.isDirectory() || info.isSymbolicLink()) return 'RECORDS_DIR_INVALID';
+    if (!info.isDirectory() || info.isSymbolicLink()) return { code: 'RECORDS_DIR_INVALID' };
     real = await fs.realpath(dir);
     root = await fs.realpath(options.projectRoot);
   } catch {
-    return 'RECORDS_DIR_INVALID';
+    return { code: 'RECORDS_DIR_INVALID' };
   }
-  if (inside(real, root)) return 'RECORDS_DIR_UNSAFE';
+  if (inside(real, root)) return { code: 'RECORDS_DIR_UNSAFE' };
   const uid = options.uid === undefined ? (typeof process.getuid === 'function' ? process.getuid() : null) : options.uid;
-  if (uid !== null && (info.uid !== uid || (Number(info.mode) & GROUP_OR_OTHER_WRITE) !== 0)) return 'RECORDS_DIR_UNSAFE';
-  return null;
+  if (uid === null) return { code: 'RECORDS_DIR_UNSAFE' }; // não dá para verificar dono e modo: nunca "pula a conferência"
+  if (Number(info.uid) !== uid || groupOrOtherWritable(Number(info.mode))) return { code: 'RECORDS_DIR_UNSAFE' };
+  if (!(await ancestorsSafe(real, uid, options.trustedAncestorOwners ?? [ROOT_UID]))) return { code: 'RECORDS_DIR_UNSAFE' };
+  return { real };
+}
+
+/** A pasta deixou de ser a mesma pasta segura conferida antes (outro caminho real, dono, modo ou ancestral)? */
+async function dirChanged(dir: string, options: RecordsDirOptions, real: string): Promise<boolean> {
+  const again = await checkedDir(dir, options);
+  return !('real' in again) || again.real !== real;
 }
 
 async function readRegular(file: string): Promise<Buffer | null> {
@@ -162,8 +206,8 @@ function validRecord(bytes: Buffer, sequence: number, previousSha: string | null
 
 /** Lê e confere a cadeia inteira; devolve o último (ou nenhum) e quantas entradas a pasta tem (o `--first` exige 0). Somente leitura. */
 export async function readRecords(dir: string, options: RecordsDirOptions): Promise<{ readonly ok: true; readonly value: { readonly last: StoredRecord | null; readonly entries: number } } | { readonly ok: false; readonly code: RecordsRefusal }> {
-  const refused = await dirRefusal(dir, options);
-  if (refused) return { ok: false, code: refused };
+  const checked = await checkedDir(dir, options);
+  if ('code' in checked) return { ok: false, code: checked.code };
   let names: string[];
   try {
     names = await fs.readdir(dir);
@@ -174,7 +218,7 @@ export async function readRecords(dir: string, options: RecordsDirOptions): Prom
   for (const name of names) {
     const match = RECORD_FILE.exec(name);
     if (match) numbers.push(Number(match[1]));
-    else if (!TEMP_FILE.test(name)) return { ok: false, code: 'RECORDS_INVALID' }; // nada além dos registros e do temporário órfão estrito
+    else if (!TEMP_FILE.test(name) || !(await isRegularFile(path.join(dir, name)))) return { ok: false, code: 'RECORDS_INVALID' }; // nada além dos registros e do temporário órfão estrito (arquivo regular)
   }
   numbers.sort((x, y) => x - y);
   if (numbers.some((n, index) => n !== index + 1)) return { ok: false, code: 'RECORDS_INVALID' };
@@ -188,44 +232,87 @@ export async function readRecords(dir: string, options: RecordsDirOptions): Prom
   return { ok: true, value: { last: chain[chain.length - 1] ?? null, entries: names.length } };
 }
 
-/** Grava o registro num arquivo NOVO (temporário exclusivo + `link()`): nunca sobrescreve. */
+async function isRegularFile(file: string): Promise<boolean> {
+  try {
+    const info = await fs.lstat(file);
+    return info.isFile() && !info.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+type Identity = { readonly dev: number; readonly ino: number };
+const sameFile = (a: Identity, b: Identity): boolean => a.dev === b.dev && a.ino === b.ino;
+
+/** Remove o temporário SÓ se o nome ainda aponta para o nosso arquivo (mesmo `dev`/`ino`); nunca apaga o que não é nosso. */
+async function unlinkIfOurs(temp: string, ours: Identity | null): Promise<void> {
+  if (ours === null) return;
+  try {
+    const info = await fs.lstat(temp);
+    if (info.isFile() && sameFile({ dev: Number(info.dev), ino: Number(info.ino) }, ours)) await fs.unlink(temp);
+  } catch {
+    // já não existe (ou não é legível): nada a remover
+  }
+}
+
+type PublishOutcome = 'OK' | RecordsRefusal;
+
+/** Escreve o temporário pelo descritor, reconfere, publica com `link()` e confere DEPOIS que o publicado é o nosso arquivo na mesma pasta. */
+async function publish(dir: string, options: RecordsDirOptions, real: string, handle: fs.FileHandle, data: string, temp: string, final: string, own: (identity: Identity) => void): Promise<PublishOutcome> {
+  await handle.writeFile(data);
+  await handle.sync();
+  const stat = await handle.stat();
+  const ours = { dev: Number(stat.dev), ino: Number(stat.ino) };
+  own(ours);
+  await options.onStage?.('BEFORE_RECHECK');
+  if (await dirChanged(dir, options, real)) return 'RECORDS_DIR_UNSAFE';
+  await options.onStage?.('BEFORE_LINK');
+  try {
+    await fs.link(temp, final);
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EEXIST' ? 'RECORD_EXISTS' : 'RECORD_WRITE_FAILED';
+  }
+  if (await dirChanged(dir, options, real)) return 'RECORDS_DIR_UNSAFE';
+  try {
+    const published = await fs.lstat(final);
+    if (!published.isFile() || !sameFile({ dev: Number(published.dev), ino: Number(published.ino) }, ours)) return 'RECORDS_DIR_UNSAFE';
+    const dirHandle = await fs.open(real, fsConstants.O_RDONLY);
+    try {
+      await dirHandle.sync();
+    } finally {
+      await dirHandle.close();
+    }
+  } catch {
+    return 'RECORD_WRITE_FAILED'; // o arquivo existe, mas a durabilidade do nome não foi provada
+  }
+  return 'OK';
+}
+
+/** Grava o registro num arquivo NOVO (temporário exclusivo + `link()`): nunca sobrescreve; a pasta trocada no meio nunca sai com sucesso. */
 export async function writeRecord(dir: string, options: RecordsDirOptions, record: ReconcileRecord): Promise<{ readonly ok: true; readonly fileName: string; readonly sha256: string } | { readonly ok: false; readonly code: RecordsRefusal }> {
-  const refused = await dirRefusal(dir, options);
-  if (refused) return { ok: false, code: refused };
+  const checked = await checkedDir(dir, options);
+  if ('code' in checked) return { ok: false, code: checked.code };
   const data = serializeRecord(record);
   const fileName = recordFileName(record.sequence);
-  const temp = path.join(dir, `${TEMP_PREFIX}${String(record.sequence).padStart(6, '0')}-${randomBytes(8).toString('hex')}.json`);
-  let linked: 'LINKED' | 'EXISTS' | 'FAILED' = 'FAILED';
+  // as operações usam o caminho REAL conferido (nenhum link simbólico do caminho informado entra depois da conferência)
+  const temp = path.join(checked.real, `${TEMP_PREFIX}${String(record.sequence).padStart(6, '0')}-${randomBytes(8).toString('hex')}.json`);
+  let handle: fs.FileHandle;
   try {
-    const handle = await fs.open(temp, 'wx', 0o600);
-    try {
-      await handle.writeFile(data);
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    try {
-      await fs.link(temp, path.join(dir, fileName));
-      linked = 'LINKED';
-    } catch (error) {
-      linked = (error as NodeJS.ErrnoException).code === 'EEXIST' ? 'EXISTS' : 'FAILED';
-    }
+    handle = await fs.open(temp, 'wx', 0o600);
   } catch {
-    linked = 'FAILED';
+    return { ok: false, code: 'RECORD_WRITE_FAILED' };
+  }
+  let ours: Identity | null = null;
+  let outcome: PublishOutcome;
+  try {
+    outcome = await publish(dir, options, checked.real, handle, data, temp, path.join(checked.real, fileName), (identity) => {
+      ours = identity;
+    });
+  } catch {
+    outcome = 'RECORD_WRITE_FAILED';
   } finally {
-    await fs.unlink(temp).catch(() => undefined); // só o PRÓPRIO temporário (o nome final, se existir, é outro vínculo)
+    await handle.close().catch(() => undefined);
+    await unlinkIfOurs(temp, ours);
   }
-  if (linked === 'EXISTS') return { ok: false, code: 'RECORD_EXISTS' };
-  if (linked === 'FAILED') return { ok: false, code: 'RECORD_WRITE_FAILED' };
-  try {
-    const handle = await fs.open(dir, fsConstants.O_RDONLY);
-    try {
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-  } catch {
-    return { ok: false, code: 'RECORD_WRITE_FAILED' }; // o arquivo existe, mas a durabilidade do nome não foi provada
-  }
-  return { ok: true, fileName, sha256: sha256(data) };
+  return outcome === 'OK' ? { ok: true, fileName, sha256: sha256(data) } : { ok: false, code: outcome };
 }

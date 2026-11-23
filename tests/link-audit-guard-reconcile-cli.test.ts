@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { createPostgresGuard } from '../src/lib/link-audit-ledger/guard-postgres';
@@ -31,6 +32,8 @@ const NOW = new Date(Date.UTC(2026, 10, 22, 5, 0, 0));
 const READER_URL = 'postgresql://gmn_guard_reader:sentinela-leitor@127.0.0.1:6543/postgres?sslmode=verify-full';
 const KEY_A = testKeySpec('gk-test-a', 'guard-a');
 const KEY_B = testKeySpec('gk-test-b', 'guard-b');
+/** Sob `run-isolated.sh` (namespace de usuário) o root real aparece com o uid de transbordo: só nos testes, o dono de `/` e da pasta temporária conta como root. */
+const TRUSTED = [...new Set([0, fs.statSync('/').uid, fs.statSync(os.tmpdir()).uid])];
 const ENV = (over: Record<string, string | undefined> = {}): Record<string, string | undefined> => ({ [GUARD_READER_DB_URL_ENV]: READER_URL, [GUARD_READER_DB_CA_ENV]: PKI?.caPem ?? '', [GUARD_KEY_ENV]: KEY_A, ...over });
 
 interface World {
@@ -68,6 +71,7 @@ async function run(argv: readonly string[], deps: Partial<GuardReconcileCliDeps>
     env: ENV(),
     projectRoot: ROOT,
     now: () => NOW,
+    recordsDir: { trustedAncestorOwners: TRUSTED },
     connectFor: (target) => {
       targets.push(target);
       return (deps.reader ?? simulatedReaderDb()).connect;
@@ -203,6 +207,24 @@ test('G1.b.2b CLI reconcile (revisão do PR #64): --first só com a pasta TOTALM
   fs.chmodSync(open, 0o777);
   const writable = await run(['reconcile', '--backup', w.roundDir, '--records-dir', open, '--first', '--json'], { reader: w.reader });
   assert.deepEqual([writable.code, writable.json().code], [EXIT.REFUSED, 'RECORDS_DIR_UNSAFE']);
+});
+
+test('G1.b.2b CLI reconcile (revisão final do PR #64, TOCTOU): a pasta dos registros trocada por um link simbólico entre a conferência e a publicação ⇒ RECORDS_DIR_UNSAFE, código 3 (nunca 0)', NEEDS_CA, async () => {
+  const w = await world();
+  const moved = `${w.recordsDir}-movida`;
+  const swapped = await run(reconcileArgs(w, ['--first', '--json']), {
+    reader: w.reader,
+    recordsDir: {
+      trustedAncestorOwners: TRUSTED,
+      onStage: (stage) => {
+        if (stage !== 'BEFORE_LINK') return;
+        fs.renameSync(w.recordsDir, moved);
+        fs.symlinkSync(moved, w.recordsDir);
+      },
+    },
+  });
+  assert.deepEqual([swapped.code, swapped.json().code], [EXIT.REFUSED, 'RECORDS_DIR_UNSAFE']);
+  assert.notEqual(swapped.code, EXIT.OK);
 });
 
 test('G1.b.2b CLI reconcile: criação EXCLUSIVA do registro — se o arquivo aparecer entre a leitura e a gravação, ⇒ RECORD_EXISTS (código 3) e o arquivo alheio fica intacto', NEEDS_CA, async () => {

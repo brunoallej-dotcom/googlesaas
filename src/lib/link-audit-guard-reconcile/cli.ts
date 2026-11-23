@@ -4,7 +4,7 @@ import { GUARD_KEY_ENV, GUARD_MAX_LAG, GUARD_READER_DB_CA_ENV, GUARD_READER_DB_U
 import { readLedgerBackup, type BackupRefusalCode, type LedgerBackup } from './backup';
 import { analyzeReconciliation, gateVerdict, type Analysis, type AuditOutcome, type Finding } from './model';
 import { readGuard, type GuardReading, type ReaderRefusal } from './reader';
-import { buildRecord, readRecords, writeRecord, type RecordsRefusal, type StoredRecord } from './records';
+import { buildRecord, readRecords, writeRecord, type RecordsDirOptions, type RecordsRefusal, type StoredRecord } from './records';
 
 /*
  * CLI da RECONCILIAÇÃO EXTERNA da guarda e do VERIFICADOR DO PORTÃO G-1 (G1.b.2b; spec `link-audit-production-gates.md` GE-E5, PG-G09, PG-G07 e
@@ -61,7 +61,10 @@ export interface GuardReconcileCliDeps {
   /** Conector da guarda (padrão: `pgGuardReaderConnector`, TLS `verify-full`). Só testes injetam outro. */
   readonly connectFor?: (target: GuardDbTarget) => GuardDbConnect;
   readonly timer?: GuardTimer;
+  /** Ajustes da conferência da pasta dos registros (dono esperado, donos aceitos nos ancestrais, gancho da gravação). Só testes passam. */
+  readonly recordsDir?: Omit<RecordsDirOptions, 'projectRoot'>;
 }
+const recordsOptions = (deps: GuardReconcileCliDeps): RecordsDirOptions => ({ ...deps.recordsDir, projectRoot: deps.projectRoot });
 
 type RefusalCode = BackupRefusalCode | RecordsRefusal | ReaderRefusal | 'NOT_CONFIGURED' | 'INSIDE_THE_STACK' | 'READER_ENV_INVALID' | 'NO_PREVIOUS_RECORD' | 'PREVIOUS_RECORD_EXISTS' | 'RECORDS_DIR_NOT_EMPTY' | 'GUARD_KEY_DROPPED' | string;
 const MESSAGES: Readonly<Record<string, string>> = {
@@ -71,7 +74,7 @@ const MESSAGES: Readonly<Record<string, string>> = {
   NO_PREVIOUS_RECORD: 'A pasta de registros está vazia: na primeira reconciliação use --first; nas seguintes, aponte a pasta com os registros anteriores.',
   PREVIOUS_RECORD_EXISTS: 'Já existe registro anterior nesta pasta: --first só vale na primeira reconciliação.',
   RECORDS_DIR_NOT_EMPTY: 'A pasta de registros não está vazia: --first só vale numa pasta TOTALMENTE vazia (nem temporário órfão).',
-  RECORDS_DIR_UNSAFE: 'A pasta de registros é insegura: fica dentro do repositório (público), não é do seu usuário ou tem escrita para grupo ou outros.',
+  RECORDS_DIR_UNSAFE: 'A pasta de registros é insegura: fica dentro do repositório (público), não é do seu usuário, tem escrita para grupo ou outros, tem um ancestral que outro usuário pode alterar, não dá para verificar dono e modo nesta plataforma, ou mudou durante a gravação (o registro não vale).',
   GUARD_KEY_DROPPED: 'Uma chave do pseudônimo usada no registro anterior não está na lista desta reconciliação: a reconciliação guarda TODA chave já usada.',
   GUARD_WRITER_CREDENTIAL_PRESENT: 'A credencial de ESCRITA da guarda está neste ambiente: a reconciliação usa só a do papel de leitura e nunca a do escritor.',
   GUARD_READER_ROLE_REQUIRED: 'A URL do leitor precisa ser do papel gmn_guard_reader (direto) ou gmn_guard_reader.<projeto> (pooler).',
@@ -229,7 +232,7 @@ function settingsOrRefuse(env: Env): GuardSettings {
 }
 
 async function previousOrRefuse(args: ParsedArgs, settings: GuardSettings, deps: GuardReconcileCliDeps): Promise<StoredRecord | null> {
-  const records = await readRecords(path.resolve(args.recordsDir as string), { projectRoot: deps.projectRoot });
+  const records = await readRecords(path.resolve(args.recordsDir as string), recordsOptions(deps));
   if (!records.ok) throw new Refusal(records.code);
   const previous = records.value.last;
   if (args.first) {
@@ -255,7 +258,7 @@ async function reconcile(args: ParsedArgs, env: Env, deps: GuardReconcileCliDeps
   if (!read.ok) throw new Refusal(read.code);
   const analysis = analyzeReconciliation({ backup, pseudonyms: settings.pseudonyms, guardHeads: read.value.heads, previous: previous?.record.heads ?? null, previousNow: read.value.previousNow });
   const record = buildRecord({ previous, createdAt: (deps.now ?? (() => new Date()))(), backup: { round: backup.round, manifestSha256: backup.manifestSha256 }, keyIds: settings.pseudonyms.keyIds, analysis });
-  const written = await writeRecord(path.resolve(args.recordsDir as string), { projectRoot: deps.projectRoot }, record);
+  const written = await writeRecord(path.resolve(args.recordsDir as string), recordsOptions(deps), record);
   if (!written.ok) throw new Refusal(written.code);
   return { settings, previous, backup, reading: read.value, analysis, record: { fileName: written.fileName, sha256: written.sha256, sequence: record.sequence } };
 }
