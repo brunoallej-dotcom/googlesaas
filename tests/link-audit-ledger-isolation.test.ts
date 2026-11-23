@@ -18,7 +18,8 @@ const imports = (source: string): string[] => [...strip(source).matchAll(/(?:^|\
 
 test('o módulo tem exatamente os arquivos esperados (arquivo novo exige revisão deliberada)', () => {
   // G1.b.1: `guard-alarm.ts` (porta PURA dos alarmes da guarda, GE-E6), revisado deliberadamente
-  assert.deepEqual(files, ['config.ts', 'guard-alarm.ts', 'guard.ts', 'index.ts', 'model.ts', 'observed.ts', 'service.ts', 'store.ts', 'types.ts']);
+  // G1.b.2a: `guard-pseudonym.ts` (pseudônimo HMAC, D-G0-5), `guard-postgres.ts` (adaptador real, cliente injetado) e `guard-pg.ts` (o ÚNICO que importa `pg`)
+  assert.deepEqual(files, ['config.ts', 'guard-alarm.ts', 'guard-pg.ts', 'guard-postgres.ts', 'guard-pseudonym.ts', 'guard.ts', 'index.ts', 'model.ts', 'observed.ts', 'service.ts', 'store.ts', 'types.ts']);
 });
 
 test('imports: lista fechada por arquivo (zod, node:path/crypto onde cabe, módulos neutros e a PORTA da 6B — nunca o restante das decisões, o motor, o coletor ou a rede)', () => {
@@ -26,18 +27,35 @@ test('imports: lista fechada por arquivo (zod, node:path/crypto onde cabe, módu
     'types.ts': ['zod', '../link-audit-origin', '../link-audit-decisions/ledger-port'],
     'model.ts': ['../link-audit-origin', './types'],
     // node:crypto só para o SHA-256 de mão única das impressões digitais de chave (G1.a, PG-L01): nunca para gerar ou expor material
-    'config.ts': ['node:crypto', 'node:path', '../link-audit-origin'],
+    // G1.b.2a: lê também a configuração da guarda (destino e chave do pseudônimo); `./guard-pg` só como TIPO (o `pg` não é carregado por aqui)
+    'config.ts': ['node:crypto', 'node:path', '../link-audit-origin', './guard-pseudonym', './guard-pg'],
     // G1.b.1: zod valida as respostas da guarda na fronteira (regra 5: fora do esquema ⇒ indisponível)
     'guard.ts': ['node:path', 'zod', '../link-audit-storage', '../link-audit/snapshot-store', './types'],
     'guard-alarm.ts': [],
+    // G1.b.2a: o pseudônimo só usa node:crypto (HKDF + HMAC); o adaptador não fala com a rede (recebe a conexão); só o conector importa `pg`
+    'guard-pseudonym.ts': ['node:crypto'],
+    'guard-postgres.ts': ['zod', './guard', './guard-pseudonym', './types'],
+    'guard-pg.ts': ['pg', './guard', './guard-postgres', './guard-pseudonym'],
     'store.ts': ['node:crypto', 'node:path', '../link-audit-storage', '../link-audit/snapshot-store', './types'],
     'observed.ts': [],
     'service.ts': ['node:path', '../link-audit-decisions/ledger-port', '../link-audit-origin', '../link-audit-storage', '../link-audit/snapshot-store', './guard', './guard-alarm', './model', './observed', './store', './types'],
-    'index.ts': ['./service', './guard', './guard-alarm', './config', './model', './observed', './store', './types'],
+    'index.ts': ['./service', './guard', './guard-alarm', './guard-pg', './guard-postgres', './guard-pseudonym', './config', './model', './observed', './store', './types'],
   };
   for (const name of files) {
     for (const specifier of imports(fs.readFileSync(path.join(LIB, name), 'utf8'))) assert.ok((allowed[name] ?? []).includes(specifier), `${name} importa "${specifier}"`);
   }
+});
+
+test('G1.b.2a: `pg` só em guard-pg.ts em TODO o src/; nenhum caminho de TLS sem verificação (rejectUnauthorized false, no-verify, sslmode fraco) no livro', () => {
+  const walk = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? walk(path.join(dir, entry.name)) : /\.(ts|tsx)$/.test(entry.name) ? [path.join(dir, entry.name)] : []));
+  const importers = walk(path.join(ROOT, 'src')).filter((file) => imports(fs.readFileSync(file, 'utf8')).some((specifier) => specifier === 'pg' || specifier.startsWith('pg/') || specifier === 'pg-native'));
+  assert.deepEqual(importers.map((file) => path.relative(ROOT, file)), ['src/lib/link-audit-ledger/guard-pg.ts']);
+  for (const name of files) {
+    const text = code(name);
+    assert.ok(!/rejectUnauthorized\s*:\s*false|no-verify|sslmode=(?:disable|allow|prefer|require)\b|NODE_TLS_REJECT_UNAUTHORIZED/.test(text), `${name}: TLS sem verificação`);
+    assert.ok(!/connectionString/.test(text), `${name}: string de conexão interpretada pelo pg`);
+  }
+  assert.match(code('guard-pg.ts'), /rejectUnauthorized: true, ca: target\.caPem/);
 });
 
 test('PUREZA: o modelo e os tipos não tocam disco, rede, relógio, aleatoriedade, ambiente nem log', () => {
