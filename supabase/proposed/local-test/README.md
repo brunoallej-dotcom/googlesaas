@@ -19,7 +19,7 @@ cp <repo>/supabase/proposed/local-test/run.mjs . && node run.mjs <caminho-do-rep
 `--network none` (sem rede, nenhuma porta publicada) e `--rm`. A imagem tem os papéis `anon`, `authenticated`,
 `service_role`, `authenticator` e `supabase_admin` e o `postgres` **sem superusuário**, como no projeto real
 (PostgreSQL 17.11). A migração roda como `postgres`; as conferências, como `supabase_admin` com `SET ROLE`, ou com login
-real pelo loopback **do contêiner** quando o que se confere é ajuste de papel. 32 verificações: pré-validação e
+real pelo loopback **do contêiner** quando o que se confere é ajuste de papel. 33 verificações: pré-validação e
 conferência final que abortam e desfazem tudo (inclusive privilégio vazado por `pg_read_all_data`), o catálogo do PG-G08,
 a regra 7 na função, a trava consultiva com duas sessões, 42501 para `anon`/`authenticated`/`service_role`/`authenticator`,
 os gatilhos mesmo para quem tem o privilégio, o prazo de 3 s no servidor, NOLOGIN do dono, idempotência, associações
@@ -30,7 +30,8 @@ chave do pseudônimo, só o `audit_ref` no banco e nenhuma conexão aberta ao fi
 testes do repositório (`tests/link-audit-guard-pg.test.ts`), não aqui.
 
 Revisão do PR #61: inventário fechado do esquema (um objeto não esperado preexistente, de qualquer tipo, aborta e desfaz),
-ACL de todos os objetos e associação administrativa só do criador. Pré-requisitos **obrigatórios** (faltando, o script falha;
+definição exata do que a reaplicação não recria (colunas, cada restrição, o índice e os gatilhos pelo texto canônico do
+PostgreSQL: nome certo com semântica errada aborta), ACL de todos os objetos e associação administrativa só do criador. Pré-requisitos **obrigatórios** (faltando, o script falha;
 nenhuma etapa é pulada): a imagem já presente, o Node e o `pg` (`npm ci`).
 
 ```bash
