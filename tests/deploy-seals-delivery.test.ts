@@ -382,7 +382,7 @@ test('P9.5 paridade: a tabela de códigos e saídas e as listas de detalhes do s
 
 const SUMMARY_ENV: Record<string, string> = {
   GMN_AMB: 'homologacao', GMN_SHA: '0123456789abcdef0123456789abcdef01234567', GITHUB_RUN_ID: '987654', GITHUB_RUN_ATTEMPT: '2',
-  GMN_O_CHECKOUT: 'success', GMN_O_FILES: 'success', GMN_O_SSH: 'success', GMN_O_HEAD: 'success', GMN_O_DELIVER: 'success', GMN_V_TRUST_SHA256: TRUST_SHA,
+  GMN_O_HEAD: 'success', GMN_O_CHECKOUT: 'success', GMN_O_FILES: 'success', GMN_O_SSH: 'success', GMN_O_HEAD2: 'success', GMN_O_DELIVER: 'success', GMN_V_TRUST_SHA256: TRUST_SHA,
   // Variáveis que o resumo NUNCA lê: se aparecerem, vazou.
   GMN_SSH_HOST: HOST_SENTINEL, GMN_SEALS_SSH_KEY: KEY_SENTINEL,
 };
@@ -427,7 +427,7 @@ test('P9.5 resumo: parada no primeiro erro (FALHOU com o código; os seguintes "
   assert.deepEqual(summaryRows(stopped).map((row) => [row[6], row[7]]), [['`WRITTEN`: gravado (verificado no host)', '`OK`'], ['`FALHOU`', '`E_V2_REFUSED SEAL_CHAIN_BROKEN`'], ['não enviado', '`-`']]);
 
   const head = summaryFixture(t, rels, []);
-  runScript(head, 'seals-summary.sh', [], { ...SUMMARY_ENV, GMN_O_HEAD: 'failure', GMN_E_HEAD: 'NOT_MAIN_HEAD', GMN_O_DELIVER: 'skipped' });
+  runScript(head, 'seals-summary.sh', [], { ...SUMMARY_ENV, GMN_O_HEAD2: 'failure', GMN_E_HEAD2: 'NOT_MAIN_HEAD', GMN_O_DELIVER: 'skipped' });
   text = fs.readFileSync(head.summaryFile, 'utf8');
   assert.match(text, /^Resultado: `NOT_MAIN_HEAD`\. A entrega para no primeiro erro \(RC-10\): 3 arquivo\(s\) não enviado\(s\)\.$/m);
   assert.deepEqual(summaryRows(head).map((row) => row[6]), ['não enviado', 'não enviado', 'não enviado']);
@@ -532,20 +532,20 @@ test('P9.5 seals-verify: before todo zero ou fora do histórico ⇒ SEALS_NO_BAS
   assert.equal(outputs(sandbox).ambientes, undefined);
 });
 
-test('P9.5 resumo com o checkout falho (passo escrito no workflow): só execução, commit e ambiente validado; nada foi enviado', (t) => {
+test('P9.5 resumo recusado antes do checkout (passo escrito no workflow): o código da primeira conferência (NOT_MAIN_HEAD), execução, commit e ambiente validado; nada foi enviado', (t) => {
   const workflow = parseYamlSubset(fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'deploy.yml'), 'utf8'));
   assert.ok(isYamlMap(workflow) && isYamlMap(workflow.jobs) && isYamlMap(workflow.jobs['seals-deliver']) && Array.isArray(workflow.jobs['seals-deliver'].steps));
-  const fallback = workflow.jobs['seals-deliver'].steps.find((item) => isYamlMap(item) && item.name === 'Resumo da entrega (checkout falhou)');
+  const fallback = workflow.jobs['seals-deliver'].steps.find((item) => isYamlMap(item) && item.name === 'Resumo da entrega (recusado antes do checkout)');
   assert.ok(isYamlMap(fallback) && typeof fallback.run === 'string');
   const sandbox = sandboxOf(t);
   const file = path.join(sandbox.root, 'fallback.sh');
   fs.writeFileSync(file, fallback.run);
-  const run = (amb: string): string => {
+  const run = (amb: string, code: string): string => {
     fs.rmSync(sandbox.summaryFile, { force: true });
-    const result = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', file], { env: { GITHUB_STEP_SUMMARY: sandbox.summaryFile, GITHUB_RUN_ID: '42', GMN_SHA: DELIVER_ENV.GMN_SHA, GMN_AMB: amb, PATH: '/usr/bin:/bin' } as unknown as NodeJS.ProcessEnv, encoding: 'utf8' });
+    const result = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', file], { env: { GITHUB_STEP_SUMMARY: sandbox.summaryFile, GITHUB_RUN_ID: '42', GMN_SHA: DELIVER_ENV.GMN_SHA, GMN_AMB: amb, GMN_E_HEAD: code, PATH: '/usr/bin:/bin' } as unknown as NodeJS.ProcessEnv, encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
     return fs.readFileSync(sandbox.summaryFile, 'utf8');
   };
-  assert.match(run('homologacao'), new RegExp(`### Entrega de manifestos \\(homologacao\\)\\n\\nCheckout falhou \\(execução \`42\`, commit \`${DELIVER_ENV.GMN_SHA}\`\\): nada foi enviado\\.`));
-  assert.match(run('x | y'), /### Entrega de manifestos \(-\)/);
+  assert.match(run('homologacao', 'NOT_MAIN_HEAD'), new RegExp(`### Entrega de manifestos \\(homologacao\\)\\n\\nRecusado antes do checkout: \`NOT_MAIN_HEAD\` \\(execução \`42\`, commit \`${DELIVER_ENV.GMN_SHA}\`\\)\\. Nada foi enviado\\.`));
+  assert.match(run('x | y', 'lixo `x`'), /### Entrega de manifestos \(-\)[\s\S]*`FALHOU_ANTES_DO_CHECKOUT`/);
 });

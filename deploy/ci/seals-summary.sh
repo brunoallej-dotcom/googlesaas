@@ -9,10 +9,10 @@
 #   FALHOU          = a recusa que parou a entrega (código fixo); os arquivos seguintes ficam "não enviado".
 # Só campos públicos, validados por padrão fixo (o que não casa vira `-`): nunca host, porta, conteúdo de arquivo nem saída do ssh.
 # Ambiente (do workflow, `if: always()`): GMN_AMB, GMN_SHA, GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT, GITHUB_STEP_SUMMARY; GMN_O_<PASSO> (outcome) e
-# GMN_E_<PASSO> (código) de CHECKOUT FILES SSH HEAD DELIVER; GMN_V_TRUST_SHA256. Lê $RUNNER_TEMP/gmn-seals/files e results.
+# GMN_E_<PASSO> (código) de HEAD CHECKOUT FILES SSH HEAD2 DELIVER; GMN_V_TRUST_SHA256. Lê $RUNNER_TEMP/gmn-seals/files e results.
 set -euo pipefail
 
-readonly -a STEPS=(CHECKOUT FILES SSH HEAD DELIVER)
+readonly -a STEPS=(HEAD CHECKOUT FILES SSH HEAD2 DELIVER)
 readonly SEALS_DIR="${RUNNER_TEMP:?RUNNER_TEMP ausente}/gmn-seals"
 readonly RELPATH='^(aud-[0-9a-f]{16}/seal-(000[1-9]|00[1-9][0-9]|01[0-9][0-9]|02[0-4][0-9]|025[0-6])\.json|_closures/[a-z0-9][a-z0-9-]{3,31}\.json)$'
 readonly HEX64='^[0-9a-f]{64}$'

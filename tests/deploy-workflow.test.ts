@@ -266,7 +266,7 @@ test('P9-W08 a chave só é escrita depois do build e do pacote, e a limpeza com
 
 test('P9-W08 (P9.5) seals-deliver: a chave de manifestos só entra no passo que a escreve (ssh-setup.sh seals), depois do cálculo da lista; limpeza da chave com if: always() logo depois da entrega; resumo e limpeza da lista sempre', () => {
   const ids = deliverSteps.map((step) => step.id ?? step.name);
-  assert.deepEqual(ids, ['checkout', 'files', 'ssh', 'head', 'deliver', 'Limpeza da chave', 'Resumo da entrega (RC-08)', 'Resumo da entrega (checkout falhou)', 'Limpeza da lista de arquivos']);
+  assert.deepEqual(ids, ['head', 'checkout', 'files', 'ssh', 'head2', 'deliver', 'Limpeza da chave', 'Resumo da entrega (RC-08)', 'Resumo da entrega (recusado antes do checkout)', 'Limpeza da lista de arquivos']);
   assert.equal(runOf(deliverStep('ssh')), 'bash deploy/ci/ssh-setup.sh seals');
   const keySteps = deliverSteps.filter((step) => JSON.stringify(step.env ?? {}).includes('GMN_SEALS_SSH_KEY')).map((step) => step.id);
   assert.deepEqual(keySteps, ['ssh'], 'a chave privada só entra no passo que a escreve');
@@ -277,7 +277,8 @@ test('P9-W08 (P9.5) seals-deliver: a chave de manifestos só entra no passo que 
   assert.equal(runOf(byName('Limpeza da chave') as YamlMap), 'rm -rf -- "$RUNNER_TEMP/gmn-ssh"');
   assert.equal(byName('Resumo da entrega (RC-08)')?.if, "always() && steps.checkout.outcome == 'success'");
   assert.equal(runOf(byName('Resumo da entrega (RC-08)') as YamlMap), 'bash deploy/ci/seals-summary.sh');
-  assert.equal(byName('Resumo da entrega (checkout falhou)')?.if, "always() && steps.checkout.outcome != 'success'");
+  assert.equal(byName('Resumo da entrega (recusado antes do checkout)')?.if, "always() && steps.checkout.outcome != 'success'");
+  assert.deepEqual(byName('Resumo da entrega (recusado antes do checkout)')?.env, { GMN_E_HEAD: '${{ steps.head.outputs.code }}' });
   assert.equal(byName('Limpeza da lista de arquivos')?.if, 'always()');
   assert.equal(runOf(byName('Limpeza da lista de arquivos') as YamlMap), 'rm -rf -- "$RUNNER_TEMP/gmn-seals"');
   assert.match(scriptText('lib.sh'), /readonly GMN_CI_SEALS_DIR="\$\{RUNNER_TEMP\}\/gmn-seals"/);
@@ -296,13 +297,21 @@ test('P9-W09 seals-deliver não roda npm, node nem npx: nem no workflow (sem set
   assert.ok(/sha256sum/.test(scriptText('lib.sh')), 'sha256sum de cada arquivo');
 });
 
-test('P9.5 NOT_MAIN_HEAD no seals-deliver: o commit ainda é a cabeça da main imediatamente antes do primeiro put, com o MESMO texto do deploy (spec omissa, decisão da P9.5)', () => {
-  const head = deliverStep('head');
-  assert.equal(runOf(head), runOf(stepById('head')), 'o mesmo código do deploy');
-  assert.deepEqual(head.env, { GH_TOKEN: '${{ github.token }}' }, 'só o token do job (leitura, contents: read)');
+test('P9.5 NOT_MAIN_HEAD no seals-deliver (revisão do PR #74, item 1): o commit é a cabeça da main no INÍCIO do job (antes do checkout e de qualquer segredo) e de novo imediatamente antes do primeiro put, com o MESMO texto do deploy', () => {
   const ids = deliverSteps.map((step) => step.id);
-  assert.equal(ids.indexOf('head'), ids.indexOf('deliver') - 1, 'imediatamente antes da entrega');
-  assert.equal(deliverSteps.filter((step) => runOf(step).includes('fail NOT_MAIN_HEAD')).length, 1);
+  assert.equal(ids.indexOf('head'), 0, 'a primeira conferência é o primeiro passo');
+  assert.ok(ids.indexOf('head') < ids.indexOf('checkout'), 'antes do checkout');
+  const firstSecret = deliverSteps.findIndex((step) => JSON.stringify(step.env ?? {}).includes('secrets.'));
+  assert.ok(firstSecret > ids.indexOf('head'), 'nenhum segredo antes da primeira conferência');
+  assert.equal(ids.indexOf('head2'), ids.indexOf('deliver') - 1, 'a segunda conferência é o passo imediatamente anterior à entrega');
+  assert.ok(ids.indexOf('ssh') < ids.indexOf('head2'), 'a chave já está escrita, mas nada foi enviado');
+  for (const id of ['head', 'head2']) {
+    assert.equal(runOf(deliverStep(id)), runOf(stepById('head')), `${id}: o mesmo código do deploy`);
+    assert.deepEqual(deliverStep(id).env, { GH_TOKEN: '${{ github.token }}' }, `${id}: só o token do job (leitura, contents: read)`);
+  }
+  assert.equal(deliverSteps.filter((step) => runOf(step).includes('fail NOT_MAIN_HEAD')).length, 2);
+  const secretSteps = deliverSteps.filter((step) => JSON.stringify(step.env ?? {}).includes('secrets.')).map((step) => step.id);
+  assert.deepEqual(secretSteps, ['ssh'], 'segredos só no passo da chave');
 });
 
 test('P9.5 seals-verify: sem segredo, Node 22 sem cache, npm ci do commit e o script do passo; nada de artefato nem de escrita', () => {

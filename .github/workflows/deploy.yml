@@ -253,8 +253,9 @@ jobs:
         run: bash deploy/ci/seals-verify.sh
 
   # P9.5 (spec §5.5.2): um job por ambiente da matriz (só os nomes do conjunto fechado, conferidos também aqui), no ambiente protegido, com a
-  # chave de manifestos. Sem npm, node ou código do repositório (P9-W09): só git, sha256sum e ssh. Antes do primeiro `put`, o commit ainda
-  # tem de ser a cabeça da `main` (o mesmo texto do deploy; spec omissa, decisão da P9.5).
+  # chave de manifestos. Sem npm, node ou código do repositório (P9-W09): só git, sha256sum e ssh. O commit ainda tem de ser a cabeça da
+  # `main` no início do job, antes do checkout e de qualquer segredo, e de novo imediatamente antes do primeiro `put` (o mesmo texto do
+  # deploy; spec omissa, decisão da P9.5 e revisão do PR #74).
   seals-deliver:
     name: seals-deliver (${{ matrix.ambiente }})
     needs: seals-verify
@@ -279,6 +280,20 @@ jobs:
       GMN_AMB: ${{ matrix.ambiente }}
       GMN_SHA: ${{ github.sha }}
     steps:
+      - name: Commit ainda é a cabeça da main (NOT_MAIN_HEAD, antes do checkout e de qualquer segredo)
+        id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          fail() { printf 'code=%s\n' "$1" >>"$GITHUB_OUTPUT"; printf 'ERRO %s\n' "$1" >&2; exit 1; }
+          [[ "$GMN_SHA" =~ ^[0-9a-f]{40}$ ]] || fail INPUT_INVALID
+          [[ "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail INPUT_INVALID
+          # Cabeça atual da main pela API, só leitura (contents: read); o gh autentica com o GH_TOKEN do ambiente, nada é montado.
+          head="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" || fail NOT_MAIN_HEAD
+          [ "$head" = "$GMN_SHA" ] || fail NOT_MAIN_HEAD
+          echo "o commit ainda é a cabeça da main"
+
       - name: Checkout do SHA (sem credencial persistida)
         id: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -300,7 +315,7 @@ jobs:
         run: bash deploy/ci/ssh-setup.sh seals
 
       - name: Commit ainda é a cabeça da main (NOT_MAIN_HEAD, imediatamente antes do primeiro put)
-        id: head
+        id: head2
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -326,28 +341,34 @@ jobs:
       - name: Resumo da entrega (RC-08)
         if: always() && steps.checkout.outcome == 'success'
         env:
+          GMN_O_HEAD: ${{ steps.head.outcome }}
+          GMN_E_HEAD: ${{ steps.head.outputs.code }}
           GMN_O_CHECKOUT: ${{ steps.checkout.outcome }}
           GMN_O_FILES: ${{ steps.files.outcome }}
           GMN_E_FILES: ${{ steps.files.outputs.code }}
           GMN_O_SSH: ${{ steps.ssh.outcome }}
           GMN_E_SSH: ${{ steps.ssh.outputs.code }}
-          GMN_O_HEAD: ${{ steps.head.outcome }}
-          GMN_E_HEAD: ${{ steps.head.outputs.code }}
+          GMN_O_HEAD2: ${{ steps.head2.outcome }}
+          GMN_E_HEAD2: ${{ steps.head2.outputs.code }}
           GMN_O_DELIVER: ${{ steps.deliver.outcome }}
           GMN_E_DELIVER: ${{ steps.deliver.outputs.code }}
           GMN_V_TRUST_SHA256: ${{ steps.files.outputs.trust_sha256 }}
         run: bash deploy/ci/seals-summary.sh
 
-      - name: Resumo da entrega (checkout falhou)
+      - name: Resumo da entrega (recusado antes do checkout)
         if: always() && steps.checkout.outcome != 'success'
+        env:
+          GMN_E_HEAD: ${{ steps.head.outputs.code }}
         run: |
           set -euo pipefail
+          code="${GMN_E_HEAD:-}"
+          [[ "$code" =~ ^[A-Z][A-Z0-9_]{1,63}$ ]] || code=FALHOU_ANTES_DO_CHECKOUT
           amb=-
           case "$GMN_AMB" in homologacao | producao) amb="$GMN_AMB" ;; esac
           {
             echo "### Entrega de manifestos ($amb)"
             echo
-            echo "Checkout falhou (execução \`$GITHUB_RUN_ID\`, commit \`$GMN_SHA\`): nada foi enviado."
+            echo "Recusado antes do checkout: \`$code\` (execução \`$GITHUB_RUN_ID\`, commit \`$GMN_SHA\`). Nada foi enviado."
           } >>"$GITHUB_STEP_SUMMARY"
 
       - name: Limpeza da lista de arquivos
