@@ -31,8 +31,11 @@ type MissingReason = Exclude<EvidenceTrustReason, (typeof EVIDENCE_TRUST_REASONS
 const REASONS_ARE_EXHAUSTIVE: [MissingReason] extends [never] ? true : never = true;
 void REASONS_ARE_EXHAUSTIVE;
 
-/** Motivos fixos do S-11 (fecho novo, e o fecho de uma fixação pelo S-12). */
-export const CLOSURE_MOTIVES = ['FORMAT', 'SIGNER_NOT_LISTED', 'SIGNATURE_INVALID', 'RETIRED_NOT_LISTED', 'HEAD_NOT_IN_REPO'] as const;
+/**
+ * Motivos fixos do S-11 (fecho novo, e o fecho de uma fixação pelo S-12). `SIGNER_NOT_ACTIVE` (revisão do PR #72, item 4): o signatário de um fecho
+ * NOVO tem de estar `active`; o fecho histórico de uma fixação segue só a regra de antes (signatário na lista, qualquer estado).
+ */
+export const CLOSURE_MOTIVES = ['FORMAT', 'SIGNER_NOT_LISTED', 'SIGNER_NOT_ACTIVE', 'SIGNATURE_INVALID', 'RETIRED_NOT_LISTED', 'HEAD_NOT_IN_REPO'] as const;
 export type ClosureMotive = (typeof CLOSURE_MOTIVES)[number];
 
 export type SealsRefusalCode =

@@ -602,7 +602,7 @@ São do CLI de coleta; onde ele roda em produção é **a confirmar**.
 | VC-E5 | `tests/deploy-config.test.ts` estendido (teste estático): as sete pastas no web; evidências e manifestos só leitura; nenhuma variável `GMN_LINK_AUDIT_*` nem bind novo no Worker; os nomes novos na lista do entrypoint; `stop-first` no web; nenhum valor literal (a regra atual, `:134-143`) |
 | VC-E6 | Backups: o plano de backup cobre as cinco pastas graváveis e a de manifestos, com **destinos independentes** para os recibos e para o livro (fora do disco dos dados que eles ancoram; checklist §1 l.55, spec do livro §12), pares do mesmo instante, `sha256sum` por arquivo, nunca `--delete`, e as cabeças guardadas junto (GE-R9). Destinos em marcador; os reais ficam fora do repositório |
 | VC-E7 | Documentos de implantação atualizados (`PROVA-DE-ORIGEM-E-DE-COLETA.md`, checklist de produção) com os nomes novos e a ordem de ativação: volumes e chaves ⇒ guarda ⇒ só então o primeiro `ENROLL` |
-| VC-E8 | Pastas criadas no host com dono `10001:10001` e modo `0700`, conferidos por `stat` (checklist l.54). É ação do responsável na implantação |
+| VC-E8 | Pastas criadas no host com dono `10001:10001` e modo `0700`, conferidos por `stat` (checklist l.54). **Emenda da P9.3b** (spec `ci-deploy-and-seal-delivery.md` §5.10): a pasta de **manifestos** é a exceção, com dono `gmn-seals` (o usuário do receptor de manifestos; homologação `gmn-hml-seals`; nunca `10001` nem `0`), grupo `10001` e modo `2750` (o web lê pelo grupo, só o receptor escreve, o setgid passa o grupo às subpastas novas); `verificar-pastas-fase6.sh` recusa outra coisa. É ação do responsável na implantação |
 
 #### 5.3.4 A chave de log `GMN_LINK_AUDIT_LOG_KEY`
 
@@ -708,7 +708,7 @@ são mantidos abaixo só como registro, para o caso de a decisão ser revista (A
 - [ ] **PG-V01** `tests/deploy-config.test.ts`: sete pastas no web; evidências e manifestos só leitura; o Worker sem `GMN_LINK_AUDIT_*` nem bind novo; os nomes novos na lista do entrypoint; `stop-first` no web; nenhum valor literal.
 - [ ] **PG-V02** (VC-E6) O plano de backup cita as seis variáveis de pasta da Fase 6, com destinos independentes (em marcador) para os dois volumes de recibos e para o livro, pares do mesmo instante, `sha256sum` por arquivo, sem `--delete`, e as cabeças guardadas junto.
 - [ ] **PG-V03** (VC-E7) `PROVA-DE-ORIGEM-E-DE-COLETA.md` e o checklist de produção citam a chave do livro, a chave de log, a credencial da guarda e a ordem de ativação (volumes e chaves ⇒ guarda ⇒ primeiro `ENROLL`).
-- [ ] **PG-V04** (VC-E8) O runbook traz o procedimento de criação e conferência das pastas no host (dono `10001:10001`, modo `0700`, conferido por `stat`). A conferência executada fica registrada no relatório da G2 (homologação, ensaio EN-12) e na tabela do portão (produção, G-3).
+- [ ] **PG-V04** (VC-E8) O runbook traz o procedimento de criação e conferência das pastas no host (dono `10001:10001`, modo `0700`, conferido por `stat`; a de manifestos `gmn-seals:10001 2750`, emenda da P9.3b, `GUIA-DE-IMPLANTACAO.md` §3.3 e `RUNBOOK-DEPLOY-PELO-CI.md` H-06). A conferência executada fica registrada no relatório da G2 (homologação, ensaio EN-12) e na tabela do portão (produção, G-3).
 - [ ] **PG-L01** `operatorRef` determinístico com `GMN_LINK_AUDIT_LOG_KEY`; chave ausente ou fraca ⇒ `UNAVAILABLE`; chave igual à de origem ou à do livro ⇒ recusada; e-mail nunca no log (critérios §10.2 da spec de observabilidade).
 
 ## 7. Casos-limite transversais
@@ -897,7 +897,7 @@ vazia.
 | EN-09 | Volume de recibos só leitura (força `ANCHOR_PENDING`) e depois a recuperação | Pendência visível; o autor conclui; nada é perdido |
 | EN-10 | Disco cheio (`ENOSPC`) num volume gravável | Escrita recusada, sem sucesso falso; alarme |
 | EN-11 | `ADOPT`, `RESTORE_ACK` e `QUARANTINE_ACK` | Com a D-G0-6 (opção 3): 403 `ADMIN_APPROVAL_UNAVAILABLE`, nada gravado. (Se a Q6 for revista: opção 1 ⇒ o fluxo decidido, com PG-A01 a PG-A03; opção 2 ⇒ com PG-A01 a PG-A04) |
-| EN-12 | Conferência das pastas no host (dono `10001:10001`, modo `0700`, por `stat`) e do Worker sem montagem nova | Saída do `stat` e de `docker service inspect` anexadas (VC-E8, PG-V04) |
+| EN-12 | Conferência das pastas no host (dono `10001:10001`, modo `0700`, por `stat`; a de manifestos `stat -c '%U:%g %a'` = `gmn-hml-seals:10001 2750` em homologação e `gmn-seals:10001 2750` em produção, emenda da P9.3b, P9-O05) e do Worker sem montagem nova | Saída do `stat`, do `verificar-pastas-fase6.sh` e de `docker service inspect` anexadas (VC-E8, PG-V04) |
 
 ## 11. Decisões da onda G0 (20/11/2026)
 

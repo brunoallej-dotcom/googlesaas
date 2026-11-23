@@ -21,7 +21,7 @@ const importsOf = (source: string): string[] => {
     ...[...code.matchAll(/\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1] ?? ''),
   ];
 };
-const FILES = ['export-run.ts', 'export.ts', 'index.ts', 'package-hash.ts', 'schemas.ts', 'sign-args.ts', 'sign-chain.ts', 'sign-cli.ts', 'sign-closure.ts', 'sign-core.ts', 'sign-key.ts', 'sign-receipts.ts', 'sign-run.ts', 'sign-runtime.ts', 'sign-terminal.ts'];
+const FILES = ['exclusive-write.ts', 'export-run.ts', 'export.ts', 'index.ts', 'package-hash.ts', 'schemas.ts', 'sign-args.ts', 'sign-chain.ts', 'sign-cli.ts', 'sign-closure.ts', 'sign-core.ts', 'sign-key.ts', 'sign-receipts.ts', 'sign-run.ts', 'sign-runtime.ts', 'sign-terminal.ts'];
 const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   'index.ts': new Set(['../link-audit-evidence/evidence-to-prove', './package-hash', './schemas']),
   'package-hash.ts': new Set(['../link-audit/canonical', './schemas']),
@@ -39,7 +39,11 @@ const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   'sign-chain.ts': new Set(['node:crypto', 'node:path', '../link-audit/fs-ops', '../link-audit-evidence/provenance-core', './schemas', './sign-core']),
   // P1 W4.3: o ÚNICO arquivo do `sign` que escreve (leitura única das entradas e gravação temporário + link() exclusivo), pelo FsOps injetado;
   // nunca o verificador (o texto gravado vem conferido de sign-chain.ts), o leitor de evidências nem o armazenamento
-  'sign-run.ts': new Set(['node:crypto', 'node:path', '../link-audit/fs-ops', './schemas', './sign-chain', './sign-core']),
+  // P9.3b: a criação exclusiva em si mora em exclusive-write.ts (extraída sem mudança de comportamento, compartilhada com o receptor de manifestos)
+  'sign-run.ts': new Set(['node:crypto', 'node:path', '../link-audit/fs-ops', './exclusive-write', './schemas', './sign-chain', './sign-core']),
+  // P9.3b (spec ci-deploy-and-seal-delivery.md §5.7 passo 7): a criação EXCLUSIVA e durável (temporário + fsync + link() + fsync da pasta), pelo
+  // FsOps injetado; só o aleatório do nome do temporário (node:crypto) e node:path. Nunca o verificador, o leitor de evidências nem o armazenamento
+  'exclusive-write.ts': new Set(['node:crypto', 'node:path', '../link-audit/fs-ops']),
   // P1 W4.4: o terminal sem eco (modo bruto, restaurado no fim) e as telas da confirmação e da frase; nenhum import além dos tipos do núcleo
   'sign-terminal.ts': new Set(['./sign-core']),
   // P1 W4.4: a chave K1 (PKCS#8 cifrado + frase) e a custódia do arquivo; disco SÓ leitura (node:fs/promises, sem escrita) e só do arquivo de chave
@@ -69,7 +73,8 @@ const EXCEPTIONS: Readonly<Record<string, ReadonlySet<string>>> = {
   'export-run.ts': new Set(['Date', 'módulo node']), // só node:path (lista acima); o instante vem de quem chama
   'sign-core.ts': new Set(['Date', 'módulo node']), // relógio INJETADO (tipo Date); só createHash de node:crypto (teste abaixo)
   'sign-chain.ts': new Set(['módulo node']), // só node:crypto (assinar/derivar a pública) e node:path (lista acima); sem relógio
-  'sign-run.ts': new Set(['módulo node', 'escrita']), // node:crypto (só randomBytes do nome do temporário) e node:path; escrita SÓ pela regra estreita abaixo
+  'sign-run.ts': new Set(['módulo node']), // node:crypto (só o TIPO da chave) e node:path; P9.3b: a escrita mora em exclusive-write.ts
+  'exclusive-write.ts': new Set(['módulo node', 'escrita']), // node:crypto (só randomBytes do nome do temporário) e node:path; escrita SÓ pela regra estreita abaixo
   'sign-key.ts': new Set(['módulo node']), // node:crypto (abrir a chave e derivar a pública), node:fs/promises SÓ leitura (regra estreita abaixo) e node:path
   'sign-receipts.ts': new Set(['módulo node']), // node:fs/promises SÓ leitura pelo descritor (regra estreita abaixo) e node:path
   'sign-runtime.ts': new Set(['módulo node']), // node:fs/promises SÓ leitura (regra estreita abaixo), createHash de node:crypto e node:path
@@ -168,15 +173,21 @@ test('P1 W4.5 (revisão, NIT): o padrão do id de chave mora no núcleo sem veri
   assert.ok(!/SIGN_KEY_ID_PATTERN\s*=/.test(strip(fs.readFileSync(path.join(LIB, 'sign-chain.ts'), 'utf8'))), 'sign-chain.ts não redefine o padrão');
 });
 
-test('P1 W4.3: sign-run.ts escreve SÓ pelo FsOps injetado: uma subpasta, um temporário exclusivo, um link() para o nome final, remove só o próprio temporário e sincroniza; nunca apaga um manifesto, renomeia, muda permissão nem usa o disco padrão', () => {
-  const code = strip(fs.readFileSync(path.join(LIB, 'sign-run.ts'), 'utf8'));
+test('P1 W4.3 (P9.3b: a gravação em exclusive-write.ts): escreve SÓ pelo FsOps injetado: uma subpasta, um temporário exclusivo, um link() para o nome final, remove só o próprio temporário e sincroniza; nunca apaga um manifesto, renomeia, muda permissão nem usa o disco padrão', () => {
+  const code = strip(fs.readFileSync(path.join(LIB, 'exclusive-write.ts'), 'utf8'));
   const count = (pattern: RegExp): number => [...code.matchAll(pattern)].length;
   assert.deepEqual([count(/\.mkdir\s*\(/g), count(/\.writeExclusive\s*\(/g), count(/\.link\s*\(/g), count(/\.syncDirectory\s*\(/g)], [1, 1, 1, 2], 'mkdir da subpasta, temporário, link() e fsync da raiz nova e da pasta');
   assert.ok(count(/\.unlink\s*\(/g) > 0 && count(/\.unlink\s*\(/g) === count(/\.unlink\s*\(\s*temp\s*\)/g), 'unlink só do temporário');
   assert.ok(/\.writeExclusive\s*\(\s*temp\s*,/.test(code) && /\.link\s*\(\s*temp\s*,/.test(code), 'o nome final só nasce por link() do temporário');
   assert.ok(!/\.(?:rename|rm|rmdir|truncate|chmod|appendFile|writeFile|copyFile)\s*\(|publishExclusive|withLock|nodeFsOps|node:fs/.test(code), 'escrita fora da regra ou disco implícito');
-  assert.deepEqual([...code.matchAll(/import\s*\{([^}]*)\}\s*from\s*'node:crypto'/g)].map((m) => (m[1] ?? '').trim()), ['randomBytes, type KeyObject'], 'de node:crypto só o aleatório do temporário (e o tipo da chave)');
+  assert.deepEqual([...code.matchAll(/import\s*\{([^}]*)\}\s*from\s*'node:crypto'/g)].map((m) => (m[1] ?? '').trim()), ['randomBytes'], 'de node:crypto só o aleatório do temporário');
   assert.ok(!/\b(?:sign|verify|createPrivateKey|createPublicKey|generateKeyPair\w*)\s*\(/.test(code), 'operação de chave fora de sign-chain.ts');
+  // sign-run.ts não escreve mais por conta própria: as duas gravações (manifesto e fecho) passam pela criação exclusiva compartilhada
+  const run = strip(fs.readFileSync(path.join(LIB, 'sign-run.ts'), 'utf8'));
+  assert.ok(!/\.(?:mkdir|writeExclusive|link|unlink|syncDirectory|rename|rm|rmdir|truncate|chmod|appendFile|writeFile|copyFile)\s*\(|publishExclusive|withLock|nodeFsOps|node:fs/.test(run), 'sign-run.ts escreve por fora da criação exclusiva compartilhada');
+  assert.equal([...run.matchAll(/\blinkExclusive\s*\(/g)].length, 2, 'manifesto e fecho pela criação exclusiva compartilhada');
+  assert.deepEqual([...run.matchAll(/import\s+type\s*\{([^}]*)\}\s*from\s*'node:crypto'/g)].map((m) => (m[1] ?? '').trim()), ['KeyObject'], 'de node:crypto, sign-run.ts só usa o tipo da chave');
+  assert.ok(!/\b(?:sign|verify|createPrivateKey|createPublicKey|generateKeyPair\w*|randomBytes)\s*\(/.test(run), 'operação de chave ou aleatório em sign-run.ts');
 });
 
 const signCode = (name: string): string => strip(fs.readFileSync(path.join(LIB, name), 'utf8'));
@@ -345,15 +356,23 @@ const ARTIFACT_ENTRY = path.join(ROOT, 'scripts', 'link-audit-sign-artifact.ts')
  */
 const CHANNEL_DIR = path.join(ROOT, 'src', 'lib', 'link-audit-seals-channel');
 const CHANNEL_ALLOWED: ReadonlySet<string> = new Set(['../link-audit-attestation/sign-chain']);
+/**
+ * P9.3b (spec `ci-deploy-and-seal-delivery.md` §5.7 passos 4, 6 e 7): o receptor de manifestos do host reaproveita a fotografia somente leitura e o
+ * autoteste do `sign` (`chainSnapshot`, `selfTestSeal`, de `sign-chain.ts`) e a criação exclusiva compartilhada (`exclusive-write.ts`); nada mais
+ * do módulo (nem chave, nem CLI, nem `sign-run.ts`). A lista fechada de cada arquivo do receptor está em `link-audit-seal-receiver-isolation.test.ts`.
+ */
+const SEAL_RECEIVER_DIR = path.join(ROOT, 'src', 'lib', 'seal-receiver');
+const SEAL_RECEIVER_ALLOWED: ReadonlySet<string> = new Set(['../link-audit-attestation/sign-chain', '../link-audit-attestation/exclusive-write']);
 
-test('consumidores: só o CLI link-audit-seal (export, export-run, schemas e sign-cli), a entrada do artefato (só sign-cli) e, desde a P9.2, o núcleo do canal de manifestos (só sign-chain) importam o módulo; o resto de src/ e os demais scripts não', () => {
+test('consumidores: só o CLI link-audit-seal (export, export-run, schemas e sign-cli), a entrada do artefato (só sign-cli), desde a P9.2 o núcleo do canal de manifestos (só sign-chain) e, desde a P9.3b, o receptor de manifestos (só sign-chain e exclusive-write) importam o módulo; o resto de src/ e os demais scripts não', () => {
   const walk = (dir: string): string[] => (fs.existsSync(dir) ? fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? (e.name === 'node_modules' || e.name === '.next' ? [] : walk(path.join(dir, e.name))) : /\.(ts|tsx|js|mjs|cjs)$/.test(e.name) ? [path.join(dir, e.name)] : [])) : []);
   assert.deepEqual(importsOf(fs.readFileSync(ARTIFACT_ENTRY, 'utf8')).filter((specifier) => /link-audit-attestation/.test(specifier)), ['../src/lib/link-audit-attestation/sign-cli'], 'a entrada do artefato importa só sign-cli');
   for (const file of [...walk(path.join(ROOT, 'src')), ...walk(path.join(ROOT, 'scripts'))]) {
     if (file.startsWith(LIB + path.sep) || file === CLI_FILE || file === ARTIFACT_ENTRY) continue;
-    if (file.startsWith(CHANNEL_DIR + path.sep)) {
+    if (file.startsWith(CHANNEL_DIR + path.sep) || file.startsWith(SEAL_RECEIVER_DIR + path.sep)) {
+      const allowed = file.startsWith(CHANNEL_DIR + path.sep) ? CHANNEL_ALLOWED : SEAL_RECEIVER_ALLOWED;
       const used = importsOf(fs.readFileSync(file, 'utf8')).filter((specifier) => /link-audit-attestation/.test(specifier));
-      assert.ok(used.every((specifier) => CHANNEL_ALLOWED.has(specifier)), `${path.relative(ROOT, file)} importa ${used.join(', ')} do módulo de atestação`);
+      assert.ok(used.every((specifier) => allowed.has(specifier)), `${path.relative(ROOT, file)} importa ${used.join(', ')} do módulo de atestação`);
       continue;
     }
     assert.ok(!/link-audit-attestation/.test(strip(fs.readFileSync(file, 'utf8'))), `${path.relative(ROOT, file)} importa o módulo de atestação`);

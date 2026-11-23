@@ -28,22 +28,23 @@ export interface ReceiverArtifactSpec {
 /** Receptor de deploy (§5.6): disco, SHA-256, caminhos e `execFile` (só `docker`, `tar`, `gzip` e o script de pastas, sem shell). */
 export const DEPLOY_RECEIVER_NODE_MODULES: readonly string[] = ['node:child_process', 'node:crypto', 'node:fs', 'node:fs/promises', 'node:path'];
 export const DEPLOY_RECEIVER_FILE_NAME = 'gmn-deploy-receiver.cjs';
+/** Receptor de manifestos (§5.7, P9.3b): disco, SHA-256 e caminhos; SEM `node:child_process` (nenhum filho) e sem rede. */
+export const SEAL_RECEIVER_NODE_MODULES: readonly string[] = ['node:crypto', 'node:fs', 'node:fs/promises', 'node:path'];
+export const SEAL_RECEIVER_FILE_NAME = 'gmn-seal-receiver.cjs';
 
-/**
- * Os artefatos, na ordem das linhas de `receivers.sha256`. A P9.3b acrescenta aqui o receptor de manifestos (`gmn-seal-receiver.cjs`, sem
- * `node:child_process`) e a linha dele no arquivo de hash, no mesmo PR.
- */
+/** Os artefatos, na ordem das linhas de `receivers.sha256`: o receptor de deploy (P9.3a) e o de manifestos (P9.3b). */
 export const RECEIVER_ARTIFACTS: readonly ReceiverArtifactSpec[] = [
   { fileName: DEPLOY_RECEIVER_FILE_NAME, entry: path.join(REPO_ROOT, 'scripts', 'deploy-receiver.ts'), defineName: 'GMN_DEPLOY_RECEIVER_ARTIFACT', modules: DEPLOY_RECEIVER_NODE_MODULES },
+  { fileName: SEAL_RECEIVER_FILE_NAME, entry: path.join(REPO_ROOT, 'scripts', 'seal-receiver.ts'), defineName: 'GMN_SEAL_RECEIVER_ARTIFACT', modules: SEAL_RECEIVER_NODE_MODULES },
 ];
 export const RECEIVERS_HASH_FILE = path.join(REPO_ROOT, 'deploy', 'hostinger', 'receivers.sha256');
 /**
  * Os modelos dos wrappers do comando forçado (revisão do PR #70): o hash deles também é versionado em `receivers.sha256`, depois dos
  * artefatos, e o build os copia para a pasta de saída. Assim o `sha256sum -c` do clone limpo e o da VPS conferem os bytes do modelo ANTES de
- * o responsável preenchê-lo e instalá-lo como root. A P9.3b acrescenta aqui o modelo do wrapper de manifestos.
+ * o responsável preenchê-lo e instalá-lo como root. Os do deploy (P9.3a) e, depois, os de manifestos (P9.3b), produção antes de homologação.
  */
 export const RECEIVER_TEMPLATES_DIR = path.join(REPO_ROOT, 'deploy', 'hostinger', 'receivers');
-export const RECEIVER_TEMPLATES: readonly string[] = ['gmn-deploy.modelo.sh', 'gmn-hml-deploy.modelo.sh'];
+export const RECEIVER_TEMPLATES: readonly string[] = ['gmn-deploy.modelo.sh', 'gmn-hml-deploy.modelo.sh', 'gmn-seals.modelo.sh', 'gmn-hml-seals.modelo.sh'];
 /** Os nomes do arquivo de hash, na ordem: os artefatos e depois os modelos. */
 export const VERSIONED_FILE_NAMES: readonly string[] = [...RECEIVER_ARTIFACTS.map((spec) => spec.fileName), ...RECEIVER_TEMPLATES];
 const TEMPLATE_MODE = 0o444;

@@ -151,11 +151,11 @@ async function chainStage(run: Run, groups: readonly ChainGroup[]): Promise<void
   }
 }
 
-/** S-11 em cada fecho novo que passou do S-04 ao S-08, contra a lista do commit do ambiente. */
+/** S-11 em cada fecho novo que passou do S-04 ao S-08, contra a lista do commit do ambiente; fecho novo exige o signatário `active`. */
 async function closureStage(run: Run, closures: readonly JudgedClosure[]): Promise<void> {
   for (const item of closures) {
     if (!item.ok) continue;
-    const motive = await closureMotive(item.closure, run.trust.get(item.channel.env)?.ring ?? null, sealsDirOf(run.input.repoRoot, item.channel.env), run.fs);
+    const motive = await closureMotive(item.closure, run.trust.get(item.channel.env)?.ring ?? null, sealsDirOf(run.input.repoRoot, item.channel.env), run.fs, 'active');
     if (motive !== null) run.refusals.push(refusal('S-11', `CLOSURE_${motive}`, item.publicPath));
   }
 }

@@ -335,6 +335,6 @@ Endurecimento de código (antes de expor): bypass `GMN_AUTH_DISABLED` desligado 
 | G1.a | Volumes, segredos, chave de log, exportação dos logs e backups | ✅ #54 |
 | G1.b | Guarda no Supabase (adaptador, contrato R6-10, migração proposta, reconciliação, runbook) | ✅ no código: G1.b.1 (#56), G1.b.2a (#61), G1.b.2b (#64); com o responsável: laboratório, PG-G08, secrets e rotina da reconciliação |
 | G1.c | Papel administrativo: só o aceite formal do 403 (Q6 = 3) | ✅ aceite formal em 23/11/2026 |
-| P-9 | Deploy pelo CI e canal de manifestos (P9.1–P9.5; spec `ci-deploy-and-seal-delivery.md`) | 🟡 P9.1 (#66), P9.2 (#68), P9.4 (#69) e P9.3a (#70) ✅; P9.3b em andamento; P9.5 a seguir |
+| P-9 | Deploy pelo CI e canal de manifestos (P9.1–P9.5; spec `ci-deploy-and-seal-delivery.md`) | 🟡 P9.1 (#66), P9.2 (#68), P9.4 (#69) e P9.3a (#70) ✅; P9.3b (receptor de manifestos, pasta de manifestos `2750`) em revisão; P9.5 a seguir |
 | G2 | Ensaio em homologação (16 ensaios, 2 atestações), depois do relatório da W5 | ⬜ |
 | G3 | Portão de produção ou piloto mínimo declarado | ⬜ |

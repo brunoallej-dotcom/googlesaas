@@ -195,6 +195,12 @@ test('P9-T07 `active → retired:<sha256>` com o fecho no commit-base, de sha256
   assert.deepEqual(codes(await check(fromRetired.w, [['M', LIST]], { baseTrust: { producao: baseBytes(fromRetired.before) } })), [], '`retired → retired:<sha256>` também');
 });
 
+test('P9-T07 (revisão do PR #72, item 4) o fecho HISTÓRICO de uma fixação segue a regra de antes: com o signatário aposentado na mesma mudança, a fixação ainda se prova (o `active` só vale para fecho novo)', async () => {
+  const pin = pinWorld();
+  writeRepoFile(pin.w.root, LIST, listFile([listItem(KEY_R, `retired:${sha256(pin.closureText)}`), listItem(KEY_S, 'retired')]));
+  assert.deepEqual(codes(await check(pin.w, [['M', LIST]], { baseTrust: { producao: baseBytes(pin.before) } })), []);
+});
+
 test('P9-T07 `active → retired` sem hash ⇒ aceito, e o resumo avisa que as posições da chave deixam de autenticar até a fixação', async () => {
   const pin = pinWorld();
   writeRepoFile(pin.w.root, LIST, listFile([listItem(KEY_R, 'retired'), listItem(KEY_S)]));

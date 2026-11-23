@@ -293,6 +293,25 @@ test('P9-S09 fecho novo com signatário fora da lista, assinatura inválida, `re
   assert.deepEqual(await judge('{"schemaVersion":1}\n'), ['CLOSURE_FORMAT']);
 });
 
+test('P9-S09 (revisão do PR #72, itens 3 e 4) fecho NOVO assinado por chave `retired` ou `revoked` na lista do commit ⇒ CLOSURE_SIGNER_NOT_ACTIVE; cabeça numa pasta de auditoria que é link simbólico (mesmo com o manifesto certo do outro lado) ⇒ CLOSURE_HEAD_NOT_IN_REPO', async () => {
+  const { w, chain } = baseWorld();
+  const target = closureRepoPath(KEY_A.keyId);
+  const text = canonicalText(closureFor(KEY_A, KEY_B, chain));
+  writeRepoFile(w.root, target, text);
+  for (const state of ['retired', 'revoked']) {
+    writeTrustList(w, [listItem(KEY_A), listItem(KEY_B, state)]);
+    assert.deepEqual(codes(await check(w, [['A', target]])), ['CLOSURE_SIGNER_NOT_ACTIVE'], `signatário ${state}`);
+  }
+  writeTrustList(w, [listItem(KEY_A), listItem(KEY_B)]);
+  assert.deepEqual(codes(await check(w, [['A', target]])), [], 'signatário active passa');
+  const auditDir = path.join(w.sealsDir(), AUD_A);
+  const elsewhere = path.join(w.root, 'fora-da-raiz', AUD_A);
+  fs.mkdirSync(path.dirname(elsewhere), { recursive: true });
+  fs.renameSync(auditDir, elsewhere);
+  fs.symlinkSync(elsewhere, auditDir);
+  assert.deepEqual(codes(await check(w, [['A', target]])), ['CLOSURE_HEAD_NOT_IN_REPO'], 'a pasta da auditoria é link: a cabeça não conta');
+});
+
 /* ------------------------------------------------------------------------------------------------------------------- P9-S11 */
 
 test('P9-S11 o resumo traz uma linha por arquivo novo, por tipo: manifesto com sha256sum, seq e sealSha256; fecho com sha256sum, retiredKeyId, signerKeyId e as cabeças `auditId:seq:<12 hex>`; nada além disso', async () => {

@@ -14,10 +14,13 @@
 > job `receivers artifact (build, hash)` do `ci.yml`) e os modelos de *wrapper* `deploy/hostinger/receivers/gmn-deploy.modelo.sh` e
 > `gmn-hml-deploy.modelo.sh`; instalação no H-04.
 >
-> **O que ainda não existe:** o **receptor de manifestos** (P9.3b: `gmn-seal-receiver.cjs`, a linha dele no `receivers.sha256` e o
-> *wrapper* `gmn-hml-seals`); e a **entrega de manifestos** pelo CI (jobs `seals-verify` e `seals-deliver`, P9.5). Até a P9.5, um
-> dispatch com `acao = entregar-selos` não roda nenhum job. A parte do receptor de manifestos no H-04 e a recusa da chave de
-> manifestos no P9-O03 dependem da P9.3b.
+> **Receptor de manifestos (P9.3b):** o artefato `gmn-seal-receiver.cjs` (linha própria no `receivers.sha256`, conferida pelo mesmo job) e os
+> modelos de *wrapper* `deploy/hostinger/receivers/gmn-seals.modelo.sh` e `gmn-hml-seals.modelo.sh`; instalação no H-04, pastas e trava no
+> H-06. A pasta de manifestos passa a ser `gmn-hml-seals:10001 2750` (`gmn-seals:10001 2750` em produção), e o `verificar-pastas-fase6.sh` a
+> confere.
+>
+> **O que ainda não existe:** a **entrega de manifestos** pelo CI (jobs `seals-verify` e `seals-deliver`, P9.5). Até a P9.5, um dispatch com
+> `acao = entregar-selos` não roda nenhum job.
 
 ## 0. Regras que valem em todo o runbook
 
@@ -31,8 +34,8 @@
 - **Nada é apagado no host** num incidente ou rollback: manifestos, imagens, stacks, pastas e secrets ficam
   (`PLANO-DE-ROLLBACK.md`).
 - **Pré-requisitos de código na `main`:** P9.2 (lista de confiança `link-audit-seals/<amb>/trust-keys.txt` e o check `seals`), P9.3a
-  (receptor de deploy) e P9.4 (este runbook). A P9.3b (receptor de manifestos e a regra `2750` da pasta de manifestos no
-  `verificar-pastas-fase6.sh`) antes do H-06.
+  (receptor de deploy), P9.3b (receptor de manifestos e a regra `2750` da pasta de manifestos no `verificar-pastas-fase6.sh`, antes do
+  H-06) e P9.4 (este runbook).
 
 ### 0.1 Códigos que o job imprime
 
@@ -135,11 +138,10 @@ O Node dos receptores é o oficial, a mesma versão do `Dockerfile` (`node:22.23
 
 Recomendado: conferir também a assinatura do `SHASUMS256.txt` (`SHASUMS256.txt.sig`) com as chaves públicas de release do Node.
 
-**Receptor de deploy (P9.3a).** Regra: o artefato sai do **commit** que você escolheu (`<SHA40>`, a versão instalada), é instalado
-como root, `0444`, só depois do `sha256sum -c` contra o `deploy/hostinger/receivers.sha256` desse commit; o CI **nunca** atualiza
-receptor (spec §5.6, "Implementação (P9.3a)"). O receptor de manifestos (`gmn-seal-receiver.cjs` e o *wrapper* `gmn-hml-seals`) entra
-na P9.3b, pelo mesmo caminho; até lá, o `command=` da chave de manifestos aponta para um *wrapper* que ainda não existe, e toda
-conexão dela falha fechada.
+**Receptores de deploy (P9.3a) e de manifestos (P9.3b).** Regra: os artefatos saem do **commit** que você escolheu (`<SHA40>`, a versão
+instalada), são instalados como root, `0444`, só depois do `sha256sum -c` contra o `deploy/hostinger/receivers.sha256` desse commit; o CI
+**nunca** atualiza receptor (spec §5.6 e §5.7, "Implementação (P9.3a)" e "(P9.3b)"). Os dois saem do mesmo build, com os quatro modelos de
+*wrapper*; enquanto o *wrapper* de um usuário não estiver instalado (passos 3 e 4), toda conexão da chave dele falha fechada.
 
 1. **Na estação**, sem segredo, num clone limpo do commit: o build é reprodutível (o mesmo do job do CI) e copia para a pasta de saída
    os **modelos** dos *wrappers*; o `--check` e o `sha256sum -c` conferem artefato **e** modelos contra o `receivers.sha256` do commit e
@@ -152,9 +154,9 @@ conexão dela falha fechada.
      git -C "$D/repo" checkout --quiet --detach <SHA40>
      test -z "$(git -C "$D/repo" status --porcelain)"                            # árvore limpa
      cd "$D/repo" && npm ci --no-audit --no-fund
-     npm run --silent deploy:receivers-artifact -- --out "$D/receptores" --check  # artefato e os dois modelos
+     npm run --silent deploy:receivers-artifact -- --out "$D/receptores" --check  # os dois artefatos e os quatro modelos
      cp deploy/hostinger/receivers.sha256 "$D/receptores/"
-     ( cd "$D/receptores" && sha256sum -c --strict receivers.sha256 )            # gmn-deploy-receiver.cjs, gmn-deploy.modelo.sh, gmn-hml-deploy.modelo.sh: OK
+     ( cd "$D/receptores" && sha256sum -c --strict receivers.sha256 )            # os dois receptores e os quatro modelos: OK
      echo "copie para a VPS: $D/receptores"; echo "clone limpo (<CLONE_LIMPO>): $D/repo"
    )
    ```
@@ -176,11 +178,11 @@ conexão dela falha fechada.
    ( set -euo pipefail                                                           # na VPS
      S='<PASTA_PRIVADA>'; V=<SHA40>
      [ "$(stat -c '%U %a' "$S")" = "$(id -un) 700" ]                             # a pasta é sua e privada
-     ( cd "$S" && sha256sum -c --strict receivers.sha256 )                       # os três: OK
+     ( cd "$S" && sha256sum -c --strict receivers.sha256 )                       # os seis: OK
      sudo install -d -m 0755 -o root -g root /opt/gmn-receivers/bin "/opt/gmn-receivers/$V"
      sudo install -m 0444 -o root -g root "$S/gmn-deploy-receiver.cjs" "$S/gmn-deploy.modelo.sh" "$S/gmn-hml-deploy.modelo.sh" \
-       "$S/receivers.sha256" "/opt/gmn-receivers/$V/"
-     ( cd "/opt/gmn-receivers/$V" && sha256sum -c --strict receivers.sha256 )      # P9-O04: os três OK
+       "$S/gmn-seal-receiver.cjs" "$S/gmn-seals.modelo.sh" "$S/gmn-hml-seals.modelo.sh" "$S/receivers.sha256" "/opt/gmn-receivers/$V/"
+     ( cd "/opt/gmn-receivers/$V" && sha256sum -c --strict receivers.sha256 )      # P9-O04: os seis OK
      rm -rf -- "$S"
    )
    ```
@@ -214,12 +216,56 @@ conexão dela falha fechada.
    fica em `/opt/gmn-receivers/<SHA40 anterior>/` para voltar (seção 6, "Receptor com defeito").
 
    Com um marcador sem preencher, o *wrapper* falha fechado: `E_ARTIFACT` (hash) ou `E_INTERNAL` (parâmetros, Node ausente). O
-   *wrapper* precisa do `/usr/bin/flock` (util-linux) e do arquivo de trava do root `<estado>/deploy.flock` (H-06); outra execução do
+   *wrapper* precisa do `/usr/bin/flock` (util-linux) e do arquivo de trava do root `/var/lib/gmn-receivers-locks/<amb>/deploy.flock` (H-06;
+   numa pasta do root que o usuário do receptor não grava, revisão do PR #72); outra execução do
    mesmo ambiente ⇒ `E_LOCKED`, e a trava some sozinha quando o receptor termina ou morre (é do kernel, presa ao descritor). O receptor
    exige o ambiente limpo (só `PATH` e `SSH_ORIGINAL_COMMAND`, senão `E_INTERNAL`), a pasta de estado e o log `0600` do H-06; ele cria
    sozinho a pasta de recebimento `<estado>/incoming` (`0700`) e uma trava de defesa `<estado>/deploy.lock`, que nunca retoma uma trava
-   alheia. Se um receptor for morto por `SIGKILL`, esse arquivo fica e o deploy seguinte recusa com `E_LOCKED`: confirme que nada roda
-   (`sudo flock -n /var/lib/gmn-deploy/<amb>/deploy.flock true` sai com 0) e só então apague o `deploy.lock`.
+   alheia. Se um receptor for morto por `SIGKILL`, esse arquivo fica e o deploy seguinte recusa com `E_LOCKED`. Apague-o SEGURANDO a trava do
+   kernel (nenhum receptor roda enquanto ela está com você; se outro a tem, o `flock -n` sai com 1 e nada é apagado):
+   `sudo flock -n /var/lib/gmn-receivers-locks/<amb>/deploy.flock rm -- /var/lib/gmn-deploy/<amb>/deploy.lock`.
+   Erros de partida do `flock`, do `env` ou do Node nunca saem como texto: o *wrapper* captura o stderr e só repassa uma linha `ERRO E_…` do
+   conjunto fechado; qualquer outra coisa vira `ERRO E_INTERNAL` (revisão do PR #72; o detalhe fica no log local do receptor, quando ele chegou a
+   rodar).
+
+4. **Wrapper de manifestos de homologação** (`/opt/gmn-receivers/bin/gmn-hml-seals`, root, `0755`; P9.3b): o modelo **já conferido e
+   instalado como root** no passo 2 é conferido de novo, preenchido numa pasta privada só com a versão e o hash do artefato de manifestos (a
+   pasta de manifestos, a lista instalada, a trava e o log de homologação já estão no modelo) e só então instalado. A cada execução, o
+   *wrapper* confere o sha256 do artefato (`E_ARTIFACT`), pega a trava do kernel `/var/lib/gmn-receivers-locks/homologacao/seals.flock`
+   (H-06; `E_LOCKED`), aplica `umask 027`, limpa o ambiente (`env -i`) e roda o Node 22 sob `--permission` com exatamente os grants da spec §5.7
+   (leitura da pasta de manifestos, da lista **instalada** e do artefato; escrita na pasta de manifestos, em `/var/lib/gmn-seals/homologacao`
+   e em `/var/log/gmn-receivers`), sem processo filho:
+
+   ```bash
+   ( set -euo pipefail; set +x
+     V=<SHA40>
+     K="/opt/gmn-receivers/$V"; T="$(mktemp -d)"                                 # T: pasta privada (0700)
+     ( cd "$K" && sha256sum -c --strict receivers.sha256 )                       # artefato e modelo de novo, antes de usar
+     H="$(awk '$2 == "gmn-seal-receiver.cjs" { print $1 }' "$K/receivers.sha256")"
+     [[ "$V" =~ ^[0-9a-f]{40}$ && "$H" =~ ^[0-9a-f]{64}$ ]]
+     sed -e "s|<VERSAO>|$V|g" -e "s|<SHA256_DO_ARTEFATO>|$H|g" "$K/gmn-hml-seals.modelo.sh" > "$T/gmn-hml-seals"
+     if grep -n '<[A-Z_]*>' "$T/gmn-hml-seals"; then echo "PARE: marcador sem preencher" >&2; exit 1; fi
+     sudo install -m 0755 -o root -g root "$T/gmn-hml-seals" /opt/gmn-receivers/bin/gmn-hml-seals
+     cmp "$T/gmn-hml-seals" /opt/gmn-receivers/bin/gmn-hml-seals                 # instalado = preenchido
+     sha256sum /opt/gmn-receivers/bin/gmn-hml-seals                              # registrar no relatório (wrapper instalado)
+     rm -rf -- "$T"
+   )
+   ```
+
+   Produção (seção 3): o mesmo bloco com `gmn-seals.modelo.sh`, destino `/opt/gmn-receivers/bin/gmn-seals`, e mais um marcador,
+   `<RAIZ_MANIFESTOS>`: o valor de `GMN_RAIZ_DADOS_MANIFESTOS` de produção (caminho absoluto, sem `/` no fim; acrescente
+   `-e "s|<RAIZ_MANIFESTOS>|$R|g"` ao `sed`, com `R` conferido por `[[ "$R" =~ ^/[A-Za-z0-9._/-]*[A-Za-z0-9._-]$ ]]`). Sem ele preenchido, o
+   receptor recusa a instalação (`E_INTERNAL`).
+
+   O receptor de manifestos exige, além do H-06: o ambiente limpo e os parâmetros fixos do modelo (senão `E_INTERNAL`); o modelo de
+   permissões ligado, sem filho nem worker e **sem escrita** sobre a lista instalada (senão `E_INTERNAL`); a lista instalada pelo primeiro
+   deploy (antes dele, todo `put` recusa com `E_TRUST_LIST_MISMATCH`; ele nunca lê a `trust-keys.pending`); e o log `0600`. Ele cria uma trava de
+   defesa `/var/lib/gmn-seals/<amb>/lock`, que nunca retoma uma trava alheia e só apaga a própria (mesmo inode). Se um receptor for morto por
+   `SIGKILL`, esse arquivo fica e a entrega seguinte recusa com `E_LOCKED`. Apague-o SEGURANDO a trava do kernel (se outro a tem, nada é
+   apagado): `sudo flock -n /var/lib/gmn-receivers-locks/<amb>/seals.flock rm -- /var/lib/gmn-seals/<amb>/lock`. Um temporário
+   `.<nome>.tmp-<32 hex>` que sobrar numa
+   pasta de auditoria (queda no meio) não é manifesto (o verificador o ignora) e pode ser apagado à mão; um `E_WRITE_UNCONFIRMED` é incidente
+   (o arquivo final existe e o receptor nunca o apaga; a entrega seguinte o acha como `ALREADY_PRESENT` só se os bytes conferem).
 
 **Impressão do projeto de produção no *wrapper* de homologação (`--forbid-supabase`), agora, antes de habilitar a chave do CI (H-05) e
 do primeiro deploy de homologação.** É o que faz o receptor de homologação recusar o projeto Supabase de produção
@@ -254,14 +300,22 @@ gh secret set GMN_SEALS_SSH_KEY --env homologacao --repo <DONO>/<REPO> < <PASTA_
 Só os arquivos `.pub` vão para a VPS. As privadas ficam na estação apenas até a prova do P9-O03 (logo depois do H-09) e só então,
 se as duas recusas esperadas aparecerem, são apagadas com `shred -u`; a cópia que vale é a do segredo do ambiente.
 
-**Na VPS** (usuários com shell `/bin/sh`, porque o `sshd` roda o comando forçado pelo shell do usuário; `nologin` o impediria):
+**Na VPS** (usuários com shell `/bin/sh`, porque o `sshd` roda o comando forçado pelo shell do usuário; `nologin` o impediria). O usuário
+de manifestos (`gmn-hml-seals`; em produção `gmn-seals`) tem uid próprio, diferente de `10001` e de `0`: ele é o **dono** da pasta de
+manifestos (H-06) e não entra no grupo `10001` (o do web), no `docker` nem no `sudo` (spec §5.10, P9.3b):
 
 ```bash
-sudo useradd --system --shell /bin/sh --home-dir /nonexistent --no-create-home gmn-hml-deploy
-sudo useradd --system --shell /bin/sh --home-dir /nonexistent --no-create-home gmn-hml-seals
-sudo usermod -aG docker gmn-hml-deploy                 # só o de deploy; o de manifestos NUNCA no docker nem no sudo
-sudo usermod -p '*' gmn-hml-deploy && sudo usermod -p '*' gmn-hml-seals   # sem senha válida, sem conta "travada" para a chave
-id gmn-hml-deploy; id gmn-hml-seals
+( set -euo pipefail
+  id -u gmn-hml-deploy >/dev/null 2>&1 || sudo useradd --system --shell /bin/sh --home-dir /nonexistent --no-create-home gmn-hml-deploy
+  id -u gmn-hml-seals >/dev/null 2>&1 || sudo useradd --system --shell /bin/sh --home-dir /nonexistent --no-create-home gmn-hml-seals
+  sudo usermod -aG docker gmn-hml-deploy                 # só o de deploy; o de manifestos NUNCA no docker nem no sudo
+  sudo usermod -p '*' gmn-hml-deploy && sudo usermod -p '*' gmn-hml-seals   # sem senha válida, sem conta "travada" para a chave
+  id gmn-hml-deploy; id gmn-hml-seals
+  u="$(id -u gmn-hml-seals)"; [ "$u" != 10001 ] && [ "$u" != 0 ] || { echo "PARE: gmn-hml-seals com uid 10001 ou 0" >&2; exit 1; }
+  if id -G gmn-hml-seals | tr ' ' '\n' | grep -qxE '0|10001' || id -nG gmn-hml-seals | tr ' ' '\n' | grep -qxE 'docker|sudo|wheel|adm'; then
+    echo "PARE: gmn-hml-seals num grupo proibido (root, 10001, docker, sudo, wheel ou adm)" >&2; exit 1
+  fi
+)
 sudo install -d -m 0755 -o root -g root /etc/ssh/authorized_keys
 printf 'restrict,command="%s" %s\n' /opt/gmn-receivers/bin/gmn-hml-deploy "$(cat gmn-hml-deploy.pub)" | sudo tee /etc/ssh/authorized_keys/gmn-hml-deploy >/dev/null
 printf 'restrict,command="%s" %s\n' /opt/gmn-receivers/bin/gmn-hml-seals "$(cat gmn-hml-seals.pub)" | sudo tee /etc/ssh/authorized_keys/gmn-hml-seals >/dev/null
@@ -345,7 +399,8 @@ e log só é criado se **não** existir; o que já existe é conferido (tipo `ex
     sudo install -d -m 0755 -o root -g root "$mnt"                              # a raiz do sistema montado
   done
   sudo install -d -m 0700 -o 10001 -g 10001 /srv/gmn-hml/vol-recibos/decisoes /srv/gmn-hml/vol-recibos/resultados /srv/gmn-hml/vol-livro/livro
-  sudo install -d -m 2750 -o gmn-hml-seals -g 10001 /srv/gmn-hml/manifestos     # regra da P9.3b (P9-O05)
+  sudo install -d -m 2750 -o gmn-hml-seals -g 10001 /srv/gmn-hml/manifestos     # regra da P9.3b (P9-O05): dono o receptor, grupo do web, setgid
+  [ "$(stat -c '%U:%g %a' /srv/gmn-hml/manifestos)" = "gmn-hml-seals:10001 2750" ] || { echo "PARE: dono, grupo ou modo da pasta de manifestos" >&2; exit 1; }
 )
 stat -c '%U:%g %a %n' /srv/gmn-hml/manifestos                                    # gmn-hml-seals:10001 2750
 findmnt -n -o SOURCE,FSTYPE,TARGET --mountpoint /srv/gmn-hml/vol-recibos; findmnt -n -o SOURCE,FSTYPE,TARGET --mountpoint /srv/gmn-hml/vol-livro
@@ -358,9 +413,17 @@ conferido.
 ( set -euo pipefail
   sudo install -d -m 0755 -o root -g root /var/lib/gmn-deploy /var/lib/gmn-seals /var/log/gmn-receivers
   sudo install -d -m 0711 -o gmn-hml-deploy -g gmn-hml-deploy /var/lib/gmn-deploy/homologacao
-  # trava do kernel do receptor de deploy (flock -n no wrapper): arquivo do root, só leitura para o usuário; nunca apagado
-  [ -e /var/lib/gmn-deploy/homologacao/deploy.flock ] || sudo install -m 0644 -o root -g root /dev/null /var/lib/gmn-deploy/homologacao/deploy.flock
   sudo install -d -m 0700 -o gmn-hml-seals -g gmn-hml-seals /var/lib/gmn-seals/homologacao
+  # travas do kernel dos dois receptores (flock -n nos wrappers; revisão do PR #72): arquivos do root numa pasta do root que os usuários dos
+  # receptores NÃO gravam (nenhum deles apaga nem troca a trava); nunca apagadas. As travas de defesa do Node (`deploy.lock`, `lock`) ficam nas
+  # pastas de estado e são criadas e apagadas pelos próprios receptores
+  sudo install -d -m 0755 -o root -g root /var/lib/gmn-receivers-locks /var/lib/gmn-receivers-locks/homologacao
+  for lock in deploy seals; do
+    f="/var/lib/gmn-receivers-locks/homologacao/$lock.flock"
+    [ -e "$f" ] || sudo install -m 0644 -o root -g root /dev/null "$f"
+    [ "$(stat -c '%U:%G %a' "$f")" = "root:root 644" ] || { echo "PARE: dono ou modo da trava $f" >&2; exit 1; }
+  done
+  [ "$(stat -c '%U:%G %a' /var/lib/gmn-receivers-locks/homologacao)" = "root:root 755" ] || { echo "PARE: dono ou modo da pasta das travas" >&2; exit 1; }
   for pair in deploy:gmn-hml-deploy seals:gmn-hml-seals; do
     log="/var/log/gmn-receivers/homologacao-${pair%%:*}.log"; owner="${pair#*:}"
     [ -e "$log" ] || sudo install -m 0600 -o "$owner" -g "$owner" /dev/null "$log"
@@ -602,13 +665,13 @@ Antes do primeiro deploy de produção (G3), repita H-03 a H-09 com os nomes de 
 | Item | Produção |
 |---|---|
 | Ambiente do GitHub | `producao`, mesma proteção (P9-O01) e segredos próprios: projeto Supabase de **produção**, `GMN_PUBLIC_HOST=<DOMINIO_PRODUCAO>` |
-| Usuários | `gmn-deploy` (grupo `docker`) e `gmn-seals` (sem `docker`), pares novos, *wrappers* do ambiente `producao` |
+| Usuários | `gmn-deploy` (grupo `docker`) e `gmn-seals` (sem `docker`, sem `sudo`, fora do grupo `10001`, uid ≠ `10001` e ≠ `0`), pares novos, *wrappers* do ambiente `producao` (o de manifestos com o marcador `<RAIZ_MANIFESTOS>` preenchido, H-04 passo 4) |
 | Arquivos | `/opt/gmn/stack.yml` (sem sobreposição: o `deploy` manda `-`), `/opt/gmn/<ARQUIVO_DE_VARIAVEIS>` root:`gmn-deploy` `0640` |
 | Arquivo de variáveis | **sem** `GMN_LINK_AUDIT_HOMOLOGATION` (proibida), sem `GMN_TRAEFIK_NAME` (o padrão `gmn`), sem `GMN_IMAGE_TAG` e sem a lista de confiança; `GMN_WORKER_REPLICAS` igual às réplicas atuais do Worker (`E_WORKER_REPLICAS_DRIFT`) |
 | Pastas | as reais (`GUIA-DE-IMPLANTACAO.md` §3.3), com a pasta de manifestos `gmn-seals:10001 2750` (P9-O05) |
 | Secrets do Swarm | os `gmn_*` de produção (`GUIA-DE-IMPLANTACAO.md` §3.1 e §3.4) |
 | Lista de confiança | `link-audit-seals/producao/trust-keys.txt`, nenhum id `ensaio-` |
-| Estado e logs | `/var/lib/gmn-deploy/producao`, `/var/lib/gmn-seals/producao`, `/var/log/gmn-receivers/producao-*.log` |
+| Estado e logs | `/var/lib/gmn-deploy/producao`, `/var/lib/gmn-seals/producao`, as travas do kernel `/var/lib/gmn-receivers-locks/producao/{deploy,seals}.flock` (root, pasta `0755`, arquivos `0644`, H-06), `/var/log/gmn-receivers/producao-*.log` |
 
 A impressão do projeto de produção no *wrapper* de homologação (`--forbid-supabase`) já foi instalada no H-04, antes da homologação.
 Para produção, ainda: a autorização escrita da implantação (checklist §0). **P9-O07:** primeiro deploy de produção pelo workflow, `VERIFICACAO-POS-DEPLOY.md`
@@ -682,6 +745,10 @@ Pela spec §10.3 e pelo `PLANO-DE-ROLLBACK.md`:
   instalada; corrija por commit e dispare de novo.
 - **Do pipeline:** corte o acesso (§5) e apague os segredos do ambiente. Sem o pipeline, a produção fica parada até ele voltar.
 - **Receptor com defeito:** reinstale a versão anterior (hash do commit anterior, `sha256sum -c`); o CI nunca atualiza receptor.
+- **Restauração da pasta de manifestos** (backup): a troca inteira roda segurando a trava do kernel do receptor de manifestos
+  (`/var/lib/gmn-receivers-locks/<amb>/seals.flock`, `flock -n`), e o dono, o grupo e os modos voltam a `gmn-seals:10001 2750` (homologação
+  `gmn-hml-seals`), arquivos `0444`: `PLANO-DE-BACKUP-E-RESTAURACAO.md`, "Restauração da Fase 6". Uma entrega que já tinha começado recusa
+  (`E_UNSAFE_PATH`), e a entrega seguinte repete o arquivo (`WRITTEN` ou `ALREADY_PRESENT`).
 
 ## 7. Onde registrar
 

@@ -200,14 +200,34 @@ echo "rodada $RODADA válida nos seis destinos"
    docker service scale gmn_gmn-web=0                      # a trava fica com esta sessão até religar o web (passo 4)
    mv -- "$P" "$P.antigo-$(date -u +%Y%m%d-%H%M%S)"        # a viva sai para um caminho IRMÃO (nunca para dentro de si mesma)
    mv -- "$P.restaurado-<RODADA>" "$P"                     # a restaurada volta para a origem
-   chown -R 10001:10001 -- "$P" && chmod 0700 -- "$P"
+   chown -R 10001:10001 -- "$P" && chmod 0700 -- "$P"      # as CINCO pastas de dados (a de manifestos, logo abaixo)
    stat -c '%u:%g %a %n' -- "$P"                           # esperado: 10001:10001 700
    ( cd -- "$P" && sha256sum --quiet --strict -c "$C/SHA256SUMS" )   # confere de novo no lugar, ANTES de religar
    ```
+   **Pasta de manifestos (P9.3b): restaurar preservando dono, grupo e modo.** Para `P` = a pasta de `GMN_RAIZ_DADOS_MANIFESTOS`, no lugar do
+   `chown`/`chmod` acima (que a daria ao uid 10001 e quebraria a separação entre a chave de manifestos e o web, spec
+   `docs/specs/ci-deploy-and-seal-delivery.md` §5.10): o dono volta a ser o usuário do receptor de manifestos (`gmn-seals`; em homologação,
+   `gmn-hml-seals`), o grupo `10001`, as pastas `2750` (setgid) e os arquivos `0444`, e o `verificar-pastas-fase6.sh` do passo 4 confere.
+   A troca inteira (os dois `mv`, o dono e os modos e a conferência no lugar) roda **segurando a trava do kernel do receptor de manifestos**
+   (revisão do PR #72): nenhuma entrega grava no meio da troca, e uma entrega que já tinha começado recusa com `E_UNSAFE_PATH` (a raiz mudou)
+   ou espera; se o `flock -n` não pegar a trava, há uma entrega em andamento: não restaure agora. Para essa pasta, este bloco SUBSTITUI os
+   dois `mv` e o `chown`/`chmod` do bloco acima:
+   ```bash
+   exec 8<"/var/lib/gmn-receivers-locks/producao/seals.flock"   # homologação: /var/lib/gmn-receivers-locks/homologacao/seals.flock
+   flock -n 8 || { echo "entrega de manifestos em andamento: não restaurar agora" >&2; exit 1; }   # segura durante TODA a troca
+   mv -- "$P" "$P.antigo-$(date -u +%Y%m%d-%H%M%S)"        # a viva sai para um caminho IRMÃO
+   mv -- "$P.restaurado-<RODADA>" "$P"                     # a restaurada volta para a origem
+   chown -R gmn-seals:10001 -- "$P"                        # homologação: gmn-hml-seals:10001
+   find "$P" -type d -exec chmod 2750 -- {} +              # pastas 2750: o web lê pelo grupo, o setgid passa o grupo às subpastas novas
+   find "$P" -type f -exec chmod 0444 -- {} +              # manifestos e fechos somente leitura
+   stat -c '%U:%g %a %n' -- "$P"                           # esperado: gmn-seals:10001 2750
+   ( cd -- "$P" && sha256sum --quiet --strict -c "$C/SHA256SUMS" )   # confere de novo no lugar, ANTES de religar
+   exec 8<&-                                               # só agora as entregas podem voltar
+   ```
    Repetir para cada pasta da rodada; se alguma conferência falhar, **não** religar: desfazer a troca daquela pasta com os dois `mv` ao
    contrário e investigar.
-4. Conferir as seis pastas com `deploy/hostinger/verificar-pastas-fase6.sh` (distintas, nenhuma dentro de outra, recibos e livro em
-   dispositivos independentes), `docker service scale gmn_gmn-web=1` e ler pela API: histórico que não confere devolve 409 e nenhum dado;
+4. Conferir as seis pastas com `deploy/hostinger/verificar-pastas-fase6.sh` (distintas, nenhuma dentro de outra, cinco em `0700` e a de
+   manifestos em `2750` com o grupo `10001` e o dono do receptor, recibos e livro em dispositivos independentes), `docker service scale gmn_gmn-web=1` e ler pela API: histórico que não confere devolve 409 e nenhum dado;
    comparar as cabeças com o `CABECAS.json` da rodada. **Nunca** apagar arquivos para "destravar" uma auditoria.
 5. Registrar data, rodada restaurada, resultado das conferências e o estado `externalGuard` da tela.
 

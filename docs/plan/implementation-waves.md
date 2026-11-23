@@ -745,7 +745,7 @@ Motivos:
 | P9.1 | Spec, ADR-0004, modelo de ameaças DC-xx, decisão do responsável registrada no p1-canal §6.3, linhas no plano e no P-9 da spec dos portões | decisão do responsável (23/11/2026) | W5.3 (sem código) | ✅ PR #66 |
 | P9.2 | Caminho `link-audit-seals/` (dois `trust-keys.txt` vazios, `.gitattributes`, `.dockerignore`); núcleo puro `src/lib/link-audit-seals-channel/` (gramática de caminhos, `auditId` opaco, forma canônica, lista: parser, regras de ambiente e de transição, regras do conjunto de mudanças, cadeia pelo verificador `v2` real); CLI `link-audit:seals-check`; job `seals` no `ci.yml`; runbooks do custodiante e de chaves (fixação por PR, ordem da aposentadoria, `aud-<16 hex>`) | P9.1 | — | 🟡 em revisão (branch `feat/p9-2-seals-check`; critérios marcados na spec §6 com o teste) |
 | P9.3a | Receptor de deploy (`src/lib/deploy-receiver/`, entrada em `scripts/`), com a regra de transição contra a lista instalada; build reprodutível dos artefatos dos receptores com hash versionado em `deploy/hostinger/receivers.sha256` e job do CI que o confere | P9.2 (módulo da lista: parser do arquivo, regras de ambiente e de transição) | — (pode começar antes, mas mergeia depois da P9.2) | 🟡 em revisão (branch `feat/p9-3a-deploy-receiver`; P9-D01 a P9-D14 marcados na spec §6; instalação no runbook H-04) |
-| P9.3b | Receptor de manifestos (núcleo do canal + verificador `v2` + gravação exclusiva do `sign` extraída para módulo compartilhado; hash do artefato do `sign` refeito); `verificar-pastas-fase6.sh` com a regra nova da pasta de manifestos; emendas VC-E8, PG-V04 e EN-12 | P9.2, P9.3a (pipeline dos artefatos) | P9.4 | ⬜ |
+| P9.3b | Receptor de manifestos (núcleo do canal + verificador `v2` + gravação exclusiva do `sign` extraída para módulo compartilhado; hash do artefato do `sign` refeito); `verificar-pastas-fase6.sh` com a regra nova da pasta de manifestos; emendas VC-E8, PG-V04 e EN-12 | P9.2, P9.3a (pipeline dos artefatos) | P9.4 | 🟡 em revisão (branch `feat/p9-3b-seal-receiver`; P9-R01 a P9-R13 e P9-F01 marcados na spec §6; instalação no runbook H-04 a H-06) |
 | P9.4 | `.github/workflows/deploy.yml` (job `deploy`); `stack.yml` com nomes do Traefik parametrizados e secrets em sintaxe longa; sobreposição `deploy/hostinger/stack-hml.yml`; testes estáticos do workflow e da stack; runbook do responsável `deploy/hostinger/RUNBOOK-DEPLOY-PELO-CI.md` (H-01 a H-10, produção, rotação, incidente); guias, plano de rollback, verificação pós-deploy e `CLAUDE.md` | P9.3a | P9.3b | ⬜ |
 | P9.5 | Jobs `seals-verify` e `seals-deliver` no `deploy.yml`; registro RC-08 no resumo; procedimento final do p1-canal §3 e campos do livro de manifestos | P9.3b, P9.4 (mesmo arquivo `deploy.yml`) | W5.3 (código só; o ensaio não usa o canal enquanto ela não estiver na `main`) | ⬜ |
 
@@ -789,7 +789,7 @@ Motivos:
 
 - **Objetivo**: o único comando que a chave de manifestos executa: segunda verificação `v2` no host, gravação só por acréscimo e
   durável.
-- **Escopo**: spec §5.7, §5.8, §5.10; `tests/link-audit-seal-receiver.test.ts`; extração da gravação exclusiva do `sign-run.ts`
+- **Escopo**: spec §5.7, §5.8, §5.10; `tests/link-audit-seal-receiver.test.ts` (e `-artifact`, `-isolation`); extração da gravação exclusiva do `sign-run.ts`
   (hash do artefato do `sign` refeito no mesmo PR); `verificar-pastas-fase6.sh` + `tests/deploy-verificar-pastas.test.ts`; guia
   §3.3; plano de backup (restauração com dono, grupo e modo); emendas VC-E8, PG-V04 e EN-12.
 - **Critérios de aceite**: P9-R01 a P9-R13, P9-F01.
