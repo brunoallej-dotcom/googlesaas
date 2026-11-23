@@ -8,8 +8,9 @@
 #
 # Os segredos NÃO ficam aqui: são `docker secret` externos criados antes do deploy.
 # Fase 6 (G1.a; spec dos portões de produção §5.3): esta versão exige, ANTES do deploy, as seis pastas novas no host (marcadores
-# GMN_RAIZ_DADOS_*, sem caminho padrão) e os três secrets gmn_link_audit_* (ordem de ativação no GUIA-DE-IMPLANTACAO.md).
-# A stack só declara o que o código lê: os secrets da guarda externa entram com o código da G1.b.
+# GMN_RAIZ_DADOS_*, sem caminho padrão) e os seis secrets gmn_link_audit_* (ordem de ativação no GUIA-DE-IMPLANTACAO.md).
+# A stack só declara o que o código lê. G1.b.2a: os três secrets da guarda externa (credencial do papel de escrita, CA do TLS e chave do
+# pseudônimo) entram com o código que os lê; o deploy desta versão exige a guarda provisionada (migração 004 aplicada, senha e secrets).
 
 services:
   gmn-web:
@@ -49,6 +50,12 @@ services:
       GMN_LINK_AUDIT_ORIGIN_KEY_FILE: /run/secrets/gmn_link_audit_origin_key
       GMN_LINK_AUDIT_LEDGER_KEY_FILE: /run/secrets/gmn_link_audit_ledger_key
       GMN_LINK_AUDIT_LOG_KEY_FILE: /run/secrets/gmn_link_audit_log_key
+      # Guarda externa (G1.b.2a; spec §5.1.7): lidos SÓ pelo módulo do livro. A credencial é a URL do papel gmn_guard_writer com
+      # sslmode=verify-full; a CA é o certificado PÚBLICO que ancora o TLS (entregue por secret pela integridade: trocá-la permitiria
+      # interceptar a conexão). A chave aposentada (GMN_LINK_AUDIT_GUARD_RETIRED_KEYS) só entra durante uma rotação, como as outras.
+      GMN_LINK_AUDIT_GUARD_DB_URL_FILE: /run/secrets/gmn_link_audit_guard_db_url
+      GMN_LINK_AUDIT_GUARD_DB_CA_FILE: /run/secrets/gmn_link_audit_guard_db_ca
+      GMN_LINK_AUDIT_GUARD_KEY_FILE: /run/secrets/gmn_link_audit_guard_key
     secrets:
       - gmn_supabase_service_role
       - gmn_supabase_anon
@@ -57,6 +64,9 @@ services:
       - gmn_link_audit_origin_key
       - gmn_link_audit_ledger_key
       - gmn_link_audit_log_key
+      - gmn_link_audit_guard_db_url
+      - gmn_link_audit_guard_db_ca
+      - gmn_link_audit_guard_key
     volumes:
       - type: bind
         source: ${GMN_DATA_ROOT:-/srv/gmn}/audits
@@ -314,4 +324,10 @@ secrets:
   gmn_link_audit_ledger_key:
     external: true
   gmn_link_audit_log_key:
+    external: true
+  gmn_link_audit_guard_db_url:
+    external: true
+  gmn_link_audit_guard_db_ca:
+    external: true
+  gmn_link_audit_guard_key:
     external: true

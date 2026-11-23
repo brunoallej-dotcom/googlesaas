@@ -1,8 +1,8 @@
 /*
  * ALARMES DA GUARDA EXTERNA (GE-E6, parte pura; spec `link-audit-production-gates.md` §5.1.4 regras 3, 4, 5 e 7, §5.1.7 e §9). Porta INJETÁVEL do domínio do livro:
  * o serviço emite eventos TIPADOS, com campos fechados — só enums e inteiros (posições do livro, atraso, idade). Nunca `auditId` em claro (D-G0-5: ele pode nascer do nome
- * da empresa), e-mail, caminho, hash ou texto livre. A ligação ao logger com o envelope da spec de observabilidade (§5.2) e a referência opaca da auditoria são da G1.b.2;
- * até lá o padrão é a porta que não faz nada.
+ * da empresa), e-mail, caminho, hash ou texto livre. A ligação ao logger com o envelope da spec de observabilidade (§5.2) é da G1.b.2a (`guardAlarmLogEntry` aqui,
+ * o destino em `ledger-wiring.ts`); o evento não leva referência da auditoria (nem o `audit_ref`): a tela mostra qual auditoria está congelada.
  */
 
 /** Os nove pontos em que o retorno da publicação era ignorado depois de um registro já gravado (§5.1.2, tabela S1–S9). */
@@ -30,5 +30,37 @@ export type GuardAlarm =
 export interface GuardAlarmSink {
   emit(alarm: GuardAlarm): void;
 }
-/** Padrão: nenhum destino (a G1.b.2 liga o logger). */
+/** Padrão: nenhum destino (as rotas ligam o logger, G1.b.2a: `ledger-wiring.ts`). */
 export const NO_GUARD_ALARMS: GuardAlarmSink = Object.freeze({ emit: () => undefined });
+
+/** Um alarme no ENVELOPE da spec de observabilidade (§5.2): `event` vai em `message`, `metadata` só com enums e inteiros, nível pela gravidade. */
+export interface GuardAlarmLogEntry {
+  readonly level: 'WARN' | 'ERROR';
+  readonly event: string;
+  readonly metadata: Readonly<Record<string, string | number>>;
+}
+const MS_PER_SECOND = 1_000;
+
+/**
+ * GE-E6 (G1.b.2a): o evento de log de cada alarme. Puro e fechado: nenhum campo além dos do alarme (nunca `auditId`, e-mail, caminho ou hash). `ERROR`
+ * para o que congela a auditoria ou indica adulteração (indisponível, MISMATCH, cabeça ausente, atraso além de `L_max`, CONFLICT); `WARN` para o que a
+ * próxima publicação obrigatória ainda resolve (atraso prolongado dentro de `L_max`, falha de publicação depois do registro).
+ */
+export function guardAlarmLogEntry(alarm: GuardAlarm): GuardAlarmLogEntry {
+  switch (alarm.kind) {
+    case 'GUARD_UNAVAILABLE':
+      return { level: 'ERROR', event: 'link_audit.guard.unavailable', metadata: { code: alarm.kind, call: alarm.call } };
+    case 'GUARD_MISMATCH':
+      return { level: 'ERROR', event: 'link_audit.guard.mismatch', metadata: { code: alarm.kind } };
+    case 'GUARD_HEAD_MISSING':
+      return { level: 'ERROR', event: 'link_audit.guard.head_missing', metadata: { code: alarm.kind, seq: alarm.ledgerSeq } };
+    case 'GUARD_LAGGING':
+      return { level: 'ERROR', event: 'link_audit.guard.lagging', metadata: { code: alarm.kind, lag: alarm.lag, maxLag: alarm.maxLag } };
+    case 'GUARD_BEHIND_PROLONGED':
+      return { level: 'WARN', event: 'link_audit.guard.behind_prolonged', metadata: { code: alarm.kind, lag: alarm.lag, ageSeconds: Math.floor(alarm.ageMs / MS_PER_SECOND) } };
+    case 'GUARD_PUBLISH_FAILED_AFTER_RECORD':
+      return { level: 'WARN', event: 'link_audit.guard.publish_failed_after_record', metadata: { code: alarm.kind, point: alarm.point, cause: alarm.cause, seq: alarm.ledgerSeq } };
+    case 'GUARD_CONFLICT':
+      return { level: 'ERROR', event: 'link_audit.guard.conflict', metadata: { code: alarm.kind, seq: alarm.ledgerSeq } };
+  }
+}

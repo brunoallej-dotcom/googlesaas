@@ -1,0 +1,69 @@
+name: guard-migration
+
+# Migração proposta da guarda externa do livro (supabase/proposed/004_link_audit_guard.sql) e o rollback dela, executados de
+# verdade num PostgreSQL do Supabase descartável (supabase/proposed/local-test/guard-run.sh): regra 7, privilégios, inventário
+# fechado do esquema, gatilhos, rollback e o adaptador real (pg). Workflow PRÓPRIO, fora do ci.yml (não mexe nos checks
+# obrigatórios), disparado só quando muda o que ele cobre. Sem secrets; o contêiner do banco roda com --network none.
+# A saída deste job no SHA exato da 004 é EVIDÊNCIA OBRIGATÓRIA antes de o responsável aplicá-la (spec dos portões, GE-E4 e PG-G08).
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'supabase/proposed/004*'
+      - 'supabase/proposed/local-test/**'
+      - 'src/lib/link-audit-ledger/guard-*'
+      - '.github/workflows/guard-migration.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'supabase/proposed/004*'
+      - 'supabase/proposed/local-test/**'
+      - 'src/lib/link-audit-ledger/guard-*'
+      - '.github/workflows/guard-migration.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guard-migration:
+    name: guard migration (Postgres do Supabase descartável)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      # public.ecr.aws/supabase/postgres:17.11.0.018 (PostgreSQL 17.11, a versão do projeto), fixada pelo digest da imagem usada no
+      # teste local (RepoDigests conferido em 22/11/2026). O guard-run.sh nunca baixa nada: a imagem é puxada aqui, por digest.
+      GUARD_PG_IMAGE: public.ecr.aws/supabase/postgres@sha256:7c31363a3f7434ff14945f1b8a4880e6eca8b362e197e88b87c476c77aa3cf8c
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: '22', cache: 'npm' }
+      - name: Install
+        run: npm ci
+      - name: Pull the Postgres image by digest
+        run: docker pull "$GUARD_PG_IMAGE"
+      - name: Migration 004, rollback and real adapter (container without network)
+        run: |
+          set -o pipefail
+          bash supabase/proposed/local-test/guard-run.sh "$GUARD_PG_IMAGE" 2>&1 | tee "$RUNNER_TEMP/guard-run.log"
+      - name: Evidence (exact files tested)
+        if: always()
+        run: |
+          {
+            echo "### guard-migration"
+            echo
+            echo "- commit: \`$GITHUB_SHA\`"
+            echo "- imagem: \`$GUARD_PG_IMAGE\`"
+            echo "- sha256 dos arquivos testados:"
+            echo '```'
+            sha256sum supabase/proposed/004_link_audit_guard.sql supabase/proposed/004_link_audit_guard.rollback.sql \
+              supabase/proposed/local-test/guard-run.sh supabase/proposed/local-test/guard-adapter-run.ts
+            echo '```'
+            echo "- resultado: $(grep -E '^(TODOS OS|FALHOU)' "$RUNNER_TEMP/guard-run.log" 2>/dev/null | tail -1 || echo 'sem saída')"
+          } >> "$GITHUB_STEP_SUMMARY"
