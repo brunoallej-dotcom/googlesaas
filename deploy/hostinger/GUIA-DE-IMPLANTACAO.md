@@ -101,8 +101,9 @@ sudo bash /opt/gmn/verificar-pastas-fase6.sh "$GMN_RAIZ_DADOS_DECISOES" "$GMN_RA
 
 ### 3.4 Segredos e variáveis da Fase 6
 - **Secrets** (criados sem expor o valor; comandos em `PROVA-DE-ORIGEM-E-DE-COLETA.md` §2): `gmn_link_audit_origin_key`,
-  `gmn_link_audit_ledger_key` e `gmn_link_audit_log_key`. Os da guarda (`gmn_link_audit_guard_db_url` e `gmn_link_audit_guard_key`)
-  **entram na G1.b**, com o código que os lê, depois da migração da guarda: não fazem parte desta stack nem da ativação da G1.a.
+  `gmn_link_audit_ledger_key` e `gmn_link_audit_log_key` e, a partir da G1.b.2a, os três da guarda (`gmn_link_audit_guard_db_url`,
+  `gmn_link_audit_guard_db_ca` e `gmn_link_audit_guard_key`), criados depois de aplicar a migração da guarda: a stack desta versão
+  exige os seis no deploy.
 - **Variáveis** no arquivo de variáveis da implantação (sem segredo): os seis marcadores `GMN_RAIZ_DADOS_*` acima e as listas públicas
   `GMN_LINK_AUDIT_ORIGIN_REVOKED_KEY_IDS`, `GMN_LINK_AUDIT_LEDGER_REVOKED_KEY_IDS` e `GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS` (vazias por
   padrão: nenhum id revogado e atestação fechada).
