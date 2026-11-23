@@ -17,7 +17,8 @@ const code = (name: string): string => strip(fs.readFileSync(path.join(LIB, name
 const imports = (source: string): string[] => [...strip(source).matchAll(/(?:^|\n)\s*(?:import|export)\s[^;]*?from\s+['"]([^'"]+)['"]/g)].map((match) => match[1] ?? '');
 
 test('o módulo tem exatamente os arquivos esperados (arquivo novo exige revisão deliberada)', () => {
-  assert.deepEqual(files, ['config.ts', 'guard.ts', 'index.ts', 'model.ts', 'observed.ts', 'service.ts', 'store.ts', 'types.ts']);
+  // G1.b.1: `guard-alarm.ts` (porta PURA dos alarmes da guarda, GE-E6), revisado deliberadamente
+  assert.deepEqual(files, ['config.ts', 'guard-alarm.ts', 'guard.ts', 'index.ts', 'model.ts', 'observed.ts', 'service.ts', 'store.ts', 'types.ts']);
 });
 
 test('imports: lista fechada por arquivo (zod, node:path/crypto onde cabe, módulos neutros e a PORTA da 6B — nunca o restante das decisões, o motor, o coletor ou a rede)', () => {
@@ -26,11 +27,13 @@ test('imports: lista fechada por arquivo (zod, node:path/crypto onde cabe, módu
     'model.ts': ['../link-audit-origin', './types'],
     // node:crypto só para o SHA-256 de mão única das impressões digitais de chave (G1.a, PG-L01): nunca para gerar ou expor material
     'config.ts': ['node:crypto', 'node:path', '../link-audit-origin'],
-    'guard.ts': ['node:path', '../link-audit-storage', '../link-audit/snapshot-store', './types'],
+    // G1.b.1: zod valida as respostas da guarda na fronteira (regra 5: fora do esquema ⇒ indisponível)
+    'guard.ts': ['node:path', 'zod', '../link-audit-storage', '../link-audit/snapshot-store', './types'],
+    'guard-alarm.ts': [],
     'store.ts': ['node:crypto', 'node:path', '../link-audit-storage', '../link-audit/snapshot-store', './types'],
     'observed.ts': [],
-    'service.ts': ['node:path', '../link-audit-decisions/ledger-port', '../link-audit-origin', '../link-audit-storage', '../link-audit/snapshot-store', './guard', './model', './observed', './store', './types'],
-    'index.ts': ['./service', './guard', './config', './model', './observed', './store', './types'],
+    'service.ts': ['node:path', '../link-audit-decisions/ledger-port', '../link-audit-origin', '../link-audit-storage', '../link-audit/snapshot-store', './guard', './guard-alarm', './model', './observed', './store', './types'],
+    'index.ts': ['./service', './guard', './guard-alarm', './config', './model', './observed', './store', './types'],
   };
   for (const name of files) {
     for (const specifier of imports(fs.readFileSync(path.join(LIB, name), 'utf8'))) assert.ok((allowed[name] ?? []).includes(specifier), `${name} importa "${specifier}"`);
@@ -38,7 +41,7 @@ test('imports: lista fechada por arquivo (zod, node:path/crypto onde cabe, módu
 });
 
 test('PUREZA: o modelo e os tipos não tocam disco, rede, relógio, aleatoriedade, ambiente nem log', () => {
-  for (const name of ['model.ts', 'types.ts']) {
+  for (const name of ['model.ts', 'types.ts', 'guard-alarm.ts']) {
     const text = code(name);
     for (const [pattern, label] of [
       [/node:(?:fs|http|https|net|dns|child_process|os|worker_threads|crypto)\b/, 'módulo do Node'],
