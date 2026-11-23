@@ -172,7 +172,7 @@ gravação (`publishSeal`, `sign-run.ts:163`) e nenhum toca a pasta de manifesto
 - chave, assinatura e autoteste (`sign-run.ts:154-162`): `SECRET_PATH_UNSAFE`, `SECRET_NOT_ENCRYPTED`, `SIGN_KEY_UNPROTECTED`,
   `SIGN_KEY_REJECTED`, `SIGN_KEY_MISMATCH`, `SIGN_TOO_MANY_ENTRIES`, `SIGN_SELFTEST_FAILED`.
 
-Nada foi assinado nem gravado. Anotar o código na linha da sessão do livro, apagar a saída bruta (ela só tem o objeto da
+Nenhum manifesto foi gravado (no `SIGN_SELFTEST_FAILED` a assinatura chegou a ser calculada em memória, mas nunca publicada). Anotar o código na linha da sessão do livro, apagar a saída bruta (ela só tem o objeto da
 recusa), corrigir a causa (§11) e rodar de novo.
 
 **Caso C — gravação tentada ou estado desconhecido.** Qualquer um destes:
@@ -460,7 +460,7 @@ No fim do ensaio da W5.3, antes de arquivar o relatório:
 | `SIGN_ROLE_SEPARATION` | falta o aceite de risco, ou os bytes de `--risk-acceptance` não batem com a aprovação (§8) |
 | `SIGN_WRITE_UNCONFIRMED`, `SIGN_WRITE_FAILED`, `SIGN_SEQ_CONFLICT`, `CLOSE_ALREADY_EXISTS`, qualquer código `4` ou saída incompleta | **caso C do §3.2**: preservar tudo, não repetir, não atualizar a tabela de manifestos do livro, conferir a pasta (o que existe, hashes), registrar o incidente e só então decidir com o responsável |
 
-Todo código `3` desta tabela fora da última linha é do caso B do §3.2 (recusa antes da gravação: nada foi assinado nem gravado).
+Todo código `3` desta tabela fora da última linha é do caso B do §3.2 (recusa antes da gravação: nenhum manifesto foi gravado).
 
 ## 12. Suplente (D15.1, D10)
 
