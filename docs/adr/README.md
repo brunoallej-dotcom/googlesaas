@@ -11,6 +11,7 @@ described by Michael Nygard. The ADR process itself is established in
 | 0001 | [Record architecture decisions](0001-record-architecture-decisions.md) | Accepted |
 | 0002 | [Autenticar a confirmação dos resultados pelo livro de cabeças](0002-authenticate-result-receipts.md) | Accepted |
 | 0003 | [Guarda externa do livro de cabeças: tabela append-only no Supabase](0003-supabase-external-ledger-guard.md) | Accepted |
+| 0004 | [Deploy pelo CI por SSH restrito a receptores de comando único, com a entrega dos manifestos no mesmo pipeline](0004-ci-deploy-over-restricted-ssh.md) | Accepted |
 
 ## Adding a new ADR
 

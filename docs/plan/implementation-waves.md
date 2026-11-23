@@ -9,7 +9,9 @@
 > (§13.1). Os bloqueadores de produção fora do P1 (guarda externa imutável, papel administrativo com dupla aprovação,
 > volumes e chaves no `stack.yml`, D5) têm spec própria, `docs/specs/link-audit-production-gates.md` (20/11/2026), e
 > ondas G0–G3 na seção [Portões de produção da Fase 6 (fora do P1)](#portões-de-produção-da-fase-6-fora-do-p1), antes
-> das notas de execução. A tabela abaixo é só do P1.
+> das notas de execução. O deploy pelo CI (P-9) e o canal de entrega dos manifestos têm spec própria,
+> `docs/specs/ci-deploy-and-seal-delivery.md` (23/11/2026), e fatias P9.1–P9.5 na seção
+> [Deploy pelo CI (P-9) e canal de entrega dos manifestos](#deploy-pelo-ci-p-9-e-canal-de-entrega-dos-manifestos). A tabela abaixo é só do P1.
 
 | Onda | Entrega | Depende de | Paralela com | Status |
 |------|---------|------------|--------------|--------|
@@ -20,7 +22,7 @@
 | R1 | ADR-0002: confirmação de resultados pelo livro de cabeças (fase C do resultado só pelo autor) | W0 (§16.17 revisada), W1, W3 | W2 | ✅ R1.1–R1.6 mergeadas (#39, #41, #45, #46, #49 e o PR da R1.6); portão da R1 satisfeito no código, nada implantado |
 | R2 | Resultado confirmado registra a proveniência que o atestou (`headSeq`, `headSealSha256`, `keyIds`); `UNAUTHENTICATED` na releitura ⇒ revisão humana | W3, R1 | W4 | ✅ R2.1 (#55: prova na avaliação, campo gravado e validado) e R2.2 (reconferência na releitura, porta, estado e rótulos na interface) neste PR; portão da R2 satisfeito no código, nada implantado |
 | W4 | CLI `sign` (manifesto `v2`) | W1, W3, decisões §13.2 itens 1, 2 e 4 (tomadas: D10, D11, D12/D14) | — | ✅ W4.1 (#38), W4.2 (#40), W4.3 (#42), W4.4 (#44), W4.5 (#48) e W4.6 (#50) mergeadas; artefato único reproduzível, conferido no CI sob `--permission` |
-| W5 | Procedimento, dossiê e ensaio ponta a ponta em homologação com chave descartável | W4, R1, R2 | — | 🟡 W5.1 (documentação, PR #58) ✅; W5.2a (PR #59) ✅; W5.2b (coleta SIMULADA) ✅; resta da W5.2 só o canal de entrega pelo CI (aguarda o P-9); W5.3 (ensaio em homologação) a seguir |
+| W5 | Procedimento, dossiê e ensaio ponta a ponta em homologação com chave descartável | W4, R1, R2 | — | 🟡 W5.1 (documentação, PR #58) ✅; W5.2a (PR #59) ✅; W5.2b (coleta SIMULADA) ✅; resta da W5.2 só o canal de entrega pelo CI, agora nas fatias P9.3b e P9.5 (P-9 decidido em 23/11/2026, seção "Deploy pelo CI (P-9)"); W5.3 (ensaio em homologação) a seguir, depois da P9.4 e da pilha de homologação |
 | W6 | Coleta LIVE nova da AUD-001 (fora do código) | W5 + autorização escrita específica (**dada em 20/11/2026, D16**) | — | ⬜ autorizada; roda depois do ensaio da W5 |
 
 Ordem prática: W0 → {W1 ∥ W3} → {W2 ∥ R1} → {R2 ∥ W4} → W5 → W6. A R1 espera a W3 porque as duas mexem nos validadores da
@@ -432,8 +434,8 @@ interface (`audit-page/validators.ts`).
   | W5.1 | Documentação, sem código: `p1-runbook-custodiante.md` (estação, artefato, linha exata do `sign`, chave K1 e conferência do perfil do KDF, cópias, fluxo, aceite de risco, `close-key`, destruição da chave do ensaio, suplente), `p1-runbook-conferente.md`, `p1-modelo-dossie.md` (partes A e B, aceite formal de risco), `p1-livro-de-manifestos.md` (formato e conferência periódica), `p1-canal-de-entrega-manifestos.md` (requisitos RC-01 a RC-10 e procedimento do canal pelo CI) e `p1-relatorio-ensaio-modelo.md` (roteiro do ensaio e verificação de entrada da nota 6 da R2.1) | ✅ PR #58 |
   | W5.2a | Itens 1 e 2 das pendências abaixo: D15.6(d) (`operator = custodiante` marca `requiresLaterReview`) e o `close-key` sob `--permission` com a linha larga, exercitado no CI; notas e histórico do hash do artefato na spec do P1 §5.5.1 | ✅ PR #59 |
   | W5.2b | Item 4 das pendências abaixo: coleta SIMULADA para o ensaio (spec do P1 §5.7, D15.8). Entregue: `--simulated` no CLI de coleta, só com `GMN_LINK_AUDIT_HOMOLOGATION=1` no ambiente do comando (nunca lê arquivo de ambiente, nunca cria provedor real); dados sintéticos fixos ("Empresa de Ensaio", FID `0x0:0xe5a10`, CID `940560`); runtime que grava só com `homologation: true`, só com o gerador sintético e só com a identidade sintética; marca persistente `provider: "SIMULATED"` + `simulated: true` na captura (dentro do hash, sem mudar o formato do pacote nem do manifesto `v2`) e no relatório; simulada e real nunca na mesma auditoria; `export` que recusa a captura simulada (`EXPORT_SIMULATED_CAPTURE`) salvo com `--simulated` + a trava, em duas camadas (CLI e módulo); marca também no pacote (`simulated: true`, dentro do `packageSha256`, ausente nos reais) e `sign` que só assina pacote simulado com a opção própria `--simulated` (aviso "SIMULADA — ensaio" na confirmação; revisão do PR #62); relatório e telas atribuindo os dados ao gerador sintético, nunca ao Serper; pré-checagem de mistura que falha fechada; leitor e telas das evidências com "SIMULADA — ensaio"; bloqueio `SIMULATED_EVIDENCE` na prévia (`BLOCKING` sem a trava no servidor, `WARNING` com ela), que impede a finalização e a conclusão de pendente fora da homologação; a `stack.yml` de produção não declara a trava (teste). Testes `tests/link-audit-simulated-collection.test.ts` e `tests/link-audit-simulated-guards.test.ts` (zero rede por armadilhas, mutações à mão: cada camada morre sozinha); hash do artefato refeito no merge com a W5.2a (`78de412e…`) e depois da revisão do PR #62 (`37797893…`, e `2fbf9851…` na confirmação dela); confirmação da revisão: reserva exclusiva do modo da auditoria (`audit-mode.json`; a resposta paga que não grava, por qualquer motivo, vai para um arquivo novo da quarentena `_quarentena-resgate-live`, fora das auditorias, com recuperação manual), nenhuma atribuição ao Serper no simulado (base, relatório, prévia e telas) e chaves de ensaio com o prefixo reservado `ensaio-` (`sign --simulated` só com elas, `sign` real nunca, servidor sem a trava recusa a lista); limite declarado: o SIMULATED da Onda 4B sem gravação não exige a trava e nenhum CLI ou rota o alcança (teste estático); roteiro do ensaio (S-02, S-03, PC-5 para S-12/S-13, AT-W5-08, D-02) e runbooks atualizados | ✅ |
-  | W5.2 (resto) | Só o item 3 abaixo: o canal de entrega pelo CI. **Aguarda a decisão do responsável sobre o P-9** (decisão c); não bloqueia a W5.3 (decisão a), bloqueia a G2 e a produção | ⬜ aguarda o P-9 |
-  | W5.3 | Ensaio em homologação com chave descartável e o relatório `p1-relatorio-ensaio.md` (goal da onda). As dependências de código (itens 1, 2 e 4 da W5.2) estão entregues (W5.2a e W5.2b); falta a pilha de homologação isolada criada pelo responsável (D-G0-12), com o volume de manifestos (G1.a) e o web com `GMN_LINK_AUDIT_HOMOLOGATION=1` (PC-5 do roteiro; nunca em produção). **Não** depende do canal do CI: a entrega é manual, como desvio declarado (decisão a abaixo) | ⬜ |
+  | W5.2 (resto) | Só o item 3 abaixo: o canal de entrega pelo CI. **P-9 decidido pelo responsável em 23/11/2026**; o código vira as fatias P9.2, P9.3b e P9.5 (seção "Deploy pelo CI (P-9)"); não bloqueia a W5.3 (decisão a), bloqueia a G2 e a produção | ⬜ nas fatias P9 |
+  | W5.3 | Ensaio em homologação com chave descartável e o relatório `p1-relatorio-ensaio.md` (goal da onda). As dependências de código (itens 1, 2 e 4 da W5.2) estão entregues (W5.2a e W5.2b); falta a pilha de homologação isolada (D-G0-12), com o volume de manifestos (G1.a) e o web com `GMN_LINK_AUDIT_HOMOLOGATION=1` (PC-5 do roteiro; nunca em produção): a pilha `gmn-hml` sai da fatia P9.4 (sobreposição `stack-hml.yml`) e das ações H-01 a H-10 do responsável, implantada pelo workflow. **Não** depende do canal do CI: a entrega é manual, como desvio declarado (decisão a abaixo) | ⬜ |
 
   **Decisões do manager sob a delegação D15 (22/11/2026, revisão do PR #58):**
   - **a.** O ensaio W5.3 pode rodar em homologação com entrega **manual** do manifesto, registrada no relatório como desvio
@@ -446,6 +448,7 @@ interface (`audit-page/validators.ts`).
     manifestos; manifesto por PR com `auditId` opaco; verificação `v2` no CI antes do merge; entrega por job em ambiente
     protegido, com aprovação do responsável, por chave SSH restrita a um comando receptor que confere de novo a assinatura e grava
     com criação exclusiva e `fsync`.
+    **Aceita pelo responsável em 23/11/2026**; detalhada em `docs/specs/ci-deploy-and-seal-delivery.md` (fatias P9.1 a P9.5).
 
   **Pendências de código da W5.2** (1, 2 e 4 entregues pela W5.2a e pela W5.2b; resta só a 3):
   1. ✅ (W5.2a) **D15.6(d)** (`operator = custodiante` passa a marcar `requiresLaterReview: true`): hoje a marca é `roleException ||
@@ -460,7 +463,8 @@ interface (`audit-page/validators.ts`).
      criação exclusiva e `fsync`, testes (CE-1, CE-2, CE-3 e CE-5 de `p1-canal-de-entrega-manifestos.md` §5; o CE-4, volume no
      `stack.yml`, é da G1.a). **Aguarda a decisão do responsável sobre o P-9** (decisão c acima); só depois dela vira código.
      Falta decidir também de onde o CI lê a lista fixada (§4 do mesmo documento). Não bloqueia a W5.3 (decisão a); bloqueia a G2
-     e a produção.
+     e a produção. **Atualização 23/11/2026:** P-9 decidido; a lista fixada passa a ser `link-audit-seals/<ambiente>/trust-keys.txt`
+     (spec `ci-deploy-and-seal-delivery.md` §5.3); o código está nas fatias P9.2, P9.3b e P9.5.
   4. ✅ (W5.2b, spec do P1 §5.7) **Coleta sintética para a homologação:** a pilha não tem Serper (D-G0-12), e o CLI de coleta só expõe DRY_RUN e LIVE
      (`scripts/link-audit-collect.ts:51-56`); o modo SIMULATED existe só no runtime, com provedores injetados
      (`src/lib/link-audit-runtime/run.ts:158-160`). Sem um comando (ou semente) que grave uma captura no layout versionado e
@@ -504,8 +508,8 @@ interface (`audit-page/validators.ts`).
 | G1.b.2a | Provedor Supabase da guarda: migração proposta `004_link_audit_guard.sql` e rollback (conferência de privilégios no SQL, teste local sem rede na imagem do Postgres do Supabase), adaptador real atrás da porta (`guard-postgres.ts`, pseudônimo HMAC em `guard-pseudonym.ts`, conector `pg` com TLS verificado em `guard-pg.ts`), dependência `pg` 8.23.1 exata (revisão no ADR-0003), configuração lida só pelo livro e ligação em `ledgerForRoutes` (parcial ou inválida ⇒ falha fechada), alarmes no logger, três secrets da guarda no `stack.yml` e quatro nomes no entrypoint | G1.b.1 ✅ | G1.c (aceite) | ✅ 22/11/2026: PG-G04 e PG-G05 (adaptador real) em `tests/link-audit-guard-postgres.test.ts`; PG-G07 (sem o verificador do portão) e configuração em `tests/link-audit-guard-config.test.ts`; TLS no driver real em `tests/link-audit-guard-pg.test.ts`; migração: 33 verificações locais, também no CI pelo workflow próprio `guard-migration.yml` (revisão do PR #61) |
 | G1.b.2b | Reconciliação externa somente leitura (`scripts/link-audit-guard-reconcile.ts`, GE-E5, PG-G09, credencial `gmn_guard_reader` fora da VPS, reaproveitando `guard-pseudonym.ts` e o SQL do `latest`), runbook da guarda (GE-E7: ativação, rotação da credencial e da chave do pseudônimo, indisponibilidade, restauração), roteiro do laboratório do PG-G08 (prova pela Data API, *Exposed schemas*, latência medida do prazo de 3 s; **primeiro passo obrigatório do roteiro:** anexar a saída verde do job `guard-migration` no SHA exato da 004 a aplicar e conferir o `sha256` do arquivo contra o resumo do job) e o verificador do portão G-1 (segunda metade do PG-G07) | G1.b.2a ✅ | G1.c (aceite) | ✅ 22/11/2026: PG-G09 em `tests/link-audit-guard-reconcile.test.ts` e `tests/link-audit-guard-reconcile-cli.test.ts` (mais `-backup`, `-reader`, `-records` e `tests/link-audit-guard-reader.test.ts`); PG-G07 completo (modo `gate`, fora da VPS); runbook `docs/phase6-auditoria-link/producao-g1b-runbook-guarda.md`; roteiro do PG-G08 `producao-g1b-laboratorio-pg-g08.md` (evidência com o responsável); teste local da guarda com 39 verificações (o CLI real contra a migração aplicada, etapa obrigatória; o workflow `guard-migration.yml` também dispara quando a reconciliação muda); 12 mutações à mão mortas |
 | G1.c | Papel administrativo: com a D-G0-6 (Q6 = 3), **só o aceite formal** de manter o 403, sem código | G0 ✅ (D-G0-6; a Q7 não se aplica) | G1.a e G1.b (sem código, corre em paralelo) | ⬜ |
-| G2 | Integração e ensaio em homologação: os 16 ensaios e as 2 atestações da spec §10.4 | G1.a, G1.b, o aceite da G1.c, o ambiente de homologação (D-G0-12) e o **relatório da W5 aprovado** | nenhuma (com a W5, só em ambiente totalmente isolado, spec §10.4) | ⬜ |
-| G3 | Portão de produção (spec §10.1) ou piloto mínimo declarado (spec §10.2) | G2, os portões do P1 (R1, R2, W4.6, W5, W6) e as decisões e ações do responsável | — | ⬜ |
+| G2 | Integração e ensaio em homologação: os 16 ensaios e as 2 atestações da spec §10.4, mais o ensaio da entrega de manifestos pelo canal do CI (P9-O06) | G1.a, G1.b, o aceite da G1.c, o ambiente de homologação (D-G0-12; pilha `gmn-hml` da P9.4), a P9.5 e o **relatório da W5 aprovado** | nenhuma (com a W5, só em ambiente totalmente isolado, spec §10.4) | ⬜ |
+| G3 | Portão de produção (spec §10.1) ou piloto mínimo declarado (spec §10.2) | G2, os portões do P1 (R1, R2, W4.6, W5, W6), o P-9 (fatias P9.1 a P9.5 e o provisionamento de produção) e as decisões e ações do responsável | — | ⬜ |
 
 Ordem prática, conforme a Q6. **Vale a primeira linha** (D-G0-6, Q6 = 3, decidida na G0):
 
@@ -690,7 +694,7 @@ Motivos:
     administrativas e pastas no host;
   - o ensaio da **entrega de manifestos pelo canal do CI** (D15.5), que o ensaio da W5 fez de forma manual como desvio declarado;
     é critério de entrada da produção (decisão a do manager na W5, sob a delegação D15; `p1-canal-de-entrega-manifestos.md` §6).
-    Depende da decisão do responsável sobre o P-9 e do código do canal (W5.2, item 3);
+    Depende da decisão do responsável sobre o P-9 (**tomada em 23/11/2026**) e do código do canal (fatias P9.3b e P9.5);
   - relatório `docs/phase6-auditoria-link/producao-relatorio-ensaio-g2.md`, com uma linha por ensaio no formato
     `| EN-xx | PASSOU ou FALHOU | resultado observado | evidência |` e uma linha por atestação no formato
     `| AT-G2-xx | SIM | evidência |` (AT-G2-01 nada em produção; AT-G2-02 chaves e credenciais do ensaio destruídas ou
@@ -723,6 +727,91 @@ Motivos:
   - autorização escrita do responsável para a implantação registrada.
 - **Goal command**: não se aplica a goal loop (decisão e ação humanas). Conferência:
   `/goal grep -q "^| G3 |.*✅" docs/plan/implementation-waves.md, stop after 1 tries` (ancorado na linha da tabela, para o comando não casar com o próprio texto).
+
+## Deploy pelo CI (P-9) e canal de entrega dos manifestos
+
+> Spec de origem: `docs/specs/ci-deploy-and-seal-delivery.md` (PROPOSTA, 23/11/2026). A decisão do responsável de 23/11/2026
+> (recomendação do `p1-canal-de-entrega-manifestos.md` §6.3) está registrada lá. ADR-0004; ameaças
+> `docs/security/threats/deploy-pelo-ci.md` (DC-01 a DC-22). Os critérios P9-xx são os da spec §6. Valem as **regras de todas
+> as ondas** acima. Por cima delas:
+>
+> - **nenhuma fatia P9 faz deploy**, cria usuário, chave, segredo de ambiente ou pasta no host: são ações do responsável (spec
+>   §10.1, H-01 a H-10). O primeiro deploy, de homologação, é do responsável pelo workflow, depois da P9.4;
+> - testes dos receptores sem rede, sem Docker real (comandos falsos no `PATH`) e em pastas temporárias;
+> - nenhum host, domínio, IP ou projeto real em arquivo: só marcadores (`<HOST_VPS>`, `<DOMINIO_HML>`…).
+
+| Onda | Entrega | Depende de | Paralela com | Status |
+|------|---------|------------|--------------|--------|
+| P9.1 | Spec, ADR-0004, modelo de ameaças DC-xx, decisão do responsável registrada no p1-canal §6.3, linhas no plano e no P-9 da spec dos portões | decisão do responsável (23/11/2026) | W5.3 (sem código) | 🟡 este PR |
+| P9.2 | Caminho `link-audit-seals/` (dois `trust-keys.txt` vazios, `.gitattributes`, `.dockerignore`); núcleo puro `src/lib/link-audit-seals-channel/` (gramática de caminhos, `auditId` opaco, forma canônica, lista: parser, regras de ambiente e de transição, regras do conjunto de mudanças, cadeia pelo verificador `v2` real); CLI `link-audit:seals-check`; job `seals` no `ci.yml`; runbooks do custodiante e de chaves (fixação por PR, ordem da aposentadoria, `aud-<16 hex>`) | P9.1 | — | ⬜ |
+| P9.3a | Receptor de deploy (`src/lib/deploy-receiver/`, entrada em `scripts/`), com a regra de transição contra a lista instalada; build reprodutível dos artefatos dos receptores com hash versionado em `deploy/hostinger/receivers.sha256` e job do CI que o confere | P9.2 (módulo da lista: parser do arquivo, regras de ambiente e de transição) | — (pode começar antes, mas mergeia depois da P9.2) | ⬜ |
+| P9.3b | Receptor de manifestos (núcleo do canal + verificador `v2` + gravação exclusiva do `sign` extraída para módulo compartilhado; hash do artefato do `sign` refeito); `verificar-pastas-fase6.sh` com a regra nova da pasta de manifestos; emendas VC-E8, PG-V04 e EN-12 | P9.2, P9.3a (pipeline dos artefatos) | P9.4 | ⬜ |
+| P9.4 | `.github/workflows/deploy.yml` (job `deploy`); `stack.yml` com nomes do Traefik parametrizados e secrets em sintaxe longa; sobreposição `deploy/hostinger/stack-hml.yml`; testes estáticos do workflow e da stack; runbook do responsável `deploy/hostinger/RUNBOOK-DEPLOY-PELO-CI.md` (H-01 a H-10, produção, rotação, incidente); guias, plano de rollback, verificação pós-deploy e `CLAUDE.md` | P9.3a | P9.3b | ⬜ |
+| P9.5 | Jobs `seals-verify` e `seals-deliver` no `deploy.yml`; registro RC-08 no resumo; procedimento final do p1-canal §3 e campos do livro de manifestos | P9.3b, P9.4 (mesmo arquivo `deploy.yml`) | W5.3 (código só; o ensaio não usa o canal enquanto ela não estiver na `main`) | ⬜ |
+
+Ordem prática: P9.1 → P9.2 → P9.3a → {P9.3b ∥ P9.4} → P9.5. Depois da P9.4: ações H-01 a H-10 do responsável → primeiro
+deploy de homologação pelo workflow → W5.3 (entrega manual como desvio D-01, salvo se a P9.5 já estiver na `main`) → G2 (ensaio
+do canal, P9-O06) → G3 (provisionamento e primeiro deploy de produção, P9-O07).
+
+Motivos:
+
+- **P9.3a depois da P9.2:** o receptor de deploy valida a lista e a transição a partir da instalada com o módulo da lista da
+  P9.2 (revisão do PR #66). As duas acrescentam um job ao `ci.yml` (`seals` e o dos artefatos dos receptores), mas, em sequência,
+  não há conflito.
+- **P9.3b depois da P9.2 e da P9.3a:** o receptor de manifestos empacota o núcleo do canal (P9.2) e entra no pipeline dos
+  artefatos criado pela P9.3a.
+- **P9.4 depois da P9.3a:** o workflow chama a gramática do receptor de deploy, e os testes estáticos conferem os dois lados.
+- **P9.3b ∥ P9.4:** dividem só o `GUIA-DE-IMPLANTACAO.md`, em seções diferentes (a P9.3b fica com o §3.3; a P9.4, com o §1–§2 e
+  o §3.4).
+- **P9.5 por último:** mexe no mesmo `deploy.yml` da P9.4 e usa o receptor da P9.3b.
+- **W5.3 não espera a P9.5:** a decisão a do manager (W5) vale; espera só a pilha de homologação, que agora sai da P9.4 e das
+  ações do responsável.
+
+### Onda P9.2 — Verificação dos manifestos antes do merge e lista de confiança versionada
+
+- **Objetivo**: nenhum manifesto ou fecho chega à `main` sem passar pelo verificador `v2` real, e a lista fixada tem fonte única.
+- **Escopo**: spec §5.2, §5.3, §5.4; `tests/link-audit-seals-check.test.ts`, `tests/link-audit-seals-trust-list.test.ts`, teste
+  de isolamento do módulo novo; job `seals` no `ci.yml`; emendas VC-E3 e P-7 (spec dos portões), runbook de chaves §4, runbook do
+  custodiante, exemplo do `docs/security/README.md`.
+- **Critérios de aceite**: P9-S01 a P9-S12, P9-T01 a P9-T07, P9-W10, P9-H08.
+- **Goal command**: `/goal npm test && test -f link-audit-seals/producao/trust-keys.txt && test -f link-audit-seals/homologacao/trust-keys.txt && grep -q "seals (append-only, v2)" .github/workflows/ci.yml, stop after 3 tries`
+
+### Onda P9.3a — Receptor de deploy e artefatos dos receptores
+
+- **Objetivo**: o único comando que a chave de deploy executa, com gramática fechada e saída só em códigos fixos.
+- **Escopo**: spec §5.6, §5.8; `tests/deploy-receiver.test.ts` (Docker, `tar` e `gzip` falsos); build dos artefatos e job do CI
+  com o hash versionado.
+- **Critérios de aceite**: P9-D01 a P9-D14.
+- **Goal command**: `/goal npm test && test -f deploy/hostinger/receivers.sha256, stop after 3 tries`
+
+### Onda P9.3b — Receptor de manifestos e pasta de manifestos
+
+- **Objetivo**: o único comando que a chave de manifestos executa: segunda verificação `v2` no host, gravação só por acréscimo e
+  durável.
+- **Escopo**: spec §5.7, §5.8, §5.10; `tests/link-audit-seal-receiver.test.ts`; extração da gravação exclusiva do `sign-run.ts`
+  (hash do artefato do `sign` refeito no mesmo PR); `verificar-pastas-fase6.sh` + `tests/deploy-verificar-pastas.test.ts`; guia
+  §3.3; plano de backup (restauração com dono, grupo e modo); emendas VC-E8, PG-V04 e EN-12.
+- **Critérios de aceite**: P9-R01 a P9-R13, P9-F01.
+- **Goal command**: `/goal npm test && grep -q "2750" deploy/hostinger/verificar-pastas-fase6.sh, stop after 3 tries`
+
+### Onda P9.4 — Workflow de deploy, homologação e runbook do responsável
+
+- **Objetivo**: deploy pelo CI de qualquer commit verde da `main` para `homologacao` ou `producao`, aprovado pelo responsável.
+- **Escopo**: spec §5.5, §5.5.1, §5.11; `tests/deploy-workflow.test.ts` (estático); `tests/deploy-config.test.ts` estendido;
+  `RUNBOOK-DEPLOY-PELO-CI.md`; `GUIA-DE-IMPLANTACAO.md` §1–§2 e §3.4, `PLANO-DE-ROLLBACK.md`, `VERIFICACAO-POS-DEPLOY.md`; `CLAUDE.md`
+  (linhas de deploy).
+- **Critérios de aceite**: P9-W01 a P9-W08, P9-W11, P9-H01 a P9-H05, P9-H09. P9-H06, P9-H07 e P9-O08 são conferências do
+  responsável no primeiro deploy de homologação.
+- **Goal command**: `/goal npm test && test -f .github/workflows/deploy.yml && test -f deploy/hostinger/stack-hml.yml && test -f deploy/hostinger/RUNBOOK-DEPLOY-PELO-CI.md, stop after 3 tries`
+
+### Onda P9.5 — Entrega dos manifestos pelo CI
+
+- **Objetivo**: fechar o CE-1 a CE-3 do canal: manifesto mergeado ⇒ entrega aprovada ⇒ gravado no host com registro RC-08.
+- **Escopo**: spec §5.5.2, §5.9; jobs `seals-verify` e `seals-deliver`; `p1-canal-de-entrega-manifestos.md` §3 e §5 (CE-1 a
+  CE-5 resolvidos); `p1-livro-de-manifestos.md` §2; `p1-relatorio-ensaio-modelo.md` (desvio D-01 só se a W5.3 rodar antes desta
+  fatia).
+- **Critérios de aceite**: P9-W09 e os de entrega do teste estático; P9-O06 na G2.
+- **Goal command**: `/goal npm test && grep -q "seals-deliver" .github/workflows/deploy.yml, stop after 3 tries`
 
 ## Notas de execução
 
