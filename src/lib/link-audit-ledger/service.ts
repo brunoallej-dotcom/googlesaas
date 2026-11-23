@@ -23,12 +23,15 @@ import type {
 import type { OriginAuthenticator } from '../link-audit-origin';
 import { DURABILITY_UNPROVEN_MESSAGE, seal } from '../link-audit-storage';
 import { nodeFsOps, type FsOps } from '../link-audit/snapshot-store';
-import type { ExternalGuardPort } from './guard';
-import { evaluateProtection, ledgerCapacity, operationCost, pendingClosings, replayLedger, resultsGrew, rotationCheckpointDue, runIntentFits, verifyTags, type Evaluation, type GuardEvidence, type LedgerReadState, type LedgerReplay, type TagFailure } from './model';
+import { boundGuard, PROCESS_GUARD_TIMER, type ExternalGuardPort, type GuardTimer } from './guard';
+import { NO_GUARD_ALARMS, type GuardAlarm, type GuardAlarmSink, type GuardPublishCause, type GuardPublishPoint } from './guard-alarm';
+import { evaluateProtection, guardVerdictNeedsReread, ledgerCapacity, operationCost, pendingClosings, replayLedger, resultsGrew, rotationCheckpointDue, runIntentFits, verifyTags, type Evaluation, type GuardEvidence, type LedgerReadState, type LedgerReplay, type TagFailure } from './model';
 import { monotonicNow, PROCESS_OBSERVATIONS, type OpenObservations } from './observed';
 import { ensureLedgerProven, ledgerDurabilityTripped, publishLedgerRecord, readLedgerFiles, newOpId, syncLedgerDirectory, type PublishLedgerResult } from './store';
 import {
   CHECKPOINT_EVERY,
+  GUARD_BEHIND_ALARM_MS,
+  GUARD_MAX_LAG,
   isRunEvent,
   LEDGER_CAPACITY_POLICY,
   LEDGER_KIND,
@@ -67,7 +70,12 @@ export interface LedgerServiceOptions {
   readonly otherDirs: ReadonlyArray<string | null | undefined>;
   readonly fs?: FsOps;
   readonly projectRoot?: string;
+  /** Guarda externa (G1.b.1: o serviço sempre fala com ela pelo prazo de resposta e pela validação de `boundGuard`). */
   readonly guard?: ExternalGuardPort;
+  /** Relógio do prazo de resposta da guarda (padrão: o do processo, 3 s por chamada). Só testes injetam outro. */
+  readonly guardTimer?: GuardTimer;
+  /** Porta dos alarmes da guarda (GE-E6; padrão: nenhum destino — a ligação ao logger é da G1.b.2). */
+  readonly guardAlarms?: GuardAlarmSink;
   /** Inatividade a partir da qual uma operação aberta pode ser recuperada (padrão 120 s). */
   readonly staleOperationMs?: number;
   /** Intervalo de espera por uma operação de outro processo (padrão 50 ms). */
@@ -81,10 +89,13 @@ export interface LedgerServiceOptions {
   readonly monotonicMs?: () => number;
 }
 
-const WITNESS_REASONS: ReadonlySet<LedgerReason> = new Set<LedgerReason>(['RESULT_LEDGER_MISMATCH', 'UNTRUSTED', 'RESULTS_EVIDENCE_UNAVAILABLE', 'GUARD_MISMATCH', 'LEDGER_REMOVED_WITNESSED']);
+const WITNESS_REASONS: ReadonlySet<LedgerReason> = new Set<LedgerReason>(['RESULT_LEDGER_MISMATCH', 'UNTRUSTED', 'RESULTS_EVIDENCE_UNAVAILABLE', 'GUARD_MISMATCH', 'GUARD_HEAD_MISSING', 'GUARD_LAGGING', 'LEDGER_REMOVED_WITNESSED']);
 /** Arquivo de FORMATO hostil no lugar de um registro (FIFO, soquete, diretório, link, grande demais, mudou durante a leitura): integridade, nunca "indisponível" (R7-07). */
 const HOSTILE_SHAPE = /\b(?:leitura|listagem)[^:]*: (?:ENOTFILE|ETOOBIG|ECHANGED|ELOOP|EISDIR|ENOTDIR)\b/;
 const READ_ERRNO = /\b(?:leitura|listagem)[^:]*: (?:E[A-Z0-9]+|DESCONHECIDO)\b/;
+/** Leitura do livro que falhou ⇒ o estado da sessão (configuração, indisponível ou não confiável); nunca "sem livro". */
+const failedReadState = (read: { readonly code: string; readonly issues: readonly string[] }): 'NOT_CONFIGURED' | 'UNAVAILABLE' | 'UNTRUSTED' =>
+  read.code === 'UNSAFE_PATH' || read.code === 'INVALID_ID' ? 'NOT_CONFIGURED' : read.code === 'STORAGE_MISSING' || (read.issues.some((issue) => READ_ERRNO.test(issue)) && !read.issues.some((issue) => HOSTILE_SHAPE.test(issue))) ? 'UNAVAILABLE' : 'UNTRUSTED';
 
 interface Session {
   readonly auditId: string;
@@ -105,6 +116,8 @@ interface Session {
   runMark: number | null;
   /** R1.4: o `RUN_INTENT` ABERTO (fase B/C) cuja conclusão o `runPrepare` desta sessão autorizou ao autor (`grant = 'RUN_CONCLUDE'`). */
   concludeIntent: LedgerRecord | null;
+  /** G1.b.1: alarmes da guarda já emitidos nesta sessão (um por tipo e ponto; a avaliação roda várias vezes por pedido). */
+  readonly alarmed: Set<string>;
 }
 
 const anchorName = (seq: number): string => `a${String(seq).padStart(4, '0')}.json`;
@@ -138,6 +151,8 @@ const MESSAGES: Partial<Record<LedgerReason, string>> = {
   RESULTS_EVIDENCE_UNAVAILABLE: 'Os resultados (testemunha independente) não puderam ser lidos.',
   GUARD_MISMATCH: 'A guarda externa guarda uma cabeça que o livro não contém.',
   GUARD_UNAVAILABLE: 'A guarda externa não pôde ser consultada.',
+  GUARD_HEAD_MISSING: 'A guarda externa não tem nenhuma cabeça publicada desta auditoria, mas o livro já tem registros além da inscrição.',
+  GUARD_LAGGING: 'A guarda externa está atrasada além do limite aceito em relação ao livro.',
   // R1.5 (§16.17.5, D-11): contradições de RESULTADO que congelam também as decisões — texto próprio (o das decisões diria "decisão" e mentiria ao operador)
   UNLEDGERED_RESULT: 'Há resultado na pasta de resultados que o livro nunca registrou (sem a operação de resultado correspondente).',
   RESULT_DIVERGES: 'Um resultado difere do que o livro registrou naquela posição (arquivo trocado ou outro conteúdo no nome).',
@@ -214,6 +229,11 @@ const CLOSING_CHANGED_MESSAGE = 'Outro processo alterou o livro durante a opera�
 const CLOSING_UNTRUSTED_MESSAGE = 'O livro relido depois de uma gravação concorrente não confere (cadeia, etiqueta ou histórico lido); a confirmação não foi gravada.';
 const CLOSING_CLOSED_MESSAGE = 'A operação desta decisão foi encerrada por outro processo antes da confirmação; a confirmação não foi gravada.';
 const CLOSING_RETRIES_MESSAGE = 'O livro mudou a cada tentativa de gravar a confirmação; ela não foi gravada (a decisão e o recibo existem; reenvie para concluir).';
+/**
+ * G1.b.1 (spec `link-audit-production-gates.md` §5.1.7, revisão do PR #53): o CHECKPOINT da ROTAÇÃO só entra com a guarda em dia; sem conseguir publicar a cabeça atual, a
+ * manutenção recusa. Texto fixo, só quando esta manutenção não gravou nada (senão a resposta é de sucesso, regra 4).
+ */
+const ROTATION_GUARD_MESSAGE = 'A rotação da chave do livro só grava o ponto de verificação com a guarda externa em dia nesta auditoria, e a cabeça atual não pôde ser publicada agora. Nada foi gravado. Siga o runbook da guarda: com a guarda de volta, repita a manutenção (RECOVER).';
 /** Recusa transitória da releitura R2 (§16.17.8): os resultados continuaram mudando a cada releitura antes de gravar (finalizações concorrentes). Nada foi gravado. */
 const RESULTS_MOVING_MESSAGE = 'Os resultados desta auditoria mudaram durante a operação (outra finalização em andamento); nada foi gravado. Tente novamente em instantes.';
 
@@ -230,6 +250,24 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
   const auth = options.authenticator;
   const observations = options.observations ?? PROCESS_OBSERVATIONS;
   const monotonic = options.monotonicMs ?? monotonicNow;
+  /** A guarda com o prazo de resposta (3 s por chamada, D-G0-3) e a validação de cada resposta: erro, prazo esgotado ou resposta fora do esquema ⇒ indisponível (regra 5). */
+  const guard = options.guard ? boundGuard(options.guard, options.guardTimer ?? PROCESS_GUARD_TIMER) : undefined;
+  const alarms = options.guardAlarms ?? NO_GUARD_ALARMS;
+
+  /**
+   * Alarme da guarda (GE-E6): um por tipo e ponto em cada sessão. A porta não deve lançar; se lançar, o protocolo segue igual — o alarme nunca muda o desfecho (regra de ouro
+   * da spec de observabilidade, §11.1), e este módulo não tem outro canal onde registrar a falha do próprio canal de alarme.
+   */
+  function alarm(session: Session, event: GuardAlarm): void {
+    const key = `${event.kind}:${'point' in event ? event.point : 'call' in event ? event.call : ''}`;
+    if (session.alarmed.has(key)) return;
+    session.alarmed.add(key);
+    try {
+      alarms.emit(event);
+    } catch {
+      // ver o comentário da função: a falha do destino do alarme não altera a resposta do livro
+    }
+  }
 
   async function overlapping(): Promise<boolean> {
     const real = async (target: string): Promise<string> => {
@@ -246,28 +284,55 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
     return others.some((other) => mine === other || mine.startsWith(other + path.sep) || other.startsWith(mine + path.sep));
   }
 
+  /**
+   * RELEITURA do livro para conferir uma cabeça da guarda posterior à cauda lida (revisão do PR #56). Mesmas regras da leitura normal (a sessão confere as etiquetas e o modelo,
+   * o replay) e o livro só cresce: a releitura tem de ESTENDER o que foi lido (o último registro conhecido no mesmo lugar; o encadeamento fixa o resto). Falha ⇒ o estado.
+   */
+  async function rereadLedger(auditId: string, known: readonly LedgerRecord[]): Promise<{ readonly kind: 'RECORDS'; readonly records: LedgerRecord[] } | { readonly kind: 'STATE'; readonly state: Session['state'] }> {
+    if (ledgerDurabilityTripped(options.dir, storeOptions)) return { kind: 'STATE', state: 'DURABILITY_UNKNOWN' };
+    const read = await readLedgerFiles(options.dir, auditId, storeOptions);
+    if (!read.ok) return { kind: 'STATE', state: failedReadState(read) };
+    const records = [...read.value.records];
+    const last = known[known.length - 1];
+    if (records.length < known.length || (last !== undefined && records[last.ledgerSeq - 1]?.contentSha256 !== last.contentSha256)) return { kind: 'STATE', state: 'UNTRUSTED' };
+    return { kind: 'RECORDS', records };
+  }
+
   async function begin(auditId: string): Promise<Session> {
-    const session: Session = { auditId, state: 'OK', records: [], tagFailure: null, guard: { status: 'NOT_CONFIGURED' }, intent: null, evaluation: null, grant: null, runIntent: null, runMark: null, concludeIntent: null };
+    const session: Session = { auditId, state: 'OK', records: [], tagFailure: null, guard: { status: 'NOT_CONFIGURED' }, intent: null, evaluation: null, grant: null, runIntent: null, runMark: null, concludeIntent: null, alarmed: new Set<string>() };
     try {
       if (!path.isAbsolute(options.dir) || (await overlapping())) return { ...session, state: 'NOT_CONFIGURED' };
       // M2: depois de uma falha de fsync (ou erro fatal) neste processo a durabilidade do livro NÃO está comprovada: ele não é lido como protegido (nada vigente, nada finalizável) até reiniciar e provar de novo
       if (ledgerDurabilityTripped(options.dir, storeOptions)) return { ...session, state: 'DURABILITY_UNKNOWN' };
       // ORDEM DE LEITURA (R7-05): guarda → livro. A guarda é publicada DEPOIS de o registro entrar no livro (guarda ≤ livro em todo instante); lida primeiro, ela nunca
       // fica à frente do livro lido e uma corrida legítima não vira `GUARD_MISMATCH`.
-      if (options.guard) {
-        const latest = await options.guard.latest(auditId);
+      if (guard) {
+        const latest = await guard.latest(auditId);
         session.guard = latest.ok ? { status: 'READ', head: latest.head } : { status: 'UNAVAILABLE' };
+        if (!latest.ok) alarm(session, { kind: 'GUARD_UNAVAILABLE', call: 'LATEST' });
       }
       const read = await readLedgerFiles(options.dir, auditId, storeOptions);
-      if (!read.ok) {
-        const state = read.code === 'UNSAFE_PATH' || read.code === 'INVALID_ID' ? 'NOT_CONFIGURED' : read.code === 'STORAGE_MISSING' || (read.issues.some((issue) => READ_ERRNO.test(issue)) && !read.issues.some((issue) => HOSTILE_SHAPE.test(issue))) ? 'UNAVAILABLE' : 'UNTRUSTED';
-        return { ...session, state };
-      }
+      if (!read.ok) return { ...session, state: failedReadState(read) };
       if (read.value.records.length === 0) return { ...session, state: 'ABSENT' };
       // REINÍCIO NÃO É COMPROVAÇÃO: com registros no disco, a durabilidade precisa estar PROVADA neste processo (uma vez por auditoria) antes de o livro ser lido como protegido
       const proof = await ensureLedgerProven(options.dir, auditId, storeOptions);
       if (!proof.ok) return { ...session, state: 'DURABILITY_UNKNOWN' };
-      return { ...session, state: 'OK', records: [...read.value.records], tagFailure: verifyTags(read.value.records, auth) };
+      let records = [...read.value.records];
+      // REGRAS 2 E 3 numa corrida legítima (G1.b.1): o livro pode ter crescido entre a leitura da guarda e a dele. Só quando o veredito seria GUARD_HEAD_MISSING ou
+      // GUARD_LAGGING, relê a guarda DEPOIS do livro. Revisão do PR #56: uma cabeça dessa releitura ALÉM da cauda lida nunca vale por si: o livro é relido (como a
+      // leitura normal: sequência, hash, etiquetas e replay) e a avaliação usa o livro RELIDO — a cabeça só conta se for registro válido dele (prefixo); senão é MISMATCH.
+      // Na ordem guarda → livro → guarda → livro, toda cabeça publicada antes da 2ª leitura da guarda já está no livro relido depois dela (guarda ≤ livro em todo instante).
+      if (guard && session.guard.status === 'READ' && guardVerdictNeedsReread(session.guard.head, records.length)) {
+        const again = await guard.latest(auditId);
+        session.guard = again.ok ? { status: 'READ', head: session.guard.head, afterLedger: again.head } : { status: 'UNAVAILABLE' };
+        if (!again.ok) alarm(session, { kind: 'GUARD_UNAVAILABLE', call: 'LATEST' });
+        if (again.ok && again.head !== null && again.head.ledgerSeq > records.length) {
+          const reread = await rereadLedger(auditId, records);
+          if (reread.kind === 'STATE') return { ...session, state: reread.state };
+          records = reread.records;
+        }
+      }
+      return { ...session, state: 'OK', records, tagFailure: verifyTags(records, auth) };
     } catch {
       return { ...session, state: 'UNAVAILABLE' };
     }
@@ -303,7 +368,22 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
       capacityPolicy: policy,
     });
     session.evaluation = evaluation;
+    viewAlarms(session, evaluation, now);
     return evaluation;
+  }
+
+  /** Alarmes que a VISTA mostra (GE-E6): MISMATCH, cabeça ausente (regra 2), atraso acima de `L_max` (regra 3) e `BEHIND` há mais de `T` (§5.1.7). */
+  function viewAlarms(session: Session, evaluation: Evaluation, now: number): void {
+    const view = evaluation.view;
+    const lag = evaluation.guardLag;
+    if (view.externalGuard === 'MISMATCH') alarm(session, { kind: 'GUARD_MISMATCH' });
+    if (view.reason === 'GUARD_HEAD_MISSING') alarm(session, { kind: 'GUARD_HEAD_MISSING', ledgerSeq: view.head?.ledgerSeq ?? 0 });
+    if (view.reason === 'GUARD_LAGGING' && lag) alarm(session, { kind: 'GUARD_LAGGING', lag: lag.lag, maxLag: GUARD_MAX_LAG });
+    if (!lag || lag.lag === 0 || lag.lag > GUARD_MAX_LAG || view.reason === 'GUARD_HEAD_MISSING') return;
+    // idade do atraso: relógio do servidor (a hora recebida) menos a hora gravada do PRIMEIRO registro ainda não publicado
+    const firstUnpublished = session.records[lag.head?.ledgerSeq ?? 0];
+    const ageMs = firstUnpublished ? now - Date.parse(firstUnpublished.recordedAt) : Number.NaN;
+    if (ageMs > GUARD_BEHIND_ALARM_MS) alarm(session, { kind: 'GUARD_BEHIND_PROLONGED', lag: lag.lag, ageMs: Math.floor(ageMs) });
   }
 
   /** Relê os resultados agora (R2). Exceção NUNCA vira "sem resultados": vira testemunha indisponível. */
@@ -412,10 +492,62 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
     const last = session.records[session.records.length - 1];
     return last ? { ledgerSeq: last.ledgerSeq, sha256: last.contentSha256 } : null;
   };
-  async function publishGuard(session: Session): Promise<boolean> {
+  /**
+   * Publica a cabeça ATUAL na guarda (regra 7). `STALE` (outro processo já publicou uma cabeça maior) relê o `latest`: se a cabeça maior da guarda está no livro relido (etiquetas
+   * e replay válidos, e a nossa cauda no mesmo lugar), a publicação está COBERTA — sucesso, sem alarme. Aceita ⇒ a sessão passa a saber que a guarda tem ao menos esta cabeça.
+   */
+  async function publishGuard(session: Session): Promise<'OK' | GuardPublishCause> {
     const tail = head(session);
-    if (!options.guard || !tail) return true;
-    return (await options.guard.publish({ auditId: session.auditId, ledgerSeq: tail.ledgerSeq, sha256: tail.sha256 })).ok;
+    if (!guard || !tail) return 'OK';
+    const published = await guard.publish({ auditId: session.auditId, ledgerSeq: tail.ledgerSeq, sha256: tail.sha256 });
+    if (!published.ok && published.reason !== 'STALE') return published.reason;
+    const coverage = published.ok ? 'COVERED' : await staleCoverage(session.auditId, tail);
+    if (coverage === 'COVERED') {
+      session.guard = { status: 'READ', head: tail };
+      return 'OK';
+    }
+    // revisão do PR #56: a conferência do STALE que não se completa (guarda ou livro ilegível) é INDISPONIBILIDADE (regra 5), nunca um falso MISMATCH
+    return coverage === 'UNAVAILABLE' ? 'UNAVAILABLE' : 'STALE_UNCOVERED';
+  }
+  /**
+   * Conferência de uma publicação `STALE` (regra 7): `COVERED` = a cabeça maior da guarda é registro do livro relido (etiquetas e replay válidos) e a nossa cauda continua no
+   * lugar; `UNAVAILABLE` = o `latest` (erro, prazo, esquema) ou o livro não puderam ser lidos — nada se conclui; `DIVERGED` = lido tudo, a guarda tem o que o livro não tem.
+   */
+  async function staleCoverage(auditId: string, tail: LedgerHead): Promise<'COVERED' | 'UNAVAILABLE' | 'DIVERGED'> {
+    if (!guard) return 'UNAVAILABLE';
+    const latest = await guard.latest(auditId);
+    if (!latest.ok) return 'UNAVAILABLE';
+    if (latest.head === null || latest.head.ledgerSeq <= tail.ledgerSeq) return 'DIVERGED'; // disse STALE e não mostra cabeça maior: a guarda não é coerente
+    const read = await readLedgerFiles(options.dir, auditId, storeOptions);
+    if (!read.ok) return 'UNAVAILABLE';
+    const records = read.value.records;
+    if (verifyTags(records, auth) !== null || !replayLedger(records, auditId).ok) return 'UNAVAILABLE'; // o livro relido não confere: não há como decidir aqui (a leitura seguinte acusa)
+    return records[tail.ledgerSeq - 1]?.contentSha256 === tail.sha256 && records[latest.head.ledgerSeq - 1]?.contentSha256 === latest.head.sha256 ? 'COVERED' : 'DIVERGED';
+  }
+  /**
+   * REGRA 4 (G1.b.1, PG-G03): publicação de MELHOR ESFORÇO depois de um registro já durável no livro (pontos S1–S9 da §5.1.2). A falha nunca vira "nada foi gravado": o
+   * chamador responde como antes (sucesso, ou `RUN_DEADLINE` no S9), a vista mostra `BEHIND` e o alarme sai AQUI, no ponto; a próxima publicação obrigatória recusa.
+   */
+  async function publishAfterRecord(session: Session, point: GuardPublishPoint): Promise<void> {
+    const outcome = await publishGuard(session);
+    if (outcome === 'OK') return;
+    const ledgerSeq = head(session)?.ledgerSeq ?? 0;
+    alarm(session, { kind: 'GUARD_PUBLISH_FAILED_AFTER_RECORD', point, cause: outcome, ledgerSeq });
+    if (outcome === 'CONFLICT') alarm(session, { kind: 'GUARD_CONFLICT', ledgerSeq });
+  }
+  /**
+   * Publicação OBRIGATÓRIA (antes de uma operação nova, do CHECKPOINT da rotação e depois do GENESIS): `null` = publicada (ou sem guarda); senão a razão da recusa
+   * `LEDGER_GUARD_UNAVAILABLE` — `GUARD_UNAVAILABLE`, ou `GUARD_MISMATCH` quando a guarda tem outra cabeça na posição (`CONFLICT`) ou uma maior que o livro não contém.
+   */
+  async function publishRequired(session: Session): Promise<LedgerReason | null> {
+    const outcome = await publishGuard(session);
+    if (outcome === 'OK') return null;
+    if (outcome === 'UNAVAILABLE') {
+      alarm(session, { kind: 'GUARD_UNAVAILABLE', call: 'PUBLISH' });
+      return 'GUARD_UNAVAILABLE';
+    }
+    alarm(session, outcome === 'CONFLICT' ? { kind: 'GUARD_CONFLICT', ledgerSeq: head(session)?.ledgerSeq ?? 0 } : { kind: 'GUARD_MISMATCH' });
+    return 'GUARD_MISMATCH';
   }
 
   const opFor = (entry: DecisionRef): LedgerOp => ({
@@ -563,7 +695,7 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
       const synced = await syncLedgerDirectory(options.dir, session.auditId, storeOptions);
       if (!synced.ok) return asRun(refusal('LEDGER_UNAVAILABLE', null, null, [...synced.issues]));
     } else if (outcome !== 'OK') return asRun(outcome);
-    await publishGuard(session);
+    await publishAfterRecord(session, 'S1');
     return { kind: 'OK' };
   }
 
@@ -598,7 +730,7 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
     const written = await append(session, runAbortDraft(again.runPlan.intent, again.runPlan.ageMs, input.actor, input.nowIso), input.nowIso, true);
     if (written === 'CONFLICT') return stop({ kind: 'RETRY', ms: 10, transient: false });
     if (written !== 'OK') return stop(asRun(written));
-    await publishGuard(session);
+    await publishAfterRecord(session, 'S2');
     const after = evaluate(session, input, fresh);
     const afterBlocked = runBlocked(after);
     return afterBlocked ? stop(afterBlocked) : { kind: 'DONE', evaluation: after };
@@ -619,6 +751,8 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
       session.grant = null;
       const actor = input.actor ?? 'system';
       const intended = input.intended ?? 'RECORD';
+      /** Registros antes desta preparação: a manutenção sabe se já gravou uma receita (regra 4) antes de recusar a rotação. */
+      const startLength = session.records.length;
       let evaluation = evaluate(session, input);
       let view = evaluation.view;
       if (view.state === 'ENROLLMENT_PENDING' || view.state === 'LEGACY_READ_ONLY') return refusedForState(view);
@@ -679,7 +813,7 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
         const written = await append(session, { event: 'CONFIRMED', recordedAt: input.nowIso, actor, op: { ...intentOp, intentSeq: plan.intent.ledgerSeq, anchorRef: { name: anchorName(plan.entry.seq), headSha256: plan.entry.sha256 } } }, input.nowIso);
         const stop = stepFromAppend(written);
         if (stop) return stop;
-        await publishGuard(session);
+        await publishAfterRecord(session, 'S3');
         evaluation = evaluate(session, input);
         view = evaluation.view;
         if (view.state !== 'PROTECTED') return refusedForState(view);
@@ -698,7 +832,7 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
           const written = await append(session, { event: 'ABORTED', recordedAt: input.nowIso, actor, op: { ...intentOp, intentSeq: intent.ledgerSeq, observed: { entryPresent: false, receiptPresent: false, ageMs: Math.max(0, view.openOperation?.ageMs ?? 0) } } }, input.nowIso);
           const stop = stepFromAppend(written);
           if (stop) return stop;
-          await publishGuard(session);
+          await publishAfterRecord(session, 'S4');
           evaluation = evaluate(session, input);
           view = evaluation.view;
           if (view.state !== 'PROTECTED') return refusedForState(view);
@@ -718,7 +852,7 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
           const written = await append(session, runAbortDraft(evaluation.runPlan.intent, evaluation.runPlan.ageMs, actor, input.nowIso), input.nowIso, true);
           const stop = stepFromAppend(written);
           if (stop) return stop;
-          await publishGuard(session);
+          await publishAfterRecord(session, 'S5');
           evaluation = evaluate(session, input);
           view = evaluation.view;
           if (view.state !== 'PROTECTED') return refusedForState(view);
@@ -736,13 +870,26 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
           if (blocked) return blocked;
           const stale = await revalidate();
           if (stale) return stale;
-          const tail = head(session) as LedgerHead;
-          const written = await append(session, { event: 'CHECKPOINT', recordedAt: input.nowIso, actor, checkpoint: { throughSeq: tail.ledgerSeq, throughSha256: tail.sha256 } }, input.nowIso);
-          const stop = stepFromAppend(written);
-          if (stop) return stop;
-          await publishGuard(session);
-          evaluation = evaluate(session, input);
-          view = evaluation.view;
+          // G1.b.1 (§5.1.7, revisão do PR #53): com a guarda configurada, o CHECKPOINT da rotação só entra com `externalGuard` = CONSISTENT — publicação OBRIGATÓRIA da
+          // cabeça atual antes dele, como numa operação nova. Sem isso, cada rotação dentro da mesma janela somaria 1 ao atraso e passaria de `L_max` (GUARD_LAGGING, sem
+          // reabertura). Não publicou: recusa se esta manutenção ainda não gravou nada; se já gravou uma receita (S3–S5), a resposta é de sucesso (regra 4) e a rotação
+          // continua descoberta na vista até a próxima manutenção.
+          let guardReady = !guard || view.externalGuard === 'CONSISTENT';
+          if (!guardReady && (await publishRequired(session)) === null) {
+            evaluation = evaluate(session, input);
+            view = evaluation.view;
+            guardReady = view.state === 'PROTECTED' && view.externalGuard === 'CONSISTENT';
+          }
+          if (!guardReady && session.records.length === startLength) return refused('LEDGER_GUARD_UNAVAILABLE', view, null, [ROTATION_GUARD_MESSAGE]);
+          if (guardReady) {
+            const tail = head(session) as LedgerHead;
+            const written = await append(session, { event: 'CHECKPOINT', recordedAt: input.nowIso, actor, checkpoint: { throughSeq: tail.ledgerSeq, throughSha256: tail.sha256 } }, input.nowIso);
+            const stop = stepFromAppend(written);
+            if (stop) return stop;
+            await publishAfterRecord(session, 'S6');
+            evaluation = evaluate(session, input);
+            view = evaluation.view;
+          }
         }
         // R7-04: o sucesso da manutenção diz que o livro desta auditoria está DURÁVEL — também quando o registro já existia e nada foi gravado agora
         if (session.records.length > 0) {
@@ -763,6 +910,13 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
       if (blocked) return blocked;
       const stale = await revalidate();
       if (stale) return stale;
+      // Guarda externa configurada: a cabeça atual publicada ANTES de qualquer gravação da operação nova — inclusive o ponto de verificação automático (G1.b.1). Publicação
+      // recusada ⇒ nada novo entra no livro: o CHECKPOINT nunca fica sem publicação depois de uma recusa (com a ordem antiga, cada rotação somava 1 ao atraso e a inscrição
+      // com a publicação falha chegava a 2 registros sem cabeça, GUARD_HEAD_MISSING).
+      if (guard) {
+        const failed = await publishRequired(session);
+        if (failed) return refused('LEDGER_GUARD_UNAVAILABLE', view, failed);
+      }
       // Ponto de verificação (primeira escrita depois de uma rotação de chave e a cada N registros).
       if (cost.checkpoint) {
         const tail = head(session) as LedgerHead;
@@ -770,8 +924,6 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
         const stop = stepFromAppend(written);
         if (stop) return stop;
       }
-      // Guarda externa configurada: a cabeça anterior precisa estar publicada antes de uma nova operação.
-      if (options.guard && !(await publishGuard(session))) return refused('LEDGER_GUARD_UNAVAILABLE', view, 'GUARD_UNAVAILABLE');
       session.grant = 'INTENT'; // autoriza UMA INTENT nesta sessão (consumida pelo `intent`)
       return { kind: 'OK', pendingKind: null };
     },
@@ -814,7 +966,7 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
       const written = await append(session, { event: 'RECEIPT_REISSUED', recordedAt: input.nowIso, actor: input.actor, op: { ...confirmed.op, intentSeq: confirmed.intentSeq, anchorRef: { name: anchorName(input.entry.seq), headSha256: input.entry.sha256 } } }, input.nowIso);
       const stop = stepFromAppend(written);
       if (stop) return stop;
-      await publishGuard(session);
+      await publishAfterRecord(session, 'S7');
       return { kind: 'OK', pendingKind: null };
     },
 
@@ -837,7 +989,7 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
         const adopted = await syncLedgerDirectory(options.dir, session.auditId, storeOptions);
         if (!adopted.ok) return refused('LEDGER_UNAVAILABLE', null, null, [...adopted.issues]);
       } else if (written !== 'OK') return { kind: 'REFUSED', refusal: written };
-      await publishGuard(session);
+      await publishAfterRecord(session, 'S8');
       return { kind: 'OK', pendingKind: null };
     },
 
@@ -901,7 +1053,10 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
       // (f): o RUN_INTENT e o fecho cabem na classe RUN (a MESMA conta que a vista anuncia em `runsAvailable`)
       if (!runIntentFits(session.records, policy)) return runRefused('LEDGER_CAPACITY_EXHAUSTED', 'LIMIT_REACHED', [capacityMessage(capacityLevelOf(session))]);
       // (g): com guarda configurada, a cabeça atual publicada antes
-      if (options.guard && !(await publishGuard(session))) return runRefused('LEDGER_GUARD_UNAVAILABLE', 'GUARD_UNAVAILABLE');
+      if (guard) {
+        const failed = await publishRequired(session);
+        if (failed) return runRefused('LEDGER_GUARD_UNAVAILABLE', failed);
+      }
       // prazo do dono (passo 7): o instante monotônico é anotado ANTES de publicar o RUN_INTENT
       session.runMark = monotonic();
       const written = await append(session, { event: 'RUN_INTENT', recordedAt: input.nowIso, actor: input.actor, run: { runOpId: newOpId(), ...runFieldsOf(run) } }, input.nowIso, true);
@@ -931,7 +1086,7 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
         // o próprio RUN_ABORTED é fecho: num EEXIST segue a regra dos fechos intercalados (R1.4; a operação é dele e nada foi publicado — o dono não chega ao link() do resultado).
         // Fechada de outro modo, ou regravações esgotadas, a fase A fica aberta até vencer (qualquer operador a aborta). A resposta é sempre RUN_DEADLINE, salvo durabilidade.
         const written = await appendClosing(session, intent, runAbortDraft(intent, Number.isFinite(elapsed) ? elapsed : 0, input.actor, input.nowIso), input.nowIso, { slot: 'openRun', sameClosing: () => false, texts: RUN_CLOSING, verifyReplay: true });
-        if (written === 'OK') await publishGuard(session);
+        if (written === 'OK') await publishAfterRecord(session, 'S9');
         else if (written !== 'ADOPTED' && written !== 'CLOSED' && asRun(written).refusal.code === 'DURABILITY_UNKNOWN') return asRun(written);
         return runRefused('RUN_DEADLINE', null, [RUN_DEADLINE_MESSAGE]);
       }
@@ -1019,7 +1174,8 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
       const written = await append(session, { event: 'GENESIS', recordedAt: input.nowIso, actor: input.actor, genesis: { mode: 'EMPTY' } }, input.nowIso);
       if (written === 'CONFLICT') return { ok: false as const, refusal: refusal('LEDGER_UNAVAILABLE', view, null, ['Outro processo inscreveu a auditoria ao mesmo tempo; releia.']) };
       if (written !== 'OK') return { ok: false as const, refusal: written };
-      if (!(await publishGuard(session))) return { ok: false as const, refusal: refusal('LEDGER_GUARD_UNAVAILABLE', view, 'GUARD_UNAVAILABLE') };
+      const failed = await publishRequired(session);
+      if (failed) return { ok: false as const, refusal: refusal('LEDGER_GUARD_UNAVAILABLE', view, failed) };
       const after = evaluate(session, { session, auditId: input.auditId, snapshot: input.snapshot, results: input.results, entryOriginProven: () => false, nowIso: input.nowIso });
       return { ok: true as const, view: after.view };
     },
