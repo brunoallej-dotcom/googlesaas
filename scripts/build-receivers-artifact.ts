@@ -83,8 +83,8 @@ export function versionedReceiverHashes(file: string = RECEIVERS_HASH_FILE): Rea
   lines.forEach((line, index) => {
     const match = HASH_LINE.exec(line);
     const expected = RECEIVER_ARTIFACTS[index]?.fileName;
-    if (!match || match[2] !== expected || hashes.has(match[2])) throw new ArtifactBuildError('HASH_MISMATCH', `${path.relative(REPO_ROOT, file)}: linha ${index + 1} fora do formato "<sha256>  <arquivo>" ou fora da ordem de RECEIVER_ARTIFACTS`);
-    hashes.set(match[2], match[1] as string);
+    if (!match || expected === undefined || match[2] !== expected || hashes.has(expected)) throw new ArtifactBuildError('HASH_MISMATCH', `${path.relative(REPO_ROOT, file)}: linha ${index + 1} fora do formato "<sha256>  <arquivo>" ou fora da ordem de RECEIVER_ARTIFACTS`);
+    hashes.set(expected, match[1] as string);
   });
   if (hashes.size !== RECEIVER_ARTIFACTS.length) throw new ArtifactBuildError('HASH_MISMATCH', `${path.relative(REPO_ROOT, file)}: ${hashes.size} linhas para ${RECEIVER_ARTIFACTS.length} artefatos`);
   return hashes;
