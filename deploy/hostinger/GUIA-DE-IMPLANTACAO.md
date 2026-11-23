@@ -5,7 +5,7 @@
 ## 0. Decisões a confirmar antes de começar
 | Item | Padrão desta preparação | Como confirmar (somente leitura) |
 |---|---|---|
-| Domínio | `gmn.somosvra.com.br` (provisório) | criar o registro DNS A (e AAAA, se houver) para o IP da VPS e aguardar propagar |
+| Domínio | `<DOMINIO_PRODUCAO>` (provisório) | criar o registro DNS A (e AAAA, se houver) para o IP da VPS e aguardar propagar |
 | Nó Swarm | `GMN_NODE_HOSTNAME` | `docker node ls` |
 | Rede do Traefik | `automacaotrafegopagoredeinterna` (external) | `docker network ls \| grep automacao` |
 | Entrypoint HTTP (porta 80) | `web` | `docker service inspect traefik_traefik --format '{{json .Spec.TaskTemplate.ContainerSpec.Args}}'` (procure `--entrypoints.<nome>.address=:80`) |
@@ -79,7 +79,7 @@ docker stack services gmn                                 # web 1/1, gmn-redis 1
 ```
 O Worker nasce com `replicas: 0` (variável `GMN_WORKER_REPLICAS`, padrão 0). O Redis e o web sobem; não há processamento. **Atenção:** o web já aceita enfileiramento (`/api/audit/enqueue`) e prospecção (`/api/prospect`, que usa o Serper por ação do operador); enquanto o Worker estiver desligado, não enfileire auditorias — elas seriam consumidas (e cobradas) assim que o Worker for ligado.
 
-## 5. Migrar as evidências da TUVAPLAST
+## 5. Migrar as evidências da AUD-001
 Siga `PLANO-DE-MIGRACAO-DE-EVIDENCIAS.md` (cópia verificável por SHA-256; os originais no Windows não são tocados).
 
 ## 6. Verificar

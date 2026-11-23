@@ -3,7 +3,7 @@
 **O que proteger e onde está**
 | Dado | Local na VPS | Criticidade |
 |---|---|---|
-| Evidências (TUVAPLAST e futuras) | `/srv/gmn/evidence` | **Alta** — a consulta paga não pode ser refeita |
+| Evidências (AUD-001 e futuras) | `/srv/gmn/evidence` | **Alta** — a consulta paga não pode ser refeita |
 | PDFs gerados | `/srv/gmn/audits` | Média (regeneráveis a partir do banco/bucket) |
 | Snapshots da Auditoria por Link | `/srv/gmn/link-audits` | Alta |
 | Fila/estado do Redis | `/srv/gmn/redis` | Baixa (jobs e batimento; auditorias ficam no Supabase) |
@@ -16,7 +16,7 @@
 ## Opção A — Windows (já é a origem das evidências)
 Rotina semanal, a partir do WSL (puxa da VPS; a VPS não precisa de credenciais do Windows):
 ```bash
-# NUNCA grave em D:\gmn-evidencias-privadas (é o ORIGINAL da migração): o destino é uma pasta de backup separada.
+# NUNCA grave em <EVIDENCIAS_PRIVADAS> (é o ORIGINAL da migração): o destino é uma pasta de backup separada.
 rsync -a --checksum --rsync-path='sudo rsync' USUARIO@IP_DA_VPS:/srv/gmn/evidence/   /mnt/d/gmn-backups/vps/evidence/
 rsync -a --checksum --rsync-path='sudo rsync' USUARIO@IP_DA_VPS:/srv/gmn/link-audits/ /mnt/d/gmn-backups/vps/link-audits/
 rsync -a --checksum --rsync-path='sudo rsync' USUARIO@IP_DA_VPS:/srv/gmn/audits/      /mnt/d/gmn-backups/vps/audits/
