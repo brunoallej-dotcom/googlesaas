@@ -6,7 +6,9 @@ import { nodeFsOps } from '../src/lib/link-audit/node-fs-ops';
 import { parseTreeEntries } from '../src/lib/link-audit-seals-channel/changes';
 import { parseSealsTreeArgs, runSealsCheckCli, SEALS_CHECK_EXIT, USAGE_LINES } from '../src/lib/link-audit-seals-channel/cli';
 import type { ChannelEnvironment } from '../src/lib/link-audit-seals-channel/paths';
-import { summaryLines } from '../src/lib/link-audit-seals-channel/summary';
+import { closureSummaryLine, COMPACT_REFUSAL_ROWS, HEADS_SHOWN, MAX_REFUSAL_ROWS, STEP_SUMMARY_BUDGET_BYTES, SUMMARY_MAX_BYTES, summaryBytes, summaryLines } from '../src/lib/link-audit-seals-channel/summary';
+import type { ClosureLine, SealsCheckReport } from '../src/lib/link-audit-seals-channel/check';
+import { refusal } from '../src/lib/link-audit-seals-channel/codes';
 import { MAX_ARCHIVE_BYTES, MAX_ARCHIVE_FILES } from '../src/lib/link-audit-seals-channel/archive';
 import { MAX_TREE_FILES, runSealsTreeCheck } from '../src/lib/link-audit-seals-channel/tree';
 import { registerCleanup, tmpDir } from './helpers/link-audit-evidence-fixtures';
@@ -266,4 +268,51 @@ test('P9.5 SEALS_ARCHIVE_FULL (revisão do PR #74, item 9): o job `seals` do PR 
   chainInRepo(heavy, AUD_A, [KEY_A], 'homologacao');
   const bytes = await check(heavy, [['A', sealRepoPath(AUD_A, 1, 'homologacao')]]);
   assert.ok(details(bytes).includes('SEALS_ARCHIVE_FULL homologacao BYTES'), JSON.stringify(details(bytes)));
+});
+
+/* ------------------------------------------------------------------------------------------------ revisão do PR #74, item 8 */
+
+const hex64 = (n: number): string => n.toString(16).padStart(64, '0');
+const auditOf = (n: number): string => `aud-${n.toString(16).padStart(16, '0')}`;
+const worstReport = (closureCount: number, headsPerClosure: number, manifestCount: number): SealsCheckReport => {
+  const heads = Array.from({ length: headsPerClosure }, (_, i) => ({ auditId: auditOf(i), seq: 256, sealSha256: hex64(i) }));
+  return {
+    touched: true,
+    refusals: Array.from({ length: 250 }, (_, i) => refusal('S-07', 'SEAL_NOT_CANONICAL', `homologacao/seals/${auditOf(i)}/seal-0256.json`)),
+    manifests: Array.from({ length: manifestCount }, (_, i) => ({ env: 'homologacao' as const, relativePath: `${auditOf(i)}/seal-0256.json`, bytesSha256: hex64(i), seq: 256, sealSha256: hex64(i + 1_000_000) })),
+    closures: Array.from({ length: closureCount }, (_, i) => ({ env: 'homologacao' as const, relativePath: `_closures/k${String(i).padStart(31, '0')}.json`, bytesSha256: hex64(i + 2_000_000), retiredKeyId: `k${String(i).padStart(31, '0')}`, signerKeyId: `s${'0'.repeat(31)}`, heads })),
+    trustLists: [],
+    chains: [],
+    chainsTruncated: false,
+    incomplete: false,
+  };
+};
+const TREE_OPTIONS = { title: '### seals-verify (homologacao): árvore inteira, S-03 a S-08', rules: 'S-03 a S-08' };
+const assertJoinKeys = (lines: readonly string[], report: SealsCheckReport): void => {
+  const text = lines.join('\n');
+  for (const line of [...report.manifests, ...report.closures]) assert.ok(text.includes(`| \`${line.relativePath}\` | \`${line.bytesSha256}\` |`), `caminho e sha256 de ${line.relativePath} sempre no resumo`);
+};
+
+test('P9.5 teto do resumo (revisão do PR #74, item 8): o pior caso admitido (970 manifestos, 30 fechos × 1000 cabeças, 250 recusas) cabe em SUMMARY_MAX_BYTES; cabeças acima de 20 viram total + primeiras + aviso; caminho e sha256 de todo arquivo sempre', () => {
+  assert.ok(3 * SUMMARY_MAX_BYTES <= STEP_SUMMARY_BUDGET_BYTES && STEP_SUMMARY_BUDGET_BYTES < 1024 * 1024, 'três resumos no mesmo passo (mudanças + dois ambientes) abaixo do 1 MiB do GitHub');
+  const report = worstReport(30, 1000, 970);
+  const lines = summaryLines(report, TREE_OPTIONS);
+  assert.ok(summaryBytes(lines) <= SUMMARY_MAX_BYTES, `${summaryBytes(lines)} bytes`);
+  assertJoinKeys(lines, report);
+  const closure = lines.find((line) => line.includes('_closures/k'));
+  assert.match(closure ?? '', /\| 1000 cabeças: `aud-0000000000000000:256:000000000000`, [^|]*… \(mais 980; lista completa no fecho\) \|$/);
+  assert.equal((closure?.match(/`aud-[0-9a-f]{16}:256:[0-9a-f]{12}`/g) ?? []).length, HEADS_SHOWN);
+  assert.ok(lines.includes(`… e mais ${250 - MAX_REFUSAL_ROWS} recusa(s) não listadas.`));
+  const few = closureSummaryLine({ ...(report.closures[0] as ClosureLine), heads: (report.closures[0] as ClosureLine).heads?.slice(0, 3) ?? null });
+  assert.ok(!few.includes('cabeças:') && few.split('`aud-').length - 1 === 3, 'até 20 cabeças: todas, como antes');
+});
+
+test('P9.5 teto do resumo: além do admitido (1000 fechos × 1000 cabeças), o resumo fica COMPACTO (cabeças só pelo total, até 20 recusas) e ainda cabe, sem perder caminho nem sha256 de nenhum arquivo', () => {
+  const report = worstReport(1000, 1000, 0);
+  const lines = summaryLines(report, TREE_OPTIONS);
+  assert.ok(summaryBytes(lines) <= SUMMARY_MAX_BYTES, `${summaryBytes(lines)} bytes`);
+  assert.ok(lines.some((line) => line.startsWith('Resumo COMPACTO')));
+  assertJoinKeys(lines, report);
+  assert.ok(lines.some((line) => line.endsWith('| 1000 cabeça(s) (lista completa no fecho) |')));
+  assert.ok(lines.includes(`… e mais ${250 - COMPACT_REFUSAL_ROWS} recusa(s) não listadas.`));
 });

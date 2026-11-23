@@ -699,3 +699,22 @@ test('P9.5 resumo recusado antes do checkout (passo escrito no workflow): o cód
   assert.match(run('homologacao', 'NOT_MAIN_HEAD'), new RegExp(`### Entrega de manifestos \\(homologacao\\)\\n\\nRecusado antes do checkout: \`NOT_MAIN_HEAD\` \\(execução \`42\`, commit \`${DELIVER_ENV.GMN_SHA}\`\\)\\. Nada foi enviado\\.`));
   assert.match(run('x | y', 'lixo `x`'), /### Entrega de manifestos \(-\)[\s\S]*`FALHOU_ANTES_DO_CHECKOUT`/);
 });
+
+test('P9.5 teto do resumo da entrega (revisão do PR #74, item 8): o pior caso admitido (1000 arquivos, o código mais longo) cabe em 900 KiB com todas as linhas; uma lista acima do teto de arquivos nunca vira tabela cortada (SUMMARY_TOO_LARGE)', (t) => {
+  const rels = Array.from({ length: 1000 }, (_, i) => (i % 2 === 0 ? seal(`aud-${i.toString(16).padStart(16, '0')}`, 256) : `_closures/${'k'.repeat(27)}${String(i).padStart(5, '0')}.json`));
+  const rows = rels.map((rel, i): [string, string, string] => (i === 999 ? [rel, 'INDETERMINADO', 'RECEIVER_UNKNOWN_ERROR EXIT_255'] : [rel, 'WRITTEN', 'OK']));
+  const sandbox = summaryFixture(t, rels, rows);
+  const result = runScript(sandbox, 'seals-summary.sh', [], { ...SUMMARY_ENV, GITHUB_RUN_ID: '9'.repeat(20), GITHUB_RUN_ATTEMPT: '999999', GMN_O_DELIVER: 'failure', GMN_E_DELIVER: 'RECEIVER_UNKNOWN_ERROR' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(fs.statSync(sandbox.summaryFile).size <= 900 * 1024, `${fs.statSync(sandbox.summaryFile).size} bytes`);
+  assert.equal(summaryRows(sandbox).length, 1000, 'todas as linhas (o livro junta por caminho e sha256)');
+
+  const many = Array.from({ length: 6000 }, (_, i) => seal(`aud-${i.toString(16).padStart(16, '0')}`, 1));
+  const tooBig = summaryFixture(t, many, []);
+  const refused = runScript(tooBig, 'seals-summary.sh', [], SUMMARY_ENV);
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /^ERRO SUMMARY_TOO_LARGE$/m);
+  const text = fs.readFileSync(tooBig.summaryFile, 'utf8');
+  assert.equal(summaryRows(tooBig).length, 0, 'nenhuma tabela cortada');
+  assert.match(text, /Resumo acima do teto de 900 KiB/);
+});

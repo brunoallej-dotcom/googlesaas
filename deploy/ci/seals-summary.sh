@@ -25,6 +25,9 @@ readonly LABEL_ALREADY_PRESENT='`ALREADY_PRESENT`: conteúdo idêntico já prese
 readonly LABEL_FAILED='`FALHOU`'
 readonly LABEL_UNDETERMINED='resultado indeterminado (conferir no host)'
 readonly LABEL_NOT_SENT='não enviado'
+# Teto do resumo deste passo (o GitHub corta em 1 MiB; revisão do PR #74, item 8). Com o teto de 1000 arquivos da lista, cada linha tem menos
+# de 400 bytes: o resumo cabe com folga. Passar do teto é falha FECHADA (nunca uma tabela cortada no meio: o livro junta por caminho e sha256).
+readonly SUMMARY_BUDGET_BYTES=$((900 * 1024))
 : "${GITHUB_STEP_SUMMARY:?GITHUB_STEP_SUMMARY ausente}"
 
 # valid VALOR PADRÃO: o valor, se casar o padrão; senão `-`.
@@ -85,6 +88,7 @@ if [ -f "${SEALS_DIR}/files" ] && [ ! -L "${SEALS_DIR}/files" ]; then
   done <"${SEALS_DIR}/files"
 fi
 
+summary="$(umask 077 && mktemp "${RUNNER_TEMP}/gmn-seals-summary.XXXXXX")"
 {
   echo "### Entrega de manifestos (${amb})"
   echo
@@ -111,5 +115,13 @@ fi
   echo
   echo "\`ALREADY_PRESENT\` = conteúdo idêntico já presente: o host já tinha um arquivo com os mesmos bytes, e o receptor só comparou os bytes"
   echo "(a verificação v2 no host vale só para \`WRITTEN\`). Host, porta e conteúdo de arquivo nunca entram neste resumo (spec §5.9)."
-} >>"$GITHUB_STEP_SUMMARY"
+} >"$summary"
+if [ "$(stat -c %s -- "$summary")" -gt "$SUMMARY_BUDGET_BYTES" ]; then
+  rm -f -- "$summary"
+  printf '%s\n' "### Entrega de manifestos (${amb})" '' 'Resumo acima do teto de 900 KiB (não deveria acontecer com o teto de 1000 arquivos): ver as linhas `OK` do log do passo.' >>"$GITHUB_STEP_SUMMARY"
+  printf 'ERRO %s\n' SUMMARY_TOO_LARGE >&2
+  exit 1
+fi
+cat -- "$summary" >>"$GITHUB_STEP_SUMMARY"
+rm -f -- "$summary"
 echo "resumo da entrega: ${result}"
