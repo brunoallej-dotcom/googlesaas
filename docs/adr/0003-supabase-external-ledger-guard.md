@@ -111,6 +111,22 @@ decisão **não** protege contra eles.
   `BEHIND` acima de 15 min (GE-E6).
 - Ameaças desta decisão: `docs/security/threats/link-audit-portoes-producao.md`.
 
+### Revisão de cadeia de suprimento do cliente Postgres (G1.b.2a, 22/11/2026)
+
+- **Pacote:** `pg` **8.23.1** (`dependencies`, versão exata, `npm install --save-exact`), publicado em 30/09/2026 (mais de
+  sete semanas antes da instalação), licença MIT, repositório `brianc/node-postgres`, mantenedor único no npm (o autor do
+  projeto). Tipos: `@types/pg` **8.23.1** (`devDependencies`, exata, DefinitelyTyped).
+- **Transitivas novas (13):** `pg-pool`, `pg-protocol`, `pg-connection-string`, `pg-cloudflare` (opcional, só para
+  Cloudflare Workers) e `pg-int8`, do mesmo grupo de mantenedores; `pg-types`, `postgres-array`, `postgres-bytea`,
+  `postgres-date` e `postgres-interval` (conversão de tipos); `pgpass` (só é consultado sem senha na configuração, o que o
+  adaptador nunca faz), `split2` e `xtend`. Todas MIT ou ISC; **nenhuma com script de instalação**. `pg-native` (peer
+  opcional, nativo) **não** é instalado.
+- **`npm audit`:** 0 vulnerabilidades (completo e `--omit=dev`) no momento da instalação. O lockfile foi gerado pelo `npm`,
+  sem edição à mão.
+- **Uso restrito:** só `src/lib/link-audit-ledger/guard-pg.ts` importa `pg` (teste de isolamento), com um `Client` por
+  chamada (sem pool), configuração explícita (nada de string de conexão interpretada pelo `pg-connection-string`) e TLS
+  sempre verificado contra a CA fornecida. O Next já trata `pg` como pacote externo do servidor (fora do bundle).
+
 ## Alternatives considered
 
 **(2) Repositório GitHub privado separado**, com regra de proteção sem push forçado e token fine-grained só com
