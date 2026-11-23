@@ -25,7 +25,8 @@ test('imports: lista fechada por arquivo (zod, node:path/crypto onde cabe, módu
   const allowed: Readonly<Record<string, readonly string[]>> = {
     'types.ts': ['zod', '../link-audit-origin', '../link-audit-decisions/ledger-port'],
     'model.ts': ['../link-audit-origin', './types'],
-    'config.ts': ['node:path', '../link-audit-origin'],
+    // node:crypto só para o SHA-256 de mão única das impressões digitais de chave (G1.a, PG-L01): nunca para gerar ou expor material
+    'config.ts': ['node:crypto', 'node:path', '../link-audit-origin'],
     // G1.b.1: zod valida as respostas da guarda na fronteira (regra 5: fora do esquema ⇒ indisponível)
     'guard.ts': ['node:path', 'zod', '../link-audit-storage', '../link-audit/snapshot-store', './types'],
     'guard-alarm.ts': [],
