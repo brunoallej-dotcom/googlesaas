@@ -10,6 +10,7 @@ import {
   CONTAINERD_ID_WEB,
   CONTAINERD_ID_WORKER,
   containerdImages,
+  DERIVED_BIND_FOLDERS,
   WEB_CONFIG,
   WEB_CONFIG_PATH,
   WEB_DIFF_IDS,
@@ -474,15 +475,20 @@ test('passo 9, armazenamento CONTAINERD, divergências ⇒ E_DOCKER_LOAD (sem st
 
 /* ===================================================================================================================== passos 10 a 12 */
 
-test('P9-D08 argv exato: stack config e stack deploy com os -c do ambiente, --resolve-image never, o nome da stack do wrapper, sem --prune; GMN_IMAGE_TAG e a lista no AMBIENTE do filho, nunca na linha de comando', async () => {
+test('P9-D08 argv exato: stack config e stack deploy com os -c das CÓPIAS PRIVADAS dos bytes conferidos, --resolve-image never, o nome da stack do wrapper, sem --prune; GMN_IMAGE_TAG e a lista no AMBIENTE do filho, nunca na linha de comando', async () => {
   for (const env of ['producao', 'homologacao'] as const) {
     const w = world({ env });
     const r = await deploy(w);
     assert.equal(r.outcome.exitCode, 0, String(r.outcome.stderr));
-    const compose = env === 'producao' ? ['-c', w.stackFile] : ['-c', w.stackFile, '-c', w.overlayFile as string];
     const config = r.runner.calls.find((call) => call.args[0] === 'stack' && call.args[1] === 'config');
     const deployed = r.runner.calls.find((call) => call.args[0] === 'stack' && call.args[1] === 'deploy');
-    assert.deepEqual(config?.args, ['stack', 'config', ...compose]);
+    const compose = (config?.args ?? []).slice(2);
+    const names = env === 'producao' ? ['stack.yml'] : ['stack.yml', 'stack-hml.yml'];
+    assert.equal(compose.length, names.length * 2);
+    compose.forEach((arg, index) => {
+      if (index % 2 === 0) assert.equal(arg, '-c');
+      else assert.match(arg, new RegExp(`^${w.stateDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/\\.stack-[0-9a-f]+/${names[(index - 1) / 2]?.replace('.', '\\.')}$`));
+    });
     assert.deepEqual(deployed?.args, ['stack', 'deploy', '--resolve-image', 'never', ...compose, w.stackName]);
     assert.ok(!r.runner.dockerCalls().some((args) => args.includes('--prune')));
     for (const call of [config, deployed]) {
@@ -496,6 +502,75 @@ test('P9-D08 argv exato: stack config e stack deploy com os -c do ambiente, --re
     const queries = r.runner.calls.filter((call) => call.program === 'docker' && !(call.args[0] === 'stack'));
     for (const call of queries) assert.deepEqual(call.env, { PATH: '/usr/bin:/bin' }, `consulta só com PATH: ${call.args.join(' ')}`);
   }
+});
+
+test('revisão do PR #70 (item 3): os dois docker stack recebem cópias PRIVADAS (pasta 0700 do estado, arquivos 0600) dos bytes conferidos no passo 2; trocar a stack instalada depois da conferência não muda o que é implantado; as cópias somem no fim (sucesso e falha)', async () => {
+  const w = world({ env: 'homologacao' });
+  const verified = fs.readFileSync(w.stackFile);
+  const verifiedOverlay = fs.readFileSync(w.overlayFile as string);
+  const modes: string[] = [];
+  w.scenario.beforeCall = (request) => {
+    // depois do passo 2 (a primeira consulta ao Docker é o passo 7): o arquivo instalado vira outro
+    if (request.program === 'docker' && request.args[0] === 'service' && request.args[1] === 'inspect') {
+      fs.writeFileSync(w.stackFile, 'services: { atacante: { image: alpine } }\n');
+      fs.writeFileSync(w.overlayFile as string, 'services: {}\n');
+    }
+    if (request.program === 'docker' && request.args[0] === 'stack') {
+      const file = request.args[request.args.indexOf('-c') + 1] as string;
+      modes.push(`${(fs.statSync(path.dirname(file)).mode & 0o777).toString(8)} ${(fs.statSync(file).mode & 0o777).toString(8)}`);
+    }
+  };
+  const r = await deploy(w);
+  assert.equal(r.outcome.exitCode, 0, String(r.outcome.stderr));
+  assert.equal(r.runner.composeCalls.length, 2);
+  for (const call of r.runner.composeCalls) {
+    assert.deepEqual(call.files.map((file) => file.bytes), [verified, verifiedOverlay], `${call.sub}: os bytes conferidos, não os do arquivo trocado`);
+    for (const file of call.files) assert.ok(!fs.existsSync(path.dirname(file.path)), `${call.sub}: a pasta privada foi apagada`);
+  }
+  assert.deepEqual(modes, ['700 600', '700 600']);
+  const failing = world();
+  failing.scenario.stackDeployOk = false;
+  refusedWith(await deploy(failing), 'ERRO E_STACK_DEPLOY');
+  assert.deepEqual(fs.readdirSync(failing.stateDir).filter((name) => name.startsWith('.stack-')), [], 'sem cópia sobrando na falha');
+  const stale = world();
+  fs.mkdirSync(path.join(stale.stateDir, '.stack-00000000deadbeef'), { mode: 0o700 });
+  fs.writeFileSync(path.join(stale.stateDir, '.stack-00000000deadbeef', 'stack.yml'), 'velha');
+  fs.writeFileSync(path.join(stale.stateDir, 'nao-e-do-receptor'), 'fica');
+  assert.equal((await deploy(stale)).outcome.exitCode, 0);
+  assert.deepEqual(fs.readdirSync(stale.stateDir).sort(), ['incoming', 'nao-e-do-receptor', 'trust-keys.txt'], 'cópia velha de um receptor morto apagada; o resto fica');
+});
+
+test('revisão do PR #70 (item 9): o filho docker stack recebe SÓ as variáveis que a stack conferida interpola (definidas no arquivo do host), a tag, a lista e o PATH fixo — nada além (GODEBUG, variável não usada)', async () => {
+  const w = world({ env: 'homologacao' });
+  fs.appendFileSync(w.hostVarsFile, 'GODEBUG=x509ignoreCN=0\nGMN_NAO_USADA_NA_STACK=1\nSUPABASE_PRIVATE_AUDIT_BUCKET=balde-ficticio\n');
+  const r = await deploy(w);
+  assert.equal(r.outcome.exitCode, 0, String(r.outcome.stderr));
+  const expectedKeys = ['GMN_DATA_ROOT', 'GMN_HOST', 'GMN_HTTP_ENTRYPOINT', 'GMN_IMAGE_TAG', 'GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS', 'GMN_LINK_AUDIT_ORIGIN_REVOKED_KEY_IDS', 'GMN_NODE_HOSTNAME', 'GMN_OPERATOR_EMAILS', 'GMN_RAIZ_DADOS_DECISOES', 'GMN_RAIZ_DADOS_LIVRO', 'GMN_RAIZ_DADOS_MANIFESTOS', 'GMN_RAIZ_DADOS_RECIBOS_DECISOES', 'GMN_RAIZ_DADOS_RECIBOS_RESULTADOS', 'GMN_RAIZ_DADOS_RESULTADOS', 'GMN_TRAEFIK_NAME', 'GMN_WORKER_REPLICAS', 'NEXT_PUBLIC_SUPABASE_URL', 'PATH', 'SUPABASE_PRIVATE_AUDIT_BUCKET'];
+  for (const call of r.runner.calls.filter((item) => item.program === 'docker' && item.args[0] === 'stack')) {
+    assert.deepEqual(Object.keys(call.env).sort(), expectedKeys, call.args[1]);
+    assert.equal(call.env.PATH, '/usr/bin:/bin');
+  }
+});
+
+test('revisão do PR #70 (item 7): em homologação, TODA origem de bind efetiva da stack conferida fica sob o prefixo pelo caminho real, inclusive as derivadas de GMN_DATA_ROOT; um link numa pasta derivada (redis, audits…) apontando para fora ⇒ E_DATA_PREFIX sem chamar o Docker', async () => {
+  for (const derived of DERIVED_BIND_FOLDERS) {
+    const w = world({ env: 'homologacao' });
+    const dataRoot = (w.dataPrefix as string).slice(0, -1);
+    const outside = fs.mkdtempSync(path.join(w.root, 'fora-'));
+    fs.rmSync(path.join(dataRoot, derived), { recursive: true });
+    fs.symlinkSync(outside, path.join(dataRoot, derived));
+    const r = await deploy(w);
+    refusedWith(r, 'ERRO E_DATA_PREFIX');
+    assert.equal(r.runner.calls.length, 0, derived);
+  }
+  const missing = world({ env: 'homologacao' });
+  fs.rmSync(path.join((missing.dataPrefix as string).slice(0, -1), 'redis'), { recursive: true });
+  refusedWith(await deploy(missing), 'ERRO E_DATA_PREFIX');
+  const production = world();
+  const prodRoot = path.dirname(production.dataFolders[0] as string);
+  fs.rmSync(path.join(prodRoot, 'redis'), { recursive: true });
+  fs.symlinkSync(fs.mkdtempSync(path.join(production.root, 'fora-')), path.join(prodRoot, 'redis'));
+  assert.equal((await deploy(production)).outcome.exitCode, 0, 'em produção não há prefixo a conferir');
 });
 
 test('passos 10 e 11: docker stack config recusado ⇒ E_STACK_CONFIG (sem stack deploy); stack deploy que falha ⇒ E_STACK_DEPLOY; lista não instalada', async () => {

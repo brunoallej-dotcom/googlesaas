@@ -30,6 +30,8 @@ export interface ReceiverFs {
   readdir(path: string): Promise<readonly string[]>;
   unlink(path: string): Promise<void>;
   mkdir(path: string, mode: number): Promise<void>;
+  /** `rmdir` de uma pasta vazia. */
+  removeDirectory(path: string): Promise<void>;
   rename(from: string, to: string): Promise<void>;
   realpath(path: string): Promise<string>;
   /** Bytes livres para usuário comum no sistema de arquivos de `path` (`statfs`: `bavail × bsize`). */

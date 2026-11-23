@@ -121,6 +121,15 @@ export interface DockerScenario {
   afterDeploy?: (services: Map<string, FakeService>) => void;
   /** `docker service ls` falha. */
   serviceLsFails?: boolean;
+  /** Chamado antes de cada programa (ex.: trocar a stack instalada no meio do deploy). */
+  beforeCall?: (request: RunRequest) => void;
+}
+
+/** O que um `docker stack config|deploy` recebeu: os `-c` e os bytes de cada um NO MOMENTO da chamada. */
+export interface ComposeCall {
+  readonly sub: string;
+  readonly files: ReadonlyArray<{ readonly path: string; readonly bytes: Buffer | null }>;
+  readonly env: Readonly<Record<string, string>>;
 }
 
 export interface LoadedImage {
@@ -181,6 +190,7 @@ export function baseService(name: string, image: string, replicas: number, extra
 /** O `docker`, o `tar`, o `gzip` e o script de pastas, falsos e em processo; registra cada chamada (argv e ambiente). */
 export class FakeRunner implements ProcessRunner {
   readonly calls: RunRequest[] = [];
+  readonly composeCalls: ComposeCall[] = [];
   private polls = 0;
   private lastState = 'completed';
   private deployed = false;
@@ -196,10 +206,17 @@ export class FakeRunner implements ProcessRunner {
 
   async run(request: RunRequest): Promise<RunResult> {
     this.calls.push(request);
+    this.scenario.beforeCall?.(request);
+    if (request.program === 'docker' && request.args[0] === 'stack') this.recordCompose(request);
     if (typeof request.program !== 'string') return this.scenario.foldersOk ? result(0, `ok ${DOCKER_NOISE}`) : result(1, '', `[verificar-pastas-fase6] RECUSADO: ${DOCKER_NOISE}`);
     if (request.program === 'gzip') return result(this.scenario.gzipOk ? 0 : 1, '', this.scenario.gzipOk ? '' : `gzip: ${DOCKER_NOISE}: invalid`);
     if (request.program === 'tar') return this.tar(request.args[2] as string);
     return this.docker(request);
+  }
+
+  private recordCompose(request: RunRequest): void {
+    const files = request.args.flatMap((arg, index) => (request.args[index - 1] === '-c' ? [arg] : [])).map((file) => ({ path: file, bytes: fs.existsSync(file) ? fs.readFileSync(file) : null }));
+    this.composeCalls.push({ sub: request.args[1] as string, files, env: request.env });
   }
 
   private docker(request: RunRequest): RunResult {
@@ -327,6 +344,9 @@ export interface World {
 }
 
 export const FOLDER_NAMES = ['decisoes', 'recibos-decisoes', 'resultados', 'recibos-resultados', 'livro', 'manifestos'] as const;
+/** As origens de bind que a stack deriva de `GMN_DATA_ROOT` (`${GMN_DATA_ROOT:-/srv/gmn}/<pasta>`). */
+export const DERIVED_BIND_FOLDERS = ['audits', 'link-audits', 'evidence', 'redis'] as const;
+const REPO_ROOT = path.join(__dirname, '..', '..');
 const VAR_NAMES = ['GMN_RAIZ_DADOS_DECISOES', 'GMN_RAIZ_DADOS_RECIBOS_DECISOES', 'GMN_RAIZ_DADOS_RESULTADOS', 'GMN_RAIZ_DADOS_RECIBOS_RESULTADOS', 'GMN_RAIZ_DADOS_LIVRO', 'GMN_RAIZ_DADOS_MANIFESTOS'] as const;
 
 export function validHostVars(env: 'producao' | 'homologacao', folders: readonly string[], dataRoot: string, url = SENTINEL_URL): string {
@@ -352,14 +372,15 @@ export function world(options: WorldOptions = {}): World {
   const root = fs.realpathSync(tmpDir('dr-world-'));
   const stateDir = path.join(root, 'state');
   fs.mkdirSync(stateDir, { mode: 0o711 });
+  // a stack e a sobreposição REAIS do repositório (as origens de bind e os nomes interpolados saem delas)
   const stackFile = path.join(root, 'opt', 'stack.yml');
   fs.mkdirSync(path.dirname(stackFile), { recursive: true });
-  fs.writeFileSync(stackFile, 'services: {} # stack fictícia\n');
+  fs.copyFileSync(path.join(REPO_ROOT, 'deploy', 'hostinger', 'stack.yml'), stackFile);
   const overlayFile = env === 'homologacao' ? path.join(root, 'opt', 'stack-hml.yml') : null;
-  if (overlayFile) fs.writeFileSync(overlayFile, 'services: {} # sobreposição fictícia\n');
+  if (overlayFile) fs.copyFileSync(path.join(REPO_ROOT, 'deploy', 'hostinger', 'stack-hml.yml'), overlayFile);
   const dataRoot = path.join(root, 'srv', env === 'homologacao' ? 'gmn-hml' : 'gmn');
   const dataFolders = FOLDER_NAMES.map((name) => path.join(dataRoot, name));
-  for (const folder of dataFolders) fs.mkdirSync(folder, { recursive: true });
+  for (const folder of [...dataFolders, ...DERIVED_BIND_FOLDERS.map((name) => path.join(dataRoot, name))]) fs.mkdirSync(folder, { recursive: true });
   const hostVarsFile = path.join(root, 'opt', 'variaveis');
   fs.writeFileSync(hostVarsFile, options.hostVars ?? validHostVars(env, dataFolders, dataRoot));
   const foldersCheck = path.join(root, 'opt', 'verificar-pastas-fase6.sh');

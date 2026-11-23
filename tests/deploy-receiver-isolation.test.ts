@@ -42,7 +42,8 @@ const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   'bundle.ts': new Set(['node:crypto', 'zod', './codes', './docker', './grammar', './ports']),
   'converge.ts': new Set(['zod', './codes', './docker', './ports']),
   'postdeploy.ts': new Set(['zod', './codes', './converge', './docker', './grammar', './ports']),
-  'deploy.ts': new Set(['node:path', './args', './bundle', './codes', './converge', './docker', './grammar', './host-vars', './ports', './postdeploy', './staging', './trust']),
+  'stack-files.ts': new Set(['node:crypto', 'node:path', './args', './codes', './grammar', './ports']),
+  'deploy.ts': new Set(['node:path', './stack-files', './args', './bundle', './codes', './converge', './docker', './grammar', './host-vars', './ports', './postdeploy', './staging', './trust']),
   'receiver.ts': new Set(['node:path', './args', './codes', './deploy', './grammar', './ports', './staging', './upload']),
   // o ÚNICO arquivo com disco, processo filho (execFile, sem shell), relógio, aleatoriedade e stdin
   'node-adapters.ts': new Set(['node:child_process', 'node:crypto', 'node:fs', 'node:fs/promises', './args', './ports']),

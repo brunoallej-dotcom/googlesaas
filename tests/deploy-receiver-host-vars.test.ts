@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { HOST_CONFIG_NAMES, ReceiverError } from '../src/lib/deploy-receiver/codes';
+import { bindSources, interpolate, interpolatedNames } from '../src/lib/deploy-receiver/stack-files';
 import { canonicalSupabaseOrigin, supabaseFp12 } from '../src/lib/deploy-receiver/supabase';
 import { checkHostConfig, DATA_FOLDER_NAMES, FORBIDDEN_EVERYWHERE, FORBIDDEN_IN_PRODUCTION, MAX_HOST_VARS_BYTES, parseHostVarsFile, REQUIRED_NON_EMPTY } from '../src/lib/deploy-receiver/host-vars';
 
@@ -175,4 +177,18 @@ test('revisão do PR #70 (item 6): NEXT_PUBLIC_SUPABASE_URL fora da origem canô
   }
   const canonicalFp = createHash('sha256').update(`https://${SENTINELA}.supabase.invalid`).digest('hex').slice(0, 12);
   assert.equal(parseAndCheck(withUrl(`https://${SENTINELA.toUpperCase()}.Supabase.invalid/`)).supabaseFp12, canonicalFp);
+});
+
+test('revisão do PR #70 (itens 7 e 9), em sincronia com deploy/hostinger/stack.yml + stack-hml.yml: as origens de bind efetivas são exatamente GMN_DATA_ROOT/{audits,link-audits,evidence,redis} e as seis pastas; os nomes interpolados não incluem o escape $$ do healthcheck', () => {
+  const stackText = ['stack.yml', 'stack-hml.yml'].map((name) => fs.readFileSync(path.join(__dirname, '..', 'deploy', 'hostinger', name), 'utf8')).join('\n');
+  const vars = parseHostVarsFile(file(baseLines('homologacao')));
+  const binds = bindSources(stackText, vars);
+  assert.deepEqual([...binds].sort(), [...['audits', 'link-audits', 'evidence', 'redis'].map((sub) => `/srv/gmn-hml/${sub}`), ...FOLDERS].sort());
+  const withoutRoot = parseHostVarsFile(file(baseLines('producao')));
+  assert.ok(bindSources(stackText, withoutRoot).includes('/srv/gmn/redis'), 'sem GMN_DATA_ROOT, o padrão da stack (/srv/gmn)');
+  assert.deepEqual(bindSources('volumes:\n  - type: bind\n    source: ${GMN_RAIZ_DADOS_LIVRO:?defina}\n', new Map()), [null], 'variável obrigatória sem valor ⇒ não resolvida');
+  const names = interpolatedNames(stackText);
+  for (const name of ['GMN_IMAGE_TAG', 'GMN_HOST', 'GMN_DATA_ROOT', 'GMN_TRAEFIK_NAME', 'GMN_WORKER_REPLICAS', 'NEXT_PUBLIC_SUPABASE_URL', 'GMN_OPERATOR_EMAILS', 'GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS', ...DATA_FOLDER_NAMES]) assert.ok(names.has(name), name);
+  assert.ok(!names.has('cat') && !names.has('REDISCLI_AUTH'), 'o $$ do healthcheck do Redis é escape, não variável');
+  assert.equal(interpolate('${A:-x}/${B-y}/${C}/$D/$$E', new Map([['A', ''], ['C', 'c'], ['D', 'd']])), 'x/y/c/d/$E');
 });

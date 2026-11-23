@@ -598,7 +598,18 @@ chamador, prazo com `SIGKILL` e teto de saída). A lista de confiança usa o mó
   `.bundle-<sha40>.partial-<aleatório>` (`O_EXCL | O_NOFOLLOW`, `0600`) e só renomeia para `bundle-<sha40>.tar.gz` depois do hash conferido
   (`rename` + `fsync` da pasta). Só nomes nesses dois formatos são apagados, e o resto da pasta não é tocado. O stdin tem de terminar
   (EOF) dentro do prazo de 120 s sem dados. O primeiro byte além do declarado recusa sem ler o resto. Prazo do stdin da lista no `deploy`: 30 s.
-- **Passo 2:** stack e sobreposição têm de ser arquivos regulares (link, ausente ou ilegível ⇒ `E_STACK_FILE_MISMATCH`).
+- **Passo 2 e a stack usada** (revisão do PR #70, itens 3, 7 e 9): stack e sobreposição são lidas **uma vez**, como arquivos regulares
+  (link, ausente ou ilegível ⇒ `E_STACK_FILE_MISMATCH`), e o sha256 é calculado sobre esses bytes. Os passos 10 e 11 recebem **cópias
+  privadas** desses mesmos bytes, numa pasta `<estado>/.stack-<aleatório>` (`0700`, arquivos `0600`) apagada no fim, com sucesso ou
+  falha. Uma troca do arquivo instalado depois do passo 2 não muda o que é implantado. Pastas de cópia que sobraram de um receptor
+  morto são apagadas no começo do deploy seguinte (só esse nome, só os dois arquivos conhecidos). Do texto conferido também saem:
+  - as **origens de bind efetivas**: todo `source:` que, interpolado com o arquivo do host, é caminho absoluto, inclusive os derivados
+    `${GMN_DATA_ROOT}/audits`, `/link-audits`, `/evidence` e `/redis`. Em homologação, cada uma tem de ficar sob `--data-prefix` pelo
+    caminho real (link para fora, pasta ausente ou variável obrigatória sem valor ⇒ `E_DATA_PREFIX`). Um teste mantém a lista em
+    sincronia com o `stack.yml`;
+  - os **nomes interpolados** (`${NOME…}`, `$NOME`; `$$` é escape). O filho `docker stack …` recebe **só** essas variáveis do arquivo do
+    host, mais `GMN_IMAGE_TAG`, a lista e o `PATH` fixo. Nada além, como `GODEBUG` ou uma variável que a stack não usa, chega ao
+    `docker`.
 - **Passo 3:** lista instalada que existe mas não é arquivo regular, está ilegível ou fora do formato ⇒ `E_TRUST_LIST_TRANSITION` (como o
   `BASE_UNREADABLE` do CI). As fixações novas (`newPins`) são aceitas no host: a prova do fecho é do CI. Stdin acima de 8 KiB ⇒
   `E_INPUT_TOO_LARGE`. Os motivos de cada violação (`<id>:<MOTIVO>`) vão só ao log local.
@@ -637,8 +648,8 @@ chamador, prazo com `SIGKILL` e teto de saída). A lista de confiança usa o mó
   o id do `OK DEPLOYED` é o que o Docker mostra (o digest do manifesto). **Limite declarado:** no containerd, a conferência pelos
   diff_ids prova as camadas (o sistema de arquivos) e a tag, não os campos de execução do `Config` carregado (ambiente, comando). Isso
   fica coberto pelo hash do pacote inteiro (passo 1, o mesmo que o job calculou) e pelo PD-06.
-- **Passos 10 e 11:** o ambiente dos dois `docker stack …` é o arquivo do host, mais `GMN_IMAGE_TAG`, a lista e o `PATH`; as consultas
-  ao Docker recebem só o `PATH`. O stdout do `docker stack config` não vai nem ao log local (tem o ambiente renderizado, com e-mails de
+- **Passos 10 e 11:** o ambiente dos dois `docker stack …` é o do passo 2 acima (as variáveis interpoladas, `GMN_IMAGE_TAG`, a lista e o
+  `PATH`), e os `-c` são as cópias privadas; as consultas ao Docker recebem só o `PATH`. O stdout do `docker stack config` não vai nem ao log local (tem o ambiente renderizado, com e-mails de
   operador); o stderr vai.
 - **Passo 12:** antes do `stack deploy`, o receptor lê o `UpdateStatus.StartedAt` do web. Só conta como resultado a atualização com
   outro `StartedAt`: um `rollback_completed` ou um `completed` antigos não valem. Sem atualização nova (serviço criado agora, mesmo

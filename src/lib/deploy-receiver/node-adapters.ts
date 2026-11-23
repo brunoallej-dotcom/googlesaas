@@ -102,6 +102,7 @@ export const nodeReceiverFs: ReceiverFs = {
   mkdir: async (path, mode) => {
     await fsp.mkdir(path, { mode });
   },
+  removeDirectory: (path) => fsp.rmdir(path),
   rename: (from, to) => fsp.rename(from, to),
   realpath: (path) => fsp.realpath(path),
   async availableBytes(path) {
