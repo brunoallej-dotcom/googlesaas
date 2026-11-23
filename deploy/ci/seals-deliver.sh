@@ -5,12 +5,14 @@
 # PARA NO PRIMEIRO ERRO (RC-10). Mandar tudo é idempotente: arquivo igual já presente volta `OK ALREADY_PRESENT`. Só ssh e sha256sum: nenhum
 # npm, node ou código do repositório (P9-W09). Host, porta, usuário e opções fixas vêm da configuração privada (ssh-setup.sh seals).
 # Ambiente: GMN_AMB, GMN_SHA, GMN_TRUST_SHA256 (saída do passo 1).
-# Resposta do receptor (§5.7, "Para o job de entrega"; conjunto fechado de src/lib/seal-receiver/codes.ts, conferido por teste):
-#   sucesso: saída 0 e exatamente uma linha `OK WRITTEN|ALREADY_PRESENT <relpath> <sha256>`, ecoando o `relpath` e o `sha256` enviados;
-#   recusa: `ERRO <CÓDIGO>[ <DETALHE>]` com a saída numérica do código; detalhe só em E_V2_REFUSED e E_CLOSURE_REFUSED, das listas fechadas;
-#   saída 29 sem texto nenhum (stdout ou stderr do receptor fechados) = E_INTERNAL.
-# Qualquer outra coisa vira RECEIVER_UNKNOWN_ERROR EXIT_<n> (ou RECEIVER_BAD_OUTPUT put), sem repetir nada do receptor nem do ssh; conexão que
-# falha (255) vira SSH_CONNECT_FAILED HOST_KEY|AUTH|OTHER. O resultado de cada arquivo vai para $RUNNER_TEMP/gmn-seals/results (0600; só
+# Resposta do receptor (§5.7, "Para o job de entrega"; conjunto fechado de src/lib/seal-receiver/codes.ts, conferido por teste). O stdout e o
+# stderr são capturados SEPARADOS, com teto, e a resposta INTEIRA é conferida contra a saída numérica (revisão do PR #74, item 4):
+#   sucesso: saída 0, stdout = EXATAMENTE uma linha `OK WRITTEN|ALREADY_PRESENT <relpath> <sha256>\n` (ecoando o pedido) e stderr vazio;
+#   recusa: stdout vazio e stderr = EXATAMENTE uma linha `ERRO <CÓDIGO>[ <DETALHE>]\n` do conjunto fechado, com a saída numérica do código;
+#     detalhe só em E_V2_REFUSED e E_CLOSURE_REFUSED, das listas fechadas;
+#   saída 29 com stdout e stderr vazios (stdout ou stderr do receptor fechados) = E_INTERNAL.
+# Qualquer outra coisa vira RECEIVER_UNKNOWN_ERROR EXIT_<n>, sem repetir nada do receptor nem do ssh; só a linha remontada é publicada.
+# Conexão que falha (255) vira SSH_CONNECT_FAILED HOST_KEY|AUTH|OTHER. O resultado de cada arquivo vai para $RUNNER_TEMP/gmn-seals/results (0600; só
 # caminho relativo, sha256, resultado e código), que o resumo publica (§5.9).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -18,7 +20,7 @@ cd "$(dirname "$0")/../.."
 
 readonly MAX_PUT_COMMAND_BYTES=256
 readonly INTERNAL_EXIT=29
-readonly PUBLIC_ERROR_LINE='^ERRO E_[A-Z0-9_]+( [A-Za-z0-9_-]{1,64})?$'
+readonly ERROR_LINE='^ERRO (E_[A-Z0-9_]+)( ([A-Za-z0-9_-]{1,64}))?$'
 # Saída numérica de cada código do receptor de manifestos (§5.8): os comuns aos dois receptores e os próprios (30 a 37).
 declare -rA SEAL_RECEIVER_EXIT_CODES=(
   [E_COMMAND]=10 [E_INPUT_TOO_LARGE]=11 [E_INPUT_TRUNCATED]=12 [E_HASH_MISMATCH]=13 [E_TRUST_LIST_MISMATCH]=14
@@ -33,23 +35,51 @@ SEAL_KEY_RETIRED_UNCOVERED SEAL_KEY_REVOKED HEAD_MISMATCH "
 # Detalhes do E_CLOSURE_REFUSED: os motivos do S-11 contra as cadeias do host (CLOSURE_REFUSAL_DETAILS).
 readonly CLOSURE_REFUSAL_DETAILS=" SIGNER_NOT_LISTED SIGNER_NOT_ACTIVE SIGNATURE_INVALID RETIRED_NOT_LISTED HEAD_NOT_IN_REPO "
 
-# seal_error SAÍDA ARQUIVO: "CÓDIGO[ DETALHE]" se a resposta de erro do receptor casar o conjunto fechado; senão nada.
-seal_error() {
-  local rc="$1" line marker code detail
-  line="$(grep -E -m1 -- "$PUBLIC_ERROR_LINE" "$2" || true)"
-  if [ -z "$line" ]; then
-    # stdout ou stderr do receptor fechados: saída 29 sem NENHUM texto (§5.7, "Saída e log")
-    if [ "$rc" -eq "$INTERNAL_EXIT" ] && [ ! -s "$2" ]; then printf 'E_INTERNAL'; fi
+# file_is ARQUIVO TEXTO: verdadeiro se os bytes do arquivo são EXATAMENTE o TEXTO (ASCII): mesmo tamanho e mesmo sha256 (nenhum byte a mais,
+# nenhuma linha a mais, nenhum NUL).
+file_is() {
+  [ "$(stat -c %s -- "$1")" -eq "${#2}" ] && [ "$(gmn_sha256_file "$1")" = "$(printf '%s' "$2" | sha256sum | cut -d' ' -f1)" ]
+}
+
+# seal_response SAÍDA: classifica a resposta INTEIRA do `put` atual (GMN_SSH_STDOUT e GMN_SSH_STDERR) contra a saída numérica. Define outcome
+# (WRITTEN | ALREADY_PRESENT | REFUSED | UNKNOWN) e, na recusa, public = "CÓDIGO[ DETALHE]" remontado do conjunto fechado.
+seal_response() {
+  local rc="$1" line code detail verdict
+  outcome=UNKNOWN
+  public=''
+  if [ "$rc" -eq 0 ]; then
+    [ ! -s "$GMN_SSH_STDERR" ] || return 0
+    for verdict in WRITTEN ALREADY_PRESENT; do
+      if file_is "$GMN_SSH_STDOUT" "OK ${verdict} ${relpath} ${sha256}"$'\n'; then
+        outcome="$verdict"
+        return 0
+      fi
+    done
     return 0
   fi
-  read -r marker code detail <<<"$line"
-  [ "$marker" = ERRO ] && [ "${SEAL_RECEIVER_EXIT_CODES[$code]:-}" = "$rc" ] || return 0
+  [ ! -s "$GMN_SSH_STDOUT" ] || return 0
+  if [ ! -s "$GMN_SSH_STDERR" ]; then
+    # stdout ou stderr do receptor fechados: saída 29 sem NENHUM texto (§5.7, "Saída e log")
+    if [ "$rc" -eq "$INTERNAL_EXIT" ]; then
+      outcome=REFUSED
+      public=E_INTERNAL
+    fi
+    return 0
+  fi
+  IFS= read -r line <"$GMN_SSH_STDERR" || true
+  [[ "$line" =~ $ERROR_LINE ]] || return 0
+  code="${BASH_REMATCH[1]}"
+  detail="${BASH_REMATCH[3]}"
+  [ "${SEAL_RECEIVER_EXIT_CODES[$code]:-}" = "$rc" ] || return 0
   case "$code" in
     E_V2_REFUSED) [ -z "$detail" ] || [[ "$V2_REFUSAL_DETAILS" == *" $detail "* ]] || return 0 ;;
     E_CLOSURE_REFUSED) [ -z "$detail" ] || [[ "$CLOSURE_REFUSAL_DETAILS" == *" $detail "* ]] || return 0 ;;
     *) [ -z "$detail" ] || return 0 ;;
   esac
-  printf '%s%s' "$code" "${detail:+ $detail}"
+  # exatamente UMA linha no stderr, sem nada antes nem depois
+  file_is "$GMN_SSH_STDERR" "ERRO ${code}${detail:+ $detail}"$'\n' || return 0
+  outcome=REFUSED
+  public="${code}${detail:+ $detail}"
 }
 
 # record RESULTADO CÓDIGO: uma linha do resultado do arquivo atual (só campos públicos e já validados).
@@ -88,24 +118,22 @@ while IFS=' ' read -r relpath sha256 extra <&3 || [ -n "${relpath:-}" ]; do
   [ "${#remote_command}" -le "$MAX_PUT_COMMAND_BYTES" ] || refuse INTERNAL command-length
 
   gmn_receiver_ssh "$remote_command" "$file"
-  public_error="$(seal_error "$GMN_SSH_RC" "$GMN_SSH_STDERR")"
   ssh_hint="$(gmn_ssh_hint "$GMN_SSH_STDERR")"
-  rm -f -- "$GMN_SSH_STDERR"
+  seal_response "$GMN_SSH_RC"
+  rm -f -- "$GMN_SSH_STDOUT" "$GMN_SSH_STDERR"
 
   if [ "$GMN_SSH_RC" -eq "$GMN_CI_SSH_CONNECT_FAILED_RC" ]; then refuse SSH_CONNECT_FAILED "$ssh_hint"; fi
-  if [ "$GMN_SSH_RC" -ne 0 ]; then
-    [ -n "$public_error" ] || refuse RECEIVER_UNKNOWN_ERROR "EXIT_${GMN_SSH_RC}"
-    read -r code detail <<<"$public_error"
-    refuse "$code" "$detail"
-  fi
-  if [[ "$GMN_SSH_RESPONSE" == *$'\n'* ]] || ! [[ "$GMN_SSH_RESPONSE" =~ ^OK\ (WRITTEN|ALREADY_PRESENT)\ ([^ ]+)\ ([0-9a-f]{64})$ ]]; then
-    refuse RECEIVER_BAD_OUTPUT put
-  fi
-  # o receptor ecoa EXATAMENTE o caminho e o sha256 do pedido
-  [ "${BASH_REMATCH[2]}" = "$relpath" ] && [ "${BASH_REMATCH[3]}" = "$sha256" ] || refuse RECEIVER_BAD_OUTPUT put
-  result="${BASH_REMATCH[1]}"
-  record "$result" OK
-  printf 'OK %s %s %s\n' "$result" "$relpath" "$sha256"
+  case "$outcome" in
+    WRITTEN | ALREADY_PRESENT)
+      record "$outcome" OK
+      printf 'OK %s %s %s\n' "$outcome" "$relpath" "$sha256"
+      ;;
+    REFUSED)
+      read -r code detail <<<"$public"
+      refuse "$code" "$detail"
+      ;;
+    *) refuse RECEIVER_UNKNOWN_ERROR "EXIT_${GMN_SSH_RC}" ;;
+  esac
 done 3<"$list"
 
 gmn_output sent "$sent"

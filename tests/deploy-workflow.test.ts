@@ -240,7 +240,8 @@ test('P9-W07 todo ssh pela configuração privada com as opções fixas (StrictH
   assert.match(lib, /seals\)\n\s+GMN_CI_SSH_KEY_VAR=GMN_SEALS_SSH_KEY\n\s+GMN_CI_SSH_KEY_NAME=id_seals\n\s+GMN_CI_SSH_ALIAS=gmn-seal-receiver\n\s+case "\$\{GMN_AMB:-\}" in producao\) GMN_CI_SSH_USER=gmn-seals ;; homologacao\) GMN_CI_SSH_USER=gmn-hml-seals ;;/);
   // a ÚNICA chamada ssh dos jobs fica em lib.sh (gmn_receiver_ssh), só pela configuração privada
   const invocations = CI_SCRIPTS.flatMap((name) => [...withoutComments(scriptText(name)).matchAll(/(?:^|[\s(])ssh (.+?)$/gm)].map((m) => `${name}: ${m[1] ?? ''}`));
-  assert.deepEqual(invocations, ['lib.sh: -F "$GMN_CI_SSH_CONFIG" -T "$GMN_CI_SSH_ALIAS" "$1" <"$2" 2>"$GMN_SSH_STDERR")"'], 'uma chamada, só pela configuração privada');
+  assert.deepEqual(invocations, ['lib.sh: -F "$GMN_CI_SSH_CONFIG" -T "$GMN_CI_SSH_ALIAS" "$1" <"$2" >"$GMN_SSH_STDOUT" 2>"$GMN_SSH_STDERR"'], 'uma chamada, só pela configuração privada, stdout e stderr separados');
+  assert.match(lib, /\(\n\s+ulimit -f "\$GMN_CI_SSH_OUTPUT_MAX_KIB"\n\s+LC_ALL=C exec ssh /, 'stdout e stderr com teto (revisão do PR #74, item 4)');
   for (const name of ['receiver-call.sh', 'seals-deliver.sh']) {
     assert.ok(!/GMN_SSH_HOST|GMN_SSH_PORT/.test(withoutComments(scriptText(name))), `${name}: o script do receptor não vê host nem porta`);
     assert.ok(scriptText(name).includes('gmn_receiver_ssh "$remote_command"'), `${name}: chama o receptor só pela chamada única`);

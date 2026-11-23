@@ -293,13 +293,38 @@ const refusedBy = (t: Fixture['t'], response: FakeResponse): { readonly fixture:
   return { fixture, result: deliver(fixture) };
 };
 
-test('P9.5 conjunto fechado do receptor de manifestos: CADA código com a sua saída numérica (src/lib/seal-receiver/codes.ts) vira a linha pública remontada, sem repetir o resto do stderr', (t) => {
+test('P9.5 conjunto fechado do receptor de manifestos: CADA código com a sua saída numérica (src/lib/seal-receiver/codes.ts), sozinho no stderr e com o stdout vazio, vira a linha pública remontada', (t) => {
   for (const [code, rc] of Object.entries(SEAL_RECEIVER_EXIT_CODES)) {
-    const { fixture, result } = refusedBy(t, { rc, stderr: `aviso /srv/caminho-real-sentinela\nERRO ${code}\n` });
+    const { fixture, result } = refusedBy(t, { rc, stderr: `ERRO ${code}\n` });
     assertRefused(fixture.sandbox, result, code);
     assert.equal(result.stderr, `ERRO ${code}\n`, code);
-    assertNoLeak(result, 'caminho-real-sentinela');
     assert.deepEqual(results(fixture.sandbox).map((row) => [row[2], row[3]]), [['FALHOU', code]]);
+  }
+});
+
+test('P9.5 resposta INTEIRA conferida contra a saída numérica (revisão do PR #74, item 4): uma linha válida com ruído antes, duas linhas de erro contraditórias, erro com stdout, erro sem \\n, OK com stderr, OK com linha em branco, 29 com stdout ⇒ RECEIVER_UNKNOWN_ERROR EXIT_<n>, sem repetir nada', (t) => {
+  const digest = sha256(content(oneFile));
+  const cases: Array<[FakeResponse, number]> = [
+    [{ rc: 13, stderr: 'aviso /srv/caminho-real-sentinela\nERRO E_HASH_MISMATCH\n' }, 13],
+    [{ rc: 16, stderr: 'ERRO E_LOCKED\nERRO E_FORMAT\n' }, 16],
+    [{ rc: 16, stderr: 'ERRO E_LOCKED\nERRO E_LOCKED\n' }, 16],
+    [{ rc: 31, stdout: 'texto-sentinela\n', stderr: 'ERRO E_EXISTS_DIFFERENT\n' }, 31],
+    [{ rc: 31, stderr: 'ERRO E_EXISTS_DIFFERENT' }, 31],
+    [{ rc: 0, stdout: `OK WRITTEN ${oneFile} ${digest}\n`, stderr: 'aviso-sentinela do ssh\n' }, 0],
+    [{ rc: 0, stdout: `OK WRITTEN ${oneFile} ${digest}\n\n` }, 0],
+    [{ rc: 0, stdout: `OK ALREADY_PRESENT ${oneFile} ${digest}` }, 0],
+    [{ rc: 29, stdout: 'texto-sentinela\n' }, 29],
+    [{ rc: 0, stdout: `${'A'.repeat(200 * 1024)}\n` }, -1],
+  ];
+  for (const [response, rc] of cases) {
+    const { fixture, result } = refusedBy(t, response);
+    assert.equal(result.status, 1, JSON.stringify(response).slice(0, 80));
+    const [, code, detail] = /^ERRO (\S+) (\S+)$/m.exec(result.stderr) ?? [];
+    assert.equal(code, 'RECEIVER_UNKNOWN_ERROR', JSON.stringify(response).slice(0, 80));
+    if (rc >= 0) assert.equal(detail, `EXIT_${rc}`);
+    else assert.match(detail ?? '', /^EXIT_\d+$/, 'saída acima do teto: o ssh é interrompido, nunca aceito');
+    assertNoLeak(result, 'caminho-real-sentinela', 'texto-sentinela', 'aviso-sentinela', 'AAAA');
+    assert.deepEqual(fs.readdirSync(fixture.sandbox.runnerTemp).filter((name) => name.startsWith('gmn-ssh-std')), [], 'as capturas são apagadas');
   }
 });
 
@@ -340,7 +365,7 @@ test('P9.5 conjunto fechado: código desconhecido, código só do receptor de de
   assertRefused(closed.fixture.sandbox, closed.result, 'E_INTERNAL');
 });
 
-test('P9.5 resposta OK fora da forma: outra linha a mais, caminho ou sha256 que não ecoam o pedido, outro veredito, campos a menos ou stdout vazio com saída 0 ⇒ RECEIVER_BAD_OUTPUT put', (t) => {
+test('P9.5 resposta OK fora da forma: outra linha a mais, caminho ou sha256 que não ecoam o pedido, outro veredito, campos a menos ou stdout vazio com saída 0 ⇒ RECEIVER_UNKNOWN_ERROR EXIT_0', (t) => {
   const digest = sha256(content(oneFile));
   for (const stdout of [
     `OK WRITTEN ${oneFile} ${digest}\nmais uma linha\n`,
@@ -354,8 +379,8 @@ test('P9.5 resposta OK fora da forma: outra linha a mais, caminho ou sha256 que 
     '',
   ]) {
     const { fixture, result } = refusedBy(t, { stdout });
-    assertRefused(fixture.sandbox, result, 'RECEIVER_BAD_OUTPUT', 'put');
-    assert.deepEqual(results(fixture.sandbox).map((row) => [row[2], row[3]]), [['FALHOU', 'RECEIVER_BAD_OUTPUT put']]);
+    assertRefused(fixture.sandbox, result, 'RECEIVER_UNKNOWN_ERROR', 'EXIT_0');
+    assert.deepEqual(results(fixture.sandbox).map((row) => [row[2], row[3]]), [['FALHOU', 'RECEIVER_UNKNOWN_ERROR EXIT_0']]);
   }
 });
 

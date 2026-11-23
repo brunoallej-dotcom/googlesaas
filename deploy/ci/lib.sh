@@ -30,6 +30,8 @@ readonly GMN_CI_SEAL_MAX_BYTES=262144
 readonly GMN_CI_SEAL_RELPATH='^aud-[0-9a-f]{16}/seal-(000[1-9]|00[1-9][0-9]|01[0-9][0-9]|02[0-4][0-9]|025[0-6])\.json$'
 readonly GMN_CI_CLOSURE_RELPATH='^_closures/[a-z0-9][a-z0-9-]{3,31}\.json$'
 readonly GMN_CI_SSH_CONNECT_FAILED_RC=255
+# Teto do que o ssh pode escrever no stdout e no stderr capturados (KiB, `ulimit -f`): as respostas dos receptores têm uma linha curta.
+readonly GMN_CI_SSH_OUTPUT_MAX_KIB=64
 
 # gmn_fail CÓDIGO [DETALHE]: registra o código na saída do passo (para o resumo) e termina com 1. O detalhe é só um nome fixo.
 gmn_fail() {
@@ -96,14 +98,20 @@ gmn_require_ssh_files() {
 }
 
 # gmn_receiver_ssh COMANDO ARQUIVO_STDIN: a ÚNICA chamada ssh dos jobs (receptor de deploy e de manifestos), só pela configuração privada
-# (`ssh -F`: host, porta e usuário nunca na linha de comando; nenhuma outra configuração lida). Define GMN_SSH_RC, GMN_SSH_RESPONSE (o stdout)
-# e GMN_SSH_STDERR (arquivo 0600 em $RUNNER_TEMP, que quem chama classifica e apaga: o stderr do ssh e do receptor NUNCA vai ao log).
+# (`ssh -F`: host, porta e usuário nunca na linha de comando; nenhuma outra configuração lida). O stdout e o stderr vão, SEPARADOS e com teto
+# (`ulimit -f`, revisão do PR #74, item 4), para dois arquivos 0600 em $RUNNER_TEMP, que quem chama classifica e apaga: o stderr do ssh e do
+# receptor NUNCA vai ao log. Define GMN_SSH_RC, GMN_SSH_STDOUT, GMN_SSH_STDERR e GMN_SSH_RESPONSE (o stdout como texto, para o deploy).
 gmn_receiver_ssh() {
+  GMN_SSH_STDOUT="$(umask 077 && mktemp "${RUNNER_TEMP}/gmn-ssh-stdout.XXXXXX")"
   GMN_SSH_STDERR="$(umask 077 && mktemp "${RUNNER_TEMP}/gmn-ssh-stderr.XXXXXX")"
   set +e
-  GMN_SSH_RESPONSE="$(LC_ALL=C ssh -F "$GMN_CI_SSH_CONFIG" -T "$GMN_CI_SSH_ALIAS" "$1" <"$2" 2>"$GMN_SSH_STDERR")"
+  (
+    ulimit -f "$GMN_CI_SSH_OUTPUT_MAX_KIB"
+    LC_ALL=C exec ssh -F "$GMN_CI_SSH_CONFIG" -T "$GMN_CI_SSH_ALIAS" "$1" <"$2" >"$GMN_SSH_STDOUT" 2>"$GMN_SSH_STDERR"
+  )
   GMN_SSH_RC=$?
   set -e
+  GMN_SSH_RESPONSE="$(cat -- "$GMN_SSH_STDOUT")"
 }
 
 # gmn_ssh_hint ARQUIVO: dica FIXA de uma conexão que falhou (saída 255): HOST_KEY, AUTH ou OTHER. Nada do texto do ssh sai daqui.

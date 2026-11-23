@@ -109,7 +109,7 @@ rc="$GMN_SSH_RC"
 response="$GMN_SSH_RESPONSE"
 public_error="$(receiver_error "$rc" "$GMN_SSH_STDERR")"
 ssh_hint="$(gmn_ssh_hint "$GMN_SSH_STDERR")"
-rm -f -- "$GMN_SSH_STDERR"
+rm -f -- "$GMN_SSH_STDOUT" "$GMN_SSH_STDERR"
 
 if [ "$rc" -eq "$GMN_CI_SSH_CONNECT_FAILED_RC" ]; then gmn_fail SSH_CONNECT_FAILED "$ssh_hint"; fi
 if [ "$rc" -ne 0 ]; then
