@@ -1182,8 +1182,11 @@ export function createLedgerService(options: LedgerServiceOptions): LedgerPort {
   };
 }
 
-/** Porta do livro NÃO CONFIGURADO (pasta ou chave ausente/insegura/sobreposta): tudo responde `NOT_CONFIGURED` (falha fechada), nada é gravado. */
-export function createUnconfiguredLedger(): LedgerPort {
+/**
+ * Porta do livro NÃO CONFIGURADO (pasta ou chave ausente/insegura/sobreposta, ou a guarda externa pedida com configuração parcial ou inválida, G1.b.2a):
+ * tudo responde `NOT_CONFIGURED` (falha fechada), nada é gravado. `detail`: pendências extras para o operador (só códigos, nunca segredo).
+ */
+export function createUnconfiguredLedger(detail: readonly string[] = []): LedgerPort {
   const notConfigured: LedgerView = {
     state: 'HISTORY_UNRESOLVED',
     reason: 'NOT_CONFIGURED',
@@ -1195,7 +1198,7 @@ export function createUnconfiguredLedger(): LedgerPort {
     receiptReissuable: false,
     externalGuard: 'NOT_CONFIGURED',
   };
-  const refusal: LedgerRefusal = { code: 'LEDGER_NOT_CONFIGURED', reason: 'NOT_CONFIGURED', issues: ['livro: NOT_CONFIGURED', MESSAGES.NOT_CONFIGURED as string], view: notConfigured };
+  const refusal: LedgerRefusal = { code: 'LEDGER_NOT_CONFIGURED', reason: 'NOT_CONFIGURED', issues: ['livro: NOT_CONFIGURED', MESSAGES.NOT_CONFIGURED as string, ...detail], view: notConfigured };
   const step: LedgerStep = { kind: 'REFUSED', refusal };
   const runStep = { kind: 'REFUSED' as const, refusal: { code: refusal.code, reason: refusal.reason, issues: refusal.issues } };
   return {

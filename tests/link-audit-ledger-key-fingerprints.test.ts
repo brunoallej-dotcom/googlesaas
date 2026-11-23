@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
-import { KEY_FINGERPRINT_LABEL as LEDGER_LABEL, phase6KeyFingerprints } from '../src/lib/link-audit-ledger/config';
+import { GUARD_KEY_ENV, GUARD_RETIRED_KEYS_ENV, KEY_FINGERPRINT_LABEL as LEDGER_LABEL, phase6KeyFingerprints } from '../src/lib/link-audit-ledger/config';
 import * as ledgerBarrel from '../src/lib/link-audit-ledger';
 import { KEY_FINGERPRINT_LABEL as OBSERVABILITY_LABEL } from '../src/lib/link-audit-observability';
 import { ORIGIN_KEY_ENV, ORIGIN_RETIRED_KEYS_ENV } from '../src/lib/link-audit-origin';
@@ -54,19 +54,24 @@ test('PG-L01 o rótulo de separação de domínio é IGUAL no livro e na observa
   assert.equal(OBSERVABILITY_LABEL, LEDGER_LABEL);
 });
 
-test('PG-L01 phase6KeyFingerprints: COMPLETUDE — com origem e livro, atuais e aposentadas, sai exatamente um par por chave configurada', () => {
+test('PG-L01 phase6KeyFingerprints: COMPLETUDE — com origem, livro e guarda, atuais e aposentadas, sai exatamente um par por chave configurada', () => {
   const origin = [testKeySpec('ok-test-a', 'origin-a')];
   const originRetired = [`${testKeySpec('ok-old-b', 'origin-old-b')}:2026-12-01`, `${testKeySpec('ok-old-c', 'origin-old-c')}:2026-12-02`];
   const ledger = [testKeySpec('lk-test-a', 'ledger-a')];
   const ledgerRetired = [`${testKeySpec('lk-old-b', 'ledger-old-b')}:2026-12-03`, `${testKeySpec('lk-old-c', 'ledger-old-c')}:2026-12-04`];
+  // G1.b.2a: a chave do pseudônimo da guarda (atual e aposentadas, sem data) também entra: a chave de log não pode repeti-la
+  const guard = [testKeySpec('gk-test-a', 'guard-a')];
+  const guardRetired = [testKeySpec('gk-old-b', 'guard-old-b'), testKeySpec('gk-old-c', 'guard-old-c')];
   const fingerprints = phase6KeyFingerprints({
     [ORIGIN_KEY_ENV]: origin.join(','),
     [ORIGIN_RETIRED_KEYS_ENV]: originRetired.join(','),
     [LEDGER_KEY_ENV]: ledger.join(','),
     [LEDGER_RETIRED_KEYS_ENV]: ledgerRetired.join(','),
+    [GUARD_KEY_ENV]: guard.join(','),
+    [GUARD_RETIRED_KEYS_ENV]: guardRetired.join(','),
   });
-  const configured = [...origin, ...originRetired, ...ledger, ...ledgerRetired].map((spec) => spec.split(':')[0]);
+  const configured = [...origin, ...originRetired, ...ledger, ...ledgerRetired, ...guard, ...guardRetired].map((spec) => spec.split(':')[0]);
   assert.equal(fingerprints.length, configured.length, 'nenhuma chave omitida (nem aposentada, nem uma família inteira)');
-  assert.deepEqual(fingerprints.map((pair) => pair.id), configured, 'um par por chave, na ordem: origem, aposentadas da origem, livro, aposentadas do livro');
+  assert.deepEqual(fingerprints.map((pair) => pair.id), configured, 'um par por chave, na ordem: origem, aposentadas da origem, livro, aposentadas do livro, guarda, aposentadas da guarda');
   assert.equal(new Set(fingerprints.map((pair) => pair.materialDigest)).size, configured.length, 'um digest distinto por material');
 });
