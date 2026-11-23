@@ -294,7 +294,8 @@ test('P9-W09 seals-deliver não roda npm, node nem npx: nem no workflow (sem set
     assert.ok(!forbidden.test(withoutComments(runOf(step))), `${String(step.name)}: npm/node/npx no run:`);
   }
   for (const name of [...called, 'lib.sh']) assert.ok(!forbidden.test(withoutComments(scriptText(name))), `${name}: npm/node/npx no script do seals-deliver`);
-  assert.ok(/git -c core\.quotePath=false ls-tree -r -z HEAD -- /.test(scriptText('seals-files.sh')) && /git hash-object --no-filters/.test(scriptText('seals-files.sh')), 'a lista sai do git');
+  assert.ok(/git -c core\.quotePath=false ls-tree -r -z "\$GMN_SHA" -- /.test(scriptText('seals-files.sh')) && /git cat-file blob "\$object"/.test(scriptText('seals-files.sh')), 'a lista e os bytes saem dos objetos do git no SHA (revisão do PR #74, item 6)');
+  assert.ok(!/<"\$\{seals_dir\}|gmn_sha256_file "\$\{?seals_dir/.test(scriptText('seals-deliver.sh')), 'o put nunca lê o caminho do checkout');
   assert.ok(/sha256sum/.test(scriptText('lib.sh')), 'sha256sum de cada arquivo');
 });
 

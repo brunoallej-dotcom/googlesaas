@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Passos 3 e 4 do job `seals-deliver` (spec docs/specs/ci-deploy-and-seal-delivery.md §5.5.2): entrega TODOS os arquivos da lista ordenada
-# do passo 1 (seals-files.sh) ao receptor de manifestos, um `put <relpath> <sha256> <trust-sha256>` por arquivo, com o arquivo no stdin, e
+# do passo 1 (seals-files.sh) ao receptor de manifestos, um `put <relpath> <sha256> <trust-sha256>` por arquivo, com a cópia privada do blob
+# do commit no stdin (nunca o caminho do checkout; o sha256 da cópia é conferido de novo antes do envio; revisão do PR #74, item 6), e
 # PARA NO PRIMEIRO ERRO (RC-10). Mandar tudo é idempotente: arquivo igual já presente volta `OK ALREADY_PRESENT`. Só ssh e sha256sum: nenhum
 # npm, node ou código do repositório (P9-W09). Host, porta, usuário e opções fixas vêm da configuração privada (ssh-setup.sh seals).
 # Ambiente: GMN_AMB, GMN_SHA, GMN_TRUST_SHA256 (saída do passo 1).
@@ -72,7 +73,6 @@ gmn_regular_file "$list" || gmn_fail SEALS_LIST_MISSING
 [ "$(wc -l <"$list")" -le "$GMN_CI_SEALS_MAX_FILES" ] || gmn_fail SEALS_TOO_MANY
 umask 077
 : >"$results"
-seals_dir="link-audit-seals/${GMN_AMB}/seals"
 
 sent=0
 while IFS=' ' read -r relpath sha256 extra <&3 || [ -n "${relpath:-}" ]; do
@@ -81,7 +81,7 @@ while IFS=' ' read -r relpath sha256 extra <&3 || [ -n "${relpath:-}" ]; do
   if [ -n "$extra" ] || ! gmn_is_hex "$sha256" 64 || ! { [[ "$relpath" =~ $GMN_CI_SEAL_RELPATH ]] || [[ "$relpath" =~ $GMN_CI_CLOSURE_RELPATH ]]; }; then
     gmn_fail SEALS_LIST_INVALID
   fi
-  file="${seals_dir}/${relpath}"
+  file="${GMN_CI_SEALS_DIR}/blobs/${sha256}"
   gmn_regular_file "$file" || refuse SEALS_FILE_CHANGED
   [ "$(gmn_sha256_file "$file")" = "$sha256" ] || refuse SEALS_FILE_CHANGED
   remote_command="put ${relpath} ${sha256} ${GMN_TRUST_SHA256}"

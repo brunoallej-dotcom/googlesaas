@@ -86,6 +86,15 @@ test('P9.5 lista (passo 1): TODOS os arquivos de <amb>/seals/ em ordem determin�
   assert.deepEqual(outputs(sandbox), { trust_sha256: TRUST_SHA, count: '8' });
   assert.equal(fs.statSync(path.dirname(listFile(sandbox))).mode & 0o777, 0o700);
   assert.equal(fs.statSync(listFile(sandbox)).mode & 0o777, 0o600);
+  // revisão do PR #74, item 6: uma cópia privada 0600 de cada blob do commit, com o sha256 da lista
+  const blobs = path.join(sandbox.runnerTemp, 'gmn-seals', 'blobs');
+  assert.equal(fs.statSync(blobs).mode & 0o777, 0o700);
+  assert.deepEqual(fs.readdirSync(blobs).sort(), expected.map((rel) => sha256(content(rel))).sort());
+  for (const rel of expected) {
+    const blob = path.join(blobs, sha256(content(rel)));
+    assert.equal(fs.readFileSync(blob, 'utf8'), content(rel));
+    assert.equal(fs.statSync(blob).mode & 0o777, 0o600);
+  }
   assert.match(result.stdout, /^8 arquivo\(s\) a entregar \(5 manifesto\(s\), 3 fecho\(s\)\); lista de confiança do commit: sha256 [0-9a-f]{64}$/m);
   assert.ok(!result.stdout.includes('falso'), 'nenhum conteúdo de arquivo no log');
 
@@ -113,35 +122,35 @@ test('P9.5 lista: caminho fora da gramática (sem eco), link, executável, acima
     assertRefused(sandbox, result, code, detail);
     assertNoLeak(result, 'AUD-001', 'SEAL-0001', 'seal-0257');
   }
-  const changed = sandboxOf(t);
-  const file = put(changed, `homologacao/seals/${seal(AUD_A, 1)}`, content('a'));
-  const sha = commitAll(changed);
-  fs.writeFileSync(file, content('outro'));
-  assertRefused(changed, runScript(changed, 'seals-files.sh', [], withHome(changed, { GMN_AMB: 'homologacao', GMN_SHA: sha })), 'CHECKOUT_MISMATCH', seal(AUD_A, 1));
-  setScenario(changed, {});
-  assertRefused(changed, runScript(changed, 'seals-files.sh', [], withHome(changed, { GMN_AMB: 'homologacao', GMN_SHA: 'f'.repeat(40) })), 'CHECKOUT_MISMATCH');
+  const other = sandboxOf(t);
+  put(other, `homologacao/seals/${seal(AUD_A, 1)}`, content('a'));
+  commitAll(other);
+  assertRefused(other, runScript(other, 'seals-files.sh', [], withHome(other, { GMN_AMB: 'homologacao', GMN_SHA: 'f'.repeat(40) })), 'CHECKOUT_MISMATCH');
 });
 
-test('P9.5 lista: ambiente ou SHA inválidos, lista de confiança ausente, link ou acima de 8 KiB, ambiente sem nenhum arquivo ⇒ recusa antes de qualquer arquivo', (t) => {
+test('P9.5 lista: ambiente ou SHA inválidos, lista de confiança do COMMIT ausente, link ou acima de 8 KiB, ambiente sem nenhum arquivo ⇒ recusa antes de qualquer arquivo', (t) => {
   const sandbox = sandboxOf(t);
-  const sha = commitAll(sandbox);
-  const env = (extra: Record<string, string>): Record<string, string> => withHome(sandbox, { GMN_AMB: 'homologacao', GMN_SHA: sha, ...extra });
+  let sha = commitAll(sandbox);
+  const env = (extra: Record<string, string> = {}): Record<string, string> => withHome(sandbox, { GMN_AMB: 'homologacao', GMN_SHA: sha, ...extra });
   assertRefused(sandbox, runScript(sandbox, 'seals-files.sh', [], env({ GMN_AMB: 'staging' })), 'INPUT_INVALID', 'GMN_AMB');
   setScenario(sandbox, {});
   assertRefused(sandbox, runScript(sandbox, 'seals-files.sh', [], env({ GMN_SHA: 'main' })), 'INPUT_INVALID', 'GMN_SHA');
   setScenario(sandbox, {});
-  assertRefused(sandbox, runScript(sandbox, 'seals-files.sh', [], env({})), 'SEALS_EMPTY');
+  assertRefused(sandbox, runScript(sandbox, 'seals-files.sh', [], env()), 'SEALS_EMPTY');
   const trust = path.join(sandbox.root, 'link-audit-seals', 'homologacao', 'trust-keys.txt');
   fs.writeFileSync(trust, 'x'.repeat(8193));
+  sha = commitAll(sandbox, 'lista grande');
   setScenario(sandbox, {});
-  assertRefused(sandbox, runScript(sandbox, 'seals-files.sh', [], env({})), 'TRUST_LIST_TOO_LARGE');
+  assertRefused(sandbox, runScript(sandbox, 'seals-files.sh', [], env()), 'TRUST_LIST_TOO_LARGE');
   fs.rmSync(trust);
-  fs.symlinkSync(path.join(sandbox.root, 'link-audit-seals', 'producao', 'trust-keys.txt'), trust);
+  fs.symlinkSync('../producao/trust-keys.txt', trust);
+  sha = commitAll(sandbox, 'lista link');
   setScenario(sandbox, {});
-  assertRefused(sandbox, runScript(sandbox, 'seals-files.sh', [], env({})), 'HASH_INPUT_MISSING', 'trust-keys.txt');
+  assertRefused(sandbox, runScript(sandbox, 'seals-files.sh', [], env()), 'HASH_INPUT_MISSING', 'trust-keys.txt');
   fs.rmSync(trust);
+  sha = commitAll(sandbox, 'sem lista');
   setScenario(sandbox, {});
-  assertRefused(sandbox, runScript(sandbox, 'seals-files.sh', [], env({})), 'HASH_INPUT_MISSING', 'trust-keys.txt');
+  assertRefused(sandbox, runScript(sandbox, 'seals-files.sh', [], env()), 'HASH_INPUT_MISSING', 'trust-keys.txt');
 });
 
 test('P9.5 lista: teto de 1000 arquivos por execução ⇒ SEALS_TOO_MANY conferido ANTES de olhar qualquer arquivo (nem o caminho fora da gramática chega a ser visto)', (t) => {
@@ -204,18 +213,23 @@ interface DeliverFixture {
   readonly rels: readonly string[];
 }
 
-/** Arquivos de homologação, a lista do passo 1 (ordem dada) e a chave/configuração do passo 2, sem git. */
-function deliverFixture(t: Fixture['t'], rels: readonly string[], ssh: readonly FakeRule[]): DeliverFixture {
-  const sandbox = sandboxOf(t);
-  const sealsDir = path.join(sandbox.runnerTemp, 'gmn-seals');
-  fs.mkdirSync(sealsDir, { mode: 0o700 });
-  fs.writeFileSync(path.join(sealsDir, 'files'), rels.map((rel) => `${rel} ${sha256(content(rel))}\n`).join(''), { mode: 0o600 });
-  for (const rel of rels) put(sandbox, `homologacao/seals/${rel}`, content(rel));
+/** A chave e a configuração do passo 2 (ssh-setup.sh seals), sem rodar o script. */
+function writeSshFiles(sandbox: Sandbox): void {
   const sshDir = path.join(sandbox.runnerTemp, 'gmn-ssh');
-  fs.mkdirSync(sshDir, { mode: 0o700 });
+  fs.mkdirSync(sshDir, { mode: 0o700, recursive: true });
   fs.writeFileSync(path.join(sshDir, 'id_seals'), `${KEY_SENTINEL}\n`, { mode: 0o600 });
   fs.writeFileSync(path.join(sshDir, 'known_hosts'), `${KNOWN_HOSTS_LINE}\n`, { mode: 0o600 });
   fs.writeFileSync(path.join(sshDir, 'config'), `Host gmn-seal-receiver\n  HostName ${HOST_SENTINEL}\n`, { mode: 0o600 });
+}
+
+/** A lista do passo 1 (ordem dada) com as cópias privadas dos blobs, e a chave/configuração do passo 2, sem git. */
+function deliverFixture(t: Fixture['t'], rels: readonly string[], ssh: readonly FakeRule[]): DeliverFixture {
+  const sandbox = sandboxOf(t);
+  const sealsDir = path.join(sandbox.runnerTemp, 'gmn-seals');
+  fs.mkdirSync(path.join(sealsDir, 'blobs'), { mode: 0o700, recursive: true });
+  fs.writeFileSync(path.join(sealsDir, 'files'), rels.map((rel) => `${rel} ${sha256(content(rel))}\n`).join(''), { mode: 0o600 });
+  for (const rel of rels) fs.writeFileSync(path.join(sealsDir, 'blobs', sha256(content(rel))), content(rel), { mode: 0o600 });
+  writeSshFiles(sandbox);
   setScenario(sandbox, { commands: { ssh }, readStdin: ['ssh'] });
   return { sandbox, rels };
 }
@@ -247,6 +261,30 @@ test('P9.5 entrega PARA NO PRIMEIRO ERRO (RC-10): o arquivo recusado fica FALHOU
   assertRefused(fixture.sandbox, result, 'E_EXISTS_DIFFERENT');
   assert.equal(calls(fixture.sandbox, 'ssh').length, 2, 'nada depois do primeiro erro');
   assert.deepEqual(results(fixture.sandbox).map((row) => [row[0], row[2], row[3]]), [[rels[0], 'WRITTEN', 'OK'], [rels[1], 'FALHOU', 'E_EXISTS_DIFFERENT']]);
+});
+
+test('P9.5 bytes do commit (revisão do PR #74, item 6): a lista e o stdin de cada put vêm dos blobs IMUTÁVEIS do SHA; um arquivo do checkout trocado antes ou depois do passo 1 não muda o que é enviado; a cópia privada alterada ⇒ SEALS_FILE_CHANGED sem ssh', (t) => {
+  const sandbox = sandboxOf(t);
+  const rel = seal(AUD_A, 1);
+  const file = put(sandbox, `homologacao/seals/${rel}`, content(rel));
+  const sha = commitAll(sandbox);
+  fs.writeFileSync(file, 'trocado ANTES do passo 1\n');
+  assert.equal(runScript(sandbox, 'seals-files.sh', [], withHome(sandbox, { GMN_AMB: 'homologacao', GMN_SHA: sha })).status, 0);
+  assert.deepEqual(readLines(listFile(sandbox)), [`${rel} ${sha256(content(rel))}`], 'o sha256 é o do blob do commit');
+  fs.writeFileSync(file, 'trocado DEPOIS do passo 1\n');
+  fs.writeFileSync(path.join(sandbox.root, 'link-audit-seals', 'homologacao', 'trust-keys.txt'), 'lista trocada no checkout\n');
+  writeSshFiles(sandbox);
+  setScenario(sandbox, { commands: { ssh: [forFile(rel, ok('WRITTEN', rel))] }, readStdin: ['ssh'] });
+  const delivered = runScript(sandbox, 'seals-deliver.sh', [], { ...DELIVER_ENV, GMN_SHA: sha });
+  assert.equal(delivered.status, 0, delivered.stderr);
+  const [call] = calls(sandbox, 'ssh');
+  assert.equal(call?.stdinSha256, sha256(content(rel)), 'o stdin é a cópia do blob, não o arquivo do checkout');
+  assert.equal(call?.argv[4], `put ${rel} ${sha256(content(rel))} ${TRUST_SHA}`, 'a lista de confiança é a do blob do commit');
+
+  fs.writeFileSync(path.join(sandbox.runnerTemp, 'gmn-seals', 'blobs', sha256(content(rel))), 'copia adulterada');
+  setScenario(sandbox, { commands: { ssh: [forFile(rel, ok('WRITTEN', rel))] }, readStdin: ['ssh'] });
+  assertRefused(sandbox, runScript(sandbox, 'seals-deliver.sh', [], { ...DELIVER_ENV, GMN_SHA: sha }), 'SEALS_FILE_CHANGED');
+  assert.equal(calls(sandbox, 'ssh').length, 0);
 });
 
 const oneFile = seal(AUD_A, 3);
@@ -336,7 +374,7 @@ test('P9.5 entrega: ssh sem conexão (255) ⇒ SSH_CONNECT_FAILED HOST_KEY|AUTH|
 
 test('P9.5 entrega: arquivo mudado depois do passo 1, lista ilegível ou acima do teto de 1000 (conferido antes do primeiro put), chave/configuração ou lista ausentes, hash da lista de confiança inválido ⇒ recusa sem ssh', (t) => {
   const changed = deliverFixture(t, [oneFile], []);
-  put(changed.sandbox, `homologacao/seals/${oneFile}`, 'bytes trocados');
+  fs.writeFileSync(path.join(changed.sandbox.runnerTemp, 'gmn-seals', 'blobs', sha256(content(oneFile))), 'bytes trocados');
   assertRefused(changed.sandbox, deliver(changed), 'SEALS_FILE_CHANGED');
   assert.deepEqual(results(changed.sandbox).map((row) => [row[0], row[2], row[3]]), [[oneFile, 'FALHOU', 'SEALS_FILE_CHANGED']]);
 
