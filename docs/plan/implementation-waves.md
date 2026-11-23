@@ -19,7 +19,7 @@
 | W3 | Verificador `v2` (aditivo em `provenance.ts`) + contrato próprio | W0 + contrato aprovado | W1, W2 | ✅ concluída em 19/11/2026 (W3.1–W3.5: PRs #30, #32, #33, #34, #35) |
 | R1 | ADR-0002: confirmação de resultados pelo livro de cabeças (fase C do resultado só pelo autor) | W0 (§16.17 revisada), W1, W3 | W2 | ✅ R1.1–R1.6 mergeadas (#39, #41, #45, #46, #49 e o PR da R1.6); portão da R1 satisfeito no código, nada implantado |
 | R2 | Resultado confirmado registra a proveniência que o atestou (`headSeq`, `headSealSha256`, `keyIds`); `UNAUTHENTICATED` na releitura ⇒ revisão humana | W3, R1 | W4 | ✅ R2.1 (#55: prova na avaliação, campo gravado e validado) e R2.2 (reconferência na releitura, porta, estado e rótulos na interface) neste PR; portão da R2 satisfeito no código, nada implantado |
-| W4 | CLI `sign` (manifesto `v2`) | W1, W3, decisões §13.2 itens 1, 2 e 4 (tomadas: D10, D11, D12/D14) | — | 🟡 W4.1 (#38), W4.2 (#40), W4.3 (#42), W4.4 (#44) e W4.5 (#48) mergeadas; W4.6 em revisão |
+| W4 | CLI `sign` (manifesto `v2`) | W1, W3, decisões §13.2 itens 1, 2 e 4 (tomadas: D10, D11, D12/D14) | — | ✅ W4.1 (#38), W4.2 (#40), W4.3 (#42), W4.4 (#44), W4.5 (#48) e W4.6 (#50) mergeadas; artefato único reproduzível, conferido no CI sob `--permission` |
 | W5 | Procedimento, dossiê e ensaio ponta a ponta em homologação com chave descartável | W4, R1, R2 | — | 🟡 W5.1 (documentação, PR #58) ✅; W5.2a (PR #59) ✅; W5.2b (coleta SIMULADA) ✅; resta da W5.2 só o canal de entrega pelo CI (aguarda o P-9); W5.3 (ensaio em homologação) a seguir |
 | W6 | Coleta LIVE nova da AUD-001 (fora do código) | W5 + autorização escrita específica (**dada em 20/11/2026, D16**) | — | ⬜ autorizada; roda depois do ensaio da W5 |
 
