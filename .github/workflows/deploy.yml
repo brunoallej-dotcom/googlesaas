@@ -152,9 +152,9 @@ jobs:
           GMN_PUBLIC_HOST: ${{ secrets.GMN_PUBLIC_HOST }}
         run: bash deploy/ci/external-check.sh
 
-      - name: Limpeza da chave e do pacote
+      - name: Limpeza da chave, do pacote e da saída do Docker
         if: always()
-        run: rm -rf -- "$RUNNER_TEMP/gmn-ssh" "$RUNNER_TEMP/gmn-bundle"
+        run: rm -rf -- "$RUNNER_TEMP/gmn-ssh" "$RUNNER_TEMP/gmn-bundle" "$RUNNER_TEMP/gmn-build"
 
       - name: Resumo do job
         if: always() && steps.checkout.outcome == 'success'

@@ -12,9 +12,9 @@ gmn_require_sha
 tag="$(gmn_image_tag)"
 
 umask 077
-mkdir -p -m 0700 "$GMN_CI_BUNDLE_DIR"
+mkdir -p -m 0700 "$GMN_CI_BUNDLE_DIR" "$GMN_CI_BUILD_DIR"
 rm -f -- "$GMN_CI_BUNDLE_FILE"
-docker save "gmn-web:${tag}" "gmn-worker:${tag}" | gzip -n >"$GMN_CI_BUNDLE_FILE" || gmn_fail BUNDLE_FAILED
+docker save "gmn-web:${tag}" "gmn-worker:${tag}" 2>"${GMN_CI_BUILD_DIR}/save.log" | gzip -n >"$GMN_CI_BUNDLE_FILE" || gmn_fail BUNDLE_FAILED
 
 bytes="$(stat -c %s -- "$GMN_CI_BUNDLE_FILE")"
 if [ "$bytes" -lt 1 ] || [ "$bytes" -gt "$GMN_CI_BUNDLE_MAX_BYTES" ]; then gmn_fail BUNDLE_SIZE_OUT_OF_RANGE; fi

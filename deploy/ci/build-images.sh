@@ -6,6 +6,9 @@
 # (segredos do ambiente do GitHub, para não expor o projeto no log público). `--build-arg NOME` SEM `=valor`: o Docker lê o valor do
 # ambiente, e ele nunca aparece na linha de comando. O `npm ci` roda DENTRO do build, isolado do runner; sem cache do GitHub, sem
 # registry, sem push.
+# A saída do `docker build` (que pode repetir valores derivados do ambiente) vai só para um arquivo 0600 em $RUNNER_TEMP/gmn-build,
+# apagado na limpeza; o log público recebe só `BUILD_FAILED <web|worker>`. Para depurar um build: o job público `build` do ci.yml
+# (`npm run build`, sem segredo) e, na máquina de desenvolvimento, deploy/hostinger/build-images.sh e verify-local.sh.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 . deploy/ci/lib.sh
@@ -21,10 +24,12 @@ case "$NEXT_PUBLIC_SUPABASE_URL" in
 esac
 
 tag="$(gmn_image_tag)"
+umask 077
+mkdir -p -m 0700 "$GMN_CI_BUILD_DIR"
 for target in web worker; do
   docker build --platform linux/amd64 -f deploy/hostinger/Dockerfile --target "$target" \
     --build-arg NEXT_PUBLIC_SUPABASE_URL \
     --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY \
-    -t "gmn-${target}:${tag}" . || gmn_fail BUILD_FAILED "$target"
+    -t "gmn-${target}:${tag}" . >"${GMN_CI_BUILD_DIR}/build-${target}.log" 2>&1 || gmn_fail BUILD_FAILED "$target"
 done
 echo "imagens construídas: gmn-web:${tag} gmn-worker:${tag}"

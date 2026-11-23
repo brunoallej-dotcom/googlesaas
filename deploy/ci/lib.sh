@@ -13,6 +13,8 @@ readonly GMN_CI_SSH_DIR="${RUNNER_TEMP:?RUNNER_TEMP ausente}/gmn-ssh"
 readonly GMN_CI_SSH_CONFIG="${GMN_CI_SSH_DIR}/config"
 readonly GMN_CI_SSH_ALIAS="gmn-receiver"
 readonly GMN_CI_BUNDLE_DIR="${RUNNER_TEMP}/gmn-bundle"
+# Saída do Docker (build e save) só em arquivo 0600 aqui, nunca no log público; a limpeza `if: always()` apaga a pasta.
+readonly GMN_CI_BUILD_DIR="${RUNNER_TEMP}/gmn-build"
 readonly GMN_CI_BUNDLE_FILE="${GMN_CI_BUNDLE_DIR}/gmn-images.tar.gz"
 readonly GMN_CI_STACK_FILE="deploy/hostinger/stack.yml"
 readonly GMN_CI_OVERLAY_FILE="deploy/hostinger/stack-hml.yml"

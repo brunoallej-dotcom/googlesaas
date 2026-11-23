@@ -130,7 +130,7 @@ test('P9-W04 nenhum artefato, registry, login ou cache do GitHub no workflow nem
     if (String(step.uses ?? '').startsWith('actions/setup-node@')) assert.ok(!isYamlMap(step.with) || step.with.cache === undefined, 'setup-node sem cache:');
   }
   assert.match(scriptText('lib.sh'), /readonly GMN_CI_BUNDLE_DIR="\$\{RUNNER_TEMP\}\/gmn-bundle"/);
-  assert.match(scriptText('bundle.sh'), /docker save "gmn-web:\$\{tag\}" "gmn-worker:\$\{tag\}" \| gzip -n >"\$GMN_CI_BUNDLE_FILE"/);
+  assert.match(scriptText('bundle.sh'), /docker save "gmn-web:\$\{tag\}" "gmn-worker:\$\{tag\}" 2>"\$\{GMN_CI_BUILD_DIR\}\/save\.log" \| gzip -n >"\$GMN_CI_BUNDLE_FILE"/);
 });
 
 test('P9-W05 nenhuma expressão ${{ }} dentro de run:, sem rastreamento do shell nem ssh verboso; segredos só no env: do passo que os usa (lista fechada por passo)', () => {
@@ -182,16 +182,17 @@ test('P9-W07 todo ssh pela configuração privada com as opções fixas (StrictH
   assert.match(scriptText('lib.sh'), /readonly GMN_CI_SSH_DIR="\$\{RUNNER_TEMP:\?RUNNER_TEMP ausente\}\/gmn-ssh"/);
 });
 
-test('P9-W08 a chave só é escrita depois do build e do pacote, e a limpeza com if: always() apaga a chave e o pacote', () => {
+test('P9-W08 a chave só é escrita depois do build e do pacote, e a limpeza com if: always() apaga a chave, o pacote e a saída do Docker', () => {
   const ssh = stepIndex('ssh');
   assert.ok(ssh > stepIndex('build') && ssh > stepIndex('bundle'), 'chave depois do build');
   assert.equal(runOf(stepById('ssh')), 'bash deploy/ci/ssh-setup.sh');
   const keySteps = steps.filter((step) => JSON.stringify(step.env ?? {}).includes('GMN_DEPLOY_SSH_KEY')).map((step) => step.id);
   assert.deepEqual(keySteps, ['ssh'], 'a chave privada só entra no passo que a escreve');
-  const cleanup = steps.findIndex((step) => step.name === 'Limpeza da chave e do pacote');
+  const cleanup = steps.findIndex((step) => step.name === 'Limpeza da chave, do pacote e da saída do Docker');
   assert.ok(cleanup > stepIndex('external'), 'limpeza depois do último passo que usa a chave');
   assert.equal(steps[cleanup]?.if, 'always()');
-  assert.equal(runOf(steps[cleanup] as YamlMap), 'rm -rf -- "$RUNNER_TEMP/gmn-ssh" "$RUNNER_TEMP/gmn-bundle"');
+  assert.equal(runOf(steps[cleanup] as YamlMap), 'rm -rf -- "$RUNNER_TEMP/gmn-ssh" "$RUNNER_TEMP/gmn-bundle" "$RUNNER_TEMP/gmn-build"');
+  assert.match(scriptText('lib.sh'), /readonly GMN_CI_BUILD_DIR="\$\{RUNNER_TEMP\}\/gmn-build"/);
   for (const [name, condition] of [['Resumo do job', "always() && steps.checkout.outcome == 'success'"], ['Resumo do job (recusado antes do checkout)', "always() && steps.checkout.outcome != 'success'"]]) {
     assert.equal(steps.find((step) => step.name === name)?.if, condition, `${name} sempre roda`);
   }
@@ -233,6 +234,7 @@ test('P9.4 build pelo commit exato: --build-arg sem =valor, linux/amd64, tag <am
   assert.ok(!/--build-arg [A-Z_]+=/.test(build), 'o valor nunca na linha de comando');
   assert.match(build, /--build-arg NEXT_PUBLIC_SUPABASE_URL \\\n\s+--build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY \\/);
   assert.match(build, /--platform linux\/amd64 -f deploy\/hostinger\/Dockerfile --target "\$target"/);
+  assert.match(build, /-t "gmn-\$\{target\}:\$\{tag\}" \. >"\$\{GMN_CI_BUILD_DIR\}\/build-\$\{target\}\.log" 2>&1 \|\| gmn_fail BUILD_FAILED "\$target"/, 'saída do build só no arquivo');
   assert.match(scriptText('lib.sh'), /gmn_image_tag\(\) \{ printf '%s-%s' "\$GMN_AMB" "\$GMN_SHA"; \}/);
   assert.match(build, /\[ "\$\(git rev-parse HEAD\)" = "\$GMN_SHA" \] \|\| gmn_fail CHECKOUT_MISMATCH/);
   const hashes = scriptText('declared-hashes.sh');

@@ -270,6 +270,26 @@ test('P9.4 build: checkout de outro commit, argumento ausente ou URL sem https, 
   assertRefused(sandbox, failed, 'BUILD_FAILED', 'web');
 });
 
+test('P9.4 build: a saída do docker build (que pode repetir valores do ambiente) vai só para arquivo 0600 em $RUNNER_TEMP/gmn-build; o log público só recebe BUILD_FAILED <alvo>', (t) => {
+  const noisy = `#7 [build 3/9] ENV NEXT_PUBLIC_SUPABASE_URL=${SUPABASE_URL_SENTINEL}\n`;
+  const sandbox = makeSandbox(t, { commands: { git: GIT_HEAD(SHA), docker: [{ match: ['build'], responses: [{ stdout: noisy, stderr: `aviso ${ANON_SENTINEL}\n` }] }] } });
+  const ok = runScript(sandbox, 'build-images.sh', [], BUILD_ENV);
+  assert.equal(ok.status, 0, ok.stderr);
+  assertNoLeak(ok, SUPABASE_URL_SENTINEL, ANON_SENTINEL, '#7 [build');
+  const buildDir = path.join(sandbox.runnerTemp, 'gmn-build');
+  assert.equal(fs.statSync(buildDir).mode & 0o777, 0o700);
+  for (const target of ['web', 'worker']) {
+    const log = path.join(buildDir, `build-${target}.log`);
+    assert.equal(fs.statSync(log).mode & 0o777, 0o600);
+    assert.ok(fs.readFileSync(log, 'utf8').includes(SUPABASE_URL_SENTINEL), 'a saída fica só no arquivo privado');
+  }
+  setScenario(sandbox, { commands: { git: GIT_HEAD(SHA), docker: [{ match: ['--target', 'worker'], responses: [{ rc: 1, stdout: noisy, stderr: 'erro do build\n' }] }] } });
+  const failed = runScript(sandbox, 'build-images.sh', [], BUILD_ENV);
+  assertRefused(sandbox, failed, 'BUILD_FAILED', 'worker');
+  assert.equal(failed.stderr, 'ERRO BUILD_FAILED worker\n');
+  assertNoLeak(failed, SUPABASE_URL_SENTINEL, 'erro do build');
+});
+
 test('P9.4 pacote: docker save das duas tags | gzip -n em $RUNNER_TEMP (0700/0600), sha256 e tamanho nas saídas', (t) => {
   const tar = 'conteudo-falso-do-docker-save';
   const sandbox = makeSandbox(t, { commands: { docker: [{ match: ['save'], responses: [{ stdout: tar }] }] } });
