@@ -13,7 +13,8 @@ import type { GuardRow } from './model';
  *     (o escritor tem outro papel, sessão gravável e EXECUTE) ⇒ recusa, sem ler nada;
  *  2. `begin … read only` (repeatable read: cabeças e linhas antigas do MESMO instante; e a transação recusa escrita mesmo que o papel mudasse);
  *  3. as cabeças: a maior linha de CADA pseudônimo da tabela (todas as auditorias: a reconciliação também procura cabeça sem livro na cópia);
- *  4. as linhas do registro anterior, pela posição exata (pseudônimo + posição), para conferir que nada sumiu nem mudou;
+ *  4. as linhas do registro anterior, pela posição exata (pseudônimo + posição), para conferir que nada sumiu nem mudou (`rows from` com dois
+ *     `unnest` qualificados: a forma `unnest(a, b)` de vários argumentos só existe sem o esquema, e o teste local contra o Postgres real acusou);
  *  5. `rollback`.
  * Erro, prazo ou resposta fora do esquema ⇒ recusa (nunca "guarda vazia"). SQL fixo; dados só por parâmetro. Nunca recebe nem envia `auditId`.
  */
@@ -22,7 +23,7 @@ export const READER_IDENTITY_SQL =
 export const READER_BEGIN_SQL = 'begin transaction isolation level repeatable read, read only';
 export const READER_HEADS_SQL = 'select distinct on (h.audit_ref) h.audit_ref, h.key_id, h.ledger_seq, h.sha256 from gmn_link_audit_guard.ledger_heads h order by h.audit_ref, h.ledger_seq desc limit $1';
 export const READER_ROWS_SQL =
-  'select h.audit_ref, h.key_id, h.ledger_seq, h.sha256 from gmn_link_audit_guard.ledger_heads h join pg_catalog.unnest($1::text[], $2::text[]) as p(audit_ref, ledger_seq) on h.audit_ref = p.audit_ref and h.ledger_seq = p.ledger_seq::integer order by h.audit_ref, h.ledger_seq';
+  'select h.audit_ref, h.key_id, h.ledger_seq, h.sha256 from gmn_link_audit_guard.ledger_heads h join rows from (pg_catalog.unnest($1::text[]), pg_catalog.unnest($2::text[])) as p(audit_ref, ledger_seq) on h.audit_ref = p.audit_ref and h.ledger_seq = p.ledger_seq::integer order by h.audit_ref, h.ledger_seq';
 export const READER_END_SQL = 'rollback';
 /** Papel que a sessão precisa ter (o mesmo nome de `GUARD_READER_ROLE`; aqui sem import cruzado do valor de configuração). */
 export const READER_ROLE = 'gmn_guard_reader';

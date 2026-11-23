@@ -19,7 +19,7 @@ cp <repo>/supabase/proposed/local-test/run.mjs . && node run.mjs <caminho-do-rep
 `--network none` (sem rede, nenhuma porta publicada) e `--rm`. A imagem tem os papéis `anon`, `authenticated`,
 `service_role`, `authenticator` e `supabase_admin` e o `postgres` **sem superusuário**, como no projeto real
 (PostgreSQL 17.11). A migração roda como `postgres`; as conferências, como `supabase_admin` com `SET ROLE`, ou com login
-real pelo loopback **do contêiner** quando o que se confere é ajuste de papel. 27 verificações: pré-validação e
+real pelo loopback **do contêiner** quando o que se confere é ajuste de papel. 27 verificações na G1.b.2a (33 com a etapa da reconciliação da G1.b.2b, abaixo): pré-validação e
 conferência final que abortam e desfazem tudo (inclusive privilégio vazado por `pg_read_all_data`), o catálogo do PG-G08,
 a regra 7 na função, a trava consultiva com duas sessões, 42501 para `anon`/`authenticated`/`service_role`/`authenticator`,
 os gatilhos mesmo para quem tem o privilégio, o prazo de 3 s no servidor, NOLOGIN do dono, idempotência, associações
@@ -28,6 +28,16 @@ Na etapa final, `guard-adapter-run.ts` roda o **adaptador real** (`createPostgre
 migração aplicada, pelo soquete Unix do contêiner montado numa pasta temporária, como `gmn_guard_writer`: regra 7, rotação da
 chave do pseudônimo, só o `audit_ref` no banco e nenhuma conexão aberta ao fim. O TLS do conector de produção é provado nos
 testes do repositório (`tests/link-audit-guard-pg.test.ts`), não aqui.
+
+**G1.b.2b:** a etapa seguinte, `guard-reconcile-run.ts`, reaplica a migração e roda a **reconciliação externa de verdade** (o
+CLI `runGuardReconcileCli`, com o SQL fixo do leitor) contra ela: o adaptador real publica como `gmn_guard_writer`, uma rodada de
+backup sintética é gerada numa pasta temporária, e o CLI lê como `gmn_guard_reader` (a imagem só confia no `supabase_admin`
+pelo soquete, então cada conexão faz `SET SESSION AUTHORIZATION` aplicando os ajustes do papel gravados pela migração, como um
+login; o login real do leitor, somente leitura por padrão, é conferido na etapa 8). Confere: conciliação limpa (código 0) e
+registro 1; o portão G-1 operante; a sessão do escritor recusada sem ler cabeças (código 3); e o **limite declarado** — o
+superusuário apaga uma cabeça com `session_replication_role = replica` e a reconciliação seguinte acusa `GUARD_REGRESSED`
+(código 2). Foi esta etapa que pegou o `pg_catalog.unnest(a, b)` qualificado (a forma de vários argumentos só existe sem o
+esquema); a consulta usa `rows from (...)`. Total com as duas etapas em Node: 33 verificações.
 
 ```bash
 bash supabase/proposed/local-test/guard-run.sh            # imagem padrão: public.ecr.aws/supabase/postgres:17.11.0.018

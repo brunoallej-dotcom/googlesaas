@@ -247,8 +247,17 @@ if [ -d "$ROOT/node_modules/pg" ]; then
   docker exec -i "$NAME" psql -h /var/run/postgresql -U postgres -d postgres -v ON_ERROR_STOP=1 -q -c "set gmn.guard_rollback_confirm = 'APAGAR-CABECAS-DA-GUARDA'" -f - < "$ROLLBACK"
   eq "catálogo final" "$BEFORE" "$(catalog_snapshot)"
   ok "depois da etapa do adaptador, o rollback confirmado volta ao catálogo original"
+
+  # ---------------------------------------------------------------- 12. a RECONCILIAÇÃO externa de verdade (CLI + leitor) contra a migração aplicada (G1.b.2b)
+  as_postgres_file "$MIGRATION"
+  RECON_OUT="$(cd "$ROOT" && node --require ./tests/register-typescript.cjs supabase/proposed/local-test/guard-reconcile-run.ts "$SOCK" 2>&1)" || fail "reconciliação real: $RECON_OUT"
+  echo "$RECON_OUT" | grep '^OK' || true
+  COUNT=$((COUNT + $(echo "$RECON_OUT" | grep -c '^OK')))
+  docker exec -i "$NAME" psql -h /var/run/postgresql -U postgres -d postgres -v ON_ERROR_STOP=1 -q -c "set gmn.guard_rollback_confirm = 'APAGAR-CABECAS-DA-GUARDA'" -f - < "$ROLLBACK"
+  eq "catálogo final depois da reconciliação" "$BEFORE" "$(catalog_snapshot)"
+  ok "depois da etapa da reconciliação, o rollback confirmado volta ao catálogo original"
 else
-  echo "AVISO: node_modules/pg ausente; etapa do adaptador real pulada (rode npm ci)"
+  echo "AVISO: node_modules/pg ausente; etapas do adaptador real e da reconciliação puladas (rode npm ci)"
 fi
 
 echo
