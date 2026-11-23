@@ -8,10 +8,14 @@
 # /srv/gmn-hml/, GMN_TRAEFIK_NAME=gmn-hml, GMN_HOST do domínio de homologação, laboratório Supabase) vem do arquivo de variáveis de
 # homologação, conferido pelo receptor.
 #
-# Serper: `SERPER_API_KEY_FILE: ""` faz o entrypoint não carregar a chave. O secret gmn-hml_serper_api_key continua existindo (a lista
-# de secrets do serviço não se remove por sobreposição) e guarda um texto fixo NÃO secreto.
-# Secrets de topo: `external: true` repetido junto do `name:` de propósito. Se o Docker trocar a entrada inteira em vez de fundir os
-# campos, o secret continua externo e com o nome de homologação (conferido no primeiro deploy, P9-H07).
+# Serper: `SERPER_API_KEY_FILE: ""` (spec §5.11) faria o entrypoint não carregar a chave. ATENÇÃO (P9.4, conferido com
+# `docker stack config` do Docker CLI 29.10, sem rede): a fusão de dois `-c` NÃO sobrescreve uma variável com valor vazio, e o web e o
+# Worker continuam com /run/secrets/gmn_serper_api_key. A garantia efetiva é o secret gmn-hml_serper_api_key, que tem de existir (a
+# lista de secrets do serviço não se remove por sobreposição) e guarda um texto fixo NÃO secreto: nenhuma chave válida do Serper chega à
+# homologação. A linha fica como intenção da spec; a correção definitiva é decisão do responsável (P9-H07 no runbook).
+# Secrets de topo: `external: true` repetido junto do `name:` de propósito, para o secret continuar externo mesmo se o Docker trocar a
+# entrada inteira em vez de fundir os campos. Conferido no mesmo `docker stack config` local: os 12 nomes gmn-hml_*, com o `target`
+# gmn_* mantido; no host, o responsável confere de novo (P9-H07). `replicas: 0` do Worker também vence a fusão.
 
 services:
   gmn-web:

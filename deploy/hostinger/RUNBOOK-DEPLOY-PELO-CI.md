@@ -351,10 +351,13 @@ sudo grep -nE 'GMN_LINK_AUDIT_HOMOLOGATION|SERPER_API_KEY_FILE|replicas:|target:
 sudo shred -u /root/gmn-hml-config.yml
 ```
 
-Esperado: 12 secrets `gmn-hml_*` (externos), `GMN_LINK_AUDIT_HOMOLOGATION: "1"` só no web, `SERPER_API_KEY_FILE: ""` no web e no
-Worker, Worker com `replicas: 0`, `target: gmn_*` mantidos e routers `gmn-hml`. Se o `SERPER_API_KEY_FILE` continuar apontando para o
-secret, registre: o Serper continua sem chave válida (texto fixo não secreto), mas a fusão do host não sobrescreve variável com valor
-vazio; abra uma questão antes do ensaio. Se os secrets de topo não fundirem, a alternativa é a da spec §5.11
+Esperado: 12 secrets `gmn-hml_*` (externos), `GMN_LINK_AUDIT_HOMOLOGATION: "1"` só no web, Worker com `replicas: 0`, `target: gmn_*`
+mantidos e routers `gmn-hml`. **`SERPER_API_KEY_FILE`:** a spec pede `""` no web e no Worker, mas a fusão de dois `-c` do Docker não
+sobrescreve uma variável com valor vazio (conferido na P9.4 com o `docker stack config` do Docker CLI 29.10): a linha deve aparecer como
+`/run/secrets/gmn_serper_api_key`. Nesse caso, a garantia é o texto fixo **não secreto** do `gmn-hml_serper_api_key` (nenhuma chave
+válida do Serper chega à homologação; uma busca por ação do operador falha na autenticação do Serper, sem custo). Registre o que
+aparecer e decida antes do ensaio se aceita esse limite ou se pede a correção (por exemplo, a variável do arquivo com padrão no
+`stack.yml`, conferida pelo receptor). Se os secrets de topo não fundirem, a alternativa é a da spec §5.11
 (`name: ${GMN_SECRET_PREFIX:-gmn}_…` no próprio `stack.yml`).
 
 **DNS:** registro A (e AAAA, se houver) de `<DOMINIO_HML>` para `<IP_DA_VPS>`; conferir com `dig +short <DOMINIO_HML>`.
@@ -414,8 +417,8 @@ docker service inspect gmn-hml_gmn-web --format '{{range .Spec.TaskTemplate.Cont
 docker service ls --filter name=gmn-hml_ --format '{{.Name}} {{.Replicas}}'      # web 1/1, gmn-redis 1/1, worker 0/0
 ```
 
-Esperado: os secrets com `SecretName` `gmn-hml_*` e `File.Name` `gmn_*` (o caminho `/run/secrets/gmn_*`), a trava `=1` e o Serper
-vazio. Depois, `VERIFICACAO-POS-DEPLOY.md` inteiro com `STACK=gmn-hml` e `HOST=<DOMINIO_HML>`.
+Esperado: os secrets com `SecretName` `gmn-hml_*` e `File.Name` `gmn_*` (o caminho `/run/secrets/gmn_*`), a trava `=1` e o
+`SERPER_API_KEY_FILE` como registrado no P9-H07. Depois, `VERIFICACAO-POS-DEPLOY.md` inteiro com `STACK=gmn-hml` e `HOST=<DOMINIO_HML>`.
 
 ## 3. Produção: o que muda
 

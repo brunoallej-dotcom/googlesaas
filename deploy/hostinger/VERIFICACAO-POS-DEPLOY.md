@@ -66,10 +66,11 @@ Na interface: `/auditoria-por-link` lista `aud-001-autorizacao-01` com integrida
 `/api/system/health` (com sessão): Redis OK, Supabase OK, Worker "sem batimento" (esperado enquanto `replicas: 0`).
 ## 9. Custos
 Nenhuma auditoria deve estar `RUNNING`; confirme no painel do Serper que o consumo não mudou desde o deploy. Em homologação não há
-Serper (`SERPER_API_KEY_FILE` vazio no web e no Worker; o secret `gmn-hml_serper_api_key` guarda um texto fixo não secreto).
+chave válida do Serper (o secret `gmn-hml_serper_api_key` guarda um texto fixo não secreto; ver o §10).
 ## 10. Trava de homologação e Serper
 ```bash
 docker service inspect "${STACK}_gmn-web" --format '{{range .Spec.TaskTemplate.ContainerSpec.Env}}{{println .}}{{end}}' | grep -E '^(GMN_LINK_AUDIT_HOMOLOGATION|SERPER_API_KEY_FILE)='
 ```
-Esperado em homologação: `GMN_LINK_AUDIT_HOMOLOGATION=1` e `SERPER_API_KEY_FILE=` (vazio). Em produção: nenhuma linha
+Esperado em homologação: `GMN_LINK_AUDIT_HOMOLOGATION=1` e o `SERPER_API_KEY_FILE` registrado no P9-H07 (vazio, se a fusão do Docker
+aplicar a sobreposição; senão, o secret `gmn-hml_serper_api_key`, com texto fixo não secreto). Em produção: nenhuma linha
 `GMN_LINK_AUDIT_HOMOLOGATION` e `SERPER_API_KEY_FILE=/run/secrets/gmn_serper_api_key`.
