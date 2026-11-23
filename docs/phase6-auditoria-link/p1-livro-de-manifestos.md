@@ -58,8 +58,8 @@ bytes arquivados e comparar com o que foi registrado.
 
 ## 5. Conferência periódica contra o servidor (RS-17)
 
-**Quando:** antes de cada sessão de assinatura (o runbook do custodiante, §7, exige a cópia conferida) e no mínimo uma vez por
-trimestre, junto da revisão amostral. **Como:** sobre uma cópia somente leitura da pasta de manifestos do servidor e da lista
+**Quando (decisão do manager sob a delegação D15, 22/11/2026):** antes de cada sessão de assinatura (o runbook do custodiante,
+§7, exige a cópia conferida) e, no mínimo, uma vez por trimestre, junto da revisão amostral. **Como:** sobre uma cópia somente leitura da pasta de manifestos do servidor e da lista
 de chaves em uso:
 
 1. para cada auditoria do livro, o `seal-NNNN.json` de maior `seq` existe no servidor e o `sha256sum` dele é igual ao anotado
