@@ -63,13 +63,13 @@ const skipOrFail = (reason: string): string | false => {
  * artefato ficam numa pasta do HOME (fora das temporárias), criada uma vez por arquivo e apagada no fim.
  */
 let homeBase: string | null | undefined;
+// W5.2a: a limpeza é registrada no nível do ARQUIVO. Registrada dentro de um teste (antes de qualquer await), o after() ficava preso àquele teste
+// e apagava a pasta para os seguintes (aparecia ao rodar só uma parte dos testes, com --test-name-pattern).
+after(() => {
+  if (homeBase) fs.rmSync(homeBase, { recursive: true, force: true });
+});
 function homeSealsDir(): string {
-  if (homeBase === undefined) {
-    homeBase = stationDir();
-    after(() => {
-      if (homeBase) fs.rmSync(homeBase, { recursive: true, force: true });
-    });
-  }
+  if (homeBase === undefined) homeBase = stationDir();
   if (homeBase === null) return assert.fail('sem pasta no HOME fora das temporárias para a pasta de manifestos do artefato');
   return fs.realpathSync(fs.mkdtempSync(path.join(homeBase, 'manifestos-')));
 }
