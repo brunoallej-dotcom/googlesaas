@@ -105,12 +105,13 @@ test('inconsistência PERSISTENTE continua bloqueando em TODAS as consultas (nen
 });
 
 test('PROCESSOS SEPARADOS: 4 processos gravam criação e revogação sem parar enquanto o leitor (resultados + guarda + livro + decisões reais) consulta 60 vezes — zero acusações espúrias de integridade e o estado final é íntegro', async () => {
+  // G1.b.1: todos os escritores publicam na guarda (como em produção); sem isso o atraso passa de L_max e a leitura acusaria GUARD_LAGGING (regra 3)
   const w = await ledgerWorld({ withGuard: true });
   const e = resultsEnv();
   await must(w.protectedService.create(ANA, w.auditId, { record: rec.c2() }, clock()));
   await sealResult(w, e, { viaLedger: true });
   const reader = decisionsOver(w, { ledger: ledgerFor(w, { guard: w.guard }), knownHeads: witnessOver(w, e) });
-  const writers = Promise.all([1, 2, 3, 4].map((worker) => runChild(w, e, { task: 'workload', worker, rounds: 2, actor: 'ana@empresa.com' })));
+  const writers = Promise.all([1, 2, 3, 4].map((worker) => runChild(w, e, { task: 'workload', worker, rounds: 2, actor: 'ana@empresa.com', guardDir: w.guardDir })));
   const seen = new Map<string, number>();
   let done = false;
   void writers.then(() => (done = true));
@@ -122,7 +123,7 @@ test('PROCESSOS SEPARADOS: 4 processos gravam criação e revogação sem parar 
   }
   const outcomes = await writers;
   for (const [index, o] of outcomes.entries()) assert.equal(o.status, 0, `processo ${index}: ${o.stderr.slice(0, 160)}`);
-  for (const bad of ['RESULT_LEDGER_MISMATCH', 'GUARD_MISMATCH', 'HISTORY_REGRESSED', 'HISTORY_DIVERGES', 'UNTRUSTED', 'PUBLISHED_AFTER_ABORT']) {
+  for (const bad of ['RESULT_LEDGER_MISMATCH', 'GUARD_MISMATCH', 'GUARD_HEAD_MISSING', 'GUARD_LAGGING', 'HISTORY_REGRESSED', 'HISTORY_DIVERGES', 'UNTRUSTED', 'PUBLISHED_AFTER_ABORT']) {
     assert.ok(![...seen.keys()].some((key) => key.endsWith(`/${bad}`)), `acusação espúria ${bad} observada: ${JSON.stringify([...seen])}`);
   }
   const end = await must(reader.list(BIA, w.auditId, clock()));

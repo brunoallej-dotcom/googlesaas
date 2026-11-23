@@ -48,9 +48,9 @@ test('com guarda: cada GENESIS/CONFIRMED publica a cabeça; a guarda acompanha o
   assert.deepEqual(await w.guard.latest(w.auditId), { ok: true, head: { ledgerSeq: 5, sha256: records[4]?.contentSha256 } });
   const view = await must(withGuard(w).list(BIA, w.auditId));
   assert.deepEqual([view.ledger.state, view.ledger.externalGuard], ['PROTECTED', 'CONSISTENT']);
-  // idempotente: o mesmo par é aceito de novo; outro hash na mesma posição é recusado
+  // idempotente: o mesmo par é aceito de novo; outro hash na mesma posição é recusado com o motivo (regra 7, G1.b.1)
   assert.deepEqual(await w.guard.publish({ auditId: w.auditId, ledgerSeq: 5, sha256: records[4]?.contentSha256 as string }), { ok: true });
-  assert.deepEqual(await w.guard.publish({ auditId: w.auditId, ledgerSeq: 5, sha256: 'f'.repeat(64) }), { ok: false });
+  assert.deepEqual(await w.guard.publish({ auditId: w.auditId, ledgerSeq: 5, sha256: 'f'.repeat(64) }), { ok: false, reason: 'CONFLICT' });
 });
 
 test('LIMITE DECLARADO (travado em teste): SEM guarda externa, o rollback COORDENADO de decisões + recibos + livro a um instante anterior NÃO é detectado — a revogação some e a decisão volta a valer', async () => {
@@ -90,7 +90,7 @@ test('guarda INDISPONÍVEL: leitura NÃO resolvida (nunca "sem guarda"), escrita
   // a publicação falha DEPOIS do CONFIRMED: a operação é válida e a guarda fica atrasada
   let failPublish = false;
   const flaky = {
-    publish: async (record: { auditId: string; ledgerSeq: number; sha256: string }) => (failPublish && record.ledgerSeq > 1 ? { ok: false } : w.guard.publish(record)),
+    publish: async (record: { auditId: string; ledgerSeq: number; sha256: string }) => (failPublish && record.ledgerSeq > 1 ? { ok: false as const, reason: 'UNAVAILABLE' as const } : w.guard.publish(record)),
     latest: (auditId: string) => w.guard.latest(auditId),
   };
   const service = withGuard(w, flaky);
@@ -108,9 +108,9 @@ test('guarda INDISPONÍVEL: leitura NÃO resolvida (nunca "sem guarda"), escrita
 test('o adaptador sintético é só de teste: recusa auditId inválido, pasta inexistente e pasta da guarda que não é diretório comum', async () => {
   const guard = createSyntheticGuard({ dir: path.join(tmpDir('lad-g-'), 'nao-existe') });
   assert.deepEqual(await guard.latest('auditoria-guarda-01'), { ok: false });
-  assert.deepEqual(await guard.publish({ auditId: 'auditoria-guarda-01', ledgerSeq: 1, sha256: 'a'.repeat(64) }), { ok: false });
+  assert.deepEqual(await guard.publish({ auditId: 'auditoria-guarda-01', ledgerSeq: 1, sha256: 'a'.repeat(64) }), { ok: false, reason: 'UNAVAILABLE' });
   const real = createSyntheticGuard({ dir: tmpDir('lad-g-'), fs: nodeFsOps });
   assert.deepEqual(await real.latest('../fora'), { ok: false });
-  assert.deepEqual(await real.publish({ auditId: 'auditoria-guarda-01', ledgerSeq: 1, sha256: 'curto' }), { ok: false });
+  assert.deepEqual(await real.publish({ auditId: 'auditoria-guarda-01', ledgerSeq: 1, sha256: 'curto' }), { ok: false, reason: 'UNAVAILABLE' });
   assert.deepEqual(await real.latest('auditoria-guarda-01'), { ok: true, head: null });
 });

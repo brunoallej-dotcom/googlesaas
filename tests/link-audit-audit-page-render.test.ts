@@ -562,6 +562,9 @@ test('livro: cada estado tem o SEU aviso; fora de PROTECTED o modo é restrito e
     ['UNAVAILABLE', /não pôde ser lido/],
     ['LEDGER_REMOVED_WITNESSED', /sumiu, mas resultados ou a guarda externa provam/],
     ['RECEIPT_REMOVED', /o autor pode reemitir o recibo/],
+    // G1.b.1: regras 2 e 3 da guarda externa
+    ['GUARD_HEAD_MISSING', /nenhuma cabeça publicada desta auditoria/],
+    ['GUARD_LAGGING', /atrasada além do limite aceito/],
   ];
   for (const [reason, pattern] of reasons) {
     const html = panel(ledgerInfo({ state: 'HISTORY_UNRESOLVED', reason, head: null, confirmedDecisions: 0 }));
