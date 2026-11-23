@@ -12,9 +12,9 @@ Atualizado em 16/10/2026. **Resultado: RECUPERAÇÃO VALIDADA (32 de 32 verifica
 ## Resultado
 | Auditoria | Estado | Battlefield | Score Juiz histórico (gravado = mostrado) | Relatório recomposto | PDF oficial servido |
 |---|---|---|---|---|---|
-| 4323da26 Goyaz Barbearia | COMPLETED | 49 pontos | **65,1%** = 65,1% | 11 páginas | do disco (13.517 B) |
-| 312ebf57 Clínica de Estética Dra. Rayane | COMPLETED | 49 pontos | **59,7%** = 59,7% | 11 páginas | do disco (13.451 B) |
-| 859b4021 Dra. Anna Vitória | COMPLETED | 49 pontos | **56,4%** = 56,4% | 12 páginas | do disco (**271.346 B**, versão oficial com mapa) |
+| 4323da26 <CLIENTE_D> | COMPLETED | 49 pontos | **65,1%** = 65,1% | 11 páginas | do disco (13.517 B) |
+| 312ebf57 <CLIENTE_E> | COMPLETED | 49 pontos | **59,7%** = 59,7% | 11 páginas | do disco (13.451 B) |
+| 859b4021 <CLIENTE_F> | COMPLETED | 49 pontos | **56,4%** = 56,4% | 12 páginas | do disco (**271.346 B**, versão oficial com mapa) |
 | 12b63268, fffc69aa, 5b986fa4 (15/10) | FAILED ("Invalid URL") | sem dados | n/d | n/d | n/d |
 
 - **Integridade:** 8 conjuntos (5 tabelas + 3 PDFs) com hash idêntico antes e depois.

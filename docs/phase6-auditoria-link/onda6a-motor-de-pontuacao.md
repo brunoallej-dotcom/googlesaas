@@ -1,6 +1,6 @@
 # Fase 6 · Onda 6A — Motor de pontuação da metodologia Lumos reconstruída
 
-Status: implementada em 22/10/2026. Régua `regua-d3b-r2` homologada (D3B-1 a D3B-16, com as condições da D3B §0.1). **Módulo puro e ainda não conectado** a interface, armazenamento, PDF, coleta ou qualquer rota. **Nenhuma chamada a Serper/Google/sites, nenhum crédito, nenhuma IA, nenhuma migration; `.env.local`, Supabase, Redis, Worker, prospecção, Juiz e a captura da TUVAPLAST não foram tocados.**
+Status: implementada em 22/10/2026. Régua `regua-d3b-r2` homologada (D3B-1 a D3B-16, com as condições da D3B §0.1). **Módulo puro e ainda não conectado** a interface, armazenamento, PDF, coleta ou qualquer rota. **Nenhuma chamada a Serper/Google/sites, nenhum crédito, nenhuma IA, nenhuma migration; `.env.local`, Supabase, Redis, Worker, prospecção, Juiz e a captura da AUD-001 não foram tocados.**
 
 > **Esta é uma metodologia reconstruída pelo projeto GMN** (`methodologyVersion = lumos-reconstruida-v1`, `scoreModelVersion = regua-d3b-r2`). Não é o agente original recuperado e não garante comportamento idêntico a ele. O resultado do motor sempre traz o aviso "O Índice Lumos não é uma nota oficial do Google" e o aviso de metodologia reconstruída.
 
@@ -9,14 +9,14 @@ A D3B foi atualizada com as decisões finais, sem contradição essencial penden
 - **D3B-8 (X5):** UTM ausente comprovado na URL do website do perfil = 0, *exclusivamente* porque o subcritério avalia o uso de UTM; nunca se conclui "sem rastreamento". URL não verificada = Não verificado.
 - **D3B-15:** só conta como "critério avaliado" o que tem **≥ 3 pontos possíveis efetivamente avaliados** (os obtidos podem ser 0), para o requisito de 3 critérios incluindo NAP ou Avaliações.
 - **Escopo de site:** `SITEMAP_COMPLETE` **não basta sozinho**; ausência/faixa intermediária só com escopo documentado (`SITEMAP_COMPLETE` ou `DOCUMENTED_FULL_REVIEW`) **mais** atestado do operador; senão Não verificado.
-- **PDFs históricos (correção):** a afirmação "todos os outros PDFs tinham cobertura ≥ 52 %" estava errada. O relatório da Estética Daniele Cardoso de 21/10/2026 tem **cobertura de 11 %** (base 7/11, índice 64 "provisório"); a VRA tem 26 %. A regra atual (mínimo de 40 %, 3 critérios com ≥ 3 pontos, NAP ou Avaliações) é uma escolha conservadora da versão reconstruída (D3B §6.2, §8.1).
+- **PDFs históricos (correção):** a afirmação "todos os outros PDFs tinham cobertura ≥ 52 %" estava errada. O relatório da <CLIENTE_B> de 21/10/2026 tem **cobertura de 11 %** (base 7/11, índice 64 "provisório"); a VRA tem 26 %. A regra atual (mínimo de 40 %, 3 critérios com ≥ 3 pontos, NAP ou Avaliações) é uma escolha conservadora da versão reconstruída (D3B §6.2, §8.1).
 - **Confirmação humana:** contrato aprovado; armazenamento definitivo só na Onda 6B.
 
 ## 2. Arquivos
 **Criados** — `src/lib/link-audit/scoring/` (26 arquivos): `versions.ts`, `math.ts`, `dates.ts`, `types.ts`, `ruler.ts`, `input.ts`, `tiers.ts`, `context.ts`, `results.ts`, `nap-compare.ts`, `eval-common.ts`, `eval-profile.ts`, `eval-reputation.ts`, `eval-visuals-posts.ts`, `eval-site.ts`, `eval-conversion.ts`, `eval-authority.ts`, `na.ts`, `aggregate.ts`, `publication.ts`, `confidence.ts`, `report-text.ts`, `fingerprint.ts`, `integrity.ts`, `engine.ts`, `index.ts`.
 Testes — `tests/link-audit-scoring-{ruler,subcriteria,engine,publication,isolation}.test.ts` (91 testes) e `tests/helpers/link-audit-scoring-fixtures.ts` (fixtures fictícias).
 **Modificados** — `package.json` (somente a lista de arquivos do script `test`); `tests/link-audit-isolation.test.ts` (lista de arquivos do módulo e o antigo teste "sem pontuação (D3 pendente)", que agora permite pontuação **somente** em `scoring/` e proíbe `Math.round`/`toFixed`/`parseFloat` ali; as demais garantias de isolamento foram mantidas); documentação (`D3B`, este arquivo, `E0` §24, `NOTES.md`).
-**Não modificados** — `methodology.ts`, `src/agents`, Juiz, prospecção, rotas, componentes, workers, filas, `supabase/`, `.env.local` e a captura da TUVAPLAST (conferidos por hash).
+**Não modificados** — `methodology.ts`, `src/agents`, Juiz, prospecção, rotas, componentes, workers, filas, `supabase/`, `.env.local` e a captura da AUD-001 (conferidos por hash).
 
 ## 3. Como o motor funciona
 `scoreAudit(raw, { scoreModelVersion? })` — nunca lança; devolve `{ ok: true, result }` ou `{ ok: false, issues }`.
@@ -51,12 +51,12 @@ Comando: `node --require ./tests/register-typescript.cjs --test tests/link-audit
 | Perfil com 3 avaliações, nota 4,7 (R1 e L1: amostra insuficiente; nota continua exibida) | 150/166 | 83 % | publicável, confiança Média | 90 (90.36) |
 | Fotos citadas só do site (V2 não pontua) | 194/194 | 97 % | publicável | 100 |
 | Sitemap sem atestado e 0 ofertas (S5) | 194/194 | 97 % | S5 = Não verificado (`SITE_SCOPE_LIMITED`), nunca zero | 100 |
-Aritmética do índice (`computeIndex`): 54,5/65 → **84** (83.85, fração 1090/13, Forte) · 74,5/100 → **75** (Forte) · 50,5/85 → **59** (Fraco) · 42/57 → **74** (Em desenvolvimento) · 0/40 → **0** (Crítico, índice zero válido). Cobertura exata em 39 % (indisponível), 40 %, 64 % (provisório), 65 %, 89 %, 90 % (publicável) por combinação de fatos. TUVAPLAST (captura preservada, somente leitura): 28–30 pontos avaliáveis ⇒ **índice indisponível**, nenhuma nota. X5 sem UTM: ausência comprovada (0) com a ressalva fixa "não comprova ausência de rastreamento em geral".
+Aritmética do índice (`computeIndex`): 54,5/65 → **84** (83.85, fração 1090/13, Forte) · 74,5/100 → **75** (Forte) · 50,5/85 → **59** (Fraco) · 42/57 → **74** (Em desenvolvimento) · 0/40 → **0** (Crítico, índice zero válido). Cobertura exata em 39 % (indisponível), 40 %, 64 % (provisório), 65 %, 89 %, 90 % (publicável) por combinação de fatos. AUD-001 (captura preservada, somente leitura): 28–30 pontos avaliáveis ⇒ **índice indisponível**, nenhuma nota. X5 sem UTM: ausência comprovada (0) com a ressalva fixa "não comprova ausência de rastreamento em geral".
 
 ## 6. Testes e verificações
 - Novos: **91** (régua e fronteiras de todas as faixas com oráculo independente; **todos os 35 subcritérios** em todos os estados; motor; publicação e confiança; isolamento). Total do projeto: **863/863**.
 - `npm run typecheck` e `npm run build`: sem erros. Suíte completa com captura de sockets/DNS/`fetch`: **0 tentativas externas**.
-- Hashes (SHA-256) de `src`, `tests`, `scripts`, `supabase`, `public`, `assets`, `docs`, `package.json` e `.env.local`: apenas os arquivos previstos mudaram; captura da TUVAPLAST idêntica.
+- Hashes (SHA-256) de `src`, `tests`, `scripts`, `supabase`, `public`, `assets`, `docs`, `package.json` e `.env.local`: apenas os arquivos previstos mudaram; captura da AUD-001 idêntica.
 
 ## 7. Revisão independente (subagente de contexto limpo, somente leitura)
 Escopo: segurança e matemática de todo `scoring/`, testes e a alteração no teste de isolamento. **Nenhum achado crítico.** Conferido sem problema: todas as faixas e fronteiras contra a D3B §4; aritmética inteira e arredondamento; L1/L2 (empates, mediana, amostra); gates de publicação; os 6 fatores de confiança; N/A e Amostra insuficiente; datas relativas; escopo de site e sitemap sem atestado; X5 sem vazar a URL; schema estrito (`__proto__`, ReDoS, falsos positivos); congelamento/`WeakSet`/`verifyScoreResult`; isolamento (nenhum consumidor; relaxamento só dentro de `scoring/`).

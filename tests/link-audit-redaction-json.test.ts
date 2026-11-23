@@ -3,7 +3,7 @@ import test from 'node:test';
 import { sanitizeForOutput, toSafeJson } from '../src/lib/link-audit/url-redaction';
 
 const KEY = 'serper-chave-ficticia-0123456789abcdef';
-const LINK = 'https://www.google.com/maps/place/TUVAPLAST+COMERCIO/data=!4m2!3m1!1s0x0:0x3a3245f75b61e57e';
+const LINK = 'https://www.google.com/maps/place/AUD-001+COMERCIO/data=!4m2!3m1!1s0x0:0x5b7d9e2c4a6f8e1d';
 
 function withEnvKey<T>(fn: () => T): T {
   const previous = process.env.SERPER_API_KEY;
@@ -32,16 +32,16 @@ test('o JSON continua válido com URLs, aspas, quebras de linha, Unicode e carac
 });
 
 test('link já saneado passa intacto (o segmento data=!… do Maps não é destruído)', () => {
-  const out = JSON.parse(toSafeJson({ originalLink: LINK, effectiveLink: `${LINK}?cid=4193491131727734142` })) as Record<string, string>;
+  const out = JSON.parse(toSafeJson({ originalLink: LINK, effectiveLink: `${LINK}?cid=6592599342604848669` })) as Record<string, string>;
   assert.equal(out.originalLink, LINK);
-  assert.equal(out.effectiveLink, `${LINK}?cid=4193491131727734142`);
+  assert.equal(out.effectiveLink, `${LINK}?cid=6592599342604848669`);
 });
 
 test('URLs com tokens, fragmento e credenciais são reduzidas ANTES de serializar', () => {
-  const dirty = 'https://admin:hunter2@www.exemplo.com/p?utm=1&token=ABCDEF&cid=4193491131727734142#segredo';
+  const dirty = 'https://admin:hunter2@www.exemplo.com/p?utm=1&token=ABCDEF&cid=6592599342604848669#segredo';
   const out = JSON.parse(toSafeJson({ u: dirty })) as { u: string };
   assert.ok(!/hunter2|ABCDEF|segredo|utm=1|admin/.test(out.u), out.u);
-  assert.ok(out.u.includes('cid=4193491131727734142'), 'o identificador é preservado');
+  assert.ok(out.u.includes('cid=6592599342604848669'), 'o identificador é preservado');
 });
 
 test('chaves sensíveis têm o valor trocado e o valor literal do ambiente nunca vaza', () => {
@@ -72,8 +72,8 @@ test('o marcador "<não exibida>" não é mutilado e padrões de segredo em text
 test('tipos especiais: bigint vira texto, NaN/Infinity viram null, undefined some, listas longas não são truncadas, __proto__ é inofensivo', () => {
   const longList = Array.from({ length: 120 }, (_, i) => `item ${i}`);
   const hostile = JSON.parse('{"__proto__":{"polluted":true},"normal":1}') as unknown;
-  const out = JSON.parse(toSafeJson({ big: 4193491131727734142n, nan: Number.NaN, inf: Number.POSITIVE_INFINITY, nada: undefined, longList, hostile })) as Record<string, unknown>;
-  assert.equal(out.big, '4193491131727734142');
+  const out = JSON.parse(toSafeJson({ big: 6592599342604848669n, nan: Number.NaN, inf: Number.POSITIVE_INFINITY, nada: undefined, longList, hostile })) as Record<string, unknown>;
+  assert.equal(out.big, '6592599342604848669');
   assert.equal(out.nan, null);
   assert.equal(out.inf, null);
   assert.ok(!('nada' in out));

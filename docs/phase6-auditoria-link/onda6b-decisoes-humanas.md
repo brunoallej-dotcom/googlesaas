@@ -76,7 +76,7 @@ Decisões podem citar evidência (N/A `FEATURE_UNAVAILABLE` e confirmação de i
 |---|---|
 | `capture:c0001` | `c0001.capture.json` |
 | `report:c0001-r0001` | `c0001.report-r0001.json` |
-Todos cabem no formato de id do contrato da 6A (`[A-Za-z0-9_.:-]{1,64}`). No layout **legado** (TUVAPLAST) o leitor expõe a captura 1 e as revisões 1 e 2; um teste somente-leitura confirma `capture:c0001` e `report:c0001-r0002` na captura real. `site:c0001` (`c0001.site.json`) **é recusado**: a API pública do leitor não permite confirmar que o arquivo existe. Formato inválido → 400 `INVALID_EVIDENCE_REFERENCE`; inexistente → 409 `EVIDENCE_REFERENCE_NOT_FOUND`. Coleta com integridade `MISMATCH`/`CORRUPT` não aceita decisões novas (409 `EVIDENCE_INTEGRITY`).
+Todos cabem no formato de id do contrato da 6A (`[A-Za-z0-9_.:-]{1,64}`). No layout **legado** (AUD-001) o leitor expõe a captura 1 e as revisões 1 e 2; um teste somente-leitura confirma `capture:c0001` e `report:c0001-r0002` na captura real. `site:c0001` (`c0001.site.json`) **é recusado**: a API pública do leitor não permite confirmar que o arquivo existe. Formato inválido → 400 `INVALID_EVIDENCE_REFERENCE`; inexistente → 409 `EVIDENCE_REFERENCE_NOT_FOUND`. Coleta com integridade `MISMATCH`/`CORRUPT` não aceita decisões novas (409 `EVIDENCE_INTEGRITY`).
 
 ## 9. Compatibilidade com a 6A
 O conjunto vigente (mais o candidato) é validado com `parseScoringInput` dentro de uma entrada mínima. Recusas da 6A (valor de juízo inválido, P3 sem amostra, N/A derivado dos fatos, N/A em subcritério que a causa não cobre, `FEATURE_UNAVAILABLE` sem evidência, subcritério repetido, atestado/observação para subcritério indevido, imagens repetidas ou sem evidência) viram **400 `CONTRACT_REJECTED`** com a mensagem da própria 6A.

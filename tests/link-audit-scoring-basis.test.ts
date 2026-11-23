@@ -11,7 +11,7 @@ import { nodeFsOps, type FsOps } from '../src/lib/link-audit/snapshot-store';
 import { CID_OTHER, clock, FID_OTHER, LINK, PLACE, PLACE_ID, T_NOW } from './helpers/link-audit-collect-fixtures';
 import { AUDIT, bodyText, captureInput, CID, COLLECTED_AT, errno, faulty, FID, registerCleanup, REQUEST_URL, SENTINEL, tmpDir, writeFull } from './helpers/link-audit-evidence-fixtures';
 
-/* Dados 100% FICTÍCIOS. A pasta real da TUVAPLAST nunca é lida: o layout legado é uma RÉPLICA gerada aqui. */
+/* Dados 100% FICTÍCIOS. A pasta real da AUD-001 nunca é lida: o layout legado é uma RÉPLICA gerada aqui. */
 registerCleanup();
 
 const OPERATOR: EvidenceActor = { email: 'ana@empresa.com' };

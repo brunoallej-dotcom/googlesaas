@@ -5,7 +5,7 @@
 # Revisão adversarial independente nº 6 — Livro de cabeças (Onda 6C)
 
 Revisor: agente independente (sem acesso a rede, VPS, Redis, Supabase, Serper, `.env*`). Snapshot revisado: `$R/proj` (congelado; `src/` não foi alterado — `diff -rq proj/src mut/src` idêntico depois das mutações).
-`$R` = `/tmp/claude-1000/-mnt-d-gmn-intelligence-platform-corrigido-gmn-intelligence-platform/dc0f56dc-9cae-4e32-bb13-6423658e8862/scratchpad/review-r6`.
+`$R` = `<SCRATCHPAD_DA_REVISAO>/dc0f56dc-9cae-4e32-bb13-6423658e8862/scratchpad/review-r6`.
 Meus testes: `$R/proj/tests/zz-rv6-*.test.ts` (+ `$R/proj/tests/helpers/zz-rv6-child.ts`). Rodar: `cd $R/proj && node --require ./tests/register-typescript.cjs --test tests/zz-rv6-X.test.ts`.
 Mutações: cópia em `$R/mut` (script `$R/mutate.py`; logs `$R/mutation-run1.log` e `$R/mutation-run2.log`).
 

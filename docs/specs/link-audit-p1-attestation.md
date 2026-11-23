@@ -19,13 +19,13 @@ A assinatura vale exatamente o que vale a conferência humana feita antes dela (
 
 - **P2** (serviço de atestação dedicado) e **P3** (coletor assina): não recomendados agora (ADR 6C-03 §7).
 - **Qualquer alteração do coletor**, do formato das capturas, de `stack.yml`, `docker-entrypoint.sh` ou dos volumes de produção. O hash da captura vem do modo `--json` **já existente** do coletor (§5.3, decisão de 16/11). O volume (novo, somente leitura para o web) da pasta de manifestos é a fase 2 do ADR, documento de implantação à parte.
-- **Atestar legado** (capturas anteriores ao layout versionado, ex.: TUVAPLAST): **NÃO ATESTÁVEL** (decisão de 16/11). `sign` recusa qualquer pacote com item legado. Um eventual fluxo de "fonte independente" seria spec futura com os critérios de RS-08 (§16).
+- **Atestar legado** (capturas anteriores ao layout versionado, ex.: AUD-001): **NÃO ATESTÁVEL** (decisão de 16/11). `sign` recusa qualquer pacote com item legado. Um eventual fluxo de "fonte independente" seria spec futura com os critérios de RS-08 (§16).
 - **Campo `entries[].source`** no manifesto (RS-10, terceira parte): não adotado (§16).
 - **Aprovação criptograficamente assinada** pelo conferente com segundo par de chaves (RS-03): **não adotada** nesta versão (§16; segue aberta, §13.2).
 - **Comando automático de conferência do livro de manifestos**, exposição do fingerprint da lista de chaves e alerta de regressão de autenticação no servidor (RS-17..RS-19): ficam como procedimento humano (W5) ou em outra spec (observabilidade).
 - **Ferramenta de reassinatura** de registros antigos (proibida pelo runbook de chaves §3/§5) e **qualquer atestação automática**.
 - Geração do par de chaves (máquina limpa, offline, pelo custodiante; só a pública sai), rotação e backup (runbook de chaves §4; custódia no contrato §2).
-- Chamadas a Serper, Google, Supabase, Redis, VPS ou qualquer rede. A coleta LIVE nova da TUVAPLAST (W6) é **fora do escopo de código** e depende de autorização escrita específica.
+- Chamadas a Serper, Google, Supabase, Redis, VPS ou qualquer rede. A coleta LIVE nova da AUD-001 (W6) é **fora do escopo de código** e depende de autorização escrita específica.
 - Conferência da procedência em si (contrato §4): é **processo humano**; o comando apenas **executa o que é mecanizável**, **exige e registra** o resto (§9).
 - Alterar `scoring-basis`, o leitor ou a rota de finalização. (O **verificador** só muda na W3, de forma aditiva.)
 
@@ -738,7 +738,7 @@ Adicionais:
 
 - **Já atestada que sumiu ou mudou:** recusa (a). Capturas/relatórios novos entram; o resto permanece idêntico.
 - **Pacote aprovado ≠ pacote a assinar:** recusa (c) (hash dos bytes lidos uma vez).
-- **Legado (TUVAPLAST): NÃO ATESTÁVEL** (decisão de 16/11). Permanece consultável e rotulado; **nunca finalizável**. `export` ainda serve como relatório (`attestable: false`); `sign` recusa. **Quando o P1 existir, fazer coleta LIVE nova** (W6) em vez de atestar o legado; premissa a confirmar na autorização: a nova coleta usa **`auditId` novo**, senão a pasta conteria legado e o pacote seria recusado.
+- **Legado (AUD-001): NÃO ATESTÁVEL** (decisão de 16/11). Permanece consultável e rotulado; **nunca finalizável**. `export` ainda serve como relatório (`attestable: false`); `sign` recusa. **Quando o P1 existir, fazer coleta LIVE nova** (W6) em vez de atestar o legado; premissa a confirmar na autorização: a nova coleta usa **`auditId` novo**, senão a pasta conteria legado e o pacote seria recusado.
 - **Pacote misto (legado + novo):** `attestable = false`; recusado.
 - **Symlink / FIFO / arquivo grande:** o leitor existente recusa; o comando traduz em `EXPORT_INTEGRITY_NOT_OK`/`EXPORT_NOT_FOUND` e **não adiciona** leitura própria.
 - **Captura sem hash registrado do coletor** (coletada antes do procedimento, ou sem `--json`): não atestável (RS-05, fail-closed); coletar de novo.
@@ -809,7 +809,7 @@ CLI offline, sem métricas nem alertas. Saída estável e testável: `--json` co
 ## 12. Rollout, compatibilidade e reversão
 
 - Sem feature flag: **opt-in**. Nenhum arquivo existente é reescrito; formatos novos: `v2` do manifesto (aditivo no verificador, W3), pacote e aprovação (fora do repositório).
-- Compatibilidade: capturas existentes inalteradas; o legado TUVAPLAST permanece não finalizável. A finalização continua fechada até existir manifesto + chave de confiança + volume de manifestos (fase 2 do ADR) + verificador `v2` implantado.
+- Compatibilidade: capturas existentes inalteradas; o legado AUD-001 permanece não finalizável. A finalização continua fechada até existir manifesto + chave de confiança + volume de manifestos (fase 2 do ADR) + verificador `v2` implantado.
 - Reversão: remover a chave pública da lista de confiança volta à política fechada (runbook §4).
 
 ## 13. Decisões registradas e questões abertas
@@ -820,7 +820,7 @@ CLI offline, sem métricas nem alertas. Saída estável e testável: `--json` co
 |---|---|---|
 | D1 | **Manifesto `v2` ANTES do primeiro resultado de produção**, com `dossier.sha256` e `prevSealSha256` na parte assinada (RS-10). Exige mudança aditiva no verificador (aceitar `v2`, conferir continuidade com o antecessor), **onda própria e contrato próprio**; o `v1` continua legível | §1, §5.1, §5.5, §5.6, §7.1, §14 (W3), IA-21 |
 | D2 | **Comando de exportação entregue ANTES do de assinatura** (ondas separadas) | §1, §14 (W2 antes de W4) |
-| D3 | **TUVAPLAST (legado): NÃO ATESTÁVEL.** Quando o P1 existir, **coleta LIVE nova** (autorização escrita específica; ~3 créditos Serper) em vez de atestar o legado | §2, §7.2, §14 (W6), IA-01(b) |
+| D3 | **AUD-001 (legado): NÃO ATESTÁVEL.** Quando o P1 existir, **coleta LIVE nova** (autorização escrita específica; ~3 créditos Serper) em vez de atestar o legado | §2, §7.2, §14 (W6), IA-01(b) |
 | D4 | **Separação de papéis:** conferente ≠ custodiante como regra padrão; se só uma pessoa operar, exige **aceite formal e escrito do risco** e **revisão posterior** dos dossiês | §5.4, §5.5 passo 9, IA-16 |
 | D5 | **Custódia:** preferência por token de hardware com Ed25519 puro (compatível com `crypto.verify(null, …)`, RS-15); na falta, PKCS#8 cifrado com frase-senha digitada no terminal sem eco. A chave nunca entra por argv, variável de ambiente, log ou arquivo temporário | §8, IA-04, IA-15, IA-22 |
 | D6 | **Hash da coleta via `--json`, sem mudar o coletor** | §3, §5.3, IA-19 |
@@ -864,7 +864,7 @@ O responsável delegou as decisões da W5 ao manager ("W5: pode decidir por mim 
 | D15.5 | **Quem escreve no volume de manifestos (§13.2 item 3; D7).** Só o canal de entrega pelo CI. O servidor confere a assinatura contra a lista de chaves fixada antes de aceitar, e não há cópia manual. Limite declarado e mantido: o administrador da VPS, que também edita a lista de chaves, continua fora da garantia (§1). Os detalhes do canal fecham na W5. |
 | D15.6 | **§13.3 e a pergunta da W4.1.** (a) A aprovação assinada pelo conferente com um segundo par de chaves (RS-03) **não é adotada agora**: sem segunda pessoa, não acrescenta nada. Volta à mesa quando houver conferente distinto. (b) **Dossiês:** arquivados offline junto do livro de manifestos enquanto o resultado existir. Revisão amostral trimestral (um dossiê ou 10 %, o que for maior), registrada no livro; sem segunda pessoa, a revisão é do próprio titular e fica marcada. (c) **`operator = conferente`:** continua só marcando `requiresLaterReview`, sem bloquear; o aceite formal da D15.1 cobre o acúmulo. (d) **`operator = custodiante`:** passa a marcar `requiresLaterReview: true` (mudança de código na W5). (e) **`entries[].source`:** continua fora (toda entrada é `LIVE`; incluir depois exige `v3`). |
 | D15.7 | **Continua com o responsável (não delegável):** a cerimônia da chave real (gerar e guardar), a assinatura do aceite formal de risco, os locais físicos das cópias e todo deploy de produção. O ensaio da W5 usa **chave descartável** em homologação. |
-| D16 | **W6 autorizada** pelo responsável em 20/11/2026: **uma** coleta LIVE nova da TUVAPLAST, no escopo da linha da W6 no plano (estimativa de cerca de 3 créditos Serper; nenhuma outra consulta paga). Ela **só roda depois do ensaio da W5 aprovado**, porque depende dele. A consulta usa a chave do Serper do ambiente de dev, que o manager não lê: o responsável executa o comando preparado no runbook. A atestação da coleta usa a chave real, na cerimônia (D15.7). |
+| D16 | **W6 autorizada** pelo responsável em 20/11/2026: **uma** coleta LIVE nova da AUD-001, no escopo da linha da W6 no plano (estimativa de cerca de 3 créditos Serper; nenhuma outra consulta paga). Ela **só roda depois do ensaio da W5 aprovado**, porque depende dele. A consulta usa a chave do Serper do ambiente de dev, que o manager não lê: o responsável executa o comando preparado no runbook. A atestação da coleta usa a chave real, na cerimônia (D15.7). |
 
 ## 14. Fatiamento em ondas
 
@@ -878,7 +878,7 @@ O responsável delegou as decisões da W5 ao manager ("W5: pode decidir por mim 
 | **W3** | **Verificador `v2`** (aditivo em `provenance.ts`) + **contrato próprio** (novo documento em `docs/phase6-auditoria-link/`, a aprovar **antes** do código): `v2`, `prevSealSha256`, `dossier`, continuidade/cumulatividade, anti-rebaixamento, assinatura externa para K2, vetor-ouro | W0 | Deve estar **implantado** antes de qualquer `v2` ser entregue. IA-21, IA-03 (parte do vetor-ouro), RS-20 |
 | **W4** | **Assinatura:** núcleo de recusas com chave de teste em memória; depois entrada da chave (K2 e/ou K1), confirmação humana, autoteste, recibo, artefato empacotado | W1, W3, §13.2 (dispositivo) | IA-01, IA-03, IA-04, IA-06, IA-07, IA-08, IA-11, IA-12, IA-15, IA-16, IA-18, IA-22, IA-23, IA-24 |
 | **W5** | **Procedimento e dossiê:** runbook do custodiante/conferente, modelo de dossiê (partes A e B), livro de manifestos e conferência periódica, procedimento do suplente; **ensaio ponta a ponta** em homologação com chave descartável (depende da fase 2 do ADR, volume de manifestos) | W4 | Documentação + ensaio; não toca produção |
-| **W6** | **Coleta LIVE nova da TUVAPLAST** (fora do escopo de código) | W5 e **autorização escrita específica** do responsável (~3 créditos Serper; sem consulta paga sem autorização, CLAUDE.md) | Registrar o hash `--json` em canal separado; seguir §3 e §5.3 |
+| **W6** | **Coleta LIVE nova da AUD-001** (fora do escopo de código) | W5 e **autorização escrita específica** do responsável (~3 créditos Serper; sem consulta paga sem autorização, CLAUDE.md) | Registrar o hash `--json` em canal separado; seguir §3 e §5.3 |
 
 ## 15. Referências
 
@@ -886,7 +886,7 @@ O responsável delegou as decisões da W5 ao manager ("W5: pode decidir por mim 
 - ADR 6C-03: `docs/phase6-auditoria-link/onda6c-adr-proveniencia-evidencias.md` (§4 verificador, §6 legado, §7 plano e fases).
 - Runbook de chaves: `docs/phase6-auditoria-link/onda6c-runbook-chaves.md` (§4 chave de atestação).
 - Código reutilizado: `src/lib/link-audit-evidence/provenance.ts`, `scoring-basis.ts`, `reader.ts`, `legacy.ts`, `store.ts`, `types.ts`; `src/lib/link-audit-scoring-runs/preview.ts`; `src/lib/link-audit/canonical.ts`; `src/lib/link-audit/collector/capture-report.ts` (`source.capture.sha256`); `scripts/link-audit-collect.ts` (modo `--json`); padrão de CLI em `scripts/link-audit-evidence.ts`.
-- Layout das evidências e legado TUVAPLAST: `docs/phase6-auditoria-link/onda5a-persistencia-e-leitura.md`, `onda4d-pos-live-resgate.md`.
+- Layout das evidências e legado AUD-001: `docs/phase6-auditoria-link/onda5a-persistencia-e-leitura.md`, `onda4d-pos-live-resgate.md`.
 - Modelo de ameaças do P1: `docs/security/threats/link-audit-p1-atestacao.md`.
 
 ## 16. Rastreabilidade: requisitos de segurança (modelo de ameaças) → esta spec

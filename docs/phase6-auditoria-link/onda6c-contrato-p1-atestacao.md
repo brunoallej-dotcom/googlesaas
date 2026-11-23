@@ -84,6 +84,6 @@ O coletor, o formato das capturas, `stack.yml`, `docker-entrypoint.sh` e os volu
 
 1. Quem são o custodiante titular e o suplente? Que dispositivo (token de hardware, HSM, meio criptografado)? — **Respondida (W0): regra na D10, dispositivo na D11; nomes no runbook da W5.**
 2. O conferente pode ser a mesma pessoa que opera a coleta, ou exige-se pessoa distinta? — **Parcial: a D4 trata conferente ≠ custodiante; o acúmulo operador/conferente gera `requiresLaterReview` (spec §13.3, a confirmar).**
-3. Para o **legado real** (a coleta da TUVAPLAST): existe backup anterior independente ou registro externo? Se não, aceita-se que permaneça **NÃO ATESTÁVEL**? — **Respondida (D3): NÃO ATESTÁVEL; coleta LIVE nova sob autorização escrita específica (onda W6).**
+3. Para o **legado real** (a coleta da AUD-001): existe backup anterior independente ou registro externo? Se não, aceita-se que permaneça **NÃO ATESTÁVEL**? — **Respondida (D3): NÃO ATESTÁVEL; coleta LIVE nova sob autorização escrita específica (onda W6).**
 4. A `v2` do manifesto (hash do dossiê dentro da parte assinada) deve entrar antes do primeiro resultado de produção? — **Respondida (D1): sim.**
 5. Aprova que o comando de exportação do candidato seja entregue **antes** do comando de assinatura (fases separadas)? — **Respondida (D2): sim.**

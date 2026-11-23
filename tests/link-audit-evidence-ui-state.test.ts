@@ -48,15 +48,15 @@ test('trocar de empresa descarta o detalhe anterior; reabrir a mesma (versão) m
 
 test('filtro local: sem acento, sem caixa, por empresa, cidade, UF e CID; consulta limitada a 120 caracteres', () => {
   const items = [
-    listItem({ auditId: 'auditoria-a-0001', companyName: 'TUVAPLAST COMÉRCIO', city: 'Mogi Guaçu', stateCode: 'SP', confirmedCid: '4193491131727734142' }),
+    listItem({ auditId: 'auditoria-a-0001', companyName: 'AUD-001 COMÉRCIO', city: 'Cidade Fictícia Açu', stateCode: 'SP', confirmedCid: '6592599342604848669' }),
     listItem({ auditId: 'auditoria-b-0002', companyName: 'Padaria Exemplo', city: 'Goiânia', stateCode: 'GO', confirmedCid: null }),
   ];
   assert.equal(filterAudits(items, '').length, 2);
   assert.equal(filterAudits(items, '   ').length, 2);
-  assert.deepEqual(filterAudits(items, 'tuvaplast comercio').map((i) => i.auditId), ['auditoria-a-0001']);
-  assert.deepEqual(filterAudits(items, 'MOGI GUACU').map((i) => i.auditId), ['auditoria-a-0001']);
+  assert.deepEqual(filterAudits(items, 'aud-001 comercio').map((i) => i.auditId), ['auditoria-a-0001']);
+  assert.deepEqual(filterAudits(items, 'CIDADE FICTICIA ACU').map((i) => i.auditId), ['auditoria-a-0001']);
   assert.deepEqual(filterAudits(items, 'goiania').map((i) => i.auditId), ['auditoria-b-0002']);
-  assert.deepEqual(filterAudits(items, '4193491').map((i) => i.auditId), ['auditoria-a-0001']);
+  assert.deepEqual(filterAudits(items, '6592599').map((i) => i.auditId), ['auditoria-a-0001']);
   assert.deepEqual(filterAudits(items, ' sp ').map((i) => i.auditId), ['auditoria-a-0001']);
   assert.equal(filterAudits(items, 'inexistente').length, 0);
   const s = evidenceReducer(initialEvidenceState, { type: 'QUERY_CHANGED', query: 'x'.repeat(500) });

@@ -1,6 +1,6 @@
 # Verificação pós-deploy (comandos somente leitura)
 
-Substitua `HOST` pelo domínio (ex.: `gmn.somosvra.com.br`). Execute após o `docker stack deploy` autorizado.
+Substitua `HOST` pelo domínio (ex.: `<DOMINIO_PRODUCAO>`). Execute após o `docker stack deploy` autorizado.
 
 ## 1. Serviços e tarefas
 ```bash
@@ -53,7 +53,7 @@ O Redis não responde de fora: `redis-cli -h IP_DA_VPS -p 6379 ping` deve falhar
 sudo ls -ld /srv/gmn/* ; sudo stat -c '%U:%G %a %n' /srv/gmn/*     # 10001:10001 700 (redis 999:1000)
 docker exec $(docker ps -q -f name=gmn_gmn-web) sh -c 'ls /data/evidence; touch /data/evidence/x 2>&1 | head -1'   # leitura ok; escrita negada (ro)
 ```
-Na interface: `/auditoria-por-link` lista `tuvaplast-20261022-maps01` com integridade OK.
+Na interface: `/auditoria-por-link` lista `aud-001-autorizacao-01` com integridade OK.
 ## 8. Saúde da aplicação (logado)
 `/api/system/health` (com sessão): Redis OK, Supabase OK, Worker "sem batimento" (esperado enquanto `replicas: 0`).
 ## 9. Custos
