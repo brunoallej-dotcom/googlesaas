@@ -71,6 +71,10 @@ api() {
 `printf` e `read` são do próprio shell (não viram processo com argumentos); o `sed` recebe a senha pela entrada padrão, só para
 escapar `\` e `:` no formato do `PGPASSFILE`.
 - Abra o registro de evidências local (fora do repositório) com a data e a versão do commit aplicado.
+- **Comando que pede senha vai sozinho** (lição do laboratório de 23/11/2026): colar junto a linha seguinte faz o `read -rs` ler essa
+  linha como senha. Cole o `pg_como` (ou o `read -rsp`) sozinho, digite a senha, e só depois a próxima linha. Máquina sem IPv6: a
+  conexão direta do Supabase só tem endereço IPv6; use o *Session pooler* (porta 5432, usuário `<papel>.<REF>`), nunca o complemento
+  pago de IPv4 sem autorização. Relatório do laboratório: `producao-g1b-relatorio-laboratorio-pg-g08.md`.
 - A sequência é a deste documento. **Pare** em qualquer `FALHOU` e anote; nada de "consertar" pelo console: correção é migração
   versionada nova, revisada.
 
