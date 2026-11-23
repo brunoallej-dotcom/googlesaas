@@ -298,7 +298,10 @@ interface (`audit-page/validators.ts`).
   3. **Além da letra (falha fechada).** (a) `VERIFIED` exige a MESMA cabeça gravada (número e hash): o verificador não diz se a cabeça gravada é
      ancestral da de hoje, então cadeia trocada por outra válida (mesma chave, mesmas entradas, outro hash) ou ESTENDIDA ⇒ `RECHECK`. Custo declarado:
      uma nova atestação que estende a cadeia (nova coleta na mesma auditoria) marca os resultados anteriores "a reconferir"; com entradas novas o
-     `classify` sobre a base gravada já daria `EVIDENCE_MISSING`. (b) A interseção usa os `keyIds` GRAVADOS e também os do `classify` de hoje: o
+     `classify` sobre a base gravada já daria `EVIDENCE_MISSING`. **Efeito permanente (revisão do PR #57):** depois de uma extensão, esses resultados
+     ficam em "A reconferir" SEM caminho de volta a `VERIFIED` enquanto a cadeia de hoje não voltar à cabeça gravada — o que, numa cadeia cumulativa
+     em uso, não acontece. Não há nesta fatia nenhum mecanismo de resolução depois da revisão humana (marcar como revisado, reatestar o resultado): a
+     marca só sai quando existir a consulta de ancestralidade no verificador (pendência futura, item 10). (b) A interseção usa os `keyIds` GRAVADOS e também os do `classify` de hoje: o
      signatário de um fecho de aposentadoria assinado DEPOIS da finalização só aparece no de hoje (contrato §6: revogado o signatário, o histórico não
      cai e a marca vem da interseção). (c) `AUTHENTICATED` do caminho v1 (sem cabeça) ⇒ `RECHECK`.
   4. **Decisão do manager (nota 12 da R2.1).** A conclusão de uma pendente NÃO passa a exigir que a cabeça gravada continue na cadeia de hoje; a
@@ -306,6 +309,10 @@ interface (`audit-page/validators.ts`).
   5. **Custo.** Memória LOCAL a cada chamada de `list`/`get` (chave = a base gravada ordenada por `ref`): mesma base ⇒ uma consulta à porta;
      consultas em SÉRIE (no máximo uma releitura de até 16 MiB por vez; até 500 resultados por listagem); o detalhe reconfere só o resultado pedido;
      nada em módulo nem no serviço, nada entre requisições (a revogação feita entre duas leituras aparece na seguinte). Limites existentes inalterados.
+     **Limite declarado (revisão do PR #57, decisão do manager: não implementar agora).** Cada base DISTINTA relê a cadeia inteira (até 16 MiB): no pior
+     caso uma listagem custa 500 bases × 16 MiB ≈ 8 GiB de leitura. Aceito só no piloto (uma auditoria, poucos resultados, operador autenticado e
+     limitado por taxa: 30 leituras por minuto). **Pendência obrigatória antes de ampliar o uso além do piloto:** classificação em lote com UMA leitura
+     da cadeia por requisição (as bases distintas conferidas contra a mesma leitura), ainda sem cache entre requisições.
   6. **Interface.** Validadores do cliente estritos (`provenanceState` obrigatório e fechado na lista e no topo do detalhe). Selo próprio "A
      reconferir" (separado de "Confirmado pelo livro"/"só por recibo" e da obsolescência), aviso de revisão humana na lista e no detalhe ("o registro
      continua íntegro e consultável"; nunca "inválido"), "Proveniência não registrada" no legado e a faixa de estado nunca diz "coerente com o estado
@@ -316,7 +323,8 @@ interface (`audit-page/validators.ts`).
      artefatos no resultado (mudança de formato): fora desta fatia; a W5 e a produção começam com auditorias novas (nota 6 da R2.1).
   8. **Testes.** Novos: `tests/link-audit-results-provenance-recheck.test.ts` (porta, veredito, verificador real com revogação + pasta apagada ou
      corrompida, `UNAUTHENTICATED` sem revogação com bytes e hash iguais, cadeia trocada/estendida, aposentada coberta, signatário do fecho revogado nas
-     duas ordens, legado v1/v2, malformado 409, erro/configuração da porta, dedupe e nenhum cache entre requisições, composição),
+     duas ordens, legado v1/v2, malformado 409, erro/configuração da porta, prova `AUTHENTICATED` fora do esquema, base gravada COMPLETA × base de hoje,
+     dedupe e nenhum cache entre requisições, composição),
      `…-recheck-route.test.ts` (rotas reais com o livro: revogar no ambiente entre leituras, lista inválida, pasta apagada) e
      `…-recheck-interface.test.ts` (validadores, tela, faixa de estado, contrato com o serviço real). Ajustes: padrão `provenanceState: 'VERIFIED'` nas
      fixtures da tela e um literal em `link-audit-audit-page-state.test.ts`. RL-29 verde; `protocol-conformance-v2.json` e o motor intactos.
@@ -326,8 +334,18 @@ interface (`audit-page/validators.ts`).
      expor `keyIds` no DTO (M6); "a reconferir" vira 409 (M7); esconder o resultado marcado (M8); erro/forma da porta (M9a), porta ausente (M9b) ou
      configuração inválida (M9c) como conferido; ignorar a cabeça gravada (M10); sem dedupe (M11); porta sem revogados (M12); `shared.ts` sem a porta
      (M13); validador do cliente leniente (M14); selo "A reconferir" sumido (M15); faixa de estado ignorando o estado (M16); detalhe sem o campo (M17).
+     **Revisão do PR #57 (`wk2`, reprovar):** BLOQUEADOR — `AUTHENTICATED` com a cabeça gravada e `keyIds: []` chegava a `VERIFIED` (a checagem era só
+     "lista de textos"). Corrigido: a prova da resposta da porta é validada com o MESMO esquema estrito do registro (`evidenceProvenanceSchema`: cabeça
+     inteira em 1..256, hash hex minúsculo de 64, `keyIds` de 1 a 16 distintos, em ordem estrita e no padrão da lista; nenhum campo extra); só `{status}`
+     (caminho v1) é "sem cabeça" ⇒ `CHAIN_CHANGED`; qualquer outra violação ⇒ `PORT_ERROR` (`RECHECK`); os `keyIds` de hoje só entram na interseção
+     quando válidos. MENOR — o teste da base passou a comparar a base COMPLETA (ref, hash e `legacy`) e a provar que a base de hoje, diferente, não é a
+     usada. Mais 5 mutações, 5 mortas: aceitar `keyIds` vazios (R1a), voltar à checagem "lista de textos" (R1b), descartar campo extra em vez de recusar
+     (R1c), base de hoje em vez da gravada na lista (R3) e no detalhe (R3b); as 22 anteriores rodadas de novo sobre o código corrigido, todas mortas.
+     Total: 27 rodadas, 27 mortas.
   10. **Fica de fora:** estado de proveniência da PENDENTE (não é resultado); diagnóstico estruturado da causa em log; gravar os artefatos do layout
-     legado; uma consulta de ancestralidade no verificador (que permitiria aceitar cadeia estendida).
+     legado; uma consulta de ancestralidade no verificador (que permitiria aceitar cadeia estendida e é o único caminho de volta a `VERIFIED` depois de
+     uma extensão, item 3); um mecanismo de resolução depois da revisão humana; a classificação em lote com leitura única da cadeia por requisição
+     (obrigatória antes de ampliar além do piloto, item 5).
 - **Goal command**: `/goal scripts/run-isolated.sh npm run typecheck && scripts/run-isolated.sh node --require ./tests/register-typescript.cjs --test tests/link-audit-results-provenance*.test.ts tests/link-audit-scoring-results-*.test.ts && git diff --quiet v1.0.1 -- src/lib/link-audit/scoring, stop after 8 tries`
 
 ## Onda W4 — Assinatura
