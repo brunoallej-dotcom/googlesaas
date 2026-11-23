@@ -18,7 +18,7 @@
 | W2 | CLI `export` (somente leitura) | W1 | W3, R1 | ✅ mergeada (PR #29) |
 | W3 | Verificador `v2` (aditivo em `provenance.ts`) + contrato próprio | W0 + contrato aprovado | W1, W2 | ✅ concluída em 19/11/2026 (W3.1–W3.5: PRs #30, #32, #33, #34, #35) |
 | R1 | ADR-0002: confirmação de resultados pelo livro de cabeças (fase C do resultado só pelo autor) | W0 (§16.17 revisada), W1, W3 | W2 | ✅ R1.1–R1.6 mergeadas (#39, #41, #45, #46, #49 e o PR da R1.6); portão da R1 satisfeito no código, nada implantado |
-| R2 | Resultado confirmado registra a proveniência que o atestou (`headSeq`, `headSealSha256`, `keyIds`); `UNAUTHENTICATED` na releitura ⇒ revisão humana | W3, R1 | W4 | 🟡 R2.1 (prova na avaliação, campo gravado e validado) neste PR; R2.2 (reconferência, porta, interface) a seguir |
+| R2 | Resultado confirmado registra a proveniência que o atestou (`headSeq`, `headSealSha256`, `keyIds`); `UNAUTHENTICATED` na releitura ⇒ revisão humana | W3, R1 | W4 | ✅ R2.1 (#55: prova na avaliação, campo gravado e validado) e R2.2 (reconferência na releitura, porta, estado e rótulos na interface) neste PR; portão da R2 satisfeito no código, nada implantado |
 | W4 | CLI `sign` (manifesto `v2`) | W1, W3, decisões §13.2 itens 1, 2 e 4 (tomadas: D10, D11, D12/D14) | — | 🟡 W4.1 (#38), W4.2 (#40), W4.3 (#42), W4.4 (#44) e W4.5 (#48) mergeadas; W4.6 em revisão |
 | W5 | Procedimento, dossiê e ensaio ponta a ponta em homologação com chave descartável | W4, R1, R2 | — | ⬜ decisões tomadas (D15, spec §13.4) |
 | W6 | Coleta LIVE nova da TUVAPLAST (fora do código) | W5 + autorização escrita específica (**dada em 20/11/2026, D16**) | — | ⬜ autorizada; roda depois do ensaio da W5 |
@@ -280,6 +280,72 @@ interface (`audit-page/validators.ts`).
      `evidenceBasis` gravado; `UNAUTHENTICATED` ⇒ "a reconferir"), a porta injetada, o estado nos DTOs e na interface e o
      rótulo do legado. Também fica para lá decidir se a conclusão de uma pendente deve exigir que a cabeça gravada continue
      na cadeia de hoje; nesta fatia ela exige só a prova v2 atual, além das conferências que já existiam.
+- **Notas da R2.2 (21–22/11/2026; decisões onde a spec era ambígua, sempre pelo lado que falha fechado):**
+  1. **Porta (domínio de evidências).** `createProvenanceRecheck({ policy, trustKeys })` em `src/lib/link-audit-evidence/provenance-recheck.ts`,
+     exportada pelo índice do módulo (a rota de pontuação só pode importar o índice, `scoring-basis` e `provenance`; a fachada `provenance.ts` tem a
+     lista fechada de exports da V2-41, por isso não mora lá). Para UMA base devolve `revokedKeyIds` (itens `revoked` da lista ATUAL; aposentada, com ou
+     sem fecho, nunca é revogada) e o `classify` ATUAL sobre a base dada. Lista ausente ou inválida ⇒ `NOT_CONFIGURED`; exceção da política ⇒
+     `UNAUTHENTICATED`. Composição em `scoring/shared.ts`: a MESMA política de produção da prévia (`[2]`; nenhuma segunda chamada de fábrica, a V2-19
+     exige uma só) e a MESMA lista, lida UMA vez por requisição; a porta é montada a cada requisição. `scoring-runs` define só o tipo estrutural
+     (`ProvenanceRecheckPort` em `results.ts`): nenhum import novo nem arquivo novo no módulo, listas fechadas da RL-29 inalteradas, sem ambiente.
+  2. **Estado calculado, nada regravado.** `provenanceState: 'VERIFIED' | 'RECHECK' | 'NOT_RECORDED'` em cada `RunSummaryDto` e no TOPO do
+     `RunDetailPayload` (como `stale`; o `run` é a projeção compartilhada com a finalização, cuja resposta não muda). Veredito puro
+     `provenanceVerdictOf` com causa INTERNA (`NOT_CONFIGURED`, `PORT_ERROR`, `KEY_REVOKED`, `UNAUTHENTICATED`, `CHAIN_CHANGED`), nunca exposta.
+     Precedência: configuração/porta, revogação, autenticação, cabeça — a revogação é dita mesmo quando a pasta sumiu (nada lido, `NO_SEAL`, residual
+     (i) do contrato §7.2). Campo ausente ⇒ `NOT_RECORDED` sem consultar a porta. Porta ausente, com erro, `NOT_CONFIGURED` ou resposta fora de forma ⇒
+     `RECHECK`, nunca `VERIFIED`. "A reconferir" nunca é 409, nunca esconde o resultado nem o detalhe; a integridade (esquema, selo, recibos, livro,
+     `verifyRunRecord`) roda ANTES e o campo malformado continua 409 sem consultar a porta (R2.1, nota 7).
+  3. **Além da letra (falha fechada).** (a) `VERIFIED` exige a MESMA cabeça gravada (número e hash): o verificador não diz se a cabeça gravada é
+     ancestral da de hoje, então cadeia trocada por outra válida (mesma chave, mesmas entradas, outro hash) ou ESTENDIDA ⇒ `RECHECK`. Custo declarado:
+     uma nova atestação que estende a cadeia (nova coleta na mesma auditoria) marca os resultados anteriores "a reconferir"; com entradas novas o
+     `classify` sobre a base gravada já daria `EVIDENCE_MISSING`. **Efeito permanente (revisão do PR #57):** depois de uma extensão, esses resultados
+     ficam em "A reconferir" SEM caminho de volta a `VERIFIED` enquanto a cadeia de hoje não voltar à cabeça gravada — o que, numa cadeia cumulativa
+     em uso, não acontece. Não há nesta fatia nenhum mecanismo de resolução depois da revisão humana (marcar como revisado, reatestar o resultado): a
+     marca só sai quando existir a consulta de ancestralidade no verificador (pendência futura, item 10). (b) A interseção usa os `keyIds` GRAVADOS e também os do `classify` de hoje: o
+     signatário de um fecho de aposentadoria assinado DEPOIS da finalização só aparece no de hoje (contrato §6: revogado o signatário, o histórico não
+     cai e a marca vem da interseção). (c) `AUTHENTICATED` do caminho v1 (sem cabeça) ⇒ `RECHECK`.
+  4. **Decisão do manager (nota 12 da R2.1).** A conclusão de uma pendente NÃO passa a exigir que a cabeça gravada continue na cadeia de hoje; a
+     releitura cobre isso (cabeça diferente ou não autenticada ⇒ "a reconferir" no resultado confirmado).
+  5. **Custo.** Memória LOCAL a cada chamada de `list`/`get` (chave = a base gravada ordenada por `ref`): mesma base ⇒ uma consulta à porta;
+     consultas em SÉRIE (no máximo uma releitura de até 16 MiB por vez; até 500 resultados por listagem); o detalhe reconfere só o resultado pedido;
+     nada em módulo nem no serviço, nada entre requisições (a revogação feita entre duas leituras aparece na seguinte). Limites existentes inalterados.
+     **Limite declarado (revisão do PR #57, decisão do manager: não implementar agora).** Cada base DISTINTA relê a cadeia inteira (até 16 MiB): no pior
+     caso uma listagem custa 500 bases × 16 MiB ≈ 8 GiB de leitura. Aceito só no piloto (uma auditoria, poucos resultados, operador autenticado e
+     limitado por taxa: 30 leituras por minuto). **Pendência obrigatória antes de ampliar o uso além do piloto:** classificação em lote com UMA leitura
+     da cadeia por requisição (as bases distintas conferidas contra a mesma leitura), ainda sem cache entre requisições.
+  6. **Interface.** Validadores do cliente estritos (`provenanceState` obrigatório e fechado na lista e no topo do detalhe). Selo próprio "A
+     reconferir" (separado de "Confirmado pelo livro"/"só por recibo" e da obsolescência), aviso de revisão humana na lista e no detalhe ("o registro
+     continua íntegro e consultável"; nunca "inválido"), "Proveniência não registrada" no legado e a faixa de estado nunca diz "coerente com o estado
+     atual" para o último "a reconferir". Nenhum id de chave nem hash da proveniência em DTO, mensagem, tela ou log (`results.ts` não registra log).
+  7. **Limitação declarada (layout LEGADO).** O artefato `legacy-status:c0001` (status do provedor no layout legado) entra no manifesto mas não no
+     `evidenceBasis` gravado (o esquema do registro não o aceita); o `classify` sobre a base gravada dá `EVIDENCE_MISSING` e um resultado de layout
+     legado com esse artefato fica sempre "a reconferir" (falso positivo, lado fechado). O layout versionado não tem artefatos. Corrigir exige gravar os
+     artefatos no resultado (mudança de formato): fora desta fatia; a W5 e a produção começam com auditorias novas (nota 6 da R2.1).
+  8. **Testes.** Novos: `tests/link-audit-results-provenance-recheck.test.ts` (porta, veredito, verificador real com revogação + pasta apagada ou
+     corrompida, `UNAUTHENTICATED` sem revogação com bytes e hash iguais, cadeia trocada/estendida, aposentada coberta, signatário do fecho revogado nas
+     duas ordens, legado v1/v2, malformado 409, erro/configuração da porta, prova `AUTHENTICATED` fora do esquema, base gravada COMPLETA × base de hoje,
+     dedupe e nenhum cache entre requisições, composição),
+     `…-recheck-route.test.ts` (rotas reais com o livro: revogar no ambiente entre leituras, lista inválida, pasta apagada) e
+     `…-recheck-interface.test.ts` (validadores, tela, faixa de estado, contrato com o serviço real). Ajustes: padrão `provenanceState: 'VERIFIED'` nas
+     fixtures da tela e um literal em `link-audit-audit-page-state.test.ts`. RL-29 verde; `protocol-conformance-v2.json` e o motor intactos.
+  9. **Mutações** (manuais, cada uma desfeita com `git checkout`): **22 rodadas, 22 mortas, nenhuma equivalente.** Ignorar a interseção quando a
+     pasta sumiu (M1); ignorar `UNAUTHENTICATED` (M2a, linha removida) ou tratá-lo como conferido (M2b); aposentada coberta como revogada (M3); não
+     marcar o signatário do fecho revogado — só `keyIds` gravados (M4a) ou interseção só quando o `classify` falha (M4b); cache entre requisições (M5);
+     expor `keyIds` no DTO (M6); "a reconferir" vira 409 (M7); esconder o resultado marcado (M8); erro/forma da porta (M9a), porta ausente (M9b) ou
+     configuração inválida (M9c) como conferido; ignorar a cabeça gravada (M10); sem dedupe (M11); porta sem revogados (M12); `shared.ts` sem a porta
+     (M13); validador do cliente leniente (M14); selo "A reconferir" sumido (M15); faixa de estado ignorando o estado (M16); detalhe sem o campo (M17).
+     **Revisão do PR #57 (`wk2`, reprovar):** BLOQUEADOR — `AUTHENTICATED` com a cabeça gravada e `keyIds: []` chegava a `VERIFIED` (a checagem era só
+     "lista de textos"). Corrigido: a prova da resposta da porta é validada com o MESMO esquema estrito do registro (`evidenceProvenanceSchema`: cabeça
+     inteira em 1..256, hash hex minúsculo de 64, `keyIds` de 1 a 16 distintos, em ordem estrita e no padrão da lista; nenhum campo extra); só `{status}`
+     (caminho v1) é "sem cabeça" ⇒ `CHAIN_CHANGED`; qualquer outra violação ⇒ `PORT_ERROR` (`RECHECK`); os `keyIds` de hoje só entram na interseção
+     quando válidos. MENOR — o teste da base passou a comparar a base COMPLETA (ref, hash e `legacy`) e a provar que a base de hoje, diferente, não é a
+     usada. Mais 5 mutações, 5 mortas: aceitar `keyIds` vazios (R1a), voltar à checagem "lista de textos" (R1b), descartar campo extra em vez de recusar
+     (R1c), base de hoje em vez da gravada na lista (R3) e no detalhe (R3b); as 22 anteriores rodadas de novo sobre o código corrigido, todas mortas.
+     Total: 27 rodadas, 27 mortas.
+  10. **Fica de fora:** estado de proveniência da PENDENTE (não é resultado); diagnóstico estruturado da causa em log; gravar os artefatos do layout
+     legado; uma consulta de ancestralidade no verificador (que permitiria aceitar cadeia estendida e é o único caminho de volta a `VERIFIED` depois de
+     uma extensão, item 3); um mecanismo de resolução depois da revisão humana; a classificação em lote com leitura única da cadeia por requisição
+     (obrigatória antes de ampliar além do piloto, item 5).
 - **Goal command**: `/goal scripts/run-isolated.sh npm run typecheck && scripts/run-isolated.sh node --require ./tests/register-typescript.cjs --test tests/link-audit-results-provenance*.test.ts tests/link-audit-scoring-results-*.test.ts && git diff --quiet v1.0.1 -- src/lib/link-audit/scoring, stop after 8 tries`
 
 ## Onda W4 — Assinatura
