@@ -97,6 +97,10 @@ export type LedgerReason =
   | 'RESULTS_EVIDENCE_UNAVAILABLE'
   | 'GUARD_MISMATCH'
   | 'GUARD_UNAVAILABLE'
+  /** Regra 2 da guarda (G1.b.1): guarda configurada, nenhuma cabeça publicada e o livro com ≥ 2 registros ("esqueceu" ou nunca publicou além da inscrição). */
+  | 'GUARD_HEAD_MISSING'
+  /** Regra 3 da guarda (G1.b.1): a guarda está atrasada mais que `L_max` registros em relação ao livro. */
+  | 'GUARD_LAGGING'
   /*
    * Contradições de RESULTADO julgadas SÓ sobre R1 (spec §16.17.5; D-11, D-21): podem ser o único sinal de livro truncado ou refeito, então CONGELAM também as decisões
    * (`HISTORY_UNRESOLVED`). Não confundir com `PUBLISHED_AFTER_ABORT` (decisões).

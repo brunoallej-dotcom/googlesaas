@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createDecisionService, WITNESS_NOT_REQUIRED, type DecisionService, type KnownHeadsProvider, type LedgerPort, type LedgerSource } from '../../src/lib/link-audit-decisions';
-import { createLedgerService, createSyntheticGuard, LEDGER_KIND, LEDGER_SCHEMA_VERSION, readLedgerFiles, type DecisionRef, type ExternalGuardPort, type LedgerCapacityPolicy, type LedgerDraft, type LedgerOp, type LedgerRecord, type OpenObservations } from '../../src/lib/link-audit-ledger';
+import { createLedgerService, createSyntheticGuard, LEDGER_KIND, LEDGER_SCHEMA_VERSION, readLedgerFiles, type DecisionRef, type ExternalGuardPort, type GuardAlarmSink, type GuardTimer, type LedgerCapacityPolicy, type LedgerDraft, type LedgerOp, type LedgerRecord, type OpenObservations } from '../../src/lib/link-audit-ledger';
 import { seal } from '../../src/lib/link-audit-storage';
 import { createOriginAuthenticator, type OriginAuthenticator, type OriginKeyring } from '../../src/lib/link-audit-origin';
 import type { FsOps } from '../../src/lib/link-audit/snapshot-store';
@@ -45,6 +45,9 @@ export interface LedgerServiceOver {
   readonly observations?: OpenObservations;
   /** Relógio monotônico do prazo do dono de uma finalização (R1.3, passo 7). */
   readonly monotonicMs?: () => number;
+  /** G1.b.1: porta de alarmes da guarda e timer do prazo de resposta da guarda. */
+  readonly guardAlarms?: GuardAlarmSink;
+  readonly guardTimer?: GuardTimer;
 }
 
 export function ledgerFor(w: Pick<LedgerWorld, 'ledgerDir' | 'otherDirs' | 'guard'>, over: LedgerServiceOver = {}): LedgerPort {
@@ -60,6 +63,8 @@ export function ledgerFor(w: Pick<LedgerWorld, 'ledgerDir' | 'otherDirs' | 'guar
     ...(over.capacityPolicy ? { capacityPolicy: over.capacityPolicy } : {}),
     ...(over.observations ? { observations: over.observations } : {}),
     ...(over.monotonicMs ? { monotonicMs: over.monotonicMs } : {}),
+    ...(over.guardAlarms ? { guardAlarms: over.guardAlarms } : {}),
+    ...(over.guardTimer ? { guardTimer: over.guardTimer } : {}),
   });
 }
 

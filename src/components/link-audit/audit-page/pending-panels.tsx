@@ -269,6 +269,9 @@ const LEDGER_REASON: Readonly<Record<string, string>> = {
   RESULTS_EVIDENCE_UNAVAILABLE: 'os resultados (testemunha independente do livro) não puderam ser lidos',
   GUARD_MISMATCH: 'a guarda externa guarda uma cabeça que o livro não contém (retrocesso)',
   GUARD_UNAVAILABLE: 'a guarda externa não pôde ser consultada',
+  // G1.b.1 (regras 2 e 3 da guarda): congelam, sem reabertura pela aplicação
+  GUARD_HEAD_MISSING: 'a guarda externa não tem nenhuma cabeça publicada desta auditoria, mas o livro já passou da inscrição (cabeça esquecida ou nunca publicada)',
+  GUARD_LAGGING: 'a guarda externa está atrasada além do limite aceito em relação ao livro (registros demais sem publicação)',
   // R1.5 (§16.17.5): contradições de RESULTADO que congelam também as decisões
   UNLEDGERED_RESULT: 'há resultado na pasta de resultados que o livro nunca registrou (resultado forjado, anterior ao livro ou cuja operação foi removida do livro)',
   RESULT_DIVERGES: 'um resultado difere do que o livro registrou naquela posição (arquivo trocado ou outro conteúdo no nome)',

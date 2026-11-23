@@ -1,7 +1,7 @@
 import { createDecisionService } from '../../src/lib/link-audit-decisions';
 import { createEvidenceReader } from '../../src/lib/link-audit-evidence';
 import { createResultsKnownHeads } from '../../src/lib/link-audit-scoring-runs';
-import { createLedgerService, deriveCapacityPolicy } from '../../src/lib/link-audit-ledger';
+import { createLedgerService, createSyntheticGuard, deriveCapacityPolicy } from '../../src/lib/link-audit-ledger';
 import { nodeFsOps, type FsOps } from '../../src/lib/link-audit/snapshot-store';
 import fs from 'node:fs';
 import { ledgerAuth, LEDGER_AUTH_A, LEDGER_KEY_A, LEDGER_KEY_B, NO_RESULTS } from './link-audit-ledger-fixtures';
@@ -58,6 +58,8 @@ interface Config {
   readonly resultsDir?: string;
   readonly resultsAnchorDir?: string;
   readonly nowIso?: string;
+  /** G1.b.1: pasta da guarda SINTÉTICA (a mesma do pai). Sem ela o filho grava sem publicar — o que, com a guarda lida pelo pai, vira atraso (regra 3). */
+  readonly guardDir?: string;
 }
 const config = JSON.parse(process.env.LEDGER_CHILD ?? '{}') as Config;
 const die = (): never => {
@@ -108,6 +110,7 @@ const RECOVER_RETRIES = 200;
     fs: ops,
     pollMs: 5,
     ...(config.staleOperationMs !== undefined ? { staleOperationMs: config.staleOperationMs } : {}),
+    ...(config.guardDir ? { guard: createSyntheticGuard({ dir: config.guardDir }) } : {}),
   });
   const service = createDecisionService({ baseDir: config.decisionsDir, anchorDir: config.anchorDir, evidence: reader, evidenceBaseDir: config.evidenceDir, origin: TEST_ORIGIN, knownHeads: config.resultsDir && config.resultsAnchorDir ? createResultsKnownHeads({ baseDir: config.resultsDir, anchorDir: config.resultsAnchorDir, origin: TEST_ORIGIN, otherDirs: [config.decisionsDir, config.anchorDir, config.evidenceDir, config.ledgerDir] }) : NO_RESULTS, ledger, fs: ops });
   const actor = { email: config.actor };

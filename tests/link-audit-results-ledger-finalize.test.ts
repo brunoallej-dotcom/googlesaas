@@ -293,7 +293,7 @@ test('RL-25: com guarda configurada a cabeça atual é publicada ANTES do RUN_IN
   assert.ok(latest.ok && latest.head?.ledgerSeq === 5 && latest.head.sha256 === records[4]?.contentSha256, `a guarda guarda o RUN_CONFIRMED: ${show(latest)}`);
 
   const { w: w2, e: e2 } = await protectedWorld({ withGuard: true });
-  const refusing: ExternalGuardPort = { latest: (auditId) => w2.guard.latest(auditId), publish: async () => ({ ok: false }) };
+  const refusing: ExternalGuardPort = { latest: (auditId) => w2.guard.latest(auditId), publish: async () => ({ ok: false, reason: 'UNAVAILABLE' }) };
   const before = await footprintOf(w2, e2);
   const refused = await finalizeAs(finalizerOver(w2, e2, { ledger: { guard: refusing } }), OP_A, w2.auditId);
   assert.ok(!refused.ok && refused.code === 'LEDGER_GUARD_UNAVAILABLE', show(refused));
