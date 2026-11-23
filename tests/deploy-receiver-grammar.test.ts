@@ -179,19 +179,22 @@ test('§5.8: saídas numéricas e conjunto fechado de detalhes iguais aos do job
   for (const code of Object.keys(RECEIVER_EXIT_CODES) as Array<keyof typeof RECEIVER_EXIT_CODES>) assert.match(publicErrorLine(code, null), publicLine);
 });
 
-test('E_LOCKED: outra execução viva com a trava do ambiente ⇒ ERRO E_LOCKED (16), nada lido; trava de processo morto é retirada e a execução segue', async () => {
+test('E_LOCKED (defesa do lado do Node; a trava de verdade é o flock do wrapper): trava existente, de processo vivo OU morto, ⇒ ERRO E_LOCKED (16), nada lido e a trava alheia nunca é apagada; sem trava, a execução segue e libera só a própria', async () => {
   const w = world();
-  fs.writeFileSync(path.join(w.stateDir, 'deploy.lock'), `${process.pid}\n`);
-  const stdin = FakeStdin.of(w.trust);
-  const locked = await runReceiver(w, `upload ${SHA40} ${H64} 10`, stdin);
-  assert.deepEqual(locked.outcome, { exitCode: 16, stdout: null, stderr: 'ERRO E_LOCKED' });
-  assert.equal(stdin.reads, 0);
-  assert.equal(fs.readFileSync(path.join(w.stateDir, 'deploy.lock'), 'utf8'), `${process.pid}\n`, 'a trava alheia fica');
+  const lock = path.join(w.stateDir, 'deploy.lock');
   const deadPid = 2 ** 22 + 12345; // acima do pid_max padrão: nunca é um processo vivo
-  fs.writeFileSync(path.join(w.stateDir, 'deploy.lock'), `${deadPid}\n`);
+  for (const owner of [`${process.pid}\n`, `${deadPid}\n`, 'ilegível']) {
+    fs.writeFileSync(lock, owner);
+    const stdin = FakeStdin.of(w.trust);
+    const locked = await runReceiver(w, `upload ${SHA40} ${H64} 10`, stdin);
+    assert.deepEqual(locked.outcome, { exitCode: 16, stdout: null, stderr: 'ERRO E_LOCKED' }, owner);
+    assert.equal(stdin.reads, 0);
+    assert.equal(fs.readFileSync(lock, 'utf8'), owner, 'sem retomada por nome: a trava alheia fica');
+  }
+  fs.rmSync(lock);
   const bytes = Buffer.from('dez bytes!');
-  const stale = await runReceiver(w, `upload ${SHA40} ${'0'.repeat(64)} ${bytes.length}`, FakeStdin.of(bytes));
-  assert.equal(stale.outcome.stderr, 'ERRO E_HASH_MISMATCH', 'passou da trava (e recusou adiante, pelo hash)');
-  assert.ok(!fs.existsSync(path.join(w.stateDir, 'deploy.lock')), 'a trava é liberada no fim');
-  assert.match(publicText(stale.outcome), /^ERRO E_[A-Z_]+$/);
+  const free = await runReceiver(w, `upload ${SHA40} ${'0'.repeat(64)} ${bytes.length}`, FakeStdin.of(bytes));
+  assert.equal(free.outcome.stderr, 'ERRO E_HASH_MISMATCH', 'passou da trava (e recusou adiante, pelo hash)');
+  assert.ok(!fs.existsSync(lock), 'a trava própria é liberada no fim');
+  assert.match(publicText(free.outcome), /^ERRO E_[A-Z_]+$/);
 });

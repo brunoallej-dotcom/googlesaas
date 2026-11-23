@@ -144,15 +144,6 @@ export const nodeClock: Clock = {
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
 
-const isAlive = (pid: number): boolean => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return errnoOf(error) !== 'ESRCH';
-  }
-};
-
 async function lockOwner(path: string): Promise<number | null> {
   try {
     const text = Buffer.from(await readCapped(path, LOCK_MAX_BYTES)).toString('ascii');
@@ -180,19 +171,13 @@ async function createLock(path: string): Promise<boolean> {
 }
 
 /**
- * Trava por arquivo exclusivo com o pid do dono. Uma trava de um processo que já morreu (`kill -0` ⇒ `ESRCH`, ex.: receptor morto por `SIGKILL`)
- * é retirada UMA vez; dono vivo, ilegível ou fora do formato ⇒ ocupada (falha fechada: o responsável confere e apaga à mão).
+ * Trava de DEFESA do lado do Node (a trava de verdade é a do kernel, `flock -n` no wrapper, revisão do PR #70): arquivo exclusivo com o pid.
+ * Arquivo já existente ⇒ ocupada (`E_LOCKED`), sem retomada por nome: o receptor nunca apaga uma trava que não é dele. A liberação só apaga
+ * o arquivo que ainda tem o próprio pid. Um arquivo que sobrou de um receptor morto por `SIGKILL` é apagado à mão pelo responsável (runbook).
  */
 export const nodeLock: LockPort = {
   async tryAcquire(path) {
-    let acquired = await createLock(path);
-    if (!acquired) {
-      const owner = await lockOwner(path);
-      if (owner === null || isAlive(owner)) return null;
-      await fsp.unlink(path).catch(() => undefined);
-      acquired = await createLock(path);
-    }
-    if (!acquired) return null;
+    if (!(await createLock(path))) return null;
     return async () => {
       if ((await lockOwner(path)) === process.pid) await fsp.unlink(path);
     };

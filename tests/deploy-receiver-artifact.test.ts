@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -267,7 +267,12 @@ interface FilledWrapper {
   readonly file: string;
   readonly artifact: string;
   readonly record: string;
+  readonly lock: string;
+  readonly node: string;
 }
+
+const FLOCK = '/usr/bin/flock';
+const HAS_FLOCK = fs.existsSync(FLOCK);
 
 /** Uma cópia do modelo com o artefato, o hash e o node trocados por caminhos temporários (o node é um falso que registra argv e ambiente). */
 function fillWrapper(template: string, artifactBytes: Buffer, hash: string = sha256(artifactBytes)): FilledWrapper {
@@ -276,23 +281,26 @@ function fillWrapper(template: string, artifactBytes: Buffer, hash: string = sha
   fs.writeFileSync(artifact, artifactBytes, { mode: 0o444 });
   const record = path.join(dir, 'registro.json');
   const node = path.join(dir, 'node');
+  const lock = path.join(dir, 'deploy.flock');
+  fs.writeFileSync(lock, '', { mode: 0o644 });
   fs.writeFileSync(node, `#!${process.execPath}\nrequire('fs').writeFileSync(${JSON.stringify(record)}, JSON.stringify({ argv: process.argv.slice(2), env: process.env }));\nprocess.stderr.write('ERRO E_COMMAND\\n');\nprocess.exit(10);\n`, { mode: 0o755 });
   const text = fs
     .readFileSync(template, 'utf8')
     .replace(/^ARTIFACT='[^']*'$/m, `ARTIFACT='${artifact}'`)
     .replace(/^ARTIFACT_SHA256='[^']*'$/m, `ARTIFACT_SHA256='${hash}'`)
     .replace(/^NODE='[^']*'$/m, `NODE='${node}'`)
+    .replace(/^LOCK='[^']*'$/m, `LOCK='${lock}'`)
     .replaceAll('<ARQUIVO_DE_VARIAVEIS>', 'variaveis')
     .replaceAll('<IMPRESSAO_SUPABASE_PRODUCAO>', '0123456789ab');
   const file = path.join(dir, 'wrapper');
   fs.writeFileSync(file, text, { mode: 0o755 });
-  return { file, artifact, record };
+  return { file, artifact, record, lock, node };
 }
 
 /** O ambiente EXATO do shell do wrapper (o tipo do Next exige NODE_ENV em ProcessEnv; o filho não o recebe). */
 const runWrapper = (file: string, env: Record<string, string>) => spawnSync('/bin/sh', [file], { env: env as NodeJS.ProcessEnv, encoding: 'utf8', timeout: 30_000 });
 
-test('wrapper (os dois modelos): só marcadores; set -eu; confere o sha256 do artefato antes de tudo; env -i com PATH fixo; node absoluto com --disable-sigusr1; parâmetros fixos iguais aos da spec e aceitos pelo receptor', () => {
+test('wrapper (os dois modelos): só marcadores; set -eu; confere o sha256 do artefato antes de tudo; Node, flock e trava conferidos (E_INTERNAL, 29, sem caminho); trava do kernel flock -n com saída própria mapeada para E_LOCKED (16); env -i com PATH fixo; node absoluto com --disable-sigusr1; parâmetros fixos iguais aos da spec e aceitos pelo receptor', () => {
   for (const template of [PROD_WRAPPER, HML_WRAPPER]) {
     const text = fs.readFileSync(template, 'utf8');
     assert.equal(fs.statSync(template).mode & 0o111, 0o111, 'executável');
@@ -301,12 +309,23 @@ test('wrapper (os dois modelos): só marcadores; set -eu; confere o sha256 do ar
     assert.match(text, /^ARTIFACT='\/opt\/gmn-receivers\/<VERSAO>\/gmn-deploy-receiver\.cjs'$/m);
     assert.match(text, /^ARTIFACT_SHA256='<SHA256_DO_ARTEFATO>'$/m);
     assert.match(text, /^NODE='\/opt\/gmn-receivers\/node\/bin\/node'$/m);
-    assert.match(text, /exec \/usr\/bin\/env -i PATH=\/usr\/bin:\/bin "SSH_ORIGINAL_COMMAND=\$\{SSH_ORIGINAL_COMMAND-\}" "\$NODE" --disable-sigusr1 "\$ARTIFACT"/);
+    assert.match(text, /^"\$FLOCK" -n -E "\$LOCK_BUSY" "\$LOCK" \/usr\/bin\/env -i PATH=\/usr\/bin:\/bin "SSH_ORIGINAL_COMMAND=\$\{SSH_ORIGINAL_COMMAND-\}" "\$NODE" --disable-sigusr1 "\$ARTIFACT"/m);
+    assert.match(text, /^FLOCK='\/usr\/bin\/flock'$/m);
+    assert.match(text, /^LOCK_BUSY=75$/m, 'saída do flock -n que nenhum código do receptor usa');
+    assert.match(text, /^\[ "\$status" -ne "\$LOCK_BUSY" \] \|\| fail E_LOCKED 16$/m);
+    assert.match(text, /^\[ -x "\$NODE" \] && \[ -x "\$FLOCK" \] && \[ -f "\$LOCK" \] && \[ -r "\$LOCK" \] \|\| fail E_INTERNAL 29$/m);
+    assert.match(text, /^\[ "\$actual" = "\$ARTIFACT_SHA256" \] \|\| fail E_ARTIFACT 17$/m);
+    assert.match(text, /^fail\(\) \{\n {2}printf '%s\\n' "ERRO \$1" >&2\n {2}exit "\$2"\n\}$/m, 'a única saída do wrapper é ERRO <código>');
+    assert.ok(!/-o\b|--close/.test(/^"\$FLOCK"[^\n]*/m.exec(text)?.[0] ?? ''), 'o filho herda o descritor da trava (sem -o)');
     assert.ok(!/\beval\b|\$SSH_ORIGINAL_COMMAND\b(?!-)|`/.test(text.replace(/^#.*$/gm, '')), 'o comando pedido nunca é interpretado pelo shell');
     assert.ok(!/\b(?:\d{1,3}\.){3}\d{1,3}\b|https?:\/\//.test(text), 'nenhum host, IP ou URL real');
-    assert.ok(text.indexOf('sha256sum') < text.indexOf('exec '), 'o hash é conferido antes do exec');
+    assert.ok(text.indexOf('sha256sum') < text.indexOf('"$FLOCK" -n'), 'o hash é conferido antes de rodar qualquer coisa');
+    assert.ok(!/^\s*exec\b/m.test(text), 'sem exec: o wrapper precisa mapear a saída do flock');
   }
-  const prodArgs = /--env producao[^\n]*\\\n[^\n]*/.exec(fs.readFileSync(PROD_WRAPPER, 'utf8'))?.[0] ?? '';
+  const prodText = fs.readFileSync(PROD_WRAPPER, 'utf8');
+  assert.match(prodText, /^LOCK='\/var\/lib\/gmn-deploy\/producao\/deploy\.flock'$/m);
+  assert.match(fs.readFileSync(HML_WRAPPER, 'utf8'), /^LOCK='\/var\/lib\/gmn-deploy\/homologacao\/deploy\.flock'$/m);
+  const prodArgs = /--env producao[^\n]*\\\n[^\n]*/.exec(prodText)?.[0] ?? '';
   assert.match(prodArgs, /--env producao --stack-name gmn --stack \/opt\/gmn\/stack\.yml --host-vars '\/opt\/gmn\/<ARQUIVO_DE_VARIAVEIS>'/);
   assert.match(prodArgs, /--folders-check \/opt\/gmn\/verificar-pastas-fase6\.sh --state \/var\/lib\/gmn-deploy\/producao --log \/var\/log\/gmn-receivers\/producao-deploy\.log/);
   const hmlText = fs.readFileSync(HML_WRAPPER, 'utf8');
@@ -352,6 +371,61 @@ test('wrapper em processo: artefato com outro hash, ausente, ou marcador do hash
   }
 });
 
+test('wrapper em processo: Node ausente ou não executável, arquivo de trava ausente ⇒ ERRO E_INTERNAL (29), sem caminho na saída e sem rodar nada', () => {
+  const bytes = Buffer.from('artefato fictício');
+  const noNode = fillWrapper(PROD_WRAPPER, bytes);
+  fs.rmSync(noNode.node);
+  const notExecutable = fillWrapper(HML_WRAPPER, bytes);
+  fs.chmodSync(notExecutable.node, 0o644);
+  const noLock = fillWrapper(PROD_WRAPPER, bytes);
+  fs.rmSync(noLock.lock);
+  for (const filled of [noNode, notExecutable, noLock]) {
+    const result = runWrapper(filled.file, { PATH: '/usr/bin:/bin', SSH_ORIGINAL_COMMAND: `upload ${SHA40} ${'0'.repeat(64)} 10` });
+    assert.equal(result.status, 29);
+    assert.equal(result.stderr, 'ERRO E_INTERNAL\n');
+    assert.equal(result.stdout, '');
+    assert.ok(!fs.existsSync(filled.record), 'o node não rodou');
+  }
+});
+
+test('wrapper em processo: trava do kernel (flock -n) — com outra execução segurando o arquivo de trava, ERRO E_LOCKED (16) sem rodar o node; solta a trava, roda; a trava fica com o FILHO (herdada) mesmo se o flock morrer', { skip: !HAS_FLOCK && !STRICT ? 'sem /usr/bin/flock' : false, timeout: 60_000 }, async () => {
+  const filled = fillWrapper(HML_WRAPPER, Buffer.from('artefato fictício'));
+  // grupo de processos próprio: o flock (pai) e o filho que herda o descritor da trava
+  const holder = spawn(FLOCK, ['-n', filled.lock, process.execPath, '-e', 'setTimeout(() => {}, 20000)'], { stdio: 'ignore', detached: true });
+  const command = { PATH: '/usr/bin:/bin', SSH_ORIGINAL_COMMAND: `upload ${SHA40} ${'0'.repeat(64)} 10` };
+  const assertBusy = (label: string): void => {
+    const busy = runWrapper(filled.file, command);
+    assert.equal(busy.status, 16, label);
+    assert.equal(busy.stderr, 'ERRO E_LOCKED\n', label);
+    assert.ok(!fs.existsSync(filled.record), `${label}: o node não rodou`);
+  };
+  try {
+    const deadline = Date.now() + 10_000;
+    while (spawnSync(FLOCK, ['-n', filled.lock, 'true']).status === 0) {
+      assert.ok(Date.now() < deadline, 'o processo de teste não pegou a trava');
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assertBusy('trava com outro processo');
+    holder.kill('SIGKILL');
+    await new Promise((resolve) => holder.once('exit', resolve));
+    assertBusy('o flock morreu, mas o filho herdou o descritor e segura a trava');
+  } finally {
+    try {
+      process.kill(-(holder.pid as number), 'SIGKILL');
+    } catch {
+      // o grupo já terminou
+    }
+  }
+  const deadline = Date.now() + 10_000;
+  while (spawnSync(FLOCK, ['-n', filled.lock, 'true']).status !== 0) {
+    assert.ok(Date.now() < deadline, 'a trava não foi solta pela morte do grupo');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  const free = runWrapper(filled.file, { PATH: '/usr/bin:/bin', SSH_ORIGINAL_COMMAND: `upload ${SHA40} ${'0'.repeat(64)} 10` });
+  assert.equal(free.status, 10, free.stderr);
+  assert.ok(fs.existsSync(filled.record), 'sem disputa, o node roda (debaixo da trava)');
+});
+
 test('wrapper + artefato REAL: o modelo de homologação com a impressão de produção sem preencher faz o receptor recusar a instalação (E_INTERNAL), nunca seguir', async () => {
   const artifact = await built();
   const dir = realTmp('dra-wrapper-real-');
@@ -359,7 +433,9 @@ test('wrapper + artefato REAL: o modelo de homologação com a impressão de pro
     .readFileSync(HML_WRAPPER, 'utf8')
     .replace(/^ARTIFACT='[^']*'$/m, `ARTIFACT='${artifact.file}'`)
     .replace(/^ARTIFACT_SHA256='[^']*'$/m, `ARTIFACT_SHA256='${artifact.sha256}'`)
-    .replace(/^NODE='[^']*'$/m, `NODE='${process.execPath}'`);
+    .replace(/^NODE='[^']*'$/m, `NODE='${process.execPath}'`)
+    .replace(/^LOCK='[^']*'$/m, `LOCK='${path.join(dir, 'deploy.flock')}'`);
+  fs.writeFileSync(path.join(dir, 'deploy.flock'), '');
   const file = path.join(dir, 'wrapper');
   fs.writeFileSync(file, text, { mode: 0o755 });
   const result = runWrapper(file, { PATH: '/usr/bin:/bin', SSH_ORIGINAL_COMMAND: `upload ${SHA40} ${'0'.repeat(64)} 10` });

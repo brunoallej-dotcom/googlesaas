@@ -197,10 +197,13 @@ conexão dela falha fechada.
    modelo de produção não tem `--forbid-supabase`). Trocar de versão = repetir os passos 1 a 3 com o commit novo; a versão anterior
    fica em `/opt/gmn-receivers/<SHA40 anterior>/` para voltar (seção 6, "Receptor com defeito").
 
-   Com um marcador sem preencher, o *wrapper* falha fechado: `E_ARTIFACT` (hash) ou `E_INTERNAL` (parâmetros). O receptor exige o
-   ambiente limpo (só `PATH` e `SSH_ORIGINAL_COMMAND`, senão `E_INTERNAL`), a pasta de estado do H-06 e o log `0600` do H-06; ele cria
-   sozinho a pasta de recebimento `<estado>/incoming` (`0700`) e a trava `<estado>/deploy.lock`. Uma trava que sobrou de um receptor
-   morto (por `SIGKILL`) é retirada sozinha; com o dono vivo, o deploy recusa com `E_LOCKED`.
+   Com um marcador sem preencher, o *wrapper* falha fechado: `E_ARTIFACT` (hash) ou `E_INTERNAL` (parâmetros, Node ausente). O
+   *wrapper* precisa do `/usr/bin/flock` (util-linux) e do arquivo de trava do root `<estado>/deploy.flock` (H-06); outra execução do
+   mesmo ambiente ⇒ `E_LOCKED`, e a trava some sozinha quando o receptor termina ou morre (é do kernel, presa ao descritor). O receptor
+   exige o ambiente limpo (só `PATH` e `SSH_ORIGINAL_COMMAND`, senão `E_INTERNAL`), a pasta de estado e o log `0600` do H-06; ele cria
+   sozinho a pasta de recebimento `<estado>/incoming` (`0700`) e uma trava de defesa `<estado>/deploy.lock`, que nunca retoma uma trava
+   alheia. Se um receptor for morto por `SIGKILL`, esse arquivo fica e o deploy seguinte recusa com `E_LOCKED`: confirme que nada roda
+   (`sudo flock -n /var/lib/gmn-deploy/<amb>/deploy.flock true` sai com 0) e só então apague o `deploy.lock`.
 
 **Impressão do projeto de produção no *wrapper* de homologação (`--forbid-supabase`), agora, antes de habilitar a chave do CI (H-05) e
 do primeiro deploy de homologação.** É o que faz o receptor de homologação recusar o projeto Supabase de produção
@@ -336,6 +339,8 @@ conferido.
 ( set -euo pipefail
   sudo install -d -m 0755 -o root -g root /var/lib/gmn-deploy /var/lib/gmn-seals /var/log/gmn-receivers
   sudo install -d -m 0711 -o gmn-hml-deploy -g gmn-hml-deploy /var/lib/gmn-deploy/homologacao
+  # trava do kernel do receptor de deploy (flock -n no wrapper): arquivo do root, só leitura para o usuário; nunca apagado
+  [ -e /var/lib/gmn-deploy/homologacao/deploy.flock ] || sudo install -m 0644 -o root -g root /dev/null /var/lib/gmn-deploy/homologacao/deploy.flock
   sudo install -d -m 0700 -o gmn-hml-seals -g gmn-hml-seals /var/lib/gmn-seals/homologacao
   for pair in deploy:gmn-hml-deploy seals:gmn-hml-seals; do
     log="/var/log/gmn-receivers/homologacao-${pair%%:*}.log"; owner="${pair#*:}"

@@ -583,9 +583,14 @@ chamador, prazo com `SIGKILL` e teto de saída). A lista de confiança usa o mó
   `gmn-deploy.modelo.sh` (produção, instalado em `/opt/gmn-receivers/bin/gmn-deploy`) e `gmn-hml-deploy.modelo.sh` (homologação,
   `/opt/gmn-receivers/bin/gmn-hml-deploy`). O artefato fica em `/opt/gmn-receivers/<sha40 do commit>/`. Instalação: runbook
   `RUNBOOK-DEPLOY-PELO-CI.md` H-04.
-- **Trava** `<estado>/deploy.lock` (`O_EXCL`, com o pid), tomada pelo `upload` **e** pelo `deploy`, para um `upload` nunca apagar o pacote de
-  um `deploy` em andamento. Trava de processo morto (`kill -0` ⇒ `ESRCH`) é retirada uma vez; dono vivo, arquivo ilegível ou fora do
-  formato ⇒ `E_LOCKED`. A gramática vem antes da trava: `E_COMMAND` não lê o stdin nem cria nada.
+- **Trava** (revisão do PR #70): a exclusão por ambiente é do kernel. O wrapper roda o receptor debaixo de `flock -n -E 75
+  <estado>/deploy.flock` (util-linux), sobre um arquivo do root criado no H-06; o filho herda o descritor, então a trava dura a
+  execução inteira e some sozinha quando o processo termina ou morre. A saída 75 do `flock` (nenhum código do §5.8 a usa) vira `ERRO
+  E_LOCKED`, com saída 16. Node, `flock` ou arquivo de trava ausentes ⇒ `ERRO E_INTERNAL`, com saída 29, sem caminho na saída. Do lado
+  do Node fica só uma trava de DEFESA, `<estado>/deploy.lock` (`O_EXCL`, com o pid), tomada pelo `upload` **e** pelo `deploy`. Arquivo
+  existente ⇒ `E_LOCKED`. Ela nunca retoma nem apaga uma trava alheia; a liberação só apaga o arquivo com o próprio pid. Depois de um
+  `SIGKILL`, o responsável confere a trava do kernel e apaga o arquivo à mão (runbook H-04). A gramática vem antes: `E_COMMAND` não lê
+  o stdin nem cria nada.
 - **Recebimento** `<estado>/incoming` (`0700`, criado pelo receptor; link ou arquivo no lugar ⇒ `E_INTERNAL`). O `upload` grava
   `.bundle-<sha40>.partial-<aleatório>` (`O_EXCL | O_NOFOLLOW`, `0600`) e só renomeia para `bundle-<sha40>.tar.gz` depois do hash conferido
   (`rename` + `fsync` da pasta). Só nomes nesses dois formatos são apagados, e o resto da pasta não é tocado. O stdin tem de terminar
