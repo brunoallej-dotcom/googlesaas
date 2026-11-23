@@ -497,6 +497,23 @@ test('trava de DEFESA: arquivo de trava existente (outra execução, ou uma mort
   assert.ok(!fs.existsSync(w.lockFile), 'a trava própria é liberada');
 });
 
+test('trava de DEFESA, liberação: só apaga o arquivo que ainda é o MESMO que este processo criou (dispositivo e inode); um arquivo trocado no meio fica, e a liberação não lê o arquivo (sob --permission só há escrita na pasta da trava)', async () => {
+  const w = sealWorld();
+  const release = await nodeLock.tryAcquire(w.lockFile);
+  assert.ok(release);
+  assert.equal(await nodeLock.tryAcquire(w.lockFile), null, 'a segunda aquisição recusa');
+  fs.rmSync(w.lockFile);
+  fs.writeFileSync(w.lockFile, '424242\n', { mode: 0o600 });
+  await release();
+  assert.equal(fs.readFileSync(w.lockFile, 'utf8'), '424242\n', 'a trava alheia (outro inode) fica');
+  fs.rmSync(w.lockFile);
+  const own = await nodeLock.tryAcquire(w.lockFile);
+  assert.ok(own);
+  assert.equal(fs.readFileSync(w.lockFile, 'utf8'), `${process.pid}\n`, 'o pid fica no arquivo para o responsável');
+  await own();
+  assert.ok(!fs.existsSync(w.lockFile), 'a própria é apagada');
+});
+
 /* ===================================================================================================================== P9-R09 */
 
 test('P9-R09 fecho: as regras do S-11 contra as cadeias DO HOST (signatário fora da lista, assinatura forjada, aposentada fora da lista, cabeça ausente do host ou com outro sealSha256) ⇒ E_CLOSURE_REFUSED <MOTIVO> (33); válido ⇒ OK WRITTEN em _closures', async () => {

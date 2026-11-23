@@ -92,12 +92,13 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
-  # P9.3a: artefatos únicos dos receptores do host (spec docs/specs/ci-deploy-and-seal-delivery.md §5.6 "Instalação"; P9.3b acrescenta o de
-  # manifestos). Mesmo padrão do sign-artifact: recompila com o esbuild travado (opções fixas e guardas sobre a saída), confere o SHA-256
-  # do artefato e dos modelos de wrapper (copiados pelo build) contra deploy/hostinger/receivers.sha256 (build reprodutível) e roda os testes do artefato em processo real (env -i, node absoluto,
-  # docker/tar/gzip FALSOS no PATH, os dois modelos de wrapper). DEPLOY_RECEIVER_ARTIFACT_STRICT=1: nada pode ser pulado. Sem segredo, sem
-  # Docker real. O upload é só para conferência: o responsável instala no host o que passou no sha256sum -c do commit; o CI nunca atualiza
-  # receptor.
+  # P9.3a/P9.3b: artefatos únicos dos receptores do host, o de deploy e o de manifestos (spec docs/specs/ci-deploy-and-seal-delivery.md §5.6
+  # e §5.7 "Instalação"). Mesmo padrão do sign-artifact: recompila com o esbuild travado (opções fixas e guardas sobre a saída), confere o SHA-256
+  # dos artefatos e dos modelos de wrapper (copiados pelo build) contra deploy/hostinger/receivers.sha256 (build reprodutível) e roda os testes
+  # dos artefatos em processo real: o de deploy com env -i, node absoluto e docker/tar/gzip FALSOS no PATH; o de manifestos pelo próprio modelo
+  # de wrapper preenchido (flock, umask 027, env -i, --permission com os grants do §5.7), gravando com fsync na linha 22 do Node (o 24.22+
+  # bloqueia fsync sob --permission). *_ARTIFACT_STRICT=1: nada pode ser pulado. Sem segredo, sem Docker real. O upload é só para conferência:
+  # o responsável instala no host o que passou no sha256sum -c do commit; o CI nunca atualiza receptor.
   receivers-artifact:
     name: receivers artifact (build, hash)
     runs-on: ubuntu-latest
@@ -119,6 +120,10 @@ jobs:
         env:
           DEPLOY_RECEIVER_ARTIFACT_STRICT: '1'
         run: node --require ./tests/register-typescript.cjs --test tests/deploy-receiver-artifact.test.ts
+      - name: Receptor de manifestos em processo real (wrapper preenchido, flock, --permission com os grants do §5.7, fsync no Node 22)
+        env:
+          SEAL_RECEIVER_ARTIFACT_STRICT: '1'
+        run: node --require ./tests/register-typescript.cjs --test tests/link-audit-seal-receiver-artifact.test.ts
       - name: Junta o hash versionado aos artefatos
         run: cp deploy/hostinger/receivers.sha256 "$RUNNER_TEMP/receivers-artifact/"
       - name: Upload dos artefatos e do hash versionado
@@ -127,8 +132,11 @@ jobs:
           name: gmn-receivers-artifact
           path: |
             ${{ runner.temp }}/receivers-artifact/gmn-deploy-receiver.cjs
+            ${{ runner.temp }}/receivers-artifact/gmn-seal-receiver.cjs
             ${{ runner.temp }}/receivers-artifact/gmn-deploy.modelo.sh
             ${{ runner.temp }}/receivers-artifact/gmn-hml-deploy.modelo.sh
+            ${{ runner.temp }}/receivers-artifact/gmn-seals.modelo.sh
+            ${{ runner.temp }}/receivers-artifact/gmn-hml-seals.modelo.sh
             ${{ runner.temp }}/receivers-artifact/receivers.sha256
           if-no-files-found: error
           retention-days: 90

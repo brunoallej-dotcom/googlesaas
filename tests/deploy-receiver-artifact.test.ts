@@ -42,9 +42,10 @@ test('P9.3a artefato: build REPRODUTÍVEL (duas pastas, mesmos bytes), 0444, e o
   assert.equal(versionedReceiverHashes().get(DEPLOY_RECEIVER_FILE_NAME), first.sha256, 'receivers.sha256 = o hash recompilado (refaça o arquivo quando o fonte mudar)');
   const lines = fs.readFileSync(RECEIVERS_HASH_FILE, 'utf8').split('\n').filter((line) => line !== '' && !line.startsWith('#'));
   const templateLines = RECEIVER_TEMPLATES.map((name) => `${sha256(fs.readFileSync(path.join(RECEIVER_TEMPLATES_DIR, name)))}  ${name}`);
-  assert.deepEqual(lines, [receiverHashLine(first), ...templateLines], 'o receptor de deploy e os dois modelos de wrapper (o de manifestos entra na P9.3b, com as próprias linhas)');
-  assert.deepEqual(RECEIVER_ARTIFACTS.map((spec) => spec.fileName), [DEPLOY_RECEIVER_FILE_NAME]);
-  assert.deepEqual([...VERSIONED_FILE_NAMES], [DEPLOY_RECEIVER_FILE_NAME, 'gmn-deploy.modelo.sh', 'gmn-hml-deploy.modelo.sh']);
+  assert.equal(lines[0], receiverHashLine(first), 'o receptor de deploy primeiro');
+  assert.deepEqual(lines.slice(RECEIVER_ARTIFACTS.length), templateLines, 'depois dos artefatos, um modelo de wrapper por linha (o de manifestos e os dele entraram na P9.3b)');
+  assert.deepEqual(RECEIVER_ARTIFACTS.map((spec) => spec.fileName), [DEPLOY_RECEIVER_FILE_NAME, 'gmn-seal-receiver.cjs']);
+  assert.deepEqual([...VERSIONED_FILE_NAMES], [DEPLOY_RECEIVER_FILE_NAME, 'gmn-seal-receiver.cjs', 'gmn-deploy.modelo.sh', 'gmn-hml-deploy.modelo.sh', 'gmn-seals.modelo.sh', 'gmn-hml-seals.modelo.sh']);
 });
 
 test('revisão do PR #70 (item 1): o build copia os modelos de wrapper (0444) para a pasta de saída, e o sha256sum -c --strict do receivers.sha256 confere artefato E modelos ali (o mesmo que o responsável roda no clone limpo e na VPS)', { timeout: 60_000 }, async () => {
@@ -95,11 +96,12 @@ test('P9.3a artefato (mutação): módulo fora da lista do receptor (node:os, no
     fs.writeFileSync(file, text);
     return file;
   };
-  const templates = `${'c'.repeat(64)}  gmn-deploy.modelo.sh\n${'d'.repeat(64)}  gmn-hml-deploy.modelo.sh\n`;
-  for (const text of ['', `${'a'.repeat(64)} gmn-deploy-receiver.cjs\n${templates}`, `${'a'.repeat(64)}  outro.cjs\n${templates}`, `${'a'.repeat(64)}  gmn-deploy-receiver.cjs\n${'b'.repeat(64)}  gmn-deploy-receiver.cjs\n${templates}`, `${'a'.repeat(64)}  gmn-deploy-receiver.cjs\n`, `${templates}${'a'.repeat(64)}  gmn-deploy-receiver.cjs\n`]) {
+  const seal = `${'e'.repeat(64)}  gmn-seal-receiver.cjs\n`;
+  const templates = `${'c'.repeat(64)}  gmn-deploy.modelo.sh\n${'d'.repeat(64)}  gmn-hml-deploy.modelo.sh\n${'f'.repeat(64)}  gmn-seals.modelo.sh\n${'9'.repeat(64)}  gmn-hml-seals.modelo.sh\n`;
+  for (const text of ['', `${'a'.repeat(64)} gmn-deploy-receiver.cjs\n${seal}${templates}`, `${'a'.repeat(64)}  outro.cjs\n${seal}${templates}`, `${'a'.repeat(64)}  gmn-deploy-receiver.cjs\n${'b'.repeat(64)}  gmn-deploy-receiver.cjs\n${seal}${templates}`, `${'a'.repeat(64)}  gmn-deploy-receiver.cjs\n`, `${templates}${'a'.repeat(64)}  gmn-deploy-receiver.cjs\n${seal}`, `${seal}${'a'.repeat(64)}  gmn-deploy-receiver.cjs\n${templates}`, `${'a'.repeat(64)}  gmn-deploy-receiver.cjs\n${templates}`]) {
     assert.throws(() => versionedReceiverHashes(write(text)), (error: unknown) => error instanceof ArtifactBuildError && error.code === 'HASH_MISMATCH', JSON.stringify(text));
   }
-  const parsed = versionedReceiverHashes(write(`# comentário\n${'a'.repeat(64)}  gmn-deploy-receiver.cjs\n${templates}`));
+  const parsed = versionedReceiverHashes(write(`# comentário\n${'a'.repeat(64)}  gmn-deploy-receiver.cjs\n${seal}${templates}`));
   assert.equal(parsed.get(DEPLOY_RECEIVER_FILE_NAME), 'a'.repeat(64));
   assert.equal(parsed.get('gmn-hml-deploy.modelo.sh'), 'd'.repeat(64));
 });
