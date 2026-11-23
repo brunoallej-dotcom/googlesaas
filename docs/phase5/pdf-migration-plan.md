@@ -7,9 +7,9 @@ Bucket `gmn-audit-pdfs`: **público**, sem limite de tamanho nem de tipo. Criado
 
 | Auditoria | `public/audits` | Bucket | Acesso sem credencial ao bucket | Conteúdo |
 |---|---|---|---|---|
-| 4323da26 (Goyaz Barbearia) | 13.517 B · `4f6e4cfd…` | 13.517 B · `4f6e4cfd…` | **HTTP 200** | idêntico |
-| 312ebf57 (Clínica de Estética Dra. Rayane) | 13.451 B · `7cd7c299…` | 13.451 B · `7cd7c299…` | **HTTP 200** | idêntico |
-| 859b4021 (Dra. Anna Vitória) | **271.346 B** · `fd41a6b3…` (oficial, com mapa) | **13.332 B** · `a670948b…` (versão antiga, 3 pág.) | **HTTP 200** | **DIFERENTE** |
+| 4323da26 (<CLIENTE_D>) | 13.517 B · `4f6e4cfd…` | 13.517 B · `4f6e4cfd…` | **HTTP 200** | idêntico |
+| 312ebf57 (<CLIENTE_E>) | 13.451 B · `7cd7c299…` | 13.451 B · `7cd7c299…` | **HTTP 200** | idêntico |
+| 859b4021 (<CLIENTE_F>) | **271.346 B** · `fd41a6b3…` (oficial, com mapa) | **13.332 B** · `a670948b…` (versão antiga, 3 pág.) | **HTTP 200** | **DIFERENTE** |
 
 **Achado importante:** a auditoria 859b4021 tem **duas versões distintas**. A pública do bucket é a antiga; a oficial (a que você escolheu como versão de desenvolvimento) só existe em `public/audits`. A migração preserva **as duas**: a oficial vira a cópia principal e a antiga vai para `versao-anterior-do-bucket/`. Nenhuma é descartada.
 
@@ -66,9 +66,9 @@ Sequência: `verify-backup` → `inventory` + comparação com o manifesto (deri
 
 | Auditoria | Destino no bucket privado | SHA-256 (16 primeiros) | Cópia local privada |
 |---|---|---|---|
-| 4323da26 | `audits/4323da26…/auditoria-gmn-goyaz-barbearia-tradicional-4323da26.pdf` (13.517 B) | `4f6e4cfd0bf9541b` | `.data/audits/` (idêntica) |
-| 312ebf57 | `audits/312ebf57…/auditoria-gmn-cl-nica-de-est-tica-dra-rayane-havilla-…-312ebf57.pdf` (13.451 B) | `7cd7c299e80389e4` | `.data/audits/` (idêntica) |
-| 859b4021 (oficial, com mapa) | `audits/859b4021…/auditoria-gmn-dra-anna-vit-ria-…-859b4021.pdf` (271.346 B) | `fd41a6b3e7a2f957` | `.data/audits/` (idêntica) |
+| 4323da26 | `audits/4323da26…/<PDF_CLIENTE_D>-4323da26.pdf` (13.517 B) | `4f6e4cfd0bf9541b` | `.data/audits/` (idêntica) |
+| 312ebf57 | `audits/312ebf57…/<PDF_CLIENTE_E>-312ebf57.pdf` (13.451 B) | `7cd7c299e80389e4` | `.data/audits/` (idêntica) |
+| 859b4021 (oficial, com mapa) | `audits/859b4021…/<PDF_CLIENTE_F>-859b4021.pdf` (271.346 B) | `fd41a6b3e7a2f957` | `.data/audits/` (idêntica) |
 | 859b4021 (versão anterior do bucket) | `audits/859b4021…/versao-anterior-do-bucket/…859b4021.pdf` (13.332 B) | `a670948b9ab6f973` | só no bucket privado e no backup |
 
 `verify-private`: **32/32 verificações aprovadas** (integridade SHA-256 de todas as cópias; cadeia de leitura só com o bucket privado; rota real com sessão servindo do bucket privado e da pasta privada com o SHA correto; rota sem sessão 401; URL pública, chave anon e token forjado negados; listagem anon vazia; bucket novo invisível ao anon; 0 chamadas externas).
@@ -105,7 +105,7 @@ Verificações **antes** de alterar (todas aprovadas): app em execução lê a v
 | Registro | Campo | ANTES | DEPOIS |
 |---|---|---|---|
 | 4323da26 | `pdf_download_url` | `https://…supabase.co/storage/v1/object/public/gmn-audit-pdfs/audits/4323da26…pdf` | `/api/audit/4323da26-b73c-417e-9306-f4330d335bcd/pdf` |
-| | `pdf_storage_path` | `<PASTA_PROJETO_V100>\public\audits\auditoria-gmn-goyaz-…-4323da26.pdf` | `<repo>/.data/audits/auditoria-gmn-goyaz-…-4323da26.pdf` |
+| | `pdf_storage_path` | `<PASTA_PROJETO_V100>\public\audits\<PDF_CLIENTE_D>-4323da26.pdf` | `<repo>/.data/audits/<PDF_CLIENTE_D>-4323da26.pdf` |
 | 312ebf57 | `pdf_download_url` | URL pública do bucket antigo | `/api/audit/312ebf57-edfc-41c4-ac62-9de45ef1e613/pdf` |
 | | `pdf_storage_path` | `<PASTA_PROJETO_V100>\public\audits\…-312ebf57.pdf` | `<repo>/.data/audits/…-312ebf57.pdf` |
 | 859b4021 | `pdf_download_url` | URL pública do bucket antigo (**versão antiga**) | `/api/audit/859b4021-404e-40fc-acba-da21e1fd4746/pdf` |
@@ -128,9 +128,9 @@ O `diagrammer_payload` mudou **somente** nas chaves `pdfDownloadUrl` e `pdfStora
 **Inventário removido (3 arquivos, 300.314 B), um por vez, `fs.unlink` por caminho exato:**
 | Arquivo | Tamanho | SHA-256 |
 |---|---|---|
-| `auditoria-gmn-goyaz-barbearia-tradicional-4323da26.pdf` | 13.517 B | `4f6e4cfd0bf9541b…` |
-| `auditoria-gmn-cl-nica-de-est-tica-dra-rayane-havilla-botox-preenchimento-facial-312ebf57.pdf` | 13.451 B | `7cd7c299e80389e4…` |
-| `auditoria-gmn-dra-anna-vit-ria-dentista-em-an-polis-859b4021.pdf` (oficial com mapa) | 271.346 B | `fd41a6b3e7a2f957…` |
+| `<PDF_CLIENTE_D>-4323da26.pdf` | 13.517 B | `4f6e4cfd0bf9541b…` |
+| `<PDF_CLIENTE_E>-312ebf57.pdf` | 13.451 B | `7cd7c299e80389e4…` |
+| `<PDF_CLIENTE_F>-859b4021.pdf` (oficial com mapa) | 271.346 B | `fd41a6b3e7a2f957…` |
 Registros: `.data/migration/g4-remocao-plano-*.json` (gravado antes de excluir) e `g4-remocao-resultado-*.json`. A pasta `public/audits/` foi mantida, vazia.
 
 **Depois da remoção:**
