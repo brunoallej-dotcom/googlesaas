@@ -8,16 +8,64 @@
 > separada, em produção. O manager não executa nada disto: é chamada externa real, criação de projeto e aplicação de migração.
 > **Custo:** se o laboratório tiver qualquer custo, ele depende de aprovação própria do responsável **antes** da criação (D-G0-12).
 >
-> **Repositório público.** Todo comando usa marcadores (`<REF_LAB>`, `<HOST_DIRETO>`, `<HOST_POOLER>`, `<URL_DATA_API>`, `<CHAVE_ANON>`
-> …). Nenhum host, ref de projeto, IP, chave, senha ou e-mail real entra no repositório, nem no registro de evidências versionado: lá
+> **Repositório público.** Todo comando usa marcadores (`<REF_LAB>`, `<HOST_DIRETO>`, `<HOST_POOLER>`, `<URL_DATA_API>`,
+> `<ARQUIVO_CA>` …). Nenhum host, ref de projeto, IP, chave, senha ou e-mail real entra no repositório, nem no registro de evidências versionado: lá
 > vão só datas, resultados (`PASSOU`/`FALHOU`), códigos e números de latência. O registro completo (com hosts) fica com o responsável,
 > fora do repositório.
 
 ## 0. Antes de começar
 
-- Máquina do responsável (fora da VPS) com: `psql` 16 ou mais novo, `openssl` 1.1.1 ou mais novo (tem `-starttls postgres`), `curl`,
-  este repositório com `node_modules` instalado (para o verificador `gate` e a reconciliação).
-- Todo bloco que lê senha começa com `set +x` e usa `read -rs` (nada de senha em argumento, histórico ou log).
+- Máquina do responsável (fora da VPS) com: `psql` 16 ou mais novo, `openssl` 1.1.1 ou mais novo (tem `-starttls postgres`), `curl`
+  7.55 ou mais novo (tem `-H @arquivo`), este repositório com `node_modules` instalado (para o verificador `gate` e a reconciliação).
+- **Nenhum segredo em argumento, URL, histórico ou log** (revisão do PR #64): senhas e chaves só por `read -rs` para variáveis do shell e
+  daí para arquivos `0600` de uma pasta temporária da sessão (`PGPASSFILE`, arquivos de cabeçalho do `curl`, arquivos `*_FILE` do CLI).
+  **Nunca** `psql "postgresql://usuário:senha@…"` nem `curl -H "apikey: …"` com o valor no comando: o argumento de um processo aparece
+  em `ps` para outros usuários da máquina e o comando vai para o histórico. Vale para **todo** o roteiro, no laboratório e em produção
+  (§11).
+- **TLS `verify-full` obrigatório em toda conexão `psql`** do roteiro, com a CA do projeto: `PGSSLMODE=verify-full` e
+  `PGSSLROOTCERT=<ARQUIVO_CA>` exportados na sessão (abaixo); sem eles o `psql` aceitaria um certificado qualquer.
+
+### 0.1 A sessão segura do roteiro (rodar uma vez, num shell só para isto)
+
+Abra um shell novo só para o roteiro (`bash --norc --noprofile`), cole o bloco abaixo nele e, no fim do roteiro, `exit` (o `trap` apaga
+a pasta temporária com o `PGPASSFILE`, os cabeçalhos e as respostas).
+
+```bash
+set +x
+umask 077
+LAB="$(mktemp -d)"; trap 'rm -rf -- "$LAB"' EXIT
+# TLS obrigatório em TODA conexão psql (laboratório e produção): cadeia até a CA do projeto E nome do host
+export PGSSLMODE=verify-full PGSSLROOTCERT=<ARQUIVO_CA> PGDATABASE=postgres PGPASSFILE="$LAB/pgpass"
+: > "$PGPASSFILE"
+# pg_como <usuário> <host> <porta>: pede a senha sem eco, guarda no PGPASSFILE 0600 da sessão e aponta PGHOST/PGPORT/PGUSER
+pg_como() {
+  local senha
+  read -rsp "senha de $1 em $2:$3: " senha; echo
+  printf '%s:%s:*:%s:%s\n' "$2" "$3" "$1" "$(printf '%s' "$senha" | sed 's/[\\:]/\\&/g')" >> "$PGPASSFILE"
+  unset senha
+  export PGHOST="$2" PGPORT="$3" PGUSER="$1"
+}
+# pg_usar <usuário> <host> <porta>: troca de usuário/host já cadastrado no PGPASSFILE, sem pedir de novo
+pg_usar() { export PGUSER="$1" PGHOST="$2" PGPORT="$3"; }
+# api_cabecalhos <nome>: pede a apikey e o bearer sem eco e grava os cabeçalhos num arquivo 0600 da sessão
+api_cabecalhos() {
+  local chave bearer
+  read -rsp "apikey ($1): " chave; echo
+  read -rsp "bearer ($1; Enter = a mesma apikey): " bearer; echo
+  printf 'apikey: %s\nAuthorization: Bearer %s\n' "$chave" "${bearer:-$chave}" > "$LAB/h-$1"
+  unset chave bearer
+}
+# api <nome> <método> <caminho> [cabeçalho de perfil] [corpo JSON]: código HTTP e os primeiros 300 bytes da resposta (em $LAB/resp)
+api() {
+  local args=(-sS -o "$LAB/resp" -w '%{http_code}\n' -X "$2" -H @"$LAB/h-$1")
+  [ -n "${4:-}" ] && args+=(-H "$4")
+  [ -n "${5:-}" ] && args+=(-H 'Content-Type: application/json' --data-binary "$5")
+  curl "${args[@]}" "<URL_DATA_API>$3"; head -c 300 "$LAB/resp"; echo
+}
+```
+
+`printf` e `read` são do próprio shell (não viram processo com argumentos); o `sed` recebe a senha pela entrada padrão, só para
+escapar `\` e `:` no formato do `PGPASSFILE`.
 - Abra o registro de evidências local (fora do repositório) com a data e a versão do commit aplicado.
 - A sequência é a deste documento. **Pare** em qualquer `FALHOU` e anote; nada de "consertar" pelo console: correção é migração
   versionada nova, revisada.
@@ -33,27 +81,26 @@
    ```bash
    openssl x509 -in <ARQUIVO_CA> -noout -fingerprint -sha256 -subject -enddate
    ```
-3. Aplicar a migração **como `postgres`**, por `psql` (o editor SQL também serve, mas guarda histórico; prefira o `psql`):
+3. Aplicar a migração **como `postgres`**, por `psql` na sessão segura (§0.1; o editor SQL também serve, mas guarda histórico):
    ```bash
-   set +x; read -rsp 'senha do postgres do laboratório: ' PGPASSWORD; export PGPASSWORD; echo
-   psql "host=<HOST_DIRETO> port=5432 dbname=postgres user=postgres sslmode=verify-full sslrootcert=<ARQUIVO_CA>" \
-     -v ON_ERROR_STOP=1 -f supabase/proposed/004_link_audit_guard.sql
+   pg_como postgres <HOST_DIRETO> 5432
+   psql -v ON_ERROR_STOP=1 -f supabase/proposed/004_link_audit_guard.sql
    ```
    Esperado: `COMMIT` no fim. Qualquer `GUARDA abortada` ou `GUARDA falhou` desfaz tudo (transação única): anote a mensagem e pare.
 4. Definir as senhas dos dois papéis de login **no próprio psql** (o cliente envia o hash SCRAM, nunca a senha em claro), uma senha
    diferente para cada um, geradas na hora e guardadas no cofre (a do leitor **nunca** vai para a VPS):
    ```bash
-   psql "host=<HOST_DIRETO> port=5432 dbname=postgres user=postgres sslmode=verify-full sslrootcert=<ARQUIVO_CA>"
+   psql                               # ainda como postgres, pela sessão segura (verify-full; senha do PGPASSFILE)
    postgres=> \password gmn_guard_writer
    postgres=> \password gmn_guard_reader
    postgres=> \q
-   unset PGPASSWORD
    ```
 5. Reaplicar a 004 uma vez (idempotência): esperado `COMMIT` de novo, sem alterar nada.
 
 ## 2. Catálogo e privilégios (a mesma conferência da migração, de fora)
 
-Ainda como `postgres`, só leitura. Cada consulta tem o resultado esperado ao lado; divergência = `FALHOU`.
+Ainda como `postgres` (`pg_usar postgres <HOST_DIRETO> 5432; psql`), só leitura. Cada consulta tem o resultado esperado ao lado;
+divergência = `FALHOU`.
 
 ```sql
 -- dono e SECURITY DEFINER com search_path vazio (esperado: gmn_guard_owner | t | {"search_path=\"\""})
@@ -82,34 +129,29 @@ select pg_get_userbyid(defaclrole), defaclnamespace::regnamespace, defaclobjtype
 
 ## 3. Prova pela Data API (REST): a tabela e a função NÃO respondem
 
-Marcadores: `<URL_DATA_API>` (a URL da API do laboratório), `<CHAVE_ANON>`, `<CHAVE_SERVICE_ROLE>` e `<JWT_AUTENTICADO>` (sessão de um
-usuário de teste criado só no laboratório). Os pedidos tentam o esquema da guarda pelos cabeçalhos de perfil do PostgREST.
+Marcadores: `<URL_DATA_API>` (a URL da API do laboratório). As chaves `anon` e `service_role` e o JWT de um usuário de teste criado só
+no laboratório (papel `authenticated`) são **digitados sem eco** quando o `api_cabecalhos` pede (§0.1), nunca colados no comando. Os
+pedidos tentam o esquema da guarda pelos cabeçalhos de perfil do PostgREST (que não são segredo).
 
 ```bash
-set +x
-for KEY in "<CHAVE_ANON>" "<CHAVE_SERVICE_ROLE>"; do
-  # leitura da tabela
-  curl -sS -o /tmp/r.json -w '%{http_code}\n' "<URL_DATA_API>/rest/v1/ledger_heads?select=*" \
-    -H "apikey: $KEY" -H "Authorization: Bearer $KEY" -H 'Accept-Profile: gmn_link_audit_guard'; head -c 300 /tmp/r.json; echo
-  # escrita direta na tabela
-  curl -sS -o /tmp/r.json -w '%{http_code}\n' -X POST "<URL_DATA_API>/rest/v1/ledger_heads" \
-    -H "apikey: $KEY" -H "Authorization: Bearer $KEY" -H 'Content-Profile: gmn_link_audit_guard' -H 'Content-Type: application/json' \
-    -d '{"audit_ref":"<64 hex de teste>","key_id":"gk-lab-1","ledger_seq":1,"sha256":"<64 hex de teste>"}'; head -c 300 /tmp/r.json; echo
-  # a função de publicação por RPC
-  curl -sS -o /tmp/r.json -w '%{http_code}\n' -X POST "<URL_DATA_API>/rest/v1/rpc/publish_head" \
-    -H "apikey: $KEY" -H "Authorization: Bearer $KEY" -H 'Content-Profile: gmn_link_audit_guard' -H 'Content-Type: application/json' \
-    -d '{"p_audit_ref":"<64 hex de teste>","p_key_id":"gk-lab-1","p_ledger_seq":1,"p_sha256":"<64 hex de teste>"}'; head -c 300 /tmp/r.json; echo
+api_cabecalhos anon             # apikey = a chave anon; Enter no bearer
+api_cabecalhos service_role     # apikey = a chave service_role; Enter no bearer
+api_cabecalhos authenticated    # apikey = a chave anon; bearer = o JWT do usuário de teste
+LINHA='{"audit_ref":"<64 hex de teste>","key_id":"gk-lab-1","ledger_seq":1,"sha256":"<64 hex de teste>"}'
+RPC='{"p_audit_ref":"<64 hex de teste>","p_key_id":"gk-lab-1","p_ledger_seq":1,"p_sha256":"<64 hex de teste>"}'
+for quem in anon authenticated service_role; do
+  api "$quem" GET  '/rest/v1/ledger_heads?select=*' 'Accept-Profile: gmn_link_audit_guard'      # leitura da tabela
+  api "$quem" POST '/rest/v1/ledger_heads' 'Content-Profile: gmn_link_audit_guard' "$LINHA"     # escrita direta
+  api "$quem" POST '/rest/v1/rpc/publish_head' 'Content-Profile: gmn_link_audit_guard' "$RPC"   # a função por RPC
 done
-rm -f /tmp/r.json
 ```
 
-Repetir os três pedidos com `-H "apikey: <CHAVE_ANON>" -H "Authorization: Bearer <JWT_AUTENTICADO>"` (papel `authenticated`).
-
-**Esperado em todos (nove pedidos + três do `authenticated`):** código 4xx, corpo **sem nenhuma linha** da guarda — com o esquema fora de
+**Esperado nos nove pedidos:** código 4xx, corpo **sem nenhuma linha** da guarda — com o esquema fora de
 *Exposed schemas*, o PostgREST recusa o perfil (erro de esquema inválido); se alguém o expuser por engano, o `REVOKE` ainda dá
-"permission denied". Depois, conferir no banco que nada foi gravado: `select count(*) from gmn_link_audit_guard.ledger_heads;` (esperado:
-0 neste ponto do roteiro). Se o projeto tiver o GraphQL ligado, conferir também que a introspecção com `<CHAVE_ANON>` não lista nenhum
-tipo da guarda (`POST <URL_DATA_API>/graphql/v1` com `{"query":"{ __schema { types { name } } }"}` e procurar `ledger`/`Ledger`).
+"permission denied". Depois, conferir no banco que nada foi gravado: `pg_usar postgres <HOST_DIRETO> 5432; psql -Atc "select count(*) from
+gmn_link_audit_guard.ledger_heads"` (esperado: 0 neste ponto do roteiro). Se o projeto tiver o GraphQL ligado, conferir também que a
+introspecção com a chave `anon` não lista nenhum tipo da guarda:
+`api anon POST /graphql/v1 '' '{"query":"{ __schema { types { name } } }"}'; grep -ciE 'ledger' "$LAB/resp"` (esperado: 0).
 
 ## 4. *Exposed schemas* (painel)
 
@@ -132,11 +174,12 @@ openssl s_client -starttls postgres -connect <HOST>:<PORTA> -servername <HOST> -
 Depois, a prova com o **conector de produção** (`pg`, `verify-full`), pelo verificador do portão, com o papel de leitura, sem backup:
 
 ```bash
-set +x
+# credencial do leitor e chave do pseudônimo em arquivos 0600 da sessão: o CLI aceita *_FILE (nada no argv nem no ambiente)
 read -rsp 'URL do leitor (postgresql://gmn_guard_reader[.<REF_LAB>]:<senha com escape>@<HOST>:<PORTA>/postgres?sslmode=verify-full): ' V; echo
-export GMN_LINK_AUDIT_GUARD_READER_DB_URL="$V"; unset V
-export GMN_LINK_AUDIT_GUARD_READER_DB_CA_FILE=<ARQUIVO_CA>
-read -rsp 'chave do pseudônimo do laboratório (<id>:<64 hex>): ' K; echo; export GMN_LINK_AUDIT_GUARD_KEY="$K"; unset K
+printf '%s' "$V" > "$LAB/reader-url"; unset V
+read -rsp 'chave do pseudônimo do laboratório (<id>:<64 hex>): ' K; echo
+printf '%s' "$K" > "$LAB/guard-key"; unset K
+export GMN_LINK_AUDIT_GUARD_READER_DB_URL_FILE="$LAB/reader-url" GMN_LINK_AUDIT_GUARD_READER_DB_CA_FILE=<ARQUIVO_CA> GMN_LINK_AUDIT_GUARD_KEY_FILE="$LAB/guard-key"
 npm run -s link-audit:guard-reconcile -- gate --json
 ```
 
@@ -148,9 +191,10 @@ Repetir para cada host candidato e anotar qual será usado pela VPS (item 7). No
 Conferir também, pelo pooler escolhido, que os ajustes do papel valem na sessão (no modo transação podem não valer):
 
 ```bash
-psql "<URL do writer, pelo host escolhido, com sslrootcert=<ARQUIVO_CA>>" -Atc "show statement_timeout; show lock_timeout; show transaction_isolation"
-# esperado: 3s / 3s / read committed
-psql "<URL do reader, idem>" -Atc "show default_transaction_read_only"     # esperado: on
+pg_como gmn_guard_writer[.<REF_LAB>] <HOST_ESCOLHIDO> <PORTA>
+psql -At -c "show statement_timeout" -c "show lock_timeout" -c "show transaction_isolation"   # esperado: 3s / 3s / read committed
+pg_como gmn_guard_reader[.<REF_LAB>] <HOST_ESCOLHIDO> <PORTA>
+psql -At -c "show default_transaction_read_only"                                           # esperado: on
 ```
 
 Se algum ajuste não vier pelo host escolhido, **esse host não serve** (o prazo de 3 s do servidor e a sessão somente leitura são parte
@@ -160,19 +204,20 @@ transação recusar, a mesma conclusão.
 ## 6. Latência contra o prazo de 3 s (D-G0-3)
 
 O que conta é o caminho **da VPS (ou do host da pilha de homologação) até o host escolhido**, com uma conexão nova por chamada (o
-adaptador não usa pool). Do host da pilha de homologação, com um `psql` 16+, 30 chamadas como o **escritor**, cada uma abrindo
-conexão TLS, publicando uma posição nova de um pseudônimo de teste e fechando:
+adaptador não usa pool). Do host da pilha de homologação, com um `psql` 16+ e a **mesma sessão segura** (§0.1, `verify-full`), 30
+chamadas como o **escritor**, cada uma abrindo conexão TLS, publicando uma posição nova de um pseudônimo de teste e fechando:
 
 ```bash
-set +x; read -rsp 'URL do writer do laboratório: ' W; echo
-REF=$(openssl rand -hex 32)
+pg_como gmn_guard_writer[.<REF_LAB>] <HOST_ESCOLHIDO> <PORTA>
+REF=$(openssl rand -hex 32); : > "$LAB/lat"
 for i in $(seq 1 30); do
-  /usr/bin/time -f '%e' psql "$W" -Atqc "select gmn_link_audit_guard.publish_head('$REF', 'gk-lab-1', $i, '$(openssl rand -hex 32)')" 2>>/tmp/lat.txt >/dev/null
+  /usr/bin/time -f '%e' -a -o "$LAB/lat" psql -Atqc "select gmn_link_audit_guard.publish_head('$REF', 'gk-lab-1', $i, '$(openssl rand -hex 32)')" >/dev/null
 done
-unset W; sort -n /tmp/lat.txt | awk '{a[NR]=$1} END {print "p50", a[int(NR*0.5)], "p95", a[int(NR*0.95)], "max", a[NR]}'; rm -f /tmp/lat.txt
+sort -n "$LAB/lat" | awk '{a[NR]=$1} END {print "p50", a[int(NR*0.5)], "p95", a[int(NR*0.95)], "max", a[NR]}'
 ```
 
-Repetir com uma leitura (`select … from gmn_link_audit_guard.ledger_heads where audit_ref = '$REF' order by ledger_seq desc limit 1`).
+Repetir como leitor (`pg_como gmn_guard_reader[.<REF_LAB>] …`, arquivo `$LAB/lat-leitura`) com uma leitura
+(`select … from gmn_link_audit_guard.ledger_heads where audit_ref = '$REF' order by ledger_seq desc limit 1`).
 **Critério:** máximo abaixo de 2 s nas duas séries ⇒ o prazo de 3 s fica confirmado (anotar p50, p95 e máximo). Máximo entre 2 s e 3 s,
 ou qualquer chamada acima de 3 s ⇒ **não** confirmar: levar os números ao manager, que registra o número novo e o motivo na spec §5.1.7
 (sem mudar a regra decidida). As linhas de teste ficam na tabela (append-only): use um pseudônimo aleatório, que nenhuma auditoria tem.
@@ -199,7 +244,7 @@ se a rotina semanal da reconciliação basta para evitar a pausa.
 
 Com o laboratório já provado, um ensaio rápido (sem a pilha):
 
-1. Como escritor, publicar para um pseudônimo de teste as posições 1 e 3 e repetir a 3 (`RECORDED`, `RECORDED`, `ALREADY_RECORDED`);
+1. Na sessão segura (§0.1), como escritor (`pg_usar gmn_guard_writer[.<REF_LAB>] <HOST> <PORTA>; psql`), publicar para um pseudônimo de teste as posições 1 e 3 e repetir a 3 (`RECORDED`, `RECORDED`, `ALREADY_RECORDED`);
    tentar a 2 (`STALE`) e a 3 com outro hash (`CONFLICT`); como leitor, tentar publicar (`permission denied for function`).
 2. Como `postgres`, tentar `update`/`delete`/`truncate` na tabela: recusados pelos gatilhos (`guarda: registros imutáveis`). **Não**
    usar `session_replication_role` aqui: é o limite declarado (o dono desliga os gatilhos), já demonstrado no teste local.
@@ -230,6 +275,10 @@ Copiar para o registro local e, sanitizado, para o relatório do laboratório qu
 Mesma sequência, com estas diferenças:
 
 - **Antes:** autorização escrita do responsável para aplicar a 004 em produção; janela combinada; backup do projeto disponível.
+- **A sessão segura do §0.1 vale igual em produção** (revisão do PR #64): `PGSSLMODE=verify-full` com a CA de **produção** em
+  `PGSSLROOTCERT`, senhas só pelo `PGPASSFILE` 0600 da sessão, chaves da Data API de produção só pelos arquivos de cabeçalho do
+  `api_cabecalhos`, credencial do leitor e chave do pseudônimo só pelos arquivos `*_FILE`. Nenhum segredo de produção em argumento,
+  URL, histórico ou log; nada colado no comando.
 - **Itens 1 a 5 e 7 a 8:** iguais (aplicar, senhas, catálogo, Data API com as chaves de produção — só pedidos que falham —, *Exposed
   schemas*, TLS, IPv4/IPv6, pausa). A CA de produção é a do projeto de produção (impressão digital anotada).
 - **Item 6 (latência):** **não** publicar linhas de teste em produção: medir só a leitura (como leitor) e o tempo de conexão; a escrita
