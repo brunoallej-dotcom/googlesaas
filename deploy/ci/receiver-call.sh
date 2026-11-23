@@ -5,7 +5,7 @@
 #   deploy <sha40> <bundle-sha256> <stack-sha256> <overlay-sha256|-> <trust-sha256> <supabase-fp12>   (lista no stdin)
 # Uso: deploy/ci/receiver-call.sh upload|deploy. Ambiente: GMN_AMB, GMN_SHA, GMN_SSH_HOST, GMN_SSH_PORT (opcional, padrão 22),
 # GMN_BUNDLE_SHA256 e, no upload, GMN_BUNDLE_BYTES; no deploy, GMN_STACK_SHA256, GMN_OVERLAY_SHA256, GMN_TRUST_SHA256 e
-# GMN_BUILD_SUPABASE_URL (segredo; só a impressão de 12 hex vai ao receptor, mascarada e nunca impressa).
+# GMN_BUILD_SUPABASE_URL (segredo; só a impressão de 12 hex vai ao receptor, nunca impressa).
 # Saída pública: a linha `OK …` do receptor ou uma linha `ERRO <CÓDIGO>[ <DETALHE>]`. O stderr do ssh NUNCA vai ao log (as mensagens
 # dele repetem host e endereço): só passa a linha de erro do receptor, se casar a gramática pública do §5.8.
 set -euo pipefail
@@ -64,10 +64,10 @@ prepare_deploy() {
   [ "$(gmn_sha256_file "$trust_file")" = "$GMN_TRUST_SHA256" ] || gmn_fail TRUST_LIST_CHANGED
   [ -n "${GMN_BUILD_SUPABASE_URL:-}" ] || gmn_fail BUILD_CONFIG_MISSING GMN_BUILD_SUPABASE_URL
   # Impressão do projeto: 12 primeiros hex do sha256 dos bytes da URL, sem quebra de linha (o receptor calcula igual sobre o
-  # NEXT_PUBLIC_SUPABASE_URL do arquivo do host). Mascarada no log por precaução; nunca vai ao resumo nem às saídas do passo.
+  # NEXT_PUBLIC_SUPABASE_URL do arquivo do host). Nunca impressa: só vai no comando remoto (argv do ssh, fora do log), nunca ao resumo
+  # nem às saídas do passo.
   fp12="$(printf '%s' "$GMN_BUILD_SUPABASE_URL" | sha256sum | cut -c1-12)"
   gmn_is_hex "$fp12" 12 || gmn_fail INTERNAL supabase-fp12
-  echo "::add-mask::${fp12}"
   remote_command="deploy ${GMN_SHA} ${GMN_BUNDLE_SHA256} ${GMN_STACK_SHA256} ${overlay} ${GMN_TRUST_SHA256} ${fp12}"
   stdin_file="$trust_file"
   expected="^OK DEPLOYED ${GMN_AMB}-${GMN_SHA} (sha256:[0-9a-f]{64}) (sha256:[0-9a-f]{64}) ${GMN_STACK_SHA256} ${overlay} ([0-9a-f]{64})\$"

@@ -133,7 +133,7 @@ test('P9-W05 nenhuma expressão ${{ }} dentro de run:, sem rastreamento do shell
   for (const step of allSteps()) assert.ok(!runOf(step).includes('${{'), `${String(step.name)}: expressão dentro de run:`);
   for (const [name, text] of jobCode()) {
     const code = withoutComments(text);
-    for (const forbidden of [/set -[a-wyz]*x/, /set -o xtrace/, /bash -[a-z]*x/, /ssh -v/, /\s-vvv?\b/, /StrictHostKeyChecking=no/, /accept-new/]) {
+    for (const forbidden of [/set -[a-wyz]*x/, /set -o xtrace/, /bash -[a-z]*x/, /ssh -v/, /\s-vvv?\b/, /StrictHostKeyChecking=no/, /accept-new/, /::add-mask::/]) {
       assert.ok(!forbidden.test(code), `${name}: ${forbidden}`);
     }
   }
@@ -188,7 +188,7 @@ test('P9-W08 a chave só é escrita depois do build e do pacote, e a limpeza com
   }
 });
 
-test('P9-W11 NOT_MAIN_HEAD no início (antes do checkout e do build) e de novo imediatamente antes do deploy por SSH, com o mesmo texto; CI verde conferido primeiro', () => {
+test('P9-W11 NOT_MAIN_HEAD (cabeça da main pela API, só leitura) no início, antes do checkout e do build, e de novo imediatamente antes do deploy por SSH, com o mesmo texto; CI verde conferido primeiro', () => {
   assert.equal(stepIndex('ci'), 0, 'CI verde no SHA é o primeiro passo');
   assert.equal(stepIndex('head'), 1);
   assert.ok(stepIndex('head') < stepIndex('checkout') && stepIndex('checkout') < stepIndex('build'));
@@ -196,7 +196,10 @@ test('P9-W11 NOT_MAIN_HEAD no início (antes do checkout e do build) e de novo i
   assert.equal(stepIndex('head2'), stepIndex('deploy') - 1, 'a segunda conferência é o passo imediatamente anterior ao deploy');
   assert.equal(runOf(stepById('head2')), runOf(stepById('head')), 'as duas conferências são o mesmo código');
   const head = runOf(stepById('head'));
-  for (const part of ['git ls-remote --exit-code', 'refs/heads/main', 'fail NOT_MAIN_HEAD', 'GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"', '::add-mask::']) assert.ok(head.includes(part), part);
+  for (const part of ['gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha', '|| fail NOT_MAIN_HEAD', '[ "$head" = "$GMN_SHA" ] || fail NOT_MAIN_HEAD']) {
+    assert.ok(head.includes(part), part);
+  }
+  assert.ok(!/git ls-remote|GIT_CONFIG_|base64|add-mask/.test(head), 'nada montado nem mascarado: o gh autentica pelo GH_TOKEN');
   assert.equal(steps.filter((step) => runOf(step).includes('fail NOT_MAIN_HEAD')).length, 2);
   const ci = runOf(stepById('ci'));
   for (const part of ['actions/workflows/ci.yml/runs', 'head_sha="$GMN_SHA"', 'event=push', 'fail CI_PENDING', 'fail CI_NOT_GREEN']) assert.ok(ci.includes(part), part);
@@ -226,7 +229,9 @@ test('P9.4 build pelo commit exato: --build-arg sem =valor, linux/amd64, tag <am
   const hashes = scriptText('declared-hashes.sh');
   assert.ok(!/SUPABASE/.test(withoutComments(hashes)), 'o passo dos hashes não toca no Supabase');
   for (const name of CI_SCRIPTS) assert.ok(!/gmn_output [a-z_]*fp|gmn_output [a-z_]*supabase/i.test(scriptText(name)), `${name}: impressão do Supabase nas saídas do passo`);
-  assert.match(scriptText('receiver-call.sh'), /echo "::add-mask::\$\{fp12\}"/);
+  const fp12Lines = withoutComments(scriptText('receiver-call.sh')).split('\n').filter((line) => line.includes('fp12')).map((line) => line.trim());
+  assert.equal(fp12Lines.length, 4, 'a impressão só é declarada, calculada, validada e posta no comando remoto');
+  assert.ok(fp12Lines.every((line) => !/^(?:echo|printf)\b|>&2|gmn_output/.test(line)), 'a impressão nunca é impressa');
 });
 
 /* ------------------------------------------------------------------------------------------------ runbook e emendas (P9.4) */

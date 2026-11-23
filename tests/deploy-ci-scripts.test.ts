@@ -435,7 +435,7 @@ test('P9.4 receptor: só a linha pública `ERRO E_…` do receptor passa (sem ca
   assertRefused(extra.sandbox, runScript(extra.sandbox, 'receiver-call.sh', ['upload'], uploadEnv(extra)), 'RECEIVER_BAD_OUTPUT', 'upload');
 });
 
-test('P9-D01 P9-D11 (lado do workflow) deploy em produção: overlay "-", lista no stdin, impressão do Supabase só no comando (mascarada), OK DEPLOYED conferido', (t) => {
+test('P9-D01 P9-D11 (lado do workflow) deploy em produção: overlay "-", lista no stdin, impressão do Supabase só no comando (nunca impressa), OK DEPLOYED conferido', (t) => {
   const trust = sha256('');
   const fixture = receiverFixture(t, [{ stdout: deployedLine('producao', '-', trust) }]);
   const result = runScript(fixture.sandbox, 'receiver-call.sh', ['deploy'], deployEnv(fixture, 'producao'));
@@ -449,9 +449,8 @@ test('P9-D01 P9-D11 (lado do workflow) deploy em produção: overlay "-", lista 
   assert.ok(command.length <= 512 && /^[\x20-\x7e]+$/.test(command), 'ASCII, até 512 bytes');
   assert.equal(call.stdinSha256, trust, 'a lista vai no stdin');
   assert.equal(call.argv[call.argv.length - 2], `gmn-deploy@${HOST_SENTINEL}`);
-  const printed = `${result.stdout}${result.stderr}`.split('\n').filter((line) => line.includes(fp12));
-  assert.deepEqual(printed, [`::add-mask::${fp12}`], 'a impressão só aparece no pedido de máscara');
-  assertNoLeak(result, SUPABASE_URL_SENTINEL, HOST_SENTINEL);
+  assertNoLeak(result, fp12, SUPABASE_URL_SENTINEL, HOST_SENTINEL);
+  assert.ok(!result.stdout.includes('::'), 'nenhum comando de workflow (nada de add-mask)');
   assert.deepEqual(outputs(fixture.sandbox), { web_image: IMAGE_WEB, worker_image: IMAGE_WORKER, trust_installed_sha256: trust });
 });
 
@@ -619,24 +618,26 @@ test('P9.4 CI verde (passo `ci`, antes do checkout): só a execução mais recen
   assert.equal(calls(sandbox, 'gh').length, 0);
 });
 
-test('P9-W11 cabeça da main (passos `head` e `head2`): git ls-remote só leitura, token por cabeçalho no ambiente; outro commit, várias linhas ou falha ⇒ NOT_MAIN_HEAD', (t) => {
+test('P9-W11 cabeça da main (passos `head` e `head2`): leitura pela API do GitHub com o token do job no ambiente (nada montado, nada mascarado); outro commit, várias linhas ou falha ⇒ NOT_MAIN_HEAD', (t) => {
   for (const stepId of ['head', 'head2']) {
-    const sandbox = makeSandbox(t, { commands: { git: [{ responses: [{ stdout: `${SHA}\trefs/heads/main\n` }] }] }, recordEnv: ['GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0', 'GIT_TERMINAL_PROMPT'] });
+    const sandbox = makeSandbox(t, { commands: { gh: [{ responses: [{ stdout: `${SHA}\n` }] }] }, recordEnv: ['GH_TOKEN'] });
     const ok = runInline(sandbox, stepId, INLINE_ENV);
     assert.equal(ok.status, 0, ok.stderr);
-    const [call] = calls(sandbox, 'git');
+    const [call] = calls(sandbox, 'gh');
     assert.ok(call);
-    assert.deepEqual(call.argv, ['ls-remote', '--exit-code', 'https://github.example/dono-ficticio/repo-ficticio.git', 'refs/heads/main']);
-    const basic = Buffer.from('x-access-token:token-ficticio-de-teste').toString('base64');
-    assert.deepEqual(call.env, { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'http.extraheader', GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${basic}`, GIT_TERMINAL_PROMPT: '0' });
-    assert.match(ok.stdout, new RegExp(`^::add-mask::${basic.replace(/[+/=]/g, '\\$&')}$`, 'm'), 'o cabeçalho é mascarado');
+    assert.deepEqual(call.argv, ['api', '--method', 'GET', 'repos/dono-ficticio/repo-ficticio/git/ref/heads/main', '--jq', '.object.sha']);
+    assert.deepEqual(call.env, { GH_TOKEN: 'token-ficticio-de-teste' }, 'o token só pelo ambiente');
+    assert.ok(!ok.stdout.includes('::'), 'nenhum comando de workflow (nada de add-mask)');
     assertNoLeak(ok, 'token-ficticio-de-teste');
 
-    const cases: Array<[string, number]> = [[`${OTHER_SHA}\trefs/heads/main\n`, 0], [`${SHA}\trefs/heads/main\n${SHA}\trefs/heads/x/refs/heads/main\n`, 0], ['', 2], [`${SHA} refs/heads/main\n`, 0]];
+    const cases: Array<[string, number]> = [[`${OTHER_SHA}\n`, 0], [`${SHA}\n${SHA}\n`, 0], ['', 1], [`${SHA.slice(0, 39)}\n`, 0], ['null\n', 0]];
     for (const [stdout, rc] of cases) {
-      setScenario(sandbox, { commands: { git: [{ responses: [{ stdout, rc }] }] } });
+      setScenario(sandbox, { commands: { gh: [{ responses: [{ stdout, rc }] }] } });
       assertRefused(sandbox, runInline(sandbox, stepId, INLINE_ENV), 'NOT_MAIN_HEAD');
     }
+    setScenario(sandbox, {});
+    assertRefused(sandbox, runInline(sandbox, stepId, { ...INLINE_ENV, GITHUB_REPOSITORY: 'dono/repo;x' }), 'INPUT_INVALID');
+    assert.equal(calls(sandbox, 'gh').length, 0);
   }
 });
 

@@ -378,11 +378,15 @@ dispara e aprova as próprias execuções (risco aceito, §11.2).
 `tests/deploy-ci-scripts.test.ts`; runbook do responsável `deploy/hostinger/RUNBOOK-DEPLOY-PELO-CI.md`):
 
 - Os passos 1 e 2 rodam antes do checkout, então são escritos no próprio workflow; a segunda conferência `NOT_MAIN_HEAD` (passo 9) é
-  o mesmo texto da primeira (teste). O token do job vai ao `git ls-remote` por cabeçalho no ambiente (`GIT_CONFIG_*`), nunca na linha
-  de comando. Os demais passos chamam scripts pequenos em `deploy/ci/`, testados com comandos falsos no `PATH`.
+  o mesmo texto da primeira (teste). **No lugar do `git ls-remote`** do passo 2, a cabeça da `main` é lida pela API, só leitura
+  (`gh api repos/<repo>/git/ref/heads/main --jq .object.sha`, permissão `contents: read`): o `gh` autentica com o token do job no
+  ambiente (`GH_TOKEN`), sem montar cabeçalho nem pedir máscara ao runner (o SAST bloqueia `::add-mask::` de valor montado no
+  workflow, regra `unsafe-add-mask-workflow-command`). Os demais passos chamam scripts pequenos em `deploy/ci/`, testados com comandos
+  falsos no `PATH`.
 - **Impressão do projeto Supabase:** os 12 primeiros hex do sha256 dos bytes da URL, **sem** quebra de linha (o receptor calcula
-  igual sobre o `NEXT_PUBLIC_SUPABASE_URL` do arquivo do host). Calculada só no passo do `deploy`, a partir do segredo, e mascarada no
-  log (`::add-mask::`); nunca vai às saídas do passo nem ao resumo.
+  igual sobre o `NEXT_PUBLIC_SUPABASE_URL` do arquivo do host). Calculada só no passo do `deploy`, a partir do segredo, e **nunca
+  impressa**: vai só no comando remoto (argv do `ssh`, fora do log), nunca às saídas do passo nem ao resumo (teste). Nenhum passo do
+  job usa `::add-mask::`.
 - **`OK DEPLOYED`:** o job aceita os ids das imagens no formato do Docker (`sha256:<64 hex>`), confere tag, stack e sobreposição
   declaradas, e exige que a lista **instalada** seja a enviada (senão `TRUST_LIST_INSTALLED_MISMATCH`, vermelho).
 - **Saída do `ssh`:** o stderr do `ssh` nunca vai ao log (repete host e endereço). Só passa a linha `ERRO E_…` do receptor que casa a
@@ -807,7 +811,8 @@ relatório indicado.
 - [x] **P9-W08** a chave só é escrita depois do passo de build, e há limpeza com `if: always()`.
 - [ ] **P9-W09** `seals-deliver` não roda `npm`, `node` nem `npx`.
 - [ ] **P9-W10** `ci.yml`: job `seals` sem filtro de caminho, sem segredo, `persist-credentials: false`, base = `HEAD^1` no PR.
-- [x] **P9-W11** o job `deploy` compara `github.sha` com `refs/heads/main` (`git ls-remote`, só leitura) no início do job, antes do
+- [x] **P9-W11** *(P9.4: a leitura é pela API, `gh api …/git/ref/heads/main`, só leitura, no lugar do `git ls-remote`; §5.5.1,
+  precisões)* o job `deploy` compara `github.sha` com `refs/heads/main` (`git ls-remote`, só leitura) no início do job, antes do
   checkout e do build, e de novo imediatamente antes do comando `deploy` por SSH; diferença ⇒ `NOT_MAIN_HEAD` (teste estático da
   presença e da ordem dos passos).
 

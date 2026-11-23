@@ -79,13 +79,9 @@ jobs:
           fail() { printf 'code=%s\n' "$1" >>"$GITHUB_OUTPUT"; printf 'ERRO %s\n' "$1" >&2; exit 1; }
           [[ "$GMN_SHA" =~ ^[0-9a-f]{40}$ ]] || fail INPUT_INVALID
           [[ "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail INPUT_INVALID
-          # git ls-remote só leitura, com o token do job num cabeçalho passado pelo ambiente (nunca na linha de comando).
-          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
-          echo "::add-mask::$auth"
-          head="$(GIT_TERMINAL_PROMPT=0 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=1 \
-            GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" \
-            git ls-remote --exit-code "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" refs/heads/main)" || fail NOT_MAIN_HEAD
-          [ "$head" = "$(printf '%s\trefs/heads/main' "$GMN_SHA")" ] || fail NOT_MAIN_HEAD
+          # Cabeça atual da main pela API, só leitura (contents: read); o gh autentica com o GH_TOKEN do ambiente, nada é montado.
+          head="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" || fail NOT_MAIN_HEAD
+          [ "$head" = "$GMN_SHA" ] || fail NOT_MAIN_HEAD
           echo "o commit ainda é a cabeça da main"
 
       - name: Checkout do SHA (sem credencial persistida)
@@ -135,13 +131,9 @@ jobs:
           fail() { printf 'code=%s\n' "$1" >>"$GITHUB_OUTPUT"; printf 'ERRO %s\n' "$1" >&2; exit 1; }
           [[ "$GMN_SHA" =~ ^[0-9a-f]{40}$ ]] || fail INPUT_INVALID
           [[ "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail INPUT_INVALID
-          # git ls-remote só leitura, com o token do job num cabeçalho passado pelo ambiente (nunca na linha de comando).
-          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
-          echo "::add-mask::$auth"
-          head="$(GIT_TERMINAL_PROMPT=0 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=1 \
-            GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" \
-            git ls-remote --exit-code "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" refs/heads/main)" || fail NOT_MAIN_HEAD
-          [ "$head" = "$(printf '%s\trefs/heads/main' "$GMN_SHA")" ] || fail NOT_MAIN_HEAD
+          # Cabeça atual da main pela API, só leitura (contents: read); o gh autentica com o GH_TOKEN do ambiente, nada é montado.
+          head="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" || fail NOT_MAIN_HEAD
+          [ "$head" = "$GMN_SHA" ] || fail NOT_MAIN_HEAD
           echo "o commit ainda é a cabeça da main"
 
       - name: Receptor - deploy (lista de confiança no stdin)
