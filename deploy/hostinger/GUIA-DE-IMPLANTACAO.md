@@ -107,20 +107,32 @@ ancoram (decisões e resultados).
 ```bash
 cd /opt/gmn && set -a; . ./.env.production; set +a        # carrega só os marcadores; nada é impresso
 P6="$GMN_RAIZ_DADOS_DECISOES $GMN_RAIZ_DADOS_RECIBOS_DECISOES $GMN_RAIZ_DADOS_RESULTADOS $GMN_RAIZ_DADOS_RECIBOS_RESULTADOS $GMN_RAIZ_DADOS_LIVRO $GMN_RAIZ_DADOS_MANIFESTOS"
-# criar: dono 10001:10001 (usuário da aplicação), modo 0700; o pai de cada uma precisa ser atravessável (0755, root)
-for d in $P6; do sudo install -d -m 0700 -o 10001 -g 10001 "$d"; done
-# conferir por stat (registrar a saída no relatório da G2, ensaio EN-12, e na linha G-3 do portão): esperado "10001:10001 700 <pasta>"
+# criar as CINCO pastas de dados: dono 10001:10001 (usuário da aplicação), modo 0700; o pai de cada uma precisa ser atravessável (0755, root)
+for d in $GMN_RAIZ_DADOS_DECISOES $GMN_RAIZ_DADOS_RECIBOS_DECISOES $GMN_RAIZ_DADOS_RESULTADOS $GMN_RAIZ_DADOS_RECIBOS_RESULTADOS $GMN_RAIZ_DADOS_LIVRO; do
+  sudo install -d -m 0700 -o 10001 -g 10001 "$d"
+done
+# a de MANIFESTOS (P9.3b, VC-E8): dono gmn-seals (o usuário do receptor de manifestos, criado antes, RUNBOOK-DEPLOY-PELO-CI.md H-05; nunca 10001
+# nem root), grupo 10001 (o web lê pelo grupo) e 2750 (o setgid passa o grupo às subpastas novas; só o receptor escreve)
+sudo install -d -m 2750 -o gmn-seals -g 10001 "$GMN_RAIZ_DADOS_MANIFESTOS"
+# conferir por stat (registrar a saída no relatório da G2, ensaio EN-12, e na linha G-3 do portão): esperado "10001:10001 700 <pasta>" nas
+# cinco de dados e "<uid de gmn-seals>:10001 2750 <pasta>" na de manifestos; pelo nome, "gmn-seals:10001 2750" (P9-O05)
 sudo stat -c '%u:%g %a %n' $P6
+sudo stat -c '%U:%g %a %n' "$GMN_RAIZ_DADOS_MANIFESTOS"
 # recibos e livro em outro disco que os dados: o número do dispositivo (%d) dos recibos e do livro difere do das decisões e dos resultados
 sudo stat -c '%d %n' $P6
-# PRÉ-REQUISITO QUE FALHA: seis caminhos distintos (realpath), nenhum dentro de outro, modo 0700, recibos e livro em dispositivos
-# independentes. Saída diferente de 0 ⇒ NÃO implantar. Registrar a saída no EN-12 da G2 e na linha G-3 do portão.
+# PRÉ-REQUISITO QUE FALHA: seis caminhos distintos (realpath), nenhum dentro de outro, modo 0700 nas cinco de dados, 2750 com o grupo 10001 e
+# dono que não é 10001 nem 0 na de manifestos, recibos e livro em dispositivos independentes. Saída diferente de 0 ⇒ NÃO implantar. Registrar
+# a saída no EN-12 da G2 e na linha G-3 do portão.
 sudo bash /opt/gmn/verificar-pastas-fase6.sh "$GMN_RAIZ_DADOS_DECISOES" "$GMN_RAIZ_DADOS_RECIBOS_DECISOES" "$GMN_RAIZ_DADOS_RESULTADOS" \
   "$GMN_RAIZ_DADOS_RECIBOS_RESULTADOS" "$GMN_RAIZ_DADOS_LIVRO" "$GMN_RAIZ_DADOS_MANIFESTOS"
 ```
 - `verificar-pastas-fase6.sh` vem de `deploy/hostinger/` (copiado para `/opt/gmn` junto com o `stack.yml`, §3.2) e só lê; é testado com
-  diretórios temporários em `tests/deploy-verificar-pastas.test.ts` (pastas coincidentes, link simbólico, aninhadas, modo e mesmo disco).
-- A pasta de manifestos é **só leitura** para o web (`read_only: true` no bind); a escrita é só pelo canal do CI (D15.5), fora da VPS.
+  diretórios temporários em `tests/deploy-verificar-pastas.test.ts` (pastas coincidentes, link simbólico, aninhadas, modo, dono e grupo da pasta
+  de manifestos e mesmo disco).
+- A pasta de manifestos é **só leitura** para o web (`read_only: true` no bind, e o web só tem o grupo: `r-x` na pasta, `r--` nos arquivos
+  `0444`); a escrita é só pelo canal do CI (D15.5): o receptor de manifestos do host (`gmn-seal-receiver.cjs`, P9.3b), com o usuário dono da
+  pasta, depois da segunda verificação `v2`. Dar a pasta ao uid 10001 daria à chave de manifestos o poder do web sobre as outras cinco
+  (spec `docs/specs/ci-deploy-and-seal-delivery.md` §5.10). Restauração preservando dono, grupo e modo: `PLANO-DE-BACKUP-E-RESTAURACAO.md`.
 - O Worker **não** monta nenhuma delas: conferir depois do deploy com
   `docker service inspect gmn_gmn-worker --format '{{json .Spec.TaskTemplate.ContainerSpec.Mounts}}'` (só a pasta de PDFs).
 - Backup de cada uma (destinos independentes): `PLANO-DE-BACKUP-E-RESTAURACAO.md`, seção "Fase 6".

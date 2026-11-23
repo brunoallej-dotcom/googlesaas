@@ -389,3 +389,47 @@ test('CI: o job "receivers artifact (build, hash)" roda este teste em modo estri
   assert.match(job, /tests\/link-audit-seal-receiver-artifact\.test\.ts/);
   for (const name of [SEAL_RECEIVER_FILE_NAME, 'gmn-seals.modelo.sh', 'gmn-hml-seals.modelo.sh', 'receivers.sha256']) assert.ok(job.includes(`\${{ runner.temp }}/receivers-artifact/${name}`), `upload de ${name}`);
 });
+
+test('runbook H-04/H-05/H-06 (P9.3b): artefato e modelos de manifestos instalados só depois do sha256sum -c; wrapper gmn-hml-seals preenchido numa pasta privada (mktemp -d) depois de conferir o modelo de novo, instalado 0755 do root, comparado e com o sha256 registrado; usuário de manifestos fora de docker/sudo/10001; pasta gmn-hml-seals:10001 2750 e trava seals.flock do root; blocos privilegiados em subshell com set -euo pipefail', () => {
+  const runbook = fs.readFileSync(path.join(__dirname, '..', 'deploy', 'hostinger', 'RUNBOOK-DEPLOY-PELO-CI.md'), 'utf8');
+  const section = (from: string, to: string): string => runbook.slice(runbook.indexOf(from), runbook.indexOf(to));
+  /** Os blocos `bash`, sem a indentação de item de lista (o recuo da primeira linha sai de todas). */
+  const blocks = (text: string): string[] =>
+    [...text.matchAll(/^( *)```bash\n([\s\S]*?)\n *```/gm)].map((match) => (match[2] as string).replace(new RegExp(`^ {0,${(match[1] as string).length}}`, 'gm'), ''));
+  const h04 = blocks(section('### H-04', '### H-05'));
+  const all04 = h04.join('\n');
+  assert.ok(!/\/tmp\//.test(all04), 'nenhum caminho fixo do /tmp');
+  const vpsCheck = all04.indexOf('( cd "$S" && sha256sum -c --strict receivers.sha256 )');
+  const sealInstall = all04.indexOf('"$S/gmn-seal-receiver.cjs" "$S/gmn-seals.modelo.sh" "$S/gmn-hml-seals.modelo.sh"');
+  assert.ok(vpsCheck > 0 && sealInstall > vpsCheck, 'na VPS: sha256sum -c dos seis antes de instalar o receptor de manifestos e os modelos');
+  const seals = h04.find((block) => block.includes('"$K/gmn-hml-seals.modelo.sh" > "$T/gmn-hml-seals"')) ?? '';
+  assert.ok(seals.startsWith('( set -euo pipefail'), 'subshell que para no primeiro erro');
+  assert.match(seals, /T="\$\(mktemp -d\)"/, 'pasta privada');
+  const recheck = seals.indexOf('( cd "$K" && sha256sum -c --strict receivers.sha256 )');
+  const fill = seals.indexOf('"$K/gmn-hml-seals.modelo.sh" > "$T/gmn-hml-seals"');
+  const markers = seals.indexOf("grep -n '<[A-Z_]*>' \"$T/gmn-hml-seals\"");
+  const install = seals.indexOf('sudo install -m 0755 -o root -g root "$T/gmn-hml-seals" /opt/gmn-receivers/bin/gmn-hml-seals');
+  assert.ok(recheck > 0 && recheck < fill && fill < markers && markers < install, 'modelo conferido de novo, preenchido, sem marcador, e só então instalado');
+  assert.match(seals, /awk '\$2 == "gmn-seal-receiver\.cjs" \{ print \$1 \}' "\$K\/receivers\.sha256"/, 'o hash do artefato de manifestos vem do receivers.sha256 conferido');
+  assert.match(seals, /cmp "\$T\/gmn-hml-seals" \/opt\/gmn-receivers\/bin\/gmn-hml-seals/);
+  assert.match(seals, /sha256sum \/opt\/gmn-receivers\/bin\/gmn-hml-seals\s+# registrar/);
+  assert.match(seals, /rm -rf -- "\$T"\n\)$/);
+  const h05 = blocks(section('### H-05', '### H-06')).find((block) => block.includes('useradd')) ?? '';
+  assert.ok(h05.startsWith('( set -euo pipefail'), 'H-05 em subshell');
+  assert.ok(!/usermod -aG docker gmn-hml-seals|usermod -aG [a-z,]*\b(?:sudo|10001)\b/.test(h05), 'o usuário de manifestos nunca entra em docker, sudo ou 10001');
+  assert.match(h05, /grep -qxE '0\|10001'/, 'e o bloco confere');
+  const h06 = blocks(section('### H-06', '### H-07'));
+  const folders = h06.find((block) => block.includes('/srv/gmn-hml/manifestos')) ?? '';
+  const state = h06.find((block) => block.includes('seals.flock')) ?? '';
+  for (const block of [folders, state]) assert.ok(block.startsWith('( set -euo pipefail'), 'H-06 em subshell');
+  assert.match(folders, /sudo install -d -m 2750 -o gmn-hml-seals -g 10001 \/srv\/gmn-hml\/manifestos/);
+  assert.match(folders, /\[ "\$\(stat -c '%U:%g %a' \/srv\/gmn-hml\/manifestos\)" = "gmn-hml-seals:10001 2750" \]/);
+  assert.match(state, /sudo install -m 0644 -o root -g root \/dev\/null \/var\/lib\/gmn-seals\/homologacao\/seals\.flock/);
+  assert.match(state, /sudo install -d -m 0700 -o gmn-hml-seals -g gmn-hml-seals \/var\/lib\/gmn-seals\/homologacao/);
+  const template = fs.readFileSync(HML_WRAPPER, 'utf8');
+  for (const [name, value] of [['LOCK', '/var/lib/gmn-seals/homologacao/seals.flock'], ['SEALS_ROOT', '/srv/gmn-hml/manifestos'], ['NODE_LOCK', '/var/lib/gmn-seals/homologacao/lock'], ['LOG', '/var/log/gmn-receivers/homologacao-seals.log']] as const) {
+    assert.ok(template.split('\n').includes(`${name}='${value}'`), `${name} do modelo`);
+    if (name !== 'LOG') assert.ok(runbook.includes(value.replace(/\/lock$/, '')), `${value}: o mesmo caminho no runbook`);
+  }
+  assert.ok(state.includes('log="/var/log/gmn-receivers/homologacao-${pair%%:*}.log"') && state.includes('seals:gmn-hml-seals'), 'o log do modelo é o que o H-06 cria (0600, do usuário de manifestos)');
+});

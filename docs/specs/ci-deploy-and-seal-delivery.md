@@ -4,8 +4,10 @@
 > lista versionada e pasta `link-audit-seals/`; critérios marcados no §6 com o teste). **P9.4 implementada** (`deploy.yml`, scripts do
 > job, sobreposição de homologação e runbook do responsável). **P9.3a implementada** (receptor de deploy, artefato com hash versionado em
 > `deploy/hostinger/receivers.sha256`, modelos de *wrapper* e job `receivers artifact (build, hash)`; §5.6 "Implementação (P9.3a)";
-> P9-D01 a P9-D14 marcados no §6). Ainda não há usuário de host nem ambiente do GitHub. O código restante vem nas fatias P9.3a a P9.5
-> (`docs/plan/implementation-waves.md`, seção "Deploy pelo CI (P-9)"). Nenhuma fatia faz deploy: o primeiro deploy é do
+> P9-D01 a P9-D14 marcados no §6). **P9.3b implementada** (receptor de manifestos `gmn-seal-receiver.cjs`, gravação exclusiva do `sign`
+> extraída para `exclusive-write.ts`, modelos de *wrapper* `gmn-seals`/`gmn-hml-seals` e a regra `2750` da pasta de manifestos; §5.7
+> "Implementação (P9.3b)"; P9-R01 a P9-R13 e P9-F01 marcados no §6). Ainda não há usuário de host nem ambiente do GitHub. O código restante
+> vem na fatia P9.5 (`docs/plan/implementation-waves.md`, seção "Deploy pelo CI (P-9)"). Nenhuma fatia faz deploy: o primeiro deploy é do
 > responsável, pelo workflow, depois das ações do §10.1.
 >
 > **Decisão do responsável (23/11/2026), registrada aqui e não rediscutida:** aceita a recomendação do manager de
@@ -759,6 +761,72 @@ Não há verbo de leitura, listagem, remoção nem troca de lista.
 módulo compartilhado. O comportamento não muda, mas o hash do artefato do `sign` muda
 (`docs/phase6-auditoria-link/p1-sign-artifact.sha256` refeito no mesmo PR, como nas W5.2a/W5.2b).
 
+**Implementação (P9.3b)** (`src/lib/seal-receiver/`, entrada fina `scripts/seal-receiver.ts`, artefato pelo mesmo
+`scripts/build-receivers-artifact.ts`, modelos `deploy/hostinger/receivers/gmn-seals.modelo.sh` e `gmn-hml-seals.modelo.sh`; testes
+`tests/link-audit-seal-receiver*.test.ts`). Núcleo puro com disco, stdin, relógio, trava e log só por portas (`ports.ts`); o adaptador de
+produção (`node-adapters.ts`) é o único arquivo com `node:fs` e não tem **nenhum** processo filho. Reaproveita, sem reimplementar: a
+gramática e as regras por arquivo do canal (`judgeSeal`/`judgeClosure`, S-05 a S-08), o módulo da lista (`parseTrustListFile`,
+`trustListEnvironmentViolations`), o S-10 (`chainRefusalCode`) e o S-11 (`closureMotive`) da P9.2; o autoteste do `sign` (`selfTestSeal` sobre
+`chainSnapshot` + `withVirtualFile`); e a gravação exclusiva, agora em `src/lib/link-audit-attestation/exclusive-write.ts`. Decisões tomadas
+na fatia, todas de falha fechada:
+
+- **Extração da gravação do `sign`:** `linkExclusive`, `commitFile`, `subDir` e `rootIsReal` saíram de `sign-run.ts` sem mudança de
+  comportamento; as recusas são passadas por quem chama (`ExclusiveWriteOutcomes`: o `sign` passa as mensagens dele, o receptor os códigos
+  dele). Novo, só de leitura: `subDirState` (a regra do `subDir` sem criar nada, para o passo 4). Hash do artefato do `sign`:
+  `978121b48fb3486b4de087cef1095051dd51cf6bd310fdb1edb2f0eef7578255` (spec do P1 §5.5.1); os testes do `sign` e do `close-key` passam sem
+  alteração.
+- **Wrapper.** O padrão da P9.3a: sha256 do artefato a cada execução (`E_ARTIFACT`, 17), `flock -n -E 75` num arquivo do root
+  (`/var/lib/gmn-seals/<amb>/seals.flock`, H-06) ⇒ `E_LOCKED` (16), Node, `flock` ou trava ausentes ⇒ `E_INTERNAL` (29) sem caminho, `env -i
+  PATH=/usr/bin:/bin` e só o `SSH_ORIGINAL_COMMAND` repassado. Mais: `umask 027` antes do Node, e `--disable-sigusr1 --permission` com
+  **exatamente** os grants da linha acima, **um por caminho** (o Node 20.7+ não aceita a lista por vírgula da linha do §5.7):
+  `--allow-fs-read` da pasta de manifestos, da lista instalada e do artefato; `--allow-fs-write` da pasta de manifestos, da pasta da trava e
+  da pasta do log. Nenhum `--allow-child-process`, `--allow-worker`, `--allow-addons` ou `--allow-wasi`. Produção tem o marcador
+  `<RAIZ_MANIFESTOS>` (o `GMN_RAIZ_DADOS_MANIFESTOS` real); homologação usa `/srv/gmn-hml/manifestos` (H-06).
+- **Confinamento conferido pelo receptor:** ambiente só com `PATH` e `SSH_ORIGINAL_COMMAND`, parâmetros fixos (`--env`, `--seals-root`,
+  `--trust-list`, `--lock`, `--log`: todos obrigatórios, absolutos e normalizados; lista, trava e log fora da pasta de manifestos) e o
+  modelo de permissões **ligado**, sem filho nem worker, sem escrita sobre a lista instalada (RC-09) e com escrita na pasta de manifestos e
+  leitura da lista. Qualquer desvio ⇒ `E_INTERNAL`, antes de ler o stdin. A entrada também aplica `umask 027` (defesa).
+- **Trava de defesa** (`--lock`, como a `deploy.lock` da P9.3a): arquivo `O_EXCL | O_NOFOLLOW` com o pid; existente ⇒ `E_LOCKED`, nunca
+  retomado. A liberação só apaga o arquivo que ainda é o **mesmo inode** que o processo criou, conferido por uma abertura só de escrita
+  (sob `--permission` o receptor não tem leitura da pasta da trava). Depois de `SIGKILL`, o responsável confere a trava do kernel e apaga à mão
+  (runbook H-04).
+- **Passo 1:** prazo de 30 s para o stdin **inteiro** (cobre também o tempo sem dados: quem goteja não segura a trava); o primeiro byte além
+  de 256 KiB recusa sem ler o resto; 0 bytes ⇒ `E_INPUT_TRUNCATED` (um manifesto nunca é vazio); bytes a menos dão `E_HASH_MISMATCH`.
+- **Passo 2:** a lista instalada é lida **uma vez**, por um único descritor (`O_NOFOLLOW | O_NONBLOCK`, tipo e tamanho no descritor, teto de
+  8 KiB), e o hash, o formato, a regra de ambiente e a verificação `v2` usam esses mesmos bytes; um `rename` da instalada no meio nunca entrega
+  arquivo parcial (P9-R13). Ausente ⇒ `E_TRUST_LIST_MISMATCH` (falta o deploy); link, não regular, ilegível ou acima do teto ⇒
+  `E_TRUST_LIST_INVALID`. A `trust-keys.pending` (P9.3a) nunca é lida: nem há grant para ela.
+- **Passo 3:** além das regras do canal, os bytes têm de ser UTF-8 exato (o texto julgado é o texto gravado). Fecho com nome ≠
+  `retiredKeyId` ou fora do esquema ⇒ `E_FORMAT`.
+- **Passo 5:** saída `OK ALREADY_PRESENT <relpath> <sha256>` (mesma forma do `WRITTEN`). Destino maior que o teto ⇒ `E_EXISTS_DIFFERENT`;
+  `ENOTDIR` no caminho ⇒ `E_UNSAFE_PATH`; outra falha de leitura ⇒ `E_INTERNAL` (nada gravado).
+- **Passo 6:** o detalhe do `E_V2_REFUSED` é uma das 14 razões de `EvidenceTrustReason` ou **`HEAD_MISMATCH`** (a cadeia do host com o
+  candidato autentica, mas a cabeça é outra: o host já tem um `seq` maior e falta o do candidato; o análogo do `SEAL_HEAD_MISMATCH` do S-10).
+  Os códigos próprios da leitura da cadeia do `sign` (pasta ilegível, nome em outra caixa) caem em `VERIFICATION_ERROR`. Lista instalada vazia
+  (política fechada) ⇒ `E_V2_REFUSED PROOF_NOT_CONFIGURED`. O detalhe do `E_CLOSURE_REFUSED` é um dos quatro motivos do S-11:
+  `SIGNER_NOT_LISTED`, `SIGNATURE_INVALID`, `RETIRED_NOT_LISTED`, `HEAD_NOT_IN_REPO` (o nome do CI foi mantido; no host, "repo" é a cadeia do
+  host). A verificação lê por uma visão da porta sem nenhuma operação de escrita.
+- **Passo 7:** o `0444` é **explícito**: o adaptador faz `chmod` do temporário recém-criado (`O_EXCL`) antes do `fsync`, porque o `umask 027`
+  daria `0440` e o modelo de permissões desliga o `fchmod`. A pasta nova nasce `2750` (`umask 027` + setgid herdado da raiz; P9-R12).
+  `EEXIST` no `link()` ⇒ volta ao passo 5 uma vez (duas rodadas no máximo; uma terceira ⇒ `E_WRITE_FAILED`). Raiz ou subpasta trocada entre o
+  passo 4 e a gravação ⇒ `E_UNSAFE_PATH`. Falha do `fsync` da raiz depois de criar a pasta de uma auditoria nova ⇒ `E_WRITE_FAILED` (a pasta
+  vazia fica; nenhum arquivo).
+- **Passo 8:** releitura dos bytes do destino e nova classificação sem nada em memória (a leitura da cadeia do `sign` pelo S-10, ou o S-11 de
+  novo); falha ⇒ `E_POSTWRITE_VERIFY`, e o arquivo fica.
+- **Saída e log:** exatamente uma linha (stdout `OK WRITTEN|ALREADY_PRESENT <relpath> <sha256>`; stderr `ERRO <CÓDIGO>[ <DETALHE>]`), stdout ou
+  stderr fechado ⇒ saída 29 sem texto, `SIGHUP` ignorado, avisos do Node descartados. O log local (`0600`, uma linha JSON por evento) leva o
+  comando da gramática (nunca o que está fora dela), o código, o detalhe e uma nota fixa; nunca conteúdo de manifesto ou de fecho.
+- **Artefato:** `gmn-seal-receiver.cjs`, lista literal `node:crypto`, `node:fs`, `node:fs/promises`, `node:path` (sem `node:child_process`),
+  zod sem JIT; hash em `receivers.sha256` (segunda linha), com as linhas dos dois modelos novos depois das dos modelos de deploy. O teste em
+  processo real roda o próprio modelo preenchido (sha256, `flock`, `umask`, `env -i`, `--permission`); no Node 22 (CI, modo estrito) grava com
+  `fsync`; no Node 24.22+ local, o `fsync` negado faz a gravação recusar (`E_WRITE_FAILED`, nada gravado). Conferência local adicional, fora do
+  repositório: numa cópia descartável do artefato com o `fsync` neutralizado, sob `--permission` com os grants acima, o manifesto, a
+  auditoria nova e o fecho gravaram (`0444`, pastas `2750`) e a trava foi liberada: nada além do `fsync` é negado pela linha decidida.
+- **Para o job de entrega (P9.5, `receiver-call.sh`):** sucesso = `OK WRITTEN <relpath> <sha256>` ou `OK ALREADY_PRESENT <relpath> <sha256>`,
+  saída 0, com o `relpath` e o `sha256` do pedido. Recusa = os códigos de saída 10 a 17, 29 e 30 a 37 da tabela do §5.8; detalhe só em
+  `E_V2_REFUSED` (razões de `EvidenceTrustReason` + `HEAD_MISMATCH`) e `E_CLOSURE_REFUSED` (os quatro motivos acima). `E_ARTIFACT`, `E_LOCKED`
+  e o `E_INTERNAL` de pré-condição vêm do *wrapper*.
+
 ### 5.8 Códigos de saída e saída pública dos receptores
 
 Saída **pública** (vai ao log do Actions, que é público): no sucesso, uma linha no stdout (`OK …`, gramática acima); na falha, uma
@@ -949,28 +1017,28 @@ relatório indicado.
 
 **Receptor de manifestos (P9.3b), sem rede, em pastas temporárias:**
 
-- [ ] **P9-R01** comando fora da gramática (verbo desconhecido, `..`, `/` a mais, campo a mais, não ASCII, acima de 256 bytes) ⇒
-  `E_COMMAND`, nada lido do stdin.
-- [ ] **P9-R02** stdin acima do teto, menor que o hash ou com hash diferente ⇒ `E_INPUT_TOO_LARGE` / `E_INPUT_TRUNCATED` /
-  `E_HASH_MISMATCH`, nada gravado.
-- [ ] **P9-R03** lista instalada com hash diferente ⇒ `E_TRUST_LIST_MISMATCH`; inválida ⇒ `E_TRUST_LIST_INVALID`.
-- [ ] **P9-R04** destino com bytes idênticos ⇒ `OK ALREADY_PRESENT`; com outros bytes ⇒ `E_EXISTS_DIFFERENT` e o arquivo
-  existente intacto (sha256 antes e depois).
-- [ ] **P9-R05** manifesto não assinado, assinado por chave fora da lista, revogada ou aposentada sem fecho, ou com `seq` que não
-  é o último + 1 do host ⇒ `E_V2_REFUSED <RAZÃO>`, nada gravado.
-- [ ] **P9-R06** raiz como link simbólico, subpasta como link ou arquivo, destino FIFO ⇒ `E_UNSAFE_PATH`.
-- [ ] **P9-R07** falha injetada no `fsync` do arquivo ⇒ `E_WRITE_FAILED` sem nome final; no `fsync` da pasta ou na remoção do
-  temporário ⇒ `E_WRITE_UNCONFIRMED`, arquivo final presente e não apagado.
-- [ ] **P9-R08** duas entregas concorrentes do mesmo arquivo: uma `WRITTEN`, a outra `ALREADY_PRESENT`; de bytes diferentes no
-  mesmo nome: uma `WRITTEN`, a outra `E_EXISTS_DIFFERENT`.
-- [ ] **P9-R09** fecho: as regras S-11 contra as cadeias do host.
-- [ ] **P9-R10** toda saída é exatamente uma linha da gramática do §5.8; nenhum caminho absoluto ou conteúdo de arquivo aparece
-  (teste sobre todas as recusas).
-- [ ] **P9-R11** o artefato reconstruído tem o hash versionado e roda sob `node --permission` com os grants do §5.7, gravando
-  com `fsync` no Node 22 (job do CI).
-- [ ] **P9-R12** depois da gravação, o arquivo é `0444` e a pasta nova herda o grupo e o setgid da raiz.
-- [ ] **P9-R13** lista instalada trocada (`rename` atômico) no meio de uma sequência de `put`: os seguintes recusam com
-  `E_TRUST_LIST_MISMATCH`, nada é gravado e nenhum lê um arquivo parcial; repetidos com o hash novo, gravam.
+- [x] **P9-R01** comando fora da gramática (verbo desconhecido, `..`, `/` a mais, campo a mais, não ASCII, acima de 256 bytes) ⇒
+  `E_COMMAND`, nada lido do stdin. Teste: `tests/link-audit-seal-receiver.test.ts` (P9.3b).
+- [x] **P9-R02** stdin acima do teto, menor que o hash ou com hash diferente ⇒ `E_INPUT_TOO_LARGE` / `E_INPUT_TRUNCATED` /
+  `E_HASH_MISMATCH`, nada gravado. Teste: `tests/link-audit-seal-receiver.test.ts` (P9.3b).
+- [x] **P9-R03** lista instalada com hash diferente ⇒ `E_TRUST_LIST_MISMATCH`; inválida ⇒ `E_TRUST_LIST_INVALID`. Teste: `tests/link-audit-seal-receiver.test.ts` (P9.3b).
+- [x] **P9-R04** destino com bytes idênticos ⇒ `OK ALREADY_PRESENT`; com outros bytes ⇒ `E_EXISTS_DIFFERENT` e o arquivo
+  existente intacto (sha256 antes e depois). Teste: `tests/link-audit-seal-receiver.test.ts` (P9.3b).
+- [x] **P9-R05** manifesto não assinado, assinado por chave fora da lista, revogada ou aposentada sem fecho, ou com `seq` que não
+  é o último + 1 do host ⇒ `E_V2_REFUSED <RAZÃO>`, nada gravado. Teste: `tests/link-audit-seal-receiver.test.ts` (P9.3b).
+- [x] **P9-R06** raiz como link simbólico, subpasta como link ou arquivo, destino FIFO ⇒ `E_UNSAFE_PATH`. Teste: `tests/link-audit-seal-receiver.test.ts` (P9.3b).
+- [x] **P9-R07** falha injetada no `fsync` do arquivo ⇒ `E_WRITE_FAILED` sem nome final; no `fsync` da pasta ou na remoção do
+  temporário ⇒ `E_WRITE_UNCONFIRMED`, arquivo final presente e não apagado. Teste: `tests/link-audit-seal-receiver.test.ts` (P9.3b).
+- [x] **P9-R08** duas entregas concorrentes do mesmo arquivo: uma `WRITTEN`, a outra `ALREADY_PRESENT`; de bytes diferentes no
+  mesmo nome: uma `WRITTEN`, a outra `E_EXISTS_DIFFERENT`. Teste: `tests/link-audit-seal-receiver.test.ts` (P9.3b).
+- [x] **P9-R09** fecho: as regras S-11 contra as cadeias do host. Teste: `tests/link-audit-seal-receiver.test.ts` (P9.3b).
+- [x] **P9-R10** toda saída é exatamente uma linha da gramática do §5.8; nenhum caminho absoluto ou conteúdo de arquivo aparece
+  (teste sobre todas as recusas). Teste: `tests/link-audit-seal-receiver.test.ts` (P9.3b).
+- [x] **P9-R11** o artefato reconstruído tem o hash versionado e roda sob `node --permission` com os grants do §5.7, gravando
+  com `fsync` no Node 22 (job do CI). Teste: `tests/link-audit-seal-receiver-artifact.test.ts` (P9.3b; modo estrito no job `receivers artifact`).
+- [x] **P9-R12** depois da gravação, o arquivo é `0444` e a pasta nova herda o grupo e o setgid da raiz. Teste: `tests/link-audit-seal-receiver.test.ts` (P9.3b).
+- [x] **P9-R13** lista instalada trocada (`rename` atômico) no meio de uma sequência de `put`: os seguintes recusam com
+  `E_TRUST_LIST_MISMATCH`, nada é gravado e nenhum lê um arquivo parcial; repetidos com o hash novo, gravam. Teste: `tests/link-audit-seal-receiver.test.ts` (P9.3b).
 
 **Receptor de deploy (P9.3a), com `docker`, `tar` e `gzip` falsos no `PATH` (sem rede, sem Docker real):**
 
@@ -1041,8 +1109,8 @@ relatório indicado.
 
 **Pastas (P9.3b):**
 
-- [ ] **P9-F01** `verificar-pastas-fase6.sh`: manifestos com `0700` ⇒ recusa; com `2750`, grupo `10001` e dono ≠ `10001` ⇒ aceito;
-  com dono `10001` ou `0` ⇒ recusa; as outras cinco continuam exigindo `0700`.
+- [x] **P9-F01** `verificar-pastas-fase6.sh`: manifestos com `0700` ⇒ recusa; com `2750`, grupo `10001` e dono ≠ `10001` ⇒ aceito;
+  com dono `10001` ou `0` ⇒ recusa; as outras cinco continuam exigindo `0700`. Teste: `tests/deploy-verificar-pastas.test.ts` (P9.3b).
 
 **Conferências do responsável [doc]:**
 
@@ -1222,7 +1290,8 @@ autorização escrita da implantação (checklist §0).
   **Feita na P9.2** (o texto; a recusa do arquivo de variáveis que ainda a defina é do receptor de deploy, P9.3a).
 - **P-7** (spec dos portões §10.1): "chave pública ativa na lista" passa a ser PR em `link-audit-seals/producao/trust-keys.txt` +
   deploy (P9.2). **Feita na P9.2.**
-- **VC-E8, PG-V04, EN-12:** a pasta de manifestos é `gmn-seals:10001 2750` (P9.3b).
+- **VC-E8, PG-V04, EN-12:** a pasta de manifestos é `gmn-seals:10001 2750` (P9.3b). **Feita na P9.3b** (spec dos portões, junto com o
+  `GUIA-DE-IMPLANTACAO.md` §3.3, o plano de backup e os passos H-04 a H-06 do runbook).
 - **Runbook de chaves §4** e **runbook do custodiante**: fixação por PR; ordem da aposentadoria (fecho → entrega → `active →
   retired:<sha256>` → deploy, §5.3); `auditId` `aud-<16 hex>` gerado na autorização; entrega por PR (P9.2). **Feita na P9.2**
   (`onda6c-runbook-chaves.md` §4, `p1-runbook-custodiante.md` §6, §6.1 e §9).
@@ -1231,7 +1300,7 @@ autorização escrita da implantação (checklist §0).
   com o do `trust-keys.txt` no commit implantado. §2: juntar as tabelas de verificação e de entrega pelo id da execução, caminho
   e sha256 (P9.5).
 - **`docs/security/README.md`:** o exemplo `aud-002-autorizacao-01` não vale para auditorias atestadas (P9.2). **Feita na P9.2.**
-- **`GUIA-DE-IMPLANTACAO.md`** §1–§2 (o build e a transferência passam ao workflow) e §3.4 (P9.4, **feita**), §3.3 (P9.3b);
+- **`GUIA-DE-IMPLANTACAO.md`** §1–§2 (o build e a transferência passam ao workflow) e §3.4 (P9.4, **feita**), §3.3 (P9.3b, **feita**);
   **`PLANO-DE-ROLLBACK.md`** (reversão por commit + workflow) e **`VERIFICACAO-POS-DEPLOY.md`** (nome da stack como parâmetro)
   (P9.4, **feitas**).
 - **`CLAUDE.md`:** "Deploy staging" passa a apontar para o ambiente `homologacao` do `deploy.yml`, e "Deploy prod" para o mesmo
