@@ -47,7 +47,7 @@ por execução (spec §5.9), que vai para o `RELATORIO-DE-IMPLANTACAO.md` (e, na
 | `HASH_INPUT_MISSING <arquivo>` / `TRUST_LIST_TOO_LARGE` | 6 | arquivo ausente no commit ou lista acima de 8 KiB |
 | `SSH_CONFIG_MISSING` / `SSH_CONFIG_INVALID <NOME>` | 7 a 9 | segredo SSH ausente ou fora do formato (H-05, H-09) |
 | `SSH_CONNECT_FAILED HOST_KEY` | 8 e 9 | chave de host diferente da fixada: **pare** e confira no console (H-09; pode ser ataque) |
-| `SSH_CONNECT_FAILED AUTH` / `OTHER` | 8 e 9 | chave pública ausente no host, `sshd`, porta ou rede (questão Q-2 da spec) |
+| `SSH_CONNECT_FAILED AUTH` / `OTHER` | 8 e 9 | chave pública ausente no host, `sshd`, porta ou rede (Q-2, aceita em 23/11/2026: porta aberta aos runners, só chave, `fail2ban`) |
 | `BUNDLE_MISSING` / `BUNDLE_CHANGED` / `TRUST_LIST_CHANGED` | 8 e 9 | o arquivo mudou entre passos do job: investigar o runner; disparar de novo |
 | `E_…` (ex.: `E_STACK_FILE_MISMATCH`) | 8 e 9 | código do receptor (spec §5.8); `E_STACK_FILE_MISMATCH` = instalar a stack do commit (H-08) |
 | `RECEIVER_FAILED EXIT_<n>` / `RECEIVER_BAD_OUTPUT` | 8 e 9 | o receptor saiu fora da gramática pública: ler o log local do receptor no host |
@@ -61,7 +61,8 @@ Ordem sugerida: H-01, H-02, H-03, H-05 (só gerar os pares), H-04, H-05 (host), 
 ### H-01 Recursos da VPS e custo
 
 Confirme, só lendo, que a VPS comporta a segunda pilha (web 1 CPU / 1 GiB, Redis 0,5 CPU / 512 MiB) e que o laboratório Supabase
-fica no plano gratuito (D-G0-12; questão Q-1). Nenhum custo novo sem aprovação própria.
+fica no plano gratuito (D-G0-12; Q-1 confirmada em 23/11/2026). A conferência continua na hora de criar a pilha, e nenhum custo novo
+entra sem aprovação própria.
 
 ```bash
 free -m; nproc; df -h /var/lib/docker /srv
@@ -79,7 +80,7 @@ valores pode ser igual a um de produção (P9-O08).
 1. *Settings → Environments → New environment* `homologacao`, **antes** do primeiro disparo. Se o workflow citar um ambiente que não
    existe, o GitHub o cria **sem proteção** (o job falharia por falta de segredos, mas o ambiente ficaria aberto até você
    configurá-lo).
-2. *Required reviewers*: `<USUARIO_GITHUB>`. *Prevent self-review*: **desligado** (você dispara e aprova; risco aceito, Q-4 da spec).
+2. *Required reviewers*: `<USUARIO_GITHUB>`. *Prevent self-review*: **desligado** (você dispara e aprova; Q-4 aceita por escrito em 23/11/2026, rever com uma segunda pessoa).
    *Allow administrators to bypass configured protection rules*: **desligado**.
 3. *Deployment branches and tags*: *Selected branches and tags*, só `main`.
 4. Segredos **do ambiente** (o `GMN_SSH_KNOWN_HOSTS` sai do H-09; as chaves, do H-05):
@@ -163,6 +164,9 @@ printf 'restrict,command="%s" %s\n' /opt/gmn-receivers/bin/gmn-hml-seals "$(cat 
 sudo chown root:root /etc/ssh/authorized_keys/gmn-hml-deploy /etc/ssh/authorized_keys/gmn-hml-seals
 sudo chmod 0644 /etc/ssh/authorized_keys/gmn-hml-deploy /etc/ssh/authorized_keys/gmn-hml-seals
 ```
+
+**Porta SSH (Q-2, aceita):** aberta aos runners do GitHub, que saem de faixas grandes e variáveis, só com chave, sem senha e com
+`fail2ban` ativo; só os quatro usuários restritos (dois por ambiente) entram pelo CI.
 
 **`sshd`:** acrescente ao **fim** de `/etc/ssh/sshd_config` (um bloco `Match` no fim do arquivo principal não vaza para o resto da
 configuração). Guarde uma cópia antes e mantenha a sessão de root aberta até confirmar o login com o seu usuário numa segunda sessão:
