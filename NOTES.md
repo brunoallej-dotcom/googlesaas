@@ -291,7 +291,21 @@ Endurecimento de código (antes de expor): bypass `GMN_AUTH_DISABLED` desligado 
   - **homologação:** pilha isolada sem dados reais nem Serper, laboratório Supabase descartável, W5 antes da G2.
   Ameaças novas em `docs/security/threats/link-audit-portoes-producao.md`. Continuam com o responsável: aplicar a migração, criar secrets e destinos, a pilha de homologação e os aceites escritos.
 - **Em andamento:** R1.6 mergeada (#52, `3899a67`) e G0 concluída (branch `docs/link-audit-production-g0-decisions`). Depois: R2 (proveniência no resultado), W5 (ensaio; decisões D15) e, em paralelo, G1.a, G1.b e G1.c (só o aceite); G2 depois do relatório da W5; G3 por último. W6 autorizada (D16), roda depois da W5.
-- **Pergunta nova para o responsável (junto da §13.3):** operador = custodiante não marca `requiresLaterReview`; a spec não trata o caso.
+- **Pergunta para o responsável (junto da §13.3):** operador = custodiante não marcava `requiresLaterReview`. **Resolvida** pela D15.6(d), implementada na W5.2a (#59).
+
+## Rodada de 21–23/11/2026 — G0, G1.a, G1.b.1, R2, W5.1–W5.2 e saneamento (Claude como manager)
+
+- **Na `main`, cada PR com testes antes do código, revisão adversarial por worker Codex só de leitura e CI verde (7 checks) no próprio commit:**
+  - **G0** (#53, `4efd274`): decisões D-G0-1 a D-G0-12 na spec dos portões, números da guarda (§5.1.7: `L_max` = 5, `T` = 15 min, 3 s), ADR-0003 e ameaças PP-xx. A revisão achou uma sequência de 6 registros pelo `RECOVER` de rotação: a G1.b passou a ser obrigada a recusá-lo fora de `CONSISTENT`.
+  - **G1.b.1** (#56, `ce61e31`): contrato da guarda independente de provedor (motivos `CONFLICT`/`STALE`/`UNAVAILABLE`, prazo de 3 s, regras 2/3/4/7, S1–S9, recusa do `RECOVER` de rotação, porta de alarmes). A revisão bloqueou uma cabeça futura aceita sem prova: agora só vale depois de reler o livro e achá-la como prefixo.
+  - **G1.a** (#54, `5a7dfd8`): pastas e secrets da Fase 6 na `stack.yml`, `stop-first`, `operatorRef` com `GMN_LINK_AUDIT_LOG_KEY` (reúso conferido por impressões digitais id/digest, sem material), plano de backup com trava global, rodada exclusiva, marcadores `RODADA-VALIDA`/`RODADA-INCOMPLETA` e pré-conferência das seis cópias, e `deploy/hostinger/verificar-pastas-fase6.sh`. Quatro rodadas de revisão.
+  - **R2** completa: **R2.1** (#55, `8fa6e49`) grava `evidenceProvenance` nos resultados novos; **R2.2** (#57, `58f7160`) reconfere na releitura e mostra "A reconferir" / "Proveniência não registrada". Limites declarados: "conferido" exige a mesma cabeça (nova atestação marca os anteriores, sem volta até haver consulta de ancestralidade); custo de até 8 GiB por listagem aceito só no piloto; layout legado sempre "a reconferir".
+  - **W5.1** (#58, `cc68d89`): runbooks do custodiante e do conferente, modelo de dossiê, livro de manifestos, requisitos do canal de entrega e relatório-modelo do ensaio.
+  - **W5.2a** (#59, `3878172`): D15.6(d); `close-key` com `--allow-fs-read=/` como único grant de leitura; grant de escrita inexistente recusado antes de ler qualquer entrada (`close-key` e `sign`); `close-key` completo exercitado no CI sob Node 22.
+  - **Saneamento** (#60, `c6d129b`): decisão do responsável em 23/11/2026, "sanear os arquivos atuais, pôr uma trava no CI e não reescrever o histórico". Sete clientes reais viraram rótulos (`AUD-001`, `<CLIENTE_B>`…`<CLIENTE_G>`); a trava `tests/repo-client-data-guard.test.ts` compara hashes de termos proibidos e falha fechada para arquivos ilegíveis. O domínio real ainda está no arquivo de ambiente de exemplo do deploy (só o responsável edita).
+- **Em revisão:** G1.b.2a (#61: migração proposta 004, adaptador `pg` 8.23.1 com TLS `verify-full` e `audit_ref` por HMAC, ligação nas rotas, secrets) e W5.2b (#62: coleta SIMULADA só com a trava de homologação, marca persistente). **Em implementação:** G1.b.2b (reconciliação externa, runbook da guarda, roteiro do laboratório PG-G08, verificador do portão G-1).
+- **Decisões do manager (delegação da W5, D15):** o ensaio W5.3 pode usar entrega manual do manifesto como desvio declarado, e o canal pelo CI é re-ensaiado na G2 antes de produção; conferência do livro de manifestos antes de cada sessão e no mínimo trimestral; coleta SIMULADA só em homologação (D15.8); dependência `pg` aceita com versão exata.
+- **Com o responsável:** decidir o pipeline de deploy pelo CI (P-9) e, com ele, o canal de manifestos (recomendação do manager em `docs/phase6-auditoria-link/p1-canal-de-entrega-manifestos.md` §6); criar a pilha de homologação e o laboratório Supabase descartável (D-G0-12); aplicar a 004 no laboratório e cumprir o PG-G08; o aceite formal da G1.c (403 mantido); trocar o domínio real no arquivo de ambiente de exemplo; a W6 roda depois do ensaio.
 
 ## Roadmap P1 (espelho de `docs/plan/implementation-waves.md`, que é a fonte da verdade)
 
@@ -302,9 +316,9 @@ Endurecimento de código (antes de expor): bypass `GMN_AUTH_DISABLED` desligado 
 | W2 | CLI `export` (somente leitura) | ✅ mergeada (PR #29, `a5bd321`) |
 | W3 | Verificador `v2` + contrato próprio | ✅ concluída (contrato PR #25; W3.1–W3.5: #30, #32, #33, #34, #35; `16ff609`) |
 | R1 | Confirmação de resultados pelo livro (ADR-0002) | ✅ R1.1–R1.6 mergeadas (#39, #41, #45, #46, #49 e o PR da R1.6); portão da R1 satisfeito no código |
-| R2 | Proveniência registrada no resultado (portão antes do primeiro resultado de produção) | ⬜ |
+| R2 | Proveniência registrada no resultado (portão antes do primeiro resultado de produção) | ✅ R2.1 (#55) e R2.2 (#57) |
 | W4 | CLI `sign` (manifesto `v2`) | ✅ W4.1–W4.6 mergeadas (#38, #40, #42, #44, #48, #50); artefato único reproduzível, conferido no CI sob `--permission` |
-| W5 | Procedimento, dossiê e ensaio em homologação | ⬜ |
+| W5 | Procedimento, dossiê e ensaio em homologação | 🟡 W5.1 (#58) e W5.2a (#59) ✅; W5.2b (#62) em revisão; canal pelo CI aguarda o P-9; W5.3 (ensaio) aguarda a pilha de homologação |
 | W6 | Coleta LIVE nova da AUD-001 (autorização escrita específica) | ⬜ |
 
 ## Roadmap dos portões de produção fora do P1 (espelho da mesma fonte)
@@ -312,8 +326,8 @@ Endurecimento de código (antes de expor): bypass `GMN_AUTH_DISABLED` desligado 
 | Onda | Entrega | Status |
 |---|---|---|
 | G0 | Decisões Q1–Q12, ADR-0003, modelo de ameaças, números do contrato da guarda | ✅ 20/11/2026 (D-G0-1 a D-G0-12) |
-| G1.a | Volumes, segredos, chave de log, exportação dos logs e backups | ⬜ |
-| G1.b | Guarda no Supabase (adaptador, contrato R6-10, migração proposta, reconciliação, runbook) | ⬜ |
+| G1.a | Volumes, segredos, chave de log, exportação dos logs e backups | ✅ #54 |
+| G1.b | Guarda no Supabase (adaptador, contrato R6-10, migração proposta, reconciliação, runbook) | 🟡 G1.b.1 ✅ (#56); G1.b.2a em revisão (#61); G1.b.2b em implementação |
 | G1.c | Papel administrativo: só o aceite formal do 403 (Q6 = 3) | ⬜ |
 | G2 | Ensaio em homologação (16 ensaios, 2 atestações), depois do relatório da W5 | ⬜ |
 | G3 | Portão de produção ou piloto mínimo declarado | ⬜ |
