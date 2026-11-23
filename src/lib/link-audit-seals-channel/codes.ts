@@ -45,6 +45,7 @@ export type SealsRefusalCode =
   | 'SEALS_BAD_MODE'
   | 'SEALS_TOO_LARGE'
   | 'SEALS_TOO_MANY'
+  | 'SEALS_ARCHIVE_FULL'
   | 'SEAL_FORMAT'
   | 'SEAL_NOT_CANONICAL'
   | 'SEAL_NAME_MISMATCH'

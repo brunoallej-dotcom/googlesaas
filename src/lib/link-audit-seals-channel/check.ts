@@ -1,5 +1,6 @@
 import type { BytesFsOps } from '../link-audit/fs-ops';
 import { sealSha256 as sealDigestOf } from '../link-audit-evidence/provenance-core';
+import { archivePaths, archiveRefusals } from './archive';
 import { budgetedFs, readBudget } from './budget';
 import { auditDirOf, chainRefusalCode, chainVerdicts, isAtEnd, seqsOnDisk, type ChainVerdict } from './chains';
 import type { ChangeEntry } from './changes';
@@ -255,6 +256,10 @@ export async function runSealsCheck(input: SealsCheckInput, deps: SealsCheckDeps
   const budget = readBudget(deps.readBudgetBytes);
   const run: Run = { input, fs: budgetedFs(deps.fs, budget), refusals, trust: new Map() };
   const state = { incomplete: false };
+  // revisão do PR #74, item 9: o arquivo inteiro do ambiente com manifesto novo cabe numa entrega (SEALS_ARCHIVE_FULL)
+  await guarded(state, async () => {
+    for (const env of CHANNEL_ENVIRONMENTS) if (touched.seals.has(env)) refusals.push(...(await archiveRefusals(env, archivePaths(input.modes.keys(), env), input.repoRoot, deps.fs)));
+  });
   const out = { files: [] as ReadFile[], seals: [] as JudgedSeal[], closures: [] as JudgedClosure[], lines: [] as TrustListLine[], chains: [] as ChainInfoLine[], truncated: false, next: new Map<ChannelEnvironment, string>() };
   await guarded(state, async () => {
     const moded = await checkModes(candidates, input.modes, input.repoRoot, run.fs);

@@ -48,10 +48,12 @@ const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   'trust-rules.ts': new Set([PORT, VERIFIER, './closures', './codes', './files', './paths', './trust-list']),
   // revisão do PR #68 (correção 5): o teto único de leitura da execução, uma porta embrulhada (só tipos da porta)
   'budget.ts': new Set([PORT]),
-  'check.ts': new Set([PORT, VERIFIER, './budget', './chains', './changes', './closures', './codes', './files', './paths', './trust-rules', './trust-list']),
+  'check.ts': new Set([PORT, VERIFIER, './archive', './budget', './chains', './changes', './closures', './codes', './files', './paths', './trust-rules', './trust-list']),
   'summary.ts': new Set(['./check', './codes', './paths']),
   // P9.5: o modo árvore do `seals-verify` (S-03 a S-08 sobre todos os arquivos do ambiente), com as mesmas peças do job `seals`
-  'tree.ts': new Set(['./budget', './changes', './check', './codes', './files', './paths']),
+  'tree.ts': new Set(['./archive', './budget', './changes', './check', './codes', './files', './paths']),
+  // revisão do PR #74, item 9: o teto do arquivo de um ambiente (SEALS_ARCHIVE_FULL), só lstat pela porta
+  'archive.ts': new Set([PORT, './budget', './codes', './paths', './trust-list']),
   // o comando: zod na fronteira, a porta de disco (o script entrega o adaptador), node:path
   'cli.ts': new Set(['node:path', 'zod', PORT, './changes', './check', './codes', './paths', './summary', './tree', './trust-list', './trust-rules']),
   'index.ts': new Set(['./cli', './check', './codes', './paths', './tree', './trust-list']),

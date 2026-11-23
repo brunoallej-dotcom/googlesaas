@@ -1,3 +1,4 @@
+import { archivePaths, archiveRefusals, MAX_ARCHIVE_FILES } from './archive';
 import { budgetedFs, MAX_RUN_READ_BYTES, readBudget } from './budget';
 import type { TreeEntry } from './changes';
 import { closureLines, EMPTY_REPORT, guarded, manifestLines, type SealsCheckDeps, type SealsCheckReport } from './check';
@@ -19,8 +20,8 @@ import { checkoutPath, classifyChannelPath, SEALS_ROOT, SEALS_SUBDIR, type Chann
  * de um arquivo, no checkout, tem de ser diretório real (`lstat`, sem link) ANTES de qualquer leitura (senão `SEALS_UNEXPECTED_PATH`).
  */
 
-/** O mesmo teto de arquivos por execução da entrega (§5.5.2, `SEALS_TOO_MANY`), conferido antes de ler qualquer arquivo. */
-export const MAX_TREE_FILES = 1000;
+/** O mesmo teto de arquivos por execução da entrega (§5.5.2), conferido antes de ler qualquer arquivo (`SEALS_ARCHIVE_FULL`, `archive.ts`). */
+export const MAX_TREE_FILES = MAX_ARCHIVE_FILES;
 /** Teto da soma dos tamanhos lidos: o teto único de leitura de uma execução (`MAX_RUN_READ_BYTES`, 64 MiB). */
 export const MAX_TREE_BYTES = MAX_RUN_READ_BYTES;
 /** Modos de arquivo comum no git (o resto, link `120000` e submódulo `160000`, é "modo errado"). */
@@ -111,19 +112,18 @@ async function realAncestors(candidates: readonly Candidate[], input: SealsTreeI
   return { kept, refusals };
 }
 
-/** O número de manifestos e fechos sob `<amb>/seals/` (o que a entrega envia). */
-const deliverableCount = (tree: readonly ClassifiedChange[]): number => tree.filter(({ channel }) => channel.kind === 'seal' || channel.kind === 'closure').length;
 const modesOf = (entries: readonly TreeEntry[]): ReadonlyMap<string, string> => new Map(entries.flatMap((entry) => (entry.path === null ? [] : [[entry.path, entry.mode] as const])));
 
 /**
- * S-03 a S-08 sobre a árvore inteira de um ambiente. Acima de `MAX_TREE_FILES` manifestos e fechos ⇒ `SEALS_TOO_MANY` sem ler nada; toda leitura
- * conta no teto único da execução (esgotado ⇒ `SEALS_TOO_MANY`, `READ_BUDGET`). Uma falha inesperada não apaga as recusas já coletadas
+ * S-03 a S-08 sobre a árvore inteira de um ambiente. O arquivo do ambiente acima de 1000 caminhos ou da soma de bytes ⇒ `SEALS_ARCHIVE_FULL` sem
+ * ler nada (revisão do PR #74, item 9); toda leitura conta no teto único da execução (esgotado ⇒ `SEALS_TOO_MANY`, `READ_BUDGET`). Uma falha inesperada não apaga as recusas já coletadas
  * (`incomplete`). A lista de confiança passa só pelo S-04 e pelo S-05 (o formato dela é do S-12, do PR).
  */
 export async function runSealsTreeCheck(input: SealsTreeInput, deps: SealsCheckDeps): Promise<SealsCheckReport> {
   const { tree, refusals } = scanTree(input);
   if (tree.length === 0 && refusals.length === 0) return EMPTY_REPORT;
-  if (deliverableCount(tree) > MAX_TREE_FILES) return { ...EMPTY_REPORT, touched: true, refusals: sortRefusals([...refusals, refusal('S-05', 'SEALS_TOO_MANY')]) };
+  const full = await archiveRefusals(input.env, archivePaths(tree.map((item) => item.entry.path), input.env), input.repoRoot, deps.fs);
+  if (full.length > 0) return { ...EMPTY_REPORT, touched: true, refusals: sortRefusals([...refusals, ...full]) };
   const candidates = candidatesOf(tree);
   const budget = readBudget(deps.readBudgetBytes);
   const fs = budgetedFs(deps.fs, budget);

@@ -7,10 +7,11 @@ import { parseTreeEntries } from '../src/lib/link-audit-seals-channel/changes';
 import { parseSealsTreeArgs, runSealsCheckCli, SEALS_CHECK_EXIT, USAGE_LINES } from '../src/lib/link-audit-seals-channel/cli';
 import type { ChannelEnvironment } from '../src/lib/link-audit-seals-channel/paths';
 import { summaryLines } from '../src/lib/link-audit-seals-channel/summary';
+import { MAX_ARCHIVE_BYTES, MAX_ARCHIVE_FILES } from '../src/lib/link-audit-seals-channel/archive';
 import { MAX_TREE_FILES, runSealsTreeCheck } from '../src/lib/link-audit-seals-channel/tree';
 import { registerCleanup, tmpDir } from './helpers/link-audit-evidence-fixtures';
 import { signer } from './helpers/link-audit-seal-close-key-fixtures';
-import { AUD_A, AUD_B, canonicalText, chainInRepo, closureFor, closureRepoPath, listItem, modesBytes, sealRepoPath, world, writeRepoFile, writeTrustList, type World } from './helpers/link-audit-seals-fixtures';
+import { AUD_A, AUD_B, canonicalText, chainInRepo, check, closureFor, closureRepoPath, listItem, modesBytes, sealRepoPath, world, writeRepoFile, writeTrustList, type World } from './helpers/link-audit-seals-fixtures';
 
 /*
  * P9.5 — modo ÁRVORE do `seals-check` (job `seals-verify` do `deploy.yml`; spec `docs/specs/ci-deploy-and-seal-delivery.md` §5.5): S-03 a S-08
@@ -91,7 +92,7 @@ test('P9.5 árvore: lista de confiança como link ⇒ SEALS_BAD_MODE (S-04); aci
   assert.deepEqual(codes(await tree(w, 'homologacao', { 'link-audit-seals/homologacao/trust-keys.txt': '120000' })), ['SEALS_BAD_MODE']);
 });
 
-test(`P9.5 árvore: mais de ${MAX_TREE_FILES} manifestos e fechos ⇒ SEALS_TOO_MANY sem ler nenhum; teto de leitura esgotado ⇒ SEALS_TOO_MANY READ_BUDGET`, async () => {
+test(`P9.5 árvore: mais de ${MAX_TREE_FILES} manifestos e fechos ⇒ SEALS_ARCHIVE_FULL (revisão do PR #74, item 9) sem ler nenhum; teto de leitura esgotado ⇒ SEALS_TOO_MANY READ_BUDGET`, async () => {
   const w = world();
   const dir = path.join(w.root, 'link-audit-seals', 'homologacao', 'seals');
   for (let i = 0; i <= MAX_TREE_FILES; i += 1) {
@@ -104,7 +105,7 @@ test(`P9.5 árvore: mais de ${MAX_TREE_FILES} manifestos e fechos ⇒ SEALS_TOO_
   assert.ok(entries);
   const spy = { ...nodeFsOps, readFileBytes: async (file: string, max: number) => (reads.push(file), nodeFsOps.readFileBytes(file, max)) };
   const report = await runSealsTreeCheck({ repoRoot: w.root, entries, env: 'homologacao' }, { fs: spy });
-  assert.deepEqual(codes(report), ['SEALS_TOO_MANY']);
+  assert.deepEqual(details(report), ['SEALS_ARCHIVE_FULL homologacao FILES']);
   assert.equal(reads.length, 0, 'nada lido acima do teto de quantidade');
 
   const small = world();
@@ -219,4 +220,50 @@ test('P9.5 árvore (revisão do PR #74, item 5): toda pasta ancestral de um arqu
     assert.ok(!reads.some((file) => file.endsWith('seal-0001.json')), `${linked}: nada lido através do link`);
     assert.equal(chain.length, 1);
   }
+});
+
+/* ------------------------------------------------------------------------------------------------ revisão do PR #74, item 9 */
+
+/** `n` arquivos esparsos de `size` bytes sob <amb>/seals/ (o tamanho conta no lstat; nada ocupa disco nem é lido). */
+function sparseArchive(w: World, n: number, size: number, env: ChannelEnvironment = 'homologacao', prefix = 'f'): void {
+  for (let i = 0; i < n; i += 1) {
+    const file = writeRepoFile(w.root, sealRepoPath(`aud-${prefix}${i.toString(16).padStart(15, '0')}`, 1, env), '');
+    fs.truncateSync(file, size);
+  }
+}
+
+test('P9.5 SEALS_ARCHIVE_FULL (revisão do PR #74, item 9): o modo árvore recusa o arquivo do ambiente acima de MAX_ARCHIVE_BYTES pela soma dos tamanhos (lstat), sem ler nada', async () => {
+  const w = world();
+  sparseArchive(w, Math.floor(MAX_ARCHIVE_BYTES / (256 * 1024)) + 1, 256 * 1024);
+  const reads: string[] = [];
+  const spy = { ...nodeFsOps, readFileBytes: async (file: string, max: number) => (reads.push(file), nodeFsOps.readFileBytes(file, max)) };
+  const entries = parseTreeEntries(modesBytes(w.root));
+  assert.ok(entries);
+  const report = await runSealsTreeCheck({ repoRoot: w.root, entries, env: 'homologacao' }, { fs: spy });
+  assert.deepEqual(details(report), ['SEALS_ARCHIVE_FULL homologacao BYTES']);
+  assert.equal(reads.length, 0);
+});
+
+test('P9.5 SEALS_ARCHIVE_FULL (revisão do PR #74, item 9): o job `seals` do PR recusa o manifesto NOVO que levaria o arquivo do ambiente a mais de 1000 arquivos ou de MAX_ARCHIVE_BYTES; exatamente 1000 passa; o outro ambiente não interfere', async () => {
+  const atLimit = world();
+  writeTrustList(atLimit, [listItem(KEY_A, 'active')], 'homologacao');
+  sparseArchive(atLimit, MAX_ARCHIVE_FILES - 1, 16);
+  sparseArchive(atLimit, MAX_ARCHIVE_FILES + 5, 16, 'producao');
+  const fresh = chainInRepo(atLimit, AUD_A, [KEY_A], 'homologacao');
+  assert.equal(fresh.length, 1);
+  assert.deepEqual(codes(await check(atLimit, [['A', sealRepoPath(AUD_A, 1, 'homologacao')]])), [], 'exatamente 1000 no ambiente: passa (produção, cheia, não é tocada)');
+
+  const over = world();
+  writeTrustList(over, [listItem(KEY_A, 'active')], 'homologacao');
+  sparseArchive(over, MAX_ARCHIVE_FILES, 16);
+  chainInRepo(over, AUD_A, [KEY_A], 'homologacao');
+  const files = await check(over, [['A', sealRepoPath(AUD_A, 1, 'homologacao')]]);
+  assert.ok(details(files).includes('SEALS_ARCHIVE_FULL homologacao FILES'), JSON.stringify(details(files)));
+
+  const heavy = world();
+  writeTrustList(heavy, [listItem(KEY_A, 'active')], 'homologacao');
+  sparseArchive(heavy, Math.floor(MAX_ARCHIVE_BYTES / (256 * 1024)) + 1, 256 * 1024);
+  chainInRepo(heavy, AUD_A, [KEY_A], 'homologacao');
+  const bytes = await check(heavy, [['A', sealRepoPath(AUD_A, 1, 'homologacao')]]);
+  assert.ok(details(bytes).includes('SEALS_ARCHIVE_FULL homologacao BYTES'), JSON.stringify(details(bytes)));
 });
