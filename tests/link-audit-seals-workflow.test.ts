@@ -59,19 +59,47 @@ const stepsOf = (job: string): string[] => job.split('\n      - ').slice(1).map(
 
 /* ------------------------------------------------------------------------------------------------------------------- P9-S10 / P9-W10 estático */
 
-test('P9-S10 (estático) PR sem nada sob link-audit-seals/ ⇒ job verde SEM `npm ci`: setup-node, `npm ci` e o comando só rodam com `changed == true`; o preparo não instala nada', () => {
+/** O passo do job com `id: <id>`. */
+const stepById = (id: string): string => {
+  const step = stepsOf(sealsJob()).find((item) => new RegExp(`\\n {8}id: ${id}\\n`).test(item));
+  assert.ok(step, `passo ${id}`);
+  return step;
+};
+/** O bloco `run:` do passo de base (o que o GitHub executa), para rodá-lo num repositório temporário. */
+const baseRunBlock = (): string => runBlocks(stepById('base'))[0] as string;
+
+test('P9-S10 (estático) PR sem nada sob link-audit-seals/ ⇒ job verde SEM `npm ci`: setup-node, `npm ci` e o comando só rodam com `changed == true`, calculado pelo preparo da base; nada antes disso instala', () => {
   const steps = stepsOf(sealsJob());
-  assert.equal(steps.length, 5, 'checkout, preparo, setup-node, install, verificação');
-  const [checkout, prepare, ...gated] = steps as [string, string, ...string[]];
+  assert.equal(steps.length, 6, 'checkout, base, preparo, setup-node, install, verificação');
+  const [checkout, base, prepare, ...gated] = steps as [string, string, string, ...string[]];
   assert.ok(checkout.startsWith(`- uses: ${CHECKOUT}`));
-  assert.match(prepare, /id: prepare\n/);
-  assert.match(prepare, /run: SEALS_OUT="\$RUNNER_TEMP\/seals" bash \.github\/scripts\/seals-prepare\.sh/);
-  assert.ok(!/npm|node /.test(prepare), 'o preparo não chama npm nem node');
+  assert.match(base, /\n {8}id: base\n/);
+  assert.match(prepare, /\n {8}id: prepare\n/);
+  assert.match(prepare, /run: SEALS_HEAD="\$GITHUB_WORKSPACE" SEALS_OUT="\$RUNNER_TEMP\/seals" bash "\$SEALS_TOOL\/\.github\/scripts\/seals-prepare\.sh"/);
+  for (const step of [base, prepare]) assert.ok(!/npm|node /.test(runBlocks(step).join('\n')), 'base e preparo não chamam npm nem node');
   for (const step of gated) assert.ok(step.includes(CHANGED), `passo condicionado: ${step.split('\n')[0]}`);
   assert.ok(gated.some((step) => step.startsWith(`- uses: ${SETUP_NODE}`)));
-  assert.ok(gated.some((step) => /run: npm ci\n/.test(`${step}\n`)), 'npm ci só com mudança');
+  assert.ok(gated.some((step) => /run: cd "\$SEALS_TOOL" && npm ci\n/.test(`${step}\n`)), 'npm ci só com mudança, na pasta da base');
   assert.ok(gated.some((step) => step.includes('npm run --silent link-audit:seals-check -- \\') && step.includes('| tee -a "$GITHUB_STEP_SUMMARY"') && step.includes('set -o pipefail')), 'o comando escreve o resumo e propaga a falha');
   assert.equal((sealsJob().match(/npm ci/g) ?? []).length, 1);
+});
+
+test('revisão do PR #68 (correção 1, estático): preparo, dependências e comando vêm da revisão CONFIÁVEL (base numa pasta própria); o PR é só dado (`--repo`); o do PR só no SEALS_BOOTSTRAP', () => {
+  const base = baseRunBlock();
+  assert.ok(base.includes('tool="$RUNNER_TEMP/seals-base"') && base.includes('git worktree add --quiet --detach "$tool" "$base"'), 'a base numa pasta própria');
+  assert.ok(base.includes("base=\"$(git rev-parse --verify --quiet 'HEAD^1^{commit}')\" || refuse SEALS_NO_BASE"), 'pull_request: HEAD^1 do merge');
+  assert.ok(base.includes('base="$(git rev-parse --verify --quiet "${SEALS_BEFORE}^{commit}")" || refuse SEALS_NO_BASE'), 'push: github.event.before');
+  // o único caminho para usar o código do PR é o bootstrap, condicionado à base sem o verificador, com aviso fixo no resumo
+  const bootstrap = /if \[ ! -f "\$tool\/\.github\/scripts\/seals-prepare\.sh" \] \|\| \[ ! -f "\$tool\/scripts\/link-audit-seals-check\.ts" \]; then\n\s+tool="\$GITHUB_WORKSPACE"\n\s+bootstrap=true\n\s+printf .*SEALS_BOOTSTRAP/.exec(base);
+  assert.ok(bootstrap, 'fallback só sem verificador na base, com aviso SEALS_BOOTSTRAP');
+  assert.equal(base.split('$GITHUB_WORKSPACE').length - 1, 1, 'o checkout do PR só aparece no fallback');
+  for (const id of ['prepare']) assert.match(stepById(id), /env:\n {10}SEALS_BASE: \$\{\{ steps\.base\.outputs\.base \}\}\n {10}SEALS_TOOL: \$\{\{ steps\.base\.outputs\.tool \}\}\n/);
+  const [install, verify] = stepsOf(sealsJob()).slice(4) as [string, string];
+  for (const step of [install, verify]) assert.match(step, /env:\n {10}SEALS_TOOL: \$\{\{ steps\.base\.outputs\.tool \}\}\n/);
+  assert.ok(runBlocks(verify)[0]?.includes('cd "$SEALS_TOOL"\n'), 'o comando roda na pasta da base');
+  assert.ok(runBlocks(verify)[0]?.includes('--repo "$GITHUB_WORKSPACE"'), 'o checkout do PR entra só como dado');
+  const script = fs.readFileSync(PREPARE, 'utf8');
+  assert.ok(script.includes('git -C "$SEALS_HEAD" -c diff.ignoreSubmodules=none'), 'o preparo lê o PR pelo git, como dado');
 });
 
 test('P9-W10 `ci.yml`: job `seals (append-only, v2)` em todo pull_request e push na main sem filtro de caminho, sem segredo, `contents: read`, checkout sem credencial e com histórico completo, ações pelos SHAs do ci.yml, nada de `${{ }}` no `run:`, base = HEAD^1 no PR', () => {
@@ -87,14 +115,13 @@ test('P9-W10 `ci.yml`: job `seals (append-only, v2)` em todo pull_request e push
   for (const action of uses) assert.equal(CI.split(`uses: ${action}`).length - 1 > 1, true, `${action} igual ao dos outros jobs`);
   assert.ok(!/cache:/.test(job), 'sem cache restaurado no job de verificação');
   const runs = runBlocks(job);
-  assert.equal(runs.length, 3, 'preparo, install e verificação');
+  assert.equal(runs.length, 4, 'base, preparo, install e verificação');
   for (const run of runs) assert.ok(!run.includes('${{'), `nenhum \${{ }} dentro de run: ${run.split('\n')[0]}`);
-  assert.match(job, /env:\n {10}SEALS_EVENT: \$\{\{ github\.event_name \}\}\n {10}SEALS_BEFORE: \$\{\{ github\.event\.before \}\}\n/, 'entradas do evento pelo ambiente');
+  assert.match(stepById('base'), /env:\n {10}SEALS_EVENT: \$\{\{ github\.event_name \}\}\n {10}SEALS_BEFORE: \$\{\{ github\.event\.before \}\}\n/, 'entradas do evento pelo ambiente');
   const script = fs.readFileSync(PREPARE, 'utf8');
-  assert.ok(script.includes("base=\"$(git rev-parse --verify --quiet 'HEAD^1^{commit}')\" || refuse SEALS_NO_BASE"), 'base = HEAD^1 no pull_request');
-  assert.ok(script.includes('git diff --name-status --no-renames -z "$base" HEAD -- "$SEALS_PATH"'));
-  assert.ok(script.includes('git ls-tree -r -z HEAD -- "$SEALS_PATH"'));
-  assert.ok(!/curl|wget|ssh|npm|node|git (fetch|push|pull|clone)/.test(script.replace(/^\s*#.*$/gm, '')), 'o preparo não usa rede nem instala nada');
+  assert.ok(script.includes('g diff --name-status --no-renames --ignore-submodules=none --no-ext-diff --no-textconv -z "$base" HEAD -- "$SEALS_PATH"'));
+  assert.ok(script.includes('g ls-tree -r -z HEAD -- "$SEALS_PATH"'));
+  assert.ok(!/curl|wget|ssh|npm|node|git (fetch|push|pull|clone)/.test([script, baseRunBlock()].join('\n').replace(/^\s*#.*$/gm, '')), 'base e preparo não usam rede nem instalam nada');
 });
 
 test('P9-H08 `.dockerignore` exclui link-audit-seals; `.gitattributes` tem `link-audit-seals/** -text` DEPOIS de toda regra de texto que casaria (a última vale); as duas listas existem, são arquivos comuns e válidas para o seu ambiente', () => {
@@ -137,41 +164,66 @@ function put(repo: string, repoPath: string, content: string): void {
 interface Prepared {
   readonly status: number | null;
   readonly stderr: string;
+  /** O que o PREPARO escreveu em GITHUB_OUTPUT (vazio se o passo de base recusou). */
   readonly output: string;
   readonly summary: string;
   readonly out: string;
+  readonly tool: string;
+  readonly bootstrap: string;
 }
 
+const readOr = (file: string): string => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '');
+const outputValue = (text: string, key: string): string => text.split('\n').find((line) => line.startsWith(`${key}=`))?.slice(key.length + 1) ?? '';
+
+/**
+ * Os dois primeiros passos do job, como o GitHub os roda: o bloco `run:` do passo `base` (lido do próprio ci.yml) e, depois, o preparo da
+ * pasta escolhida por ele (`$SEALS_TOOL/.github/scripts/seals-prepare.sh`), com o checkout do PR só como dado.
+ */
 function prepare(repo: string, event: string, before = ''): Prepared {
-  const out = tmpDir('p92-prep-');
-  const outputFile = path.join(out, 'github-output');
-  const summaryFile = path.join(out, 'summary.md');
-  const result = spawnSync('bash', [PREPARE], { cwd: repo, env: { ...GIT_ENV, HOME: repo, SEALS_EVENT: event, SEALS_BEFORE: before, SEALS_OUT: path.join(out, 'seals'), GITHUB_OUTPUT: outputFile, GITHUB_STEP_SUMMARY: summaryFile } as unknown as NodeJS.ProcessEnv, encoding: 'utf8' });
-  const readOr = (file: string): string => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '');
-  return { status: result.status, stderr: result.stderr, output: readOr(outputFile), summary: readOr(summaryFile), out: path.join(out, 'seals') };
+  const work = tmpDir('p92-prep-');
+  const summaryFile = path.join(work, 'summary.md');
+  const baseOutput = path.join(work, 'base-output');
+  const common = { ...GIT_ENV, HOME: repo, GITHUB_STEP_SUMMARY: summaryFile };
+  const base = spawnSync('bash', ['-c', baseRunBlock()], { cwd: repo, env: { ...common, SEALS_EVENT: event, SEALS_BEFORE: before, RUNNER_TEMP: path.join(work, 'runner'), GITHUB_WORKSPACE: repo, GITHUB_OUTPUT: baseOutput } as unknown as NodeJS.ProcessEnv, encoding: 'utf8' });
+  const empty = { output: '', summary: readOr(summaryFile), out: path.join(work, 'seals'), tool: '', bootstrap: '' };
+  if (base.status !== 0) return { status: base.status, stderr: base.stderr, ...empty };
+  const facts = readOr(baseOutput);
+  const tool = outputValue(facts, 'tool');
+  const prepareOutput = path.join(work, 'prepare-output');
+  const env = { ...common, SEALS_BASE: outputValue(facts, 'base'), SEALS_HEAD: repo, SEALS_OUT: path.join(work, 'seals'), GITHUB_OUTPUT: prepareOutput };
+  const prepared = spawnSync('bash', [path.join(tool, '.github', 'scripts', 'seals-prepare.sh')], { cwd: repo, env: env as unknown as NodeJS.ProcessEnv, encoding: 'utf8' });
+  return { status: prepared.status, stderr: prepared.stderr, output: readOr(prepareOutput), summary: readOr(summaryFile), out: path.join(work, 'seals'), tool, bootstrap: outputValue(facts, 'bootstrap') };
 }
 
 const KEY = signer('ek-fluxo-a');
+const MALICIOUS_PREPARE = '#!/usr/bin/env bash\necho changed=false >> "$GITHUB_OUTPUT"\n';
 
-/** Base na `main` (lista com a chave, cadeia de AUD_A com um manifesto) e um PR em cima; devolve o commit-base. */
-function repoWithBase(): { readonly repo: string; readonly base: string } {
+/**
+ * Base na `main` (lista com a chave, cadeia de AUD_A com um manifesto) e, com `tooling`, o verificador na base (o preparo real e um marcador
+ * no lugar do comando): é o caso normal depois da P9.2 na `main`. Sem ele, o caso do bootstrap.
+ */
+function repoWithBase(options: { readonly tooling?: boolean; readonly baseList?: string } = {}): { readonly repo: string; readonly base: string } {
   const repo = tmpDir('p92-git-');
   git(repo, 'init', '-q', '-b', 'main');
   fs.copyFileSync(path.join(ROOT, '.gitattributes'), path.join(repo, '.gitattributes'));
   put(repo, 'README.md', 'repositório de teste\n');
-  put(repo, 'link-audit-seals/producao/trust-keys.txt', listFile([listItem(KEY)]));
+  put(repo, 'link-audit-seals/producao/trust-keys.txt', options.baseList ?? listFile([listItem(KEY)]));
   put(repo, 'link-audit-seals/homologacao/trust-keys.txt', '');
   put(repo, sealRepoPath(AUD_A, 1), canonicalText(nextSeal(AUD_A, [], { signer: KEY })));
+  if (options.tooling !== false) {
+    put(repo, '.github/scripts/seals-prepare.sh', fs.readFileSync(PREPARE, 'utf8'));
+    put(repo, 'scripts/link-audit-seals-check.ts', '// marcador de teste: o comando da base\n');
+  }
   git(repo, 'add', '-A');
   git(repo, 'commit', '-q', '-m', 'base');
   return { repo, base: git(repo, 'rev-parse', 'HEAD') };
 }
 
-/** Simula o `refs/pull/N/merge` do GitHub: o PR num ramo e um commit de merge na `main` (HEAD^1 = base). */
-function mergePr(repo: string, change: (repo: string) => void): void {
+/** Simula o `refs/pull/N/merge` do GitHub: o PR num ramo e um commit de merge na `main` (HEAD^1 = base). `change` pode encenar o índice. */
+function mergePr(repo: string, change: (repo: string) => void, stageAll = true): void {
   git(repo, 'checkout', '-q', '-b', 'pr');
   change(repo);
-  git(repo, 'add', '-A');
+  if (stageAll) git(repo, 'add', '-A');
   git(repo, 'commit', '-q', '-m', 'pr');
   git(repo, 'checkout', '-q', 'main');
   git(repo, 'merge', '-q', '--no-ff', '-m', 'merge', 'pr');
@@ -185,11 +237,13 @@ async function runCheck(repo: string, out: string): Promise<{ readonly exit: num
   return { exit, lines, errors };
 }
 
-test('P9-S10 (funcional) PR sem nada sob link-audit-seals/ ⇒ `changed=false`, nenhuma entrada gerada e o resumo diz que nada foi verificado', () => {
+test('P9-S10 (funcional) PR sem nada sob link-audit-seals/ ⇒ `changed=false` pelo preparo da base, nenhuma entrada gerada e o resumo diz que nada foi verificado', () => {
   const { repo, base } = repoWithBase();
   mergePr(repo, (dir) => put(dir, 'README.md', 'outra coisa\n'));
   const result = prepare(repo, 'pull_request');
   assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.bootstrap, 'false');
+  assert.ok(result.tool.endsWith(`${path.sep}seals-base`), 'o preparo veio da pasta da base');
   assert.equal(result.output, 'changed=false\n');
   assert.ok(!fs.existsSync(path.join(result.out, 'modes')), 'nenhum modo calculado');
   assert.ok(result.summary.includes(`Nada mudou sob \`link-audit-seals/\` desde \`${base}\``));
@@ -211,6 +265,32 @@ test('P9-S10 (funcional) PR com manifesto novo: base = HEAD^1 do merge, `changed
   assert.ok(checked.lines.some((line) => line.startsWith(`| \`${AUD_A}/seal-0002.json\` |`)));
 });
 
+test('revisão do PR #68 (correção 1, funcional): um PR que troca o preparo por um que diz "nada mudou" não escapa, porque o preparo que roda é o da base; sem verificador na base, SEALS_BOOTSTRAP', () => {
+  const { repo } = repoWithBase();
+  const first = nextSeal(AUD_A, [], { signer: KEY });
+  mergePr(repo, (dir) => {
+    put(dir, '.github/scripts/seals-prepare.sh', MALICIOUS_PREPARE);
+    put(dir, sealRepoPath(AUD_A, 2), canonicalText(nextSeal(AUD_A, [first], { signer: KEY })));
+  });
+  const result = prepare(repo, 'pull_request');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.bootstrap, 'false');
+  assert.equal(fs.readFileSync(path.join(result.tool, '.github', 'scripts', 'seals-prepare.sh'), 'utf8'), fs.readFileSync(PREPARE, 'utf8'), 'a pasta da ferramenta tem o preparo da base');
+  assert.equal(result.output, 'changed=true\n', 'a mudança aparece');
+  assert.ok(!result.summary.includes('SEALS_BOOTSTRAP'));
+  const bootstrap = repoWithBase({ tooling: false });
+  // como este próprio PR: o verificador chega junto com a mudança
+  mergePr(bootstrap.repo, (dir) => {
+    put(dir, '.github/scripts/seals-prepare.sh', fs.readFileSync(PREPARE, 'utf8'));
+    put(dir, 'scripts/link-audit-seals-check.ts', '// marcador de teste: o comando do PR\n');
+  });
+  const fallback = prepare(bootstrap.repo, 'pull_request');
+  assert.equal(fallback.status, 0, fallback.stderr);
+  assert.equal(fallback.bootstrap, 'true');
+  assert.equal(fallback.tool, bootstrap.repo, 'só no bootstrap a ferramenta é a do PR');
+  assert.ok(fallback.summary.includes('Aviso `SEALS_BOOTSTRAP`'));
+});
+
 test('P9-S10 (funcional) modos reais do git: link simbólico e executável sob link-audit-seals/ ⇒ SEALS_BAD_MODE pelo comando', async () => {
   const { repo } = repoWithBase();
   mergePr(repo, (dir) => {
@@ -229,7 +309,35 @@ test('P9-S10 (funcional) modos reais do git: link simbólico e executável sob l
   assert.equal(checked.lines.filter((line) => line.includes('`SEALS_BAD_MODE`')).length, 2);
 });
 
-test('push: base = `before`; `before` todo zero (branch novo), fora do histórico ou evento desconhecido ⇒ falha FECHADA SEALS_NO_BASE (spec omissa, decisão da P9.2)', () => {
+test('revisão do PR #68 (correção 2): um gitlink REAL sob link-audit-seals/ com `.gitmodules` `ignore = all` aparece no preparo (`--ignore-submodules=none`) e o comando recusa SEALS_BAD_MODE', async () => {
+  const { repo, base } = repoWithBase();
+  const target = sealRepoPath(AUD_A, 2);
+  mergePr(repo, (dir) => {
+    put(dir, '.gitmodules', `[submodule "selo"]\n\tpath = ${target}\n\turl = ./nao-existe\n\tignore = all\n`);
+    git(dir, 'add', '.gitmodules');
+    git(dir, 'update-index', '--add', '--cacheinfo', `160000,${base},${target}`);
+  }, false);
+  assert.equal(git(repo, 'diff', '--name-status', base, 'HEAD', '--', 'link-audit-seals'), '', 'sem a opção, o git esconde o gitlink');
+  const result = prepare(repo, 'pull_request');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.output, 'changed=true\n');
+  assert.equal(fs.readFileSync(path.join(result.out, 'changes'), 'utf8'), `A\0${target}\0`);
+  assert.ok(fs.readFileSync(path.join(result.out, 'modes'), 'utf8').includes(`160000 commit ${base}\t${target}\0`));
+  const checked = await runCheck(repo, result.out);
+  assert.equal(checked.exit, SEALS_CHECK_EXIT.REFUSED);
+  assert.deepEqual(checked.errors, ['ERRO SEALS_BAD_MODE']);
+});
+
+test('revisão do PR #68 (correção 5): a lista do commit-base acima de 8 KiB é recusada pelo tamanho do blob (`git cat-file -s`) antes de ser materializada', () => {
+  const { repo } = repoWithBase({ baseList: `${'a'.repeat(9000)}\n` });
+  mergePr(repo, (dir) => put(dir, sealRepoPath(AUD_A, 2), 'qualquer coisa\n'));
+  const result = prepare(repo, 'pull_request');
+  assert.equal(result.status, 2);
+  assert.equal(result.stderr, 'ERRO SEALS_TOO_LARGE\n');
+  assert.ok(!fs.existsSync(path.join(result.out, 'base-trust', 'producao', 'trust-keys.txt')), 'nada materializado');
+});
+
+test('push: base = `before`; `before` todo zero (branch novo), fora do histórico ou evento desconhecido ⇒ falha FECHADA SEALS_NO_BASE no passo de base (spec omissa, decisão da P9.2)', () => {
   const { repo, base } = repoWithBase();
   put(repo, 'README.md', 'mudança direta\n');
   git(repo, 'commit', '-q', '-am', 'push');

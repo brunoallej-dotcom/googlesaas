@@ -93,9 +93,11 @@ jobs:
           retention-days: 90
 
   # P9.2: verificação dos manifestos, fechos e listas de confiança ANTES do merge (spec docs/specs/ci-deploy-and-seal-delivery.md
-  # §5.4, S-01 a S-14). Em todo pull_request e push na main, sem filtro de caminho (check obrigatório). Sem nada sob
-  # link-audit-seals/, termina verde sem instalar nada. Sem segredo; checkout sem credencial e com o histórico completo (a base é
-  # HEAD^1 no PR e github.event.before no push). As entradas do evento vão pelo ambiente, nunca dentro do run:.
+  # §5.4, S-01 a S-14). Em todo pull_request e push na main, sem filtro de caminho (check obrigatório). Sem segredo; checkout sem
+  # credencial e com o histórico completo. O código que verifica (preparo, dependências e comando) vem da revisão CONFIÁVEL, a base
+  # (HEAD^1 no PR, github.event.before no push), numa pasta própria; o checkout do PR é só dado (revisão do PR #68). Enquanto a base
+  # não tiver o verificador (só até a P9.2 estar na main), usa o do PR e avisa SEALS_BOOTSTRAP. Sem nada sob link-audit-seals/,
+  # termina verde sem instalar nada. As entradas do evento e as saídas dos passos vão pelo ambiente, nunca dentro do run:.
   seals:
     name: seals (append-only, v2)
     runs-on: ubuntu-latest
@@ -107,22 +109,53 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Base da comparação e mudanças sob link-audit-seals/
-        id: prepare
+      - name: Revisão confiável (base) numa pasta própria
+        id: base
         env:
           SEALS_EVENT: ${{ github.event_name }}
           SEALS_BEFORE: ${{ github.event.before }}
-        run: SEALS_OUT="$RUNNER_TEMP/seals" bash .github/scripts/seals-prepare.sh
+        run: |
+          set -euo pipefail
+          refuse() { printf 'ERRO %s\n' "$1" >&2; printf '%s\n' '### seals (append-only, v2)' '' "Resultado: \`ERRO $1\`" >> "$GITHUB_STEP_SUMMARY"; exit 2; }
+          case "${SEALS_EVENT:-}" in
+            pull_request)
+              base="$(git rev-parse --verify --quiet 'HEAD^1^{commit}')" || refuse SEALS_NO_BASE ;;
+            push)
+              if ! [[ "${SEALS_BEFORE:-}" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || [[ "$SEALS_BEFORE" =~ ^0+$ ]]; then refuse SEALS_NO_BASE; fi
+              base="$(git rev-parse --verify --quiet "${SEALS_BEFORE}^{commit}")" || refuse SEALS_NO_BASE ;;
+            *)
+              refuse SEALS_NO_BASE ;;
+          esac
+          tool="$RUNNER_TEMP/seals-base"
+          git worktree add --quiet --detach "$tool" "$base"
+          bootstrap=false
+          if [ ! -f "$tool/.github/scripts/seals-prepare.sh" ] || [ ! -f "$tool/scripts/link-audit-seals-check.ts" ]; then
+            tool="$GITHUB_WORKSPACE"
+            bootstrap=true
+            printf '%s\n' '### seals (append-only, v2)' '' 'Aviso `SEALS_BOOTSTRAP`: a revisão base ainda não tem o verificador; esta execução usa o do próprio PR (só até a P9.2 estar na main).' '' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          { echo "base=$base"; echo "tool=$tool"; echo "bootstrap=$bootstrap"; } >> "$GITHUB_OUTPUT"
+      - name: Mudanças sob link-audit-seals/ (preparo da base)
+        id: prepare
+        env:
+          SEALS_BASE: ${{ steps.base.outputs.base }}
+          SEALS_TOOL: ${{ steps.base.outputs.tool }}
+        run: SEALS_HEAD="$GITHUB_WORKSPACE" SEALS_OUT="$RUNNER_TEMP/seals" bash "$SEALS_TOOL/.github/scripts/seals-prepare.sh"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: steps.prepare.outputs.changed == 'true'
         with: { node-version: '22' }
-      - name: Install
+      - name: Install (dependências da base)
         if: steps.prepare.outputs.changed == 'true'
-        run: npm ci
-      - name: Verificador v2 sobre o que mudou (resumo público no job)
+        env:
+          SEALS_TOOL: ${{ steps.base.outputs.tool }}
+        run: cd "$SEALS_TOOL" && npm ci
+      - name: Verificador v2 da base sobre o que mudou (resumo público no job)
         if: steps.prepare.outputs.changed == 'true'
+        env:
+          SEALS_TOOL: ${{ steps.base.outputs.tool }}
         run: |
           set -o pipefail
+          cd "$SEALS_TOOL"
           npm run --silent link-audit:seals-check -- \
             --changes "$RUNNER_TEMP/seals/changes" --modes "$RUNNER_TEMP/seals/modes" \
             --base-trust "$RUNNER_TEMP/seals/base-trust" --repo "$GITHUB_WORKSPACE" | tee -a "$GITHUB_STEP_SUMMARY"
