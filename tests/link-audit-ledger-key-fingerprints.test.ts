@@ -53,3 +53,20 @@ test('PG-L01 o rótulo de separação de domínio é IGUAL no livro e na observa
   assert.equal(LEDGER_LABEL, 'gmn.link-audit.key-fingerprint.v1');
   assert.equal(OBSERVABILITY_LABEL, LEDGER_LABEL);
 });
+
+test('PG-L01 phase6KeyFingerprints: COMPLETUDE — com origem e livro, atuais e aposentadas, sai exatamente um par por chave configurada', () => {
+  const origin = [testKeySpec('ok-test-a', 'origin-a')];
+  const originRetired = [`${testKeySpec('ok-old-b', 'origin-old-b')}:2026-12-01`, `${testKeySpec('ok-old-c', 'origin-old-c')}:2026-12-02`];
+  const ledger = [testKeySpec('lk-test-a', 'ledger-a')];
+  const ledgerRetired = [`${testKeySpec('lk-old-b', 'ledger-old-b')}:2026-12-03`, `${testKeySpec('lk-old-c', 'ledger-old-c')}:2026-12-04`];
+  const fingerprints = phase6KeyFingerprints({
+    [ORIGIN_KEY_ENV]: origin.join(','),
+    [ORIGIN_RETIRED_KEYS_ENV]: originRetired.join(','),
+    [LEDGER_KEY_ENV]: ledger.join(','),
+    [LEDGER_RETIRED_KEYS_ENV]: ledgerRetired.join(','),
+  });
+  const configured = [...origin, ...originRetired, ...ledger, ...ledgerRetired].map((spec) => spec.split(':')[0]);
+  assert.equal(fingerprints.length, configured.length, 'nenhuma chave omitida (nem aposentada, nem uma família inteira)');
+  assert.deepEqual(fingerprints.map((pair) => pair.id), configured, 'um par por chave, na ordem: origem, aposentadas da origem, livro, aposentadas do livro');
+  assert.equal(new Set(fingerprints.map((pair) => pair.materialDigest)).size, configured.length, 'um digest distinto por material');
+});

@@ -16,7 +16,10 @@ import { z } from 'zod';
  * material: este módulo não cita os nomes das variáveis delas nem importa outro módulo da Fase 6. Quem compõe é o livro, com
  * `phase6KeyFingerprints(env)` de `link-audit-ledger/config.ts` (import direto, fora do barrel). Lista ausente ou inválida ⇒
  * `LOG_KEY_UNVERIFIED` (nunca `READY`). Ponto de composição futuro (com o `emit` das próximas fatias; nada liga isto a rota ou logger
- * nesta fatia): `operatorRefSourceFromEnv(phase6KeyFingerprints(env), env)`. Nunca se cai para hash sem chave (poucos e-mails: um
+ * nesta fatia): `operatorRefSourceFromEnv(phase6KeyFingerprints(env), env)`.
+ * DECISÃO DO MANAGER (4ª rodada da revisão do PR #54): a lista vem do NOSSO código (`phase6KeyFingerprints`), não de entrada externa, e lista
+ * vazia é legítima quando não há outras chaves configuradas. A garantia de que nenhuma chave fica de fora (origem e livro, atuais e
+ * aposentadas) é o teste de completude em `tests/link-audit-ledger-key-fingerprints.test.ts`, não uma checagem aqui. Nunca se cai para hash sem chave (poucos e-mails: um
  * dicionário o reverteria) nem para o e-mail. Uma identidade que não parece e-mail também vira `UNAVAILABLE`.
  *
  * LIMITE DECLARADO: HMAC é pseudonimização, não anonimização (LGPD): quem tem a chave e a lista de operadores recalcula o pseudônimo.
