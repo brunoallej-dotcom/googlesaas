@@ -689,6 +689,53 @@ test('passo 12: um rollback_completed ANTIGO (de antes do deploy) não vira E_RO
   refusedWith(await deploy(otherImage), 'ERRO E_CONVERGE_TIMEOUT');
 });
 
+test('revisão do PR #70 (item 4a): com a especificação mudada pelo deploy, só vale um estado TERMINAL completed da atualização começada por ESTE deploy — updating (mesmo com as tarefas já na imagem nova) ou um UpdateStatus anterior (updating ou completed) nunca valem ⇒ E_CONVERGE_TIMEOUT', async () => {
+  const cases: ReadonlyArray<readonly [string, string, string[]]> = [
+    ['retomada durante um updating anterior', 'updating', ['stale-new-image']],
+    ['completed anterior com as tarefas já na imagem nova', 'completed', ['stale-new-image']],
+    ['updating novo com as tarefas já na imagem nova', 'completed', ['updating-new-image']],
+    ['paused novo', 'completed', ['updating-new-image', 'paused']],
+  ];
+  for (const [label, previousState, states] of cases) {
+    const w = world();
+    w.scenario.services.set('gmn_gmn-web', { ...baseService('gmn_gmn-web', 'gmn-web:anterior', 1), UpdateStatus: { State: previousState, StartedAt: '2026-11-01T00:00:00Z' } });
+    w.scenario.updateStates = states;
+    const r = await deploy(w);
+    refusedWith(r, 'ERRO E_CONVERGE_TIMEOUT');
+    assert.ok(!fs.existsSync(installedPath(w)), `${label}: lista não instalada`);
+  }
+  const resumed = world();
+  resumed.scenario.services.set('gmn_gmn-web', { ...baseService('gmn_gmn-web', 'gmn-web:anterior', 1), UpdateStatus: { State: 'updating', StartedAt: '2026-11-01T00:00:00Z' } });
+  resumed.scenario.updateStates = ['stale-new-image', 'updating-new-image', 'completed'];
+  assert.equal((await deploy(resumed)).outcome.exitCode, 0, 'só depois do completed da atualização nova');
+});
+
+test('revisão do PR #70 (item 4a): especificação igual (o mesmo commit de novo): não há atualização a esperar; com as tarefas no id carregado, converge mesmo com o UpdateStatus antigo', async () => {
+  const w = world();
+  const value = w.trust.toString('ascii').slice(0, -1).split('\n').join(',');
+  w.scenario.services.set('gmn_gmn-web', { ...baseService('gmn_gmn-web', `gmn-web:producao-${SHA40}`, 1, { Env: [`GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS=${value}`] }), UpdateStatus: { State: 'completed', StartedAt: '2026-11-01T00:00:00Z' } });
+  w.scenario.specUnchanged = true;
+  w.scenario.updateStates = ['stale-new-image'];
+  const r = await deploy(w);
+  assert.equal(r.outcome.exitCode, 0, String(r.outcome.stderr));
+});
+
+test('revisão do PR #70 (item 4b): a mesma TAG com outro id de imagem no contêiner das tarefas não conta como convergência (web ⇒ E_CONVERGE_TIMEOUT) nem passa no PD-06 (Worker ligado ⇒ E_POSTDEPLOY_CHECK PD-06); a identidade vem do contêiner de cada tarefa', async () => {
+  const web = world();
+  web.scenario.runningImageIds = new Map([['gmn_gmn-web', `sha256:${'7'.repeat(64)}`]]);
+  refusedWith(await deploy(web), 'ERRO E_CONVERGE_TIMEOUT');
+  const worker = world();
+  fs.writeFileSync(worker.hostVarsFile, fs.readFileSync(worker.hostVarsFile, 'utf8').replace('GMN_WORKER_REPLICAS=0', 'GMN_WORKER_REPLICAS=1'));
+  worker.scenario.runningImageIds = new Map([['gmn_gmn-worker', `sha256:${'7'.repeat(64)}`]]);
+  refusedWith(await deploy(worker), 'ERRO E_POSTDEPLOY_CHECK PD-06');
+  const workerOk = world();
+  fs.writeFileSync(workerOk.hostVarsFile, fs.readFileSync(workerOk.hostVarsFile, 'utf8').replace('GMN_WORKER_REPLICAS=0', 'GMN_WORKER_REPLICAS=1'));
+  const ok = await deploy(workerOk);
+  assert.equal(ok.outcome.exitCode, 0, String(ok.outcome.stderr));
+  const identity = ok.runner.dockerCalls().filter((args) => args[0] === 'inspect' && args[1] === '--type');
+  assert.ok(identity.some((args) => args[2] === 'task') && identity.some((args) => args[2] === 'container'), 'tarefa ⇒ contêiner ⇒ id da imagem');
+});
+
 /* ===================================================================================================================== passo 13 */
 
 test('P9-D10 cada PD-01 a PD-08 reprovado ⇒ E_POSTDEPLOY_CHECK <PD-xx> (saída 64), e a lista não é instalada', async () => {

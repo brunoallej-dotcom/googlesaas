@@ -158,7 +158,15 @@ if (a === 'service' && b === 'inspect') {
   if (!state.deployed) done(1, '[]\\n', 'Error: no such service: ' + args[2] + ' ' + noise + '\\n');
   done(0, JSON.stringify(args.slice(2).map((id) => service(id.replace(/^id-/, '')))) + '\\n', '');
 }
-if (a === 'service' && b === 'ps') done(0, JSON.stringify({ Image: 'gmn-web:' + state.tag, CurrentState: 'Running 2 seconds ago', DesiredState: 'Running' }) + '\\n', '');
+if (a === 'service' && b === 'ps') {
+  const target = args[args.length - 1];
+  if (!target.endsWith('_gmn-web')) done(0, '', '');
+  done(0, JSON.stringify({ ID: 'tarefaweb1', Image: 'gmn-web:' + state.tag, CurrentState: 'Running 2 seconds ago', DesiredState: 'Running' }) + '\\n', '');
+}
+if (a === 'inspect' && b === '--type') {
+  if (args[2] === 'task') done(0, JSON.stringify('c'.repeat(64)) + '\\n', '');
+  done(0, JSON.stringify(state.images['gmn-web:' + state.tag].Id) + '\\n', '');
+}
 if (a === 'service' && b === 'ls') done(0, names.map((name) => JSON.stringify({ ID: 'id-' + name, Name: name, Replicas: name.endsWith('worker') ? '0/0' : '1/1', Ports: '' })).join('\\n') + '\\n', '');
 done(1, '', 'fake docker: inesperado ' + args.join(' ') + ' ' + noise + '\\n');
 `;

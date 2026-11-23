@@ -2,7 +2,7 @@ import nodePath from 'node:path';
 import type { ReceiverConfig } from './args';
 import { listBundle, loadBundle } from './bundle';
 import { ReceiverError } from './codes';
-import { updateMarkOf, waitForConvergence } from './converge';
+import { snapshotOf, waitForConvergence } from './converge';
 import { dockerRootDir, inspectService, runProgram } from './docker';
 import type { DeployCommand } from './grammar';
 import { checkHostConfig, isUnderPrefix, MAX_HOST_VARS_BYTES, parseHostVarsFile, type HostConfig } from './host-vars';
@@ -151,10 +151,10 @@ export async function runDeploy(command: DeployCommand, config: ReceiverConfig, 
   await checkDisk(listing.uncompressedBytes, deps); // 8
   const images = await loadBundle(bundle.file, listing, config.env, command.sha40, deps); // 9
   const webService = `${config.stackName}_gmn-web`;
-  const before = updateMarkOf(await inspectService(webService, 'E_INTERNAL', deps));
+  const before = snapshotOf(await inspectService(webService, 'E_INTERNAL', deps));
   await configureAndDeploy(config, stack, stackEnvironment(host, stack, images.tag, trust.value, deps.childPath), deps); // 10, 11
-  await waitForConvergence(webService, images.webRef, before, deps); // 12
-  await runPostdeployChecks({ stackName: config.stackName, env: config.env, webRef: images.webRef, workerRef: images.workerRef, workerReplicas: host.workerReplicas, trustValue: trust.value }, deps); // 13
+  await waitForConvergence(webService, images.webRef, images.webImageId, before, deps); // 12
+  await runPostdeployChecks({ stackName: config.stackName, env: config.env, webRef: images.webRef, workerRef: images.workerRef, webImageId: images.webImageId, workerImageId: images.workerImageId, workerReplicas: host.workerReplicas, trustValue: trust.value }, deps); // 13
   const installedSha256 = await installTrustList(trust, config.stateDir, deps); // 14
   await deps.fs.unlink(bundle.file).catch(() => deps.log.write('deploy.bundle_unlink_failed'));
   deps.log.write('deploy.done', { tag: images.tag, stackSha256: command.stackSha256, overlaySha256: command.overlaySha256, trustInstalledSha256: installedSha256 });

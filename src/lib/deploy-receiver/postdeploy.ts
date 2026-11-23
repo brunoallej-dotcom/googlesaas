@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { ReceiverError, type PostdeployCheckId } from './codes';
 import { isImageRef } from './converge';
-import { dockerQuery, inspectService, parseJsonLines, parseJsonWith, ServiceSchema, type ServiceInfo } from './docker';
+import { dockerQuery, inspectService, parseJsonLines, parseJsonWith, runningTasks, ServiceSchema, taskImageId, type ServiceInfo } from './docker';
 import type { DeployEnvironment } from './grammar';
 import type { ReceiverDeps } from './ports';
 
@@ -9,7 +9,8 @@ import type { ReceiverDeps } from './ports';
  * P9.3a — passo 13 do `deploy` (spec §5.6; `VERIFICACAO-POS-DEPLOY.md` §1–2 e EN-12): verificações SOMENTE LEITURA, cada uma com id fixo, na
  * ordem; a primeira reprovada ⇒ `E_POSTDEPLOY_CHECK <PD-xx>` (o serviço já foi atualizado: o responsável decide pelo `PLANO-DE-ROLLBACK.md`).
  *   PD-01 web 1/1 · PD-02 redis 1/1 · PD-03 Worker com as réplicas do arquivo (homologação: 0) · PD-04 nenhuma porta publicada na stack ·
- *   PD-05 Worker só com a pasta de PDFs e `/tmp` · PD-06 imagens = `gmn-web:<tag>` e `gmn-worker:<tag>` · PD-07 a variável da lista no web = a
+ *   PD-05 Worker só com a pasta de PDFs e `/tmp` · PD-06 imagens = `gmn-web:<tag>` e `gmn-worker:<tag>` e, pela identidade efetiva, cada
+ *   tarefa em execução roda o id carregado no passo 9 (revisão do PR #70) · PD-07 a variável da lista no web = a
  *   lista recebida · PD-08 produção sem `GMN_LINK_AUDIT_HOMOLOGATION` no web, homologação com `1`.
  * Uma consulta que falha reprova a verificação que dependia dela.
  */
@@ -25,6 +26,9 @@ export interface PostdeployInput {
   readonly env: DeployEnvironment;
   readonly webRef: string;
   readonly workerRef: string;
+  /** Os ids carregados no passo 9 (identidade efetiva das tarefas, revisão do PR #70). */
+  readonly webImageId: string;
+  readonly workerImageId: string;
   readonly workerReplicas: number;
   readonly trustValue: string;
 }
@@ -56,6 +60,13 @@ async function checkNoPublishedPorts(services: readonly ListedService[], deps: R
 function checkWorkerMounts(worker: ServiceInfo): void {
   const mounts = (worker.Spec.TaskTemplate.ContainerSpec.Mounts ?? []).map((mount) => `${mount.Type ?? ''}:${mount.Target}`).sort();
   if (mounts.join('\n') !== [...WORKER_MOUNTS].sort().join('\n')) throw fail('PD-05', 'worker mounts');
+}
+
+/** PD-06 pela identidade EFETIVA: toda tarefa em execução do serviço roda um contêiner da imagem de id `imageId` (e há `minimum` delas). */
+async function checkTaskImages(serviceName: string, imageId: string, minimum: number, deps: ReceiverDeps): Promise<void> {
+  const tasks = await runningTasks(serviceName, 'E_POSTDEPLOY_CHECK', deps);
+  if (tasks.length < minimum) throw fail('PD-06', `${serviceName} has fewer running tasks than expected`);
+  for (const task of tasks) if ((await taskImageId(task.ID, 'E_POSTDEPLOY_CHECK', deps)) !== imageId) throw fail('PD-06', `${serviceName} task runs another image id`);
 }
 
 /** As entradas `NOME=…` do ambiente do serviço. */
@@ -100,6 +111,8 @@ export async function runPostdeployChecks(input: PostdeployInput, deps: Receiver
   checkWorkerMounts(worker);
   const web = await requireService(`${input.stackName}_gmn-web`, 'PD-06', deps);
   if (!isImageRef(web.Spec.TaskTemplate.ContainerSpec.Image, input.webRef) || !isImageRef(worker.Spec.TaskTemplate.ContainerSpec.Image, input.workerRef)) throw fail('PD-06', 'service images');
+  await withCheck('PD-06', () => checkTaskImages(`${input.stackName}_gmn-web`, input.webImageId, 1, deps));
+  if (input.workerReplicas > 0) await withCheck('PD-06', () => checkTaskImages(`${input.stackName}_gmn-worker`, input.workerImageId, input.workerReplicas, deps));
   checkEnvironment(web, input);
   deps.log.write('postdeploy.ok');
 }

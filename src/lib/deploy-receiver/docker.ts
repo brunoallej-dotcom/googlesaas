@@ -87,7 +87,8 @@ export const ServiceSchema = z.object({
   Endpoint: z.object({ Ports: PortsSchema }).nullable().optional(),
   UpdateStatus: z.object({ State: z.string(), StartedAt: z.string().optional() }).nullable().optional(),
 });
-export type ServiceInfo = z.infer<typeof ServiceSchema>;
+/** O serviço, com a especificação inteira serializada como o Docker a devolveu (para saber se o `stack deploy` a mudou). */
+export type ServiceInfo = z.infer<typeof ServiceSchema> & { readonly specJson: string };
 const ServiceArraySchema = z.array(ServiceSchema);
 const NO_SUCH_SERVICE = /no such service/i;
 
@@ -97,10 +98,34 @@ export async function inspectService(name: string, code: ReceiverCode, deps: Pic
   const result = await runProgram({ program: 'docker', args: ['service', 'inspect', name], env: { PATH: deps.childPath }, timeoutMs: QUERY_TIMEOUT_MS, maxOutputBytes: QUERY_MAX_OUTPUT, logStdout: false, label }, deps);
   if (result.exitCode !== 0 && !result.timedOut && !result.overflow && NO_SUCH_SERVICE.test(text(result.stderr))) return null;
   if (!succeeded(result)) throw new ReceiverError(code, null, `${label} failed`);
-  const services = parseJsonWith(text(result.stdout), ServiceArraySchema, code, label);
+  const raw = text(result.stdout);
+  const services = parseJsonWith(raw, ServiceArraySchema, code, label);
   const found = services.find((service) => service.Spec.Name === name);
   if (services.length !== 1 || found === undefined) throw new ReceiverError(code, null, `${label}: unexpected result`);
-  return found;
+  const rawSpec: unknown = (JSON.parse(raw) as Array<{ Spec?: unknown }>)[0]?.Spec ?? null;
+  return { ...found, specJson: JSON.stringify(rawSpec) };
+}
+
+const TaskLineSchema = z.object({ ID: z.string().regex(/^[0-9a-z]{1,64}$/), Image: z.string(), CurrentState: z.string(), DesiredState: z.string() });
+export type RunningTask = z.infer<typeof TaskLineSchema>;
+const CONTAINER_ID = /^[0-9a-f]{64}$/;
+const IMAGE_ID = /^sha256:[0-9a-f]{64}$/;
+
+/** As tarefas com `desired-state=running` de um serviço (`docker service ps`). */
+export async function runningTasks(serviceName: string, code: ReceiverCode, deps: Pick<ReceiverDeps, 'runner' | 'log' | 'childPath'>): Promise<RunningTask[]> {
+  const raw = await dockerQuery(['service', 'ps', '--no-trunc', '--filter', 'desired-state=running', '--format', '{{json .}}', serviceName], `docker service ps ${serviceName}`, code, deps);
+  return parseJsonLines(raw, TaskLineSchema, code, 'docker service ps');
+}
+
+/**
+ * A identidade EFETIVA da imagem de uma tarefa (revisão do PR #70): o id da imagem do contêiner dela (`docker inspect` da tarefa ⇒ id do
+ * contêiner ⇒ `docker inspect` do contêiner ⇒ `.Image`), não só a tag. `null` se a tarefa ainda não tem contêiner.
+ */
+export async function taskImageId(taskId: string, code: ReceiverCode, deps: Pick<ReceiverDeps, 'runner' | 'log' | 'childPath'>): Promise<string | null> {
+  const container = parseJsonWith((await dockerQuery(['inspect', '--type', 'task', '--format', '{{json .Status.ContainerStatus.ContainerID}}', taskId], `docker inspect task ${taskId}`, code, deps)).trim(), z.string(), code, 'docker inspect task');
+  if (!CONTAINER_ID.test(container)) return null;
+  const image = parseJsonWith((await dockerQuery(['inspect', '--type', 'container', '--format', '{{json .Image}}', container], 'docker inspect container', code, deps)).trim(), z.string(), code, 'docker inspect container');
+  return IMAGE_ID.test(image) ? image : null;
 }
 
 /** `docker info`: a raiz de dados do Docker (para o espaço livre do passo 8). */

@@ -659,13 +659,21 @@ chamador, prazo com `SIGKILL` e teto de saída). A lista de confiança usa o mó
 - **Passos 10 e 11:** o ambiente dos dois `docker stack …` é o do passo 2 acima (as variáveis interpoladas, `GMN_IMAGE_TAG`, a lista e o
   `PATH`), e os `-c` são as cópias privadas; as consultas ao Docker recebem só o `PATH`. O stdout do `docker stack config` não vai nem ao log local (tem o ambiente renderizado, com e-mails de
   operador); o stderr vai.
-- **Passo 12:** antes do `stack deploy`, o receptor lê o `UpdateStatus.StartedAt` do web. Só conta como resultado a atualização com
-  outro `StartedAt`: um `rollback_completed` ou um `completed` antigos não valem. Sem atualização nova (serviço criado agora, mesmo
-  commit de novo), bastam as tarefas `desired-state=running` em `Running` com a tag nova (`docker service ps`). Consulta a cada 5 s, a
-  primeira 5 s depois do deploy. Falha passageira de consulta só vai ao log. `paused` espera até o prazo.
+- **Passo 12** (revisão do PR #70, item 4): antes do `stack deploy`, o receptor fotografa o web: a especificação inteira e o
+  `UpdateStatus.StartedAt`.
+  - Se o deploy **mudou** a especificação, só vale a atualização começada por ele (outro `StartedAt`) num estado **terminal**
+    `completed`. `updating` (mesmo com as tarefas já na imagem nova), `paused` ou um `UpdateStatus` anterior (`updating`, `completed`,
+    `rollback_completed`) nunca valem: espera até o prazo.
+  - Uma atualização nova em `rollback_*` ⇒ `E_ROLLED_BACK`.
+  - Especificação igual (o mesmo commit de novo) ou serviço criado agora: não há atualização a esperar, e valem as tarefas.
+  - "As tarefas rodam a imagem nova" é a identidade **efetiva**: toda tarefa `desired-state=running` está em `Running` com a tag nova, e
+    o id da imagem do contêiner dela (`docker inspect --type task` ⇒ id do contêiner ⇒ `docker inspect --type container` ⇒ `.Image`) é o
+    id carregado no passo 9, não só a tag.
+  - Consulta a cada 5 s, a primeira 5 s depois do deploy. Falha passageira de consulta só vai ao log.
 - **Passo 13:** `docker service ls --filter label=com.docker.stack.namespace=<stack>` para as réplicas (`N/N`) e `docker service inspect`
   para o resto. PD-04 olha `Spec.EndpointSpec.Ports` e `Endpoint.Ports` de **todos** os serviços da stack. PD-05 exige exatamente
-  `bind:/app/.data/audits` e `tmpfs:/tmp`. PD-06 aceita a tag com ou sem `@sha256:…`. PD-07 exige uma única entrada, igual à lista.
+  `bind:/app/.data/audits` e `tmpfs:/tmp`. PD-06 aceita a tag com ou sem `@sha256:…` na especificação e confere a identidade efetiva: toda tarefa em execução do web (pelo menos
+  uma) e, com o Worker ligado, do Worker roda um contêiner do id carregado no passo 9. PD-07 exige uma única entrada, igual à lista.
   PD-08 exige, em homologação, exatamente `GMN_LINK_AUDIT_HOMOLOGATION=1`. Consulta que falha reprova a verificação que dependia dela.
 - **Passo 14:** `trust-keys.txt` com `fchmod 0644` explícito, para o `umask` não tirar a leitura do receptor de manifestos. Falha ao
   instalar ⇒ `E_INTERNAL`, com o serviço já atualizado: o responsável segue o `PLANO-DE-ROLLBACK.md`. Falha ao apagar o pacote só vai

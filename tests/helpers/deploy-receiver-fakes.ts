@@ -115,12 +115,19 @@ export interface DockerScenario {
   stackConfigOk: boolean;
   stackDeployOk: boolean;
   foldersOk: boolean;
-  /** Estados do `UpdateStatus` do web devolvidos a cada consulta depois do deploy; `stale` = o anterior, tarefas ainda na imagem velha. */
+  /**
+   * Estados do `UpdateStatus` do web devolvidos a cada consulta depois do deploy: `stale` = o anterior, tarefas ainda na imagem velha;
+   * `stale-new-image` = o anterior, mas as tarefas já na imagem nova; `none` = sem `UpdateStatus` (serviço criado agora).
+   */
   updateStates: string[];
   /** Ajuste dos serviços logo depois do `stack deploy` (para reprovar uma verificação PD-xx). */
   afterDeploy?: (services: Map<string, FakeService>) => void;
   /** `docker service ls` falha. */
   serviceLsFails?: boolean;
+  /** Id da imagem que o CONTÊINER das tarefas de um serviço roda (serviço → id); sem ele, o id carregado da tag do serviço. */
+  runningImageIds?: Map<string, string>;
+  /** O `stack deploy` não muda a especificação do web (o mesmo commit de novo): o serviço anterior fica como está. */
+  specUnchanged?: boolean;
   /** Saída do `tar -tvzf` (linhas do GNU tar); sem ela, montada do `manifest` e dos `configs` (`listingFor`). */
   listing?: string;
   /** Chamado antes de cada programa (ex.: trocar a stack instalada no meio do deploy). */
@@ -147,6 +154,8 @@ export const WORKER_DIFF_IDS = [`sha256:${'2'.repeat(64)}`];
 export const WEB_CONFIG = imageConfig('web', WEB_DIFF_IDS);
 export const WORKER_CONFIG = imageConfig('worker', WORKER_DIFF_IDS);
 export const CONFIG_DIGEST_WEB = sha256(WEB_CONFIG);
+/** O id da imagem que as tarefas rodavam antes do deploy. */
+export const OLD_IMAGE_ID = `sha256:${'0'.repeat(64)}`;
 export const CONFIG_DIGEST_WORKER = sha256(WORKER_CONFIG);
 /** Formato OCI para o web, antigo para o Worker (os dois que o receptor aceita). */
 export const WEB_CONFIG_PATH = `blobs/sha256/${CONFIG_DIGEST_WEB}`;
@@ -218,6 +227,8 @@ export class FakeRunner implements ProcessRunner {
   readonly composeCalls: ComposeCall[] = [];
   private polls = 0;
   private lastState = 'completed';
+  private readonly taskImages = new Map<string, string>();
+  private readonly containers = new Map<string, string>();
   private deployed = false;
   private oldWebImage = 'gmn-web:anterior';
   constructor(readonly scenario: DockerScenario, readonly stackName: string, readonly env: 'producao' | 'homologacao') {}
@@ -247,6 +258,7 @@ export class FakeRunner implements ProcessRunner {
   private docker(request: RunRequest): RunResult {
     const [a, b] = request.args;
     if (a === 'info') return result(0, `${JSON.stringify(this.scenario.rootDir)}\n`);
+    if (a === 'inspect' && b === '--type') return this.objectInspect(request.args[2] as string, request.args[request.args.length - 1] as string);
     if (a === 'service' && b === 'inspect') return this.inspect(request.args.slice(2));
     if (a === 'service' && b === 'ls') return this.list();
     if (a === 'service' && b === 'ps') return this.tasks(request.args[request.args.length - 1] as string);
@@ -279,17 +291,33 @@ export class FakeRunner implements ProcessRunner {
 
   private updateFor(state: string): FakeService['UpdateStatus'] {
     const web = this.scenario.services.get(`${this.stackName}_gmn-web`);
-    if (state === 'stale') return web?.UpdateStatus ?? null;
+    if (state === 'stale' || state === 'stale-new-image') return web?.UpdateStatus ?? null;
     if (state === 'none') return null;
-    return { State: state, StartedAt: '2026-11-23T00:00:01Z' };
+    return { State: state === 'updating-new-image' ? 'updating' : state, StartedAt: '2026-11-23T00:00:01Z' };
   }
 
   private tasks(name: string): RunResult {
     const service = this.scenario.services.get(name);
     if (!service) return result(1, '', 'no such service');
-    const state = this.lastState;
-    const image = state === 'completed' || state === 'none' ? service.Spec.TaskTemplate.ContainerSpec.Image : this.oldWebImage;
-    return result(0, `${JSON.stringify({ Image: image, CurrentState: 'Running 3 seconds ago', DesiredState: 'Running' })}\n`);
+    if ((service.Spec.Mode.Replicated?.Replicas ?? 0) === 0) return result(0, '');
+    const isWeb = name === `${this.stackName}_gmn-web`;
+    const fresh = !isWeb || ['completed', 'none', 'stale-new-image', 'updating-new-image'].includes(this.lastState);
+    const image = fresh ? service.Spec.TaskTemplate.ContainerSpec.Image : this.oldWebImage;
+    const id = `t${sha256(name).slice(0, 24)}`;
+    this.taskImages.set(id, fresh ? (this.scenario.runningImageIds?.get(name) ?? this.scenario.loadedImages.get(image)?.Id ?? OLD_IMAGE_ID) : OLD_IMAGE_ID);
+    return result(0, `${JSON.stringify({ ID: id, Image: image, CurrentState: 'Running 3 seconds ago', DesiredState: 'Running' })}\n`);
+  }
+
+  /** `docker inspect --type task|container --format … <id>`: tarefa ⇒ contêiner ⇒ id da imagem do contêiner. */
+  private objectInspect(type: string, id: string): RunResult {
+    if (type === 'task') {
+      if (!this.taskImages.has(id)) return result(1, '', 'Error: No such task');
+      const container = sha256(`contêiner ${id}`);
+      this.containers.set(container, id);
+      return result(0, `${JSON.stringify(container)}\n`);
+    }
+    const task = this.containers.get(id);
+    return task === undefined ? result(1, '', 'Error: No such container') : result(0, `${JSON.stringify(this.taskImages.get(task))}\n`);
   }
 
   private list(): RunResult {
@@ -328,7 +356,7 @@ export class FakeRunner implements ProcessRunner {
     const services = this.scenario.services;
     const previous = services.get(`${this.stackName}_gmn-web`);
     if (previous) this.oldWebImage = previous.Spec.TaskTemplate.ContainerSpec.Image;
-    services.set(`${this.stackName}_gmn-web`, { ...baseService(`${this.stackName}_gmn-web`, `gmn-web:${tag}`, 1, { Env: env }), UpdateStatus: previous?.UpdateStatus ?? null });
+    if (!(this.scenario.specUnchanged && previous)) services.set(`${this.stackName}_gmn-web`, { ...baseService(`${this.stackName}_gmn-web`, `gmn-web:${tag}`, 1, { Env: env }), UpdateStatus: previous?.UpdateStatus ?? null });
     services.set(`${this.stackName}_gmn-worker`, baseService(`${this.stackName}_gmn-worker`, `gmn-worker:${tag}`, Number(request.env.GMN_WORKER_REPLICAS ?? '0'), { Mounts: [{ Type: 'bind', Source: '/srv/x/audits', Target: '/app/.data/audits' }, { Type: 'tmpfs', Target: '/tmp' }] }));
     if (!services.has(`${this.stackName}_gmn-redis`)) services.set(`${this.stackName}_gmn-redis`, baseService(`${this.stackName}_gmn-redis`, 'redis:7.4.11-alpine', 1));
     this.scenario.afterDeploy?.(services);
