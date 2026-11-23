@@ -266,12 +266,35 @@ lista nova.
 lista, regras S-01 a S-13, resumo e comando), o passo de preparo do job em `.github/scripts/seals-prepare.sh` e o comando em
 `scripts/link-audit-seals-check.ts`. Decisões tomadas na fatia, todas de falha fechada:
 
+- **O código que verifica não vem do PR verificado** (revisão do PR #68). O job resolve a revisão base (`HEAD^1` do commit de merge no
+  `pull_request`, `github.event.before` no `push`), cria uma `git worktree` dela em `$RUNNER_TEMP/seals-base` e roda de lá o
+  `seals-prepare.sh`, o `npm ci` e o comando; o checkout do PR entra só como dado (`--repo`, e o git lê dele a mudança e os modos). Se a
+  base ainda não tem o verificador (`.github/scripts/seals-prepare.sh` e `scripts/link-audit-seals-check.ts`), o job usa o do próprio
+  PR e escreve no resumo o aviso fixo `SEALS_BOOTSTRAP`. Isso só acontece até a P9.2 estar na `main`. O atalho "nada mudou ⇒ verde sem
+  instalar nada" é calculado pelo preparo da base. Como o próprio workflow vem do PR no `pull_request`, o CODEOWNERS do responsável
+  (P9-O02) tem de cobrir também `.github/workflows/ci.yml`, `.github/scripts/seals-prepare.sh`, `src/lib/link-audit-seals-channel/**`
+  e `scripts/link-audit-seals-check.ts`.
 - **Sem base utilizável** (push com `before` todo zero de um branch novo, `before` fora do histórico, evento que não é
-  `pull_request` nem `push`): o preparo sai com `ERRO SEALS_NO_BASE` (código 2) e o job fica vermelho. Nada é dado como "sem mudança".
+  `pull_request` nem `push`): o passo da base sai com `ERRO SEALS_NO_BASE` (código 2) e o job fica vermelho. Nada é dado como "sem
+  mudança".
+- **Submódulos sempre visíveis:** o preparo lê o PR com `git diff --ignore-submodules=none --no-ext-diff --no-textconv` e
+  `-c diff.ignoreSubmodules=none`. Sem isso, um `.gitmodules` com `ignore = all` no próprio PR esconderia do diff um gitlink sob
+  `link-audit-seals/` (verificado em teste). O gitlink aparece com modo `160000` e o comando recusa (`SEALS_BAD_MODE`).
 - **Saída do comando:** o resumo público em Markdown no stdout (o job o acrescenta a `$GITHUB_STEP_SUMMARY`) e, na recusa, uma linha
   `ERRO <CÓDIGO>` no stderr. Códigos de saída: `0` nada recusado (ou nada sob `link-audit-seals/`), `1` recusa (código da primeira, na
-  ordem das regras), `2` uso ou entrada ilegível (`SEALS_USAGE`, `SEALS_INPUT_INVALID`), `3` falha inesperada (`SEALS_INTERNAL`). Os
-  modos vêm de `git ls-tree -r -z HEAD -- link-audit-seals` (com `-z`, como a lista de mudanças).
+  ordem das regras), `2` uso ou entrada ilegível (`SEALS_USAGE`, `SEALS_INPUT_INVALID`), `3` falha inesperada sem nenhuma recusa
+  (`SEALS_INTERNAL`). Uma etapa que falha de forma inesperada não apaga as recusas já coletadas: a execução fica "incompleta" (aviso no
+  resumo) e sai com `1` e a primeira recusa; sem nenhuma, com `3`. Os modos vêm de `git ls-tree -r -z HEAD -- link-audit-seals` (com
+  `-z`, como a lista de mudanças).
+- **Pastas:** `<amb>/seals` e a pasta de cada auditoria são conferidas por `lstat` antes de qualquer listagem; uma que existe e não é
+  diretório real (arquivo, link) dá `SEALS_UNEXPECTED_PATH` (detalhe `<amb>/seals` ou `<amb>/seals/<auditId>`) e nunca é listada.
+- **Tetos de leitura:** além dos tetos do S-05 (256 KiB por arquivo, 200 arquivos e 16 MiB de arquivos novos, conferidos pelo tamanho
+  antes de ler), toda leitura de uma execução passa por um teto **único** de 64 MiB (`MAX_RUN_READ_BYTES`): os arquivos novos, a
+  releitura de cada cadeia tocada pelo verificador no S-10 (que ainda tem o próprio teto de 16 MiB por cadeia, `MAX_CLASSIFY_BYTES`), as
+  cabeças dos fechos no S-11, os fechos das fixações no S-12 e as listas do commit. Esgotado, nada mais é lido e a execução recusa com
+  `SEALS_TOO_MANY` (detalhe `READ_BUDGET`). O veredito informativo das cadeias sob a lista nova tem um teto próprio do mesmo tamanho e
+  só trunca a informação (aviso no resumo), nunca recusa. A lista do commit-base tem o tamanho do blob conferido com `git cat-file -s`
+  antes de ser materializada: acima de 8 KiB, o preparo sai com `ERRO SEALS_TOO_LARGE`.
 - **Fecho:** formato fora do esquema ⇒ `CLOSURE_FORMAT` (S-11); nome ≠ `retiredKeyId` ⇒ `SEAL_NAME_MISMATCH` (S-08, a regra da
   tabela; o P9-S09 cita `CLOSURE_<MOTIVO>` de modo genérico). Os motivos do S-11 são `CLOSURE_SIGNER_NOT_LISTED`,
   `CLOSURE_SIGNATURE_INVALID`, `CLOSURE_RETIRED_NOT_LISTED` e `CLOSURE_HEAD_NOT_IN_REPO`.
@@ -835,7 +858,9 @@ relatório indicado.
 - [ ] **P9-O01** ambientes `homologacao` e `producao` com revisor obrigatório, só `main`, sem contorno por administrador (captura
   da configuração no relatório).
 - [ ] **P9-O02** `seals (append-only, v2)` como check obrigatório da `main` e CODEOWNERS do responsável para `.github/workflows/`,
-  `deploy/hostinger/` e `link-audit-seals/**/trust-keys.txt`.
+  `deploy/hostinger/` e `link-audit-seals/**/trust-keys.txt`; desde a P9.2 (revisão do PR #68), também para
+  `.github/scripts/seals-prepare.sh`, `src/lib/link-audit-seals-channel/**` e `scripts/link-audit-seals-check.ts` (o código que
+  verifica, §5.4 "Implementação").
 - [ ] **P9-O03** quatro usuários criados, `authorized_keys` com `restrict,command=`, `sshd -T` com o `Match User`, e `ssh` com
   outro comando recusado (`E_COMMAND`).
 - [ ] **P9-O04** artefatos dos receptores e Node com `sha256sum -c` OK no host.
