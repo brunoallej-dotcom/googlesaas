@@ -5,8 +5,9 @@ import type { ByteSource, Clock } from './ports';
 /*
  * P9.3b — passo 1 do `put` (spec §5.7): o stdin até o teto + 1 byte, com prazo de 30 s, e o SHA-256 em fluxo. O primeiro byte além do teto recusa na
  * hora, sem ler o resto (`E_INPUT_TOO_LARGE`). Prazo vencido, erro no stdin ou fim sem nenhum byte ⇒ `E_INPUT_TRUNCATED` (um manifesto nunca é
- * vazio). O prazo vale para o stdin INTEIRO, não só para cada espera: quem gotejar bytes não segura a trava do ambiente além dele. Puro (stdin e
- * relógio pelas portas).
+ * vazio). O prazo vale para o stdin INTEIRO, não só para cada espera: quem gotejar bytes não segura a trava do ambiente além dele. O relógio é
+ * conferido de novo DEPOIS de cada espera (dados ou fim): um evento que chega depois do prazo nunca é aceito (revisão do PR #72, item 10). Puro
+ * (stdin e relógio pelas portas).
  */
 
 /** Prazo do stdin inteiro (cobre também o tempo sem dados entre pedaços). */
@@ -28,6 +29,7 @@ export async function readCandidateInput(source: ByteSource, clock: Clock, maxBy
     if (remaining <= 0) throw new SealReceiverError('E_INPUT_TRUNCATED', null, `stdin deadline after ${total} bytes`);
     const event = await source.next(remaining);
     if (event.kind === 'idle') throw new SealReceiverError('E_INPUT_TRUNCATED', null, `stdin idle or failed after ${total} bytes`);
+    if (clock.monotonicMs() > deadline) throw new SealReceiverError('E_INPUT_TRUNCATED', null, `stdin event after the deadline (${total} bytes)`);
     if (event.kind === 'end') break;
     total += event.chunk.byteLength;
     if (total > maxBytes) throw new SealReceiverError('E_INPUT_TOO_LARGE', null, `stdin above ${maxBytes} bytes`);

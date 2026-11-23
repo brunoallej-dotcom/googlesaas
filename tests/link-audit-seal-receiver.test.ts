@@ -193,6 +193,30 @@ test('P9-R02 stdin acima do teto ⇒ E_INPUT_TOO_LARGE (11) sem ler o resto; vaz
   assert.ok(!fs.existsSync(w.lockFile), 'a trava é liberada em toda recusa');
 });
 
+test('P9-R02 (revisão do PR #72, item 10) o prazo é conferido DEPOIS de cada espera: o fim (EOF) ou um pedaço que chega aos 30 001 ms ⇒ E_INPUT_TRUNCATED; aos 30 000 ms ainda vale', async () => {
+  const { w, text, command } = hostWithChain();
+  const late = (lastAtMs: number, lastIsData: boolean) => {
+    const clock = new FakeClock();
+    const events = [{ kind: 'data' as const, chunk: Buffer.from(lastIsData ? text.slice(0, 10) : text) }, lastIsData ? { kind: 'data' as const, chunk: Buffer.from(text.slice(10)) } : { kind: 'end' as const }, { kind: 'end' as const }];
+    let index = 0;
+    const stdin = {
+      next: async () => {
+        if (index === 1) clock.now = lastAtMs;
+        index += 1;
+        return events[index - 1] ?? ({ kind: 'end' } as const);
+      },
+    };
+    return { stdin, clock };
+  };
+  for (const lastIsData of [false, true]) {
+    const tooLate = late(STDIN_DEADLINE_MS + 1, lastIsData);
+    const refused = await runReceiver(w, command, tooLate.stdin, { clock: tooLate.clock });
+    assert.equal(stderrOf(refused), 'ERRO E_INPUT_TRUNCATED', lastIsData ? 'pedaço tardio' : 'EOF tardio');
+  }
+  const onTime = late(STDIN_DEADLINE_MS, false);
+  assert.match(stdoutOf(await runReceiver(w, command, onTime.stdin, { clock: onTime.clock })) ?? '', /^OK WRITTEN /, 'no limite exato, aceito');
+});
+
 /* ===================================================================================================================== P9-R03 */
 
 test('P9-R03 lista instalada com outro hash (inclusive a pendente com o hash pedido) ou ausente ⇒ E_TRUST_LIST_MISMATCH (14); inválida, link, acima do teto ou fora da regra de ambiente ⇒ E_TRUST_LIST_INVALID (15); nada gravado', async () => {

@@ -3,7 +3,7 @@
 # P9.3a; manifestos, P9.3b) e depois uma por modelo de wrapper (deploy/hostinger/receivers/), na ordem de VERSIONED_FILE_NAMES
 # (scripts/build-receivers-artifact.ts); o build copia os modelos para a pasta de saída.
 e506a4658e79ed3ace80cce8fafe53fe3dc0198703596945382fe00c9ab97f91  gmn-deploy-receiver.cjs
-928803be29a6275a869476ccd3c56c7bff05bb19220b8d4fbd2da8002f53e5d9  gmn-seal-receiver.cjs
+b94d25322a251defebb43bcc322b4346033588754988c2da2bbf21fefb61e06b  gmn-seal-receiver.cjs
 fd2ba3cb7c15416bfef30d8576b454ac309249defe113841d66a0774b271e85d  gmn-deploy.modelo.sh
 db4fc000ca8437322cf25af24f499062305fddd85ea483367fd6a1b8dd54a2f3  gmn-hml-deploy.modelo.sh
 c6a7882dd636e8f9b842aa2067d2df46d1abc0806d4c588f0be37f53967bdf94  gmn-seals.modelo.sh
