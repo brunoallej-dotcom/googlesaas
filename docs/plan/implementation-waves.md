@@ -534,7 +534,9 @@ Motivos:
   chave dentro da mesma janela somava 1 ao atraso por esse caminho, que a recusa do `RECOVER` não cobre, e a inscrição com
   a publicação falha chegava a 2 registros sem cabeça (`GUARD_HEAD_MISSING`). A contagem de `L_max` continua **5**
   (spec §5.1.7): o `CHECKPOINT` automático segue sendo uma das cinco parcelas, agora logo depois da publicação. O
-  `RECOVER` de rotação também publica a cabeça atual antes do `CHECKPOINT` e recusa quando não consegue.
+  `RECOVER` de rotação também publica a cabeça atual antes do `CHECKPOINT` e recusa quando não consegue. Revisão do PR #56: uma cabeça da guarda relida depois do livro e posterior
+  à cauda lida só vale se existir no livro relido como registro válido (prefixo), e a avaliação passa a usar o livro
+  relido; sem prova, `GUARD_MISMATCH`. A conferência de um `STALE` que não se completa é `GUARD_UNAVAILABLE`.
 - **Goal command**: `/goal scripts/run-isolated.sh npm run typecheck && scripts/run-isolated.sh node --require ./tests/register-typescript.cjs --test tests/link-audit-guard-*.test.ts tests/link-audit-ledger-*.test.ts tests/link-audit-results-ledger*.test.ts && for id in PG-G01 PG-G02 PG-G04 PG-G05 PG-G06 PG-G07 PG-G09; do grep -lq "$id" tests/link-audit-guard-*.test.ts || exit 1; done && for s in S1 S2 S3 S4 S5 S6 S7 S8 S9; do grep -lqE "PG-G03.*\b$s\b" tests/link-audit-guard-*.test.ts || exit 1; done && git diff --quiet v1.0.1 -- src/lib/link-audit/scoring, stop after 10 tries`
 
 ### Onda G1.c — Papel administrativo (condicional à Q6)
