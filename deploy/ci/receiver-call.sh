@@ -28,7 +28,8 @@ declare -rA RECEIVER_EXIT_CODES=(
   [E_DATA_PREFIX]=65 [E_TRUST_LIST_TRANSITION]=66
 )
 # Nomes que o E_HOST_CONFIG pode trazer (spec §5.6 passo 4: proibidas, obrigatórias e as pastas de homologação). O receptor da P9.3a
-# usa esta lista; um nome novo entra aqui no mesmo PR.
+# usa esta lista; um nome novo entra aqui no mesmo PR. Sem detalhe também vale: linha fora do parser sem nome desta lista, nome reservado
+# ou arquivo ilegível (spec §5.6, "Implementação (P9.3a)").
 readonly HOST_CONFIG_NAMES=" GMN_IMAGE_TAG GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS GMN_AUTH_DISABLED GMN_DEMO_MODE GMN_LINK_AUDIT_HOMOLOGATION \
 GMN_TRAEFIK_NAME GMN_WORKER_REPLICAS GMN_DATA_ROOT GMN_RAIZ_DADOS_DECISOES GMN_RAIZ_DADOS_RECIBOS_DECISOES GMN_RAIZ_DADOS_RESULTADOS \
 GMN_RAIZ_DADOS_RECIBOS_RESULTADOS GMN_RAIZ_DADOS_LIVRO GMN_RAIZ_DADOS_MANIFESTOS NEXT_PUBLIC_SUPABASE_URL GMN_HOST GMN_NODE_HOSTNAME \
@@ -43,7 +44,8 @@ receiver_error() {
   [ "$marker" = ERRO ] && [ "${RECEIVER_EXIT_CODES[$code]:-}" = "$rc" ] || return 0
   case "$code" in
     E_HOST_CONFIG)
-      [ -n "$detail" ] && [[ "$HOST_CONFIG_NAMES" == *" $detail "* ]] || return 0
+      # sem detalhe (linha ilegível ou nome fora da lista: o receptor nunca ecoa o que não é da lista) ou um nome da lista fechada
+      [ -z "$detail" ] || [[ "$HOST_CONFIG_NAMES" == *" $detail "* ]] || return 0
       ;;
     E_POSTDEPLOY_CHECK)
       [[ "$detail" =~ ^PD-0[1-8]$ ]] || return 0

@@ -447,8 +447,9 @@ dispara e aprova as próprias execuções (risco aceito, §11.2).
   qualquer outra configuração (nem a do sistema). O usuário (`gmn-deploy`, `gmn-hml-deploy`) sai do ambiente, não de segredo.
 - **Saída do `ssh` e do receptor:** o stderr do `ssh` nunca vai ao log (repete host e endereço). O erro do receptor também não passa
   como veio: o código tem de ser do conjunto **fechado** do §5.8 (os do receptor de deploy e os comuns), com a saída numérica
-  correspondente; o detalhe só pode vir da lista fechada do código (`E_HOST_CONFIG <nome>` de uma lista fixa de variáveis,
-  `E_POSTDEPLOY_CHECK PD-01..PD-08`; os demais sem detalhe), e a linha pública é remontada pelo job. Qualquer outra coisa vira
+  correspondente; o detalhe só pode vir da lista fechada do código (`E_HOST_CONFIG <nome>` de uma lista fixa de variáveis, ou
+  `E_HOST_CONFIG` sem detalhe desde a P9.3a; `E_POSTDEPLOY_CHECK PD-01..PD-08`; os demais sem detalhe), e a linha pública é remontada
+  pelo job. Qualquer outra coisa vira
   `RECEIVER_UNKNOWN_ERROR EXIT_<n>`, sem repetir nada. Conexão que falha (255) vira `SSH_CONNECT_FAILED HOST_KEY|AUTH|OTHER`. **A
   P9.3a usa a mesma lista de nomes do `E_HOST_CONFIG`** (`HOST_CONFIG_NAMES` em `deploy/ci/receiver-call.sh`); um nome novo entra
   nela no mesmo PR.
@@ -602,7 +603,8 @@ chamador, prazo com `SIGKILL` e teto de saída). A lista de confiança usa o mó
   `GMN_DATA_ROOT` é obrigatória. "Sob o prefixo" aceita o próprio prefixo sem a barra (`GMN_DATA_ROOT=/srv/gmn-hml`, como no modelo do
   H-08). Além do texto, o caminho **real** de cada pasta (e do prefixo) é conferido, então um link para fora, ou uma pasta que não
   resolve, dá `E_DATA_PREFIX`. O detalhe do `E_HOST_CONFIG` só sai quando o nome é da lista fechada (`HOST_CONFIG_NAMES`, a mesma do
-  job). Linha sem nome reconhecível, ou com nome fora da lista, sai como `E_HOST_CONFIG` sem detalhe. O log local leva o motivo e o
+  job). Linha sem nome reconhecível, ou com nome fora da lista, sai como `E_HOST_CONFIG` sem detalhe, que o job aceita e remonta igual
+  (`receiver-call.sh`). O log local leva o motivo e o
   número da linha, nunca o valor.
 - **Passo 5:** em homologação, `E_HML_PRODUCTION_PROJECT` vem antes e vale tanto para a impressão do arquivo do host quanto para a
   declarada pelo CI.
@@ -728,7 +730,7 @@ fecho ou o **nome** de uma variável. Nunca conteúdo de arquivo, caminho real, 
 | 37 | `E_POSTWRITE_VERIFY` | manifestos | releitura não autentica |
 | 50 | `E_NOT_STAGED` | deploy | `deploy` sem `upload` correspondente |
 | 51 | `E_STACK_FILE_MISMATCH` | deploy | stack ou sobreposição do host ≠ commit |
-| 52 | `E_HOST_CONFIG <NOME>` | deploy | arquivo de variáveis fora das regras |
+| 52 | `E_HOST_CONFIG[ <NOME>]` | deploy | arquivo de variáveis fora das regras (o nome só quando é da lista fechada; sem nome reconhecível, sem detalhe) |
 | 53 | `E_HOST_FOLDERS` | deploy | `verificar-pastas-fase6.sh` recusou |
 | 54 | `E_SUPABASE_MISMATCH` | deploy | imagem e ambiente de projetos diferentes |
 | 55 | `E_HML_PRODUCTION_PROJECT` | deploy | homologação apontando para o projeto de produção |
