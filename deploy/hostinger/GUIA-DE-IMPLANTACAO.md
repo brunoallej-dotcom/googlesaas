@@ -5,7 +5,7 @@
 ## 0. Decisões a confirmar antes de começar
 | Item | Padrão desta preparação | Como confirmar (somente leitura) |
 |---|---|---|
-| Domínio | `gmn.somosvra.com.br` (provisório) | criar o registro DNS A (e AAAA, se houver) para o IP da VPS e aguardar propagar |
+| Domínio | `<DOMINIO_DA_GMN>` (provisório; o valor real fica no arquivo de variáveis, `GMN_HOST`) | criar o registro DNS A (e AAAA, se houver) para o IP da VPS e aguardar propagar |
 | Nó Swarm | `GMN_NODE_HOSTNAME` | `docker node ls` |
 | Rede do Traefik | `automacaotrafegopagoredeinterna` (external) | `docker network ls \| grep automacao` |
 | Entrypoint HTTP (porta 80) | `web` | `docker service inspect traefik_traefik --format '{{json .Spec.TaskTemplate.ContainerSpec.Args}}'` (procure `--entrypoints.<nome>.address=:80`) |
@@ -68,7 +68,48 @@ A senha é hexadecimal (sem caracteres especiais na URL). O Redis lê a senha de
 ```bash
 install -m 0600 deploy/hostinger/.env.production.example /opt/gmn/.env.production   # preencher (sem segredos)
 cp deploy/hostinger/stack.yml /opt/gmn/stack.yml
+cp deploy/hostinger/verificar-pastas-fase6.sh /opt/gmn/verificar-pastas-fase6.sh   # conferência das pastas da Fase 6 (§3.3)
 ```
+
+### 3.3 Pastas da Fase 6 no host (antes de implantar a versão da G1.a; ação do responsável)
+O `stack.yml` monta seis pastas novas só no web, com origem por marcador **obrigatório** e sem caminho padrão (spec dos portões §5.3,
+VC-E1 e VC-E8). Os caminhos reais ficam no arquivo de variáveis da implantação (fora do repositório), nas variáveis
+`GMN_RAIZ_DADOS_DECISOES`, `GMN_RAIZ_DADOS_RECIBOS_DECISOES`, `GMN_RAIZ_DADOS_RESULTADOS`, `GMN_RAIZ_DADOS_RECIBOS_RESULTADOS`,
+`GMN_RAIZ_DADOS_LIVRO` e `GMN_RAIZ_DADOS_MANIFESTOS`. Regras: **nenhuma pasta dentro de outra** (nem dentro da pasta de evidências; o
+código recusa), sistema de arquivos **local** ext4/xfs (sem NFS/SMB), e os **recibos e o livro em disco/volume diferente** dos dados que
+ancoram (decisões e resultados).
+```bash
+cd /opt/gmn && set -a; . ./.env.production; set +a        # carrega só os marcadores; nada é impresso
+P6="$GMN_RAIZ_DADOS_DECISOES $GMN_RAIZ_DADOS_RECIBOS_DECISOES $GMN_RAIZ_DADOS_RESULTADOS $GMN_RAIZ_DADOS_RECIBOS_RESULTADOS $GMN_RAIZ_DADOS_LIVRO $GMN_RAIZ_DADOS_MANIFESTOS"
+# criar: dono 10001:10001 (usuário da aplicação), modo 0700; o pai de cada uma precisa ser atravessável (0755, root)
+for d in $P6; do sudo install -d -m 0700 -o 10001 -g 10001 "$d"; done
+# conferir por stat (registrar a saída no relatório da G2, ensaio EN-12, e na linha G-3 do portão): esperado "10001:10001 700 <pasta>"
+sudo stat -c '%u:%g %a %n' $P6
+# recibos e livro em outro disco que os dados: o número do dispositivo (%d) dos recibos e do livro difere do das decisões e dos resultados
+sudo stat -c '%d %n' $P6
+# PRÉ-REQUISITO QUE FALHA: seis caminhos distintos (realpath), nenhum dentro de outro, modo 0700, recibos e livro em dispositivos
+# independentes. Saída diferente de 0 ⇒ NÃO implantar. Registrar a saída no EN-12 da G2 e na linha G-3 do portão.
+sudo bash /opt/gmn/verificar-pastas-fase6.sh "$GMN_RAIZ_DADOS_DECISOES" "$GMN_RAIZ_DADOS_RECIBOS_DECISOES" "$GMN_RAIZ_DADOS_RESULTADOS" \
+  "$GMN_RAIZ_DADOS_RECIBOS_RESULTADOS" "$GMN_RAIZ_DADOS_LIVRO" "$GMN_RAIZ_DADOS_MANIFESTOS"
+```
+- `verificar-pastas-fase6.sh` vem de `deploy/hostinger/` (copiado para `/opt/gmn` junto com o `stack.yml`, §3.2) e só lê; é testado com
+  diretórios temporários em `tests/deploy-verificar-pastas.test.ts` (pastas coincidentes, link simbólico, aninhadas, modo e mesmo disco).
+- A pasta de manifestos é **só leitura** para o web (`read_only: true` no bind); a escrita é só pelo canal do CI (D15.5), fora da VPS.
+- O Worker **não** monta nenhuma delas: conferir depois do deploy com
+  `docker service inspect gmn_gmn-worker --format '{{json .Spec.TaskTemplate.ContainerSpec.Mounts}}'` (só a pasta de PDFs).
+- Backup de cada uma (destinos independentes): `PLANO-DE-BACKUP-E-RESTAURACAO.md`, seção "Fase 6".
+
+### 3.4 Segredos e variáveis da Fase 6
+- **Secrets** (criados sem expor o valor; comandos em `PROVA-DE-ORIGEM-E-DE-COLETA.md` §2): `gmn_link_audit_origin_key`,
+  `gmn_link_audit_ledger_key` e `gmn_link_audit_log_key`. Os da guarda (`gmn_link_audit_guard_db_url` e `gmn_link_audit_guard_key`)
+  **entram na G1.b**, com o código que os lê, depois da migração da guarda: não fazem parte desta stack nem da ativação da G1.a.
+- **Variáveis** no arquivo de variáveis da implantação (sem segredo): os seis marcadores `GMN_RAIZ_DADOS_*` acima e as listas públicas
+  `GMN_LINK_AUDIT_ORIGIN_REVOKED_KEY_IDS`, `GMN_LINK_AUDIT_LEDGER_REVOKED_KEY_IDS` e `GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS` (vazias por
+  padrão: nenhum id revogado e atestação fechada).
+- **Ordem de ativação:** volumes e chaves (G1.a) ⇒ guarda (G1.b) ⇒ primeiro `ENROLL` (`PROVA-DE-ORIGEM-E-DE-COLETA.md` §3b). O web atualiza com
+  `stop-first` (R6-09): cada atualização tem uma breve indisponibilidade, e nunca há dois processos gravando nas pastas. Depois do primeiro
+  `ENROLL`, não voltar a uma imagem anterior ao livro; o `failure_action: rollback` automático volta à especificação anterior do serviço,
+  então a **primeira** implantação com o livro é validada (503/200 esperados) antes de qualquer `ENROLL`.
 
 ## 4. Validar e implantar (**só com autorização**)
 ```bash
@@ -79,7 +120,7 @@ docker stack services gmn                                 # web 1/1, gmn-redis 1
 ```
 O Worker nasce com `replicas: 0` (variável `GMN_WORKER_REPLICAS`, padrão 0). O Redis e o web sobem; não há processamento. **Atenção:** o web já aceita enfileiramento (`/api/audit/enqueue`) e prospecção (`/api/prospect`, que usa o Serper por ação do operador); enquanto o Worker estiver desligado, não enfileire auditorias — elas seriam consumidas (e cobradas) assim que o Worker for ligado.
 
-## 5. Migrar as evidências da TUVAPLAST
+## 5. Migrar as evidências já coletadas
 Siga `PLANO-DE-MIGRACAO-DE-EVIDENCIAS.md` (cópia verificável por SHA-256; os originais no Windows não são tocados).
 
 ## 6. Verificar

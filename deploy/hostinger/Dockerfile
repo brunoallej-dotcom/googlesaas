@@ -41,6 +41,10 @@ ENV NODE_ENV=production
 # ---------------------------------------------------------------- WEB
 FROM runtime AS web
 ENV PORT=3000 HOSTNAME=0.0.0.0 GMN_ROLE=web
+# Alvos de montagem da Fase 6 (só no web; o Worker não monta nenhum). Com a raiz só leitura, não dependem da criação implícita do ponto
+# de montagem. Dono e modo valem só se o bind faltar: o que vale em produção é a pasta do HOST (10001:10001, 0700; ver o guia).
+RUN install -d -m 0700 -o 10001 -g 10001 /data/decisions /data/decision-anchors /data/results /data/result-anchors \
+    /data/decisions-ledger /data/evidence-seals
 COPY --from=build --chown=10001:10001 /app/.next/standalone ./
 COPY --from=build --chown=10001:10001 /app/.next/static ./.next/static
 COPY --from=build --chown=10001:10001 /app/public ./public
