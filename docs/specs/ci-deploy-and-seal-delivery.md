@@ -348,7 +348,7 @@ dispara e aprova as próprias execuções (risco aceito, §11.2).
 1. **CI verde no SHA:** a execução mais recente do `ci.yml` por `push` com `head_sha = github.sha` concluiu `success`. Senão,
    `CI_NOT_GREEN` ou `CI_PENDING`.
 2. **O commit ainda é a cabeça da `main`:** no início do job, isto é, depois da aprovação (que pode ter esperado horas ou dias),
-   o `git ls-remote` de `refs/heads/main` com o token do job (só leitura) tem de devolver `github.sha`. Senão sai `NOT_MAIN_HEAD`,
+   a leitura de `refs/heads/main` pela API com o token do job (só leitura; ver as precisões da P9.4) tem de devolver `github.sha`. Senão sai `NOT_MAIN_HEAD`,
    e nada é construído. A conferência se repete imediatamente antes do comando `deploy` por SSH (passo 9). Motivo: uma
    execução aprovada antiga, de um commit já superado, implantaria imagens antigas e uma lista antiga, desfazendo por exemplo
    uma revogação (DC-21). A janela entre a segunda conferência e a instalação no host fica coberta pela regra de transição do
@@ -828,7 +828,7 @@ relatório indicado.
 - [ ] **P9-W09** `seals-deliver` não roda `npm`, `node` nem `npx`.
 - [ ] **P9-W10** `ci.yml`: job `seals` sem filtro de caminho, sem segredo, `persist-credentials: false`, base = `HEAD^1` no PR.
 - [x] **P9-W11** *(P9.4: a leitura é pela API, `gh api …/git/ref/heads/main`, só leitura, no lugar do `git ls-remote`; §5.5.1,
-  precisões)* o job `deploy` compara `github.sha` com `refs/heads/main` (`git ls-remote`, só leitura) no início do job, antes do
+  precisões)* o job `deploy` compara `github.sha` com `refs/heads/main` (pela API, só leitura) no início do job, antes do
   checkout e do build, e de novo imediatamente antes do comando `deploy` por SSH; diferença ⇒ `NOT_MAIN_HEAD` (teste estático da
   presença e da ordem dos passos).
 
