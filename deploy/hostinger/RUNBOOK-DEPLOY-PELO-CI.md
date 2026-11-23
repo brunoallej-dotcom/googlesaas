@@ -3,7 +3,7 @@
 > **Status: PREPARAÇÃO (fatia P9.4, 23/11/2026).** Nada disto foi executado. Este runbook é do **responsável**: nenhum passo é do
 > manager ou de um worker (spec `docs/specs/ci-deploy-and-seal-delivery.md` §10.1). Repositório **público**: aqui só há marcadores
 > (`<HOST_VPS>`, `<PORTA_SSH>`, `<IP_DA_VPS>`, `<DOMINIO_HML>`, `<DOMINIO_PRODUCAO>`, `<USUARIO_GITHUB>`, `<DONO>/<REPO>`, `<SHA40>`,
-> `<ARQUIVO_DE_VARIAVEIS>`, `<PASTA_FORA_DO_REPO>`, `<SEU_USUARIO_SSH>`). Os valores reais ficam no cofre e no dossiê offline, nunca
+> `<ARQUIVO_DE_VARIAVEIS>`, `<PASTA_FORA_DO_REPO>`, `<PASTA_PRIVADA>`, `<SEU_USUARIO_SSH>`). Os valores reais ficam no cofre e no dossiê offline, nunca
 > em arquivo versionado, issue, PR, chat ou log.
 >
 > **O que já existe (P9.4):** o workflow `.github/workflows/deploy.yml` (job `deploy`, disparado à mão na `main` e aprovado por você
@@ -141,60 +141,76 @@ receptor (spec §5.6, "Implementação (P9.3a)"). O receptor de manifestos (`gmn
 na P9.3b, pelo mesmo caminho; até lá, o `command=` da chave de manifestos aponta para um *wrapper* que ainda não existe, e toda
 conexão dela falha fechada.
 
-1. **Na estação**, sem segredo, num clone limpo do commit: o build é reprodutível (o mesmo do job do CI), e o `--check` e o
-   `sha256sum -c` param tudo se o hash não for o versionado:
+1. **Na estação**, sem segredo, num clone limpo do commit: o build é reprodutível (o mesmo do job do CI) e copia para a pasta de saída
+   os **modelos** dos *wrappers*; o `--check` e o `sha256sum -c` conferem artefato **e** modelos contra o `receivers.sha256` do commit e
+   param tudo se algum não for o versionado:
 
    ```bash
    ( set -euo pipefail                                                           # para no primeiro erro
-     D="$(mktemp -d)"
+     D="$(mktemp -d)"                                                            # pasta privada (0700)
      git clone --quiet https://github.com/<DONO>/<REPO>.git "$D/repo"
      git -C "$D/repo" checkout --quiet --detach <SHA40>
      test -z "$(git -C "$D/repo" status --porcelain)"                            # árvore limpa
      cd "$D/repo" && npm ci --no-audit --no-fund
-     npm run --silent deploy:receivers-artifact -- --out "$D/receptores" --check  # <sha256>  gmn-deploy-receiver.cjs
-     cp deploy/hostinger/receivers.sha256 deploy/hostinger/receivers/gmn-hml-deploy.modelo.sh deploy/hostinger/receivers/gmn-deploy.modelo.sh "$D/receptores/"
-     ( cd "$D/receptores" && sha256sum -c --strict receivers.sha256 )            # gmn-deploy-receiver.cjs: OK
+     npm run --silent deploy:receivers-artifact -- --out "$D/receptores" --check  # artefato e os dois modelos
+     cp deploy/hostinger/receivers.sha256 "$D/receptores/"
+     ( cd "$D/receptores" && sha256sum -c --strict receivers.sha256 )            # gmn-deploy-receiver.cjs, gmn-deploy.modelo.sh, gmn-hml-deploy.modelo.sh: OK
      echo "copie para a VPS: $D/receptores"
    )
    ```
 
-   Confira a linha do `receivers.sha256` com a do commit no GitHub
-   (`https://github.com/<DONO>/<REPO>/blob/<SHA40>/deploy/hostinger/receivers.sha256`). Leve a pasta `receptores` para a VPS pelo seu
-   canal de administração (ex.: `scp -r` para `/tmp/gmn-receptores`, com o seu usuário, nunca com as chaves do CI).
+   Confira as linhas do `receivers.sha256` com as do commit no GitHub
+   (`https://github.com/<DONO>/<REPO>/blob/<SHA40>/deploy/hostinger/receivers.sha256`).
 
-2. **Na VPS**, artefato e hash em `/opt/gmn-receivers/<SHA40>/` (root, `0444`), conferidos de novo no lugar (**P9-O04**, registrar):
+2. **Na VPS**, primeiro uma pasta **privada** (`mktemp -d`, `0700`, sua) para receber os arquivos, nunca um caminho fixo e compartilhado
+   do `/tmp`; depois a cópia, pelo seu canal de administração (com o seu usuário, nunca com as chaves do CI); por fim, a conferência e a
+   instalação em `/opt/gmn-receivers/<SHA40>/` (root, `0444`, artefato, modelos e hash), conferidos de novo no lugar (**P9-O04**,
+   registrar):
 
    ```bash
-   ( set -euo pipefail
-     S=/tmp/gmn-receptores; V=<SHA40>
-     ( cd "$S" && sha256sum -c --strict receivers.sha256 )                       # gmn-deploy-receiver.cjs: OK
+   mktemp -d                                                                     # na VPS: anote a pasta impressa (<PASTA_PRIVADA>)
+   scp -P <PORTA_SSH> -r "<pasta receptores do passo 1>/." <SEU_USUARIO_SSH>@<HOST_VPS>:<PASTA_PRIVADA>/   # na estação
+   ```
+
+   ```bash
+   ( set -euo pipefail                                                           # na VPS
+     S='<PASTA_PRIVADA>'; V=<SHA40>
+     [ "$(stat -c '%U %a' "$S")" = "$(id -un) 700" ]                             # a pasta é sua e privada
+     ( cd "$S" && sha256sum -c --strict receivers.sha256 )                       # os três: OK
      sudo install -d -m 0755 -o root -g root /opt/gmn-receivers/bin "/opt/gmn-receivers/$V"
-     sudo install -m 0444 -o root -g root "$S/gmn-deploy-receiver.cjs" "$S/receivers.sha256" "/opt/gmn-receivers/$V/"
-     ( cd "/opt/gmn-receivers/$V" && sha256sum -c --strict receivers.sha256 )      # P9-O04: OK
+     sudo install -m 0444 -o root -g root "$S/gmn-deploy-receiver.cjs" "$S/gmn-deploy.modelo.sh" "$S/gmn-hml-deploy.modelo.sh" \
+       "$S/receivers.sha256" "/opt/gmn-receivers/$V/"
+     ( cd "/opt/gmn-receivers/$V" && sha256sum -c --strict receivers.sha256 )      # P9-O04: os três OK
+     rm -rf -- "$S"
    )
    ```
 
-3. **Wrapper de homologação** (`/opt/gmn-receivers/bin/gmn-hml-deploy`, root, `0755`): o modelo preenchido com a versão, o hash do
-   artefato, o nome do arquivo de variáveis e a **impressão do projeto de produção** (`--forbid-supabase`, explicada abaixo). O
-   *wrapper* confere o sha256 do artefato a cada execução (`ERRO E_ARTIFACT`, saída 17), limpa o ambiente (`env -i`) e passa só o
-   PATH fixo e o comando pedido. No `sed`, os marcadores à esquerda são os do modelo e ficam como estão; troque só os de `V=` e `F=`:
+3. **Wrapper de homologação** (`/opt/gmn-receivers/bin/gmn-hml-deploy`, root, `0755`): o modelo **já conferido e instalado como root**
+   no passo 2 é preenchido numa pasta privada com a versão, o hash do artefato, o nome do arquivo de variáveis e a **impressão do
+   projeto de produção** (`--forbid-supabase`, explicada abaixo), e só então instalado. O *wrapper* confere o sha256 do artefato a cada
+   execução (`ERRO E_ARTIFACT`, saída 17), roda o receptor debaixo da trava do kernel (`E_LOCKED`), limpa o ambiente (`env -i`) e passa
+   só o PATH fixo e o comando pedido. No `sed`, os marcadores à esquerda são os do modelo e ficam como estão; troque só os de `V=` e `F=`:
 
    ```bash
    ( set -euo pipefail; set +x
-     S=/tmp/gmn-receptores; V=<SHA40>; F='<ARQUIVO_DE_VARIAVEIS>'                 # F: o nome real do arquivo do H-08
-     H="$(awk '$2 == "gmn-deploy-receiver.cjs" { print $1 }' "/opt/gmn-receivers/$V/receivers.sha256")"
+     V=<SHA40>; F='<ARQUIVO_DE_VARIAVEIS>'                                       # F: o nome real do arquivo do H-08
+     K="/opt/gmn-receivers/$V"; T="$(mktemp -d)"                                 # T: pasta privada (0700)
+     ( cd "$K" && sha256sum -c --strict receivers.sha256 )                       # o modelo de novo, antes de usar
+     H="$(awk '$2 == "gmn-deploy-receiver.cjs" { print $1 }' "$K/receivers.sha256")"
      read -rsp 'URL do Supabase de PRODUÇÃO: ' U; echo; FP="$(printf '%s' "$U" | sha256sum | cut -c1-12)"; unset U
      [[ "$V" =~ ^[0-9a-f]{40}$ && "$H" =~ ^[0-9a-f]{64}$ && "$FP" =~ ^[0-9a-f]{12}$ && "$F" =~ ^[A-Za-z0-9._-]+$ ]]
      sed -e "s|<VERSAO>|$V|g" -e "s|<SHA256_DO_ARTEFATO>|$H|g" -e "s|<ARQUIVO_DE_VARIAVEIS>|$F|g" -e "s|<IMPRESSAO_SUPABASE_PRODUCAO>|$FP|g" \
-       "$S/gmn-hml-deploy.modelo.sh" > "$S/gmn-hml-deploy"
-     if grep -n '<[A-Z_]*>' "$S/gmn-hml-deploy"; then echo "PARE: marcador sem preencher" >&2; exit 1; fi
-     sudo install -m 0755 -o root -g root "$S/gmn-hml-deploy" /opt/gmn-receivers/bin/gmn-hml-deploy
-     sha256sum /opt/gmn-receivers/bin/gmn-hml-deploy                             # registrar no relatório
+       "$K/gmn-hml-deploy.modelo.sh" > "$T/gmn-hml-deploy"
+     if grep -n '<[A-Z_]*>' "$T/gmn-hml-deploy"; then echo "PARE: marcador sem preencher" >&2; exit 1; fi
+     sudo install -m 0755 -o root -g root "$T/gmn-hml-deploy" /opt/gmn-receivers/bin/gmn-hml-deploy
+     cmp "$T/gmn-hml-deploy" /opt/gmn-receivers/bin/gmn-hml-deploy               # instalado = preenchido
+     sha256sum /opt/gmn-receivers/bin/gmn-hml-deploy                             # registrar no relatório (wrapper instalado)
+     rm -rf -- "$T"
    )
    ```
 
    Produção (seção 3): o mesmo bloco com `gmn-deploy.modelo.sh`, destino `/opt/gmn-receivers/bin/gmn-deploy`, sem a impressão (o
-   modelo de produção não tem `--forbid-supabase`). Trocar de versão = repetir os passos 1 a 3 com o commit novo; a versão anterior
+   modelo de produção não tem `--forbid-supabase`), também com o sha256 do *wrapper* instalado registrado. Trocar de versão = repetir os passos 1 a 3 com o commit novo; a versão anterior
    fica em `/opt/gmn-receivers/<SHA40 anterior>/` para voltar (seção 6, "Receptor com defeito").
 
    Com um marcador sem preencher, o *wrapper* falha fechado: `E_ARTIFACT` (hash) ou `E_INTERNAL` (parâmetros, Node ausente). O

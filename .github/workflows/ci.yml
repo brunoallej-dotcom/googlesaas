@@ -94,7 +94,7 @@ jobs:
 
   # P9.3a: artefatos únicos dos receptores do host (spec docs/specs/ci-deploy-and-seal-delivery.md §5.6 "Instalação"; P9.3b acrescenta o de
   # manifestos). Mesmo padrão do sign-artifact: recompila com o esbuild travado (opções fixas e guardas sobre a saída), confere o SHA-256
-  # contra deploy/hostinger/receivers.sha256 (build reprodutível) e roda os testes do artefato em processo real (env -i, node absoluto,
+  # do artefato e dos modelos de wrapper (copiados pelo build) contra deploy/hostinger/receivers.sha256 (build reprodutível) e roda os testes do artefato em processo real (env -i, node absoluto,
   # docker/tar/gzip FALSOS no PATH, os dois modelos de wrapper). DEPLOY_RECEIVER_ARTIFACT_STRICT=1: nada pode ser pulado. Sem segredo, sem
   # Docker real. O upload é só para conferência: o responsável instala no host o que passou no sha256sum -c do commit; o CI nunca atualiza
   # receptor.
@@ -127,6 +127,8 @@ jobs:
           name: gmn-receivers-artifact
           path: |
             ${{ runner.temp }}/receivers-artifact/gmn-deploy-receiver.cjs
+            ${{ runner.temp }}/receivers-artifact/gmn-deploy.modelo.sh
+            ${{ runner.temp }}/receivers-artifact/gmn-hml-deploy.modelo.sh
             ${{ runner.temp }}/receivers-artifact/receivers.sha256
           if-no-files-found: error
           retention-days: 90

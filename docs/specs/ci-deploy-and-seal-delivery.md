@@ -655,9 +655,11 @@ chamador, prazo com `SIGKILL` e teto de saída). A lista de confiança usa o mó
 - **Artefato:** `gmn-deploy-receiver.cjs` reaproveita as opções fixas do esbuild e as guardas de saída do `sign`
   (`artifactBuildOptions`, `checkMetafileImports`, `checkArtifactText`, agora com a lista de módulos como parâmetro, e o hash do `sign`
   não muda). A lista literal do receptor é `node:child_process`, `node:crypto`, `node:fs`, `node:fs/promises` e `node:path`. O zod roda
-  sem JIT (`scripts/receiver-artifact-zod.ts`, importado primeiro). `receivers.sha256` tem uma linha por artefato, na ordem de
-  `RECEIVER_ARTIFACTS`; `#` é comentário, ignorado também pelo `sha256sum -c --strict`. A P9.3b acrescenta a linha do receptor de
-  manifestos.
+  sem JIT (`scripts/receiver-artifact-zod.ts`, importado primeiro). `receivers.sha256` tem uma linha por artefato e depois uma por
+  **modelo de wrapper** (revisão do PR #70), na ordem de `VERSIONED_FILE_NAMES`; `#` é comentário, ignorado também pelo
+  `sha256sum -c --strict`. O build copia os modelos para a pasta de saída. Com isso, o `sha256sum -c` do clone limpo e o da VPS
+  conferem os bytes do modelo antes de ele ser preenchido, numa pasta privada (`mktemp -d`), e instalado como root. O sha256 do wrapper
+  instalado também é registrado (runbook H-04). A P9.3b acrescenta as linhas do receptor de manifestos e do modelo do wrapper dele.
 
 ### 5.7 Receptor de manifestos (CE-3)
 

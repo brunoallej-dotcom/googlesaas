@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { ArtifactBuildError, type BuiltArtifact } from '../scripts/build-sign-artifact';
-import { buildReceiverArtifact, DEPLOY_RECEIVER_FILE_NAME, DEPLOY_RECEIVER_NODE_MODULES, RECEIVER_ARTIFACTS, RECEIVERS_HASH_FILE, receiverHashLine, versionedReceiverHashes } from '../scripts/build-receivers-artifact';
+import { buildReceiverArtifact, buildReceiverArtifacts, DEPLOY_RECEIVER_FILE_NAME, DEPLOY_RECEIVER_NODE_MODULES, RECEIVER_ARTIFACTS, RECEIVER_TEMPLATES, RECEIVER_TEMPLATES_DIR, RECEIVERS_HASH_FILE, receiverHashLine, VERSIONED_FILE_NAMES, versionedReceiverHashes } from '../scripts/build-receivers-artifact';
 import { parseReceiverArgs } from '../src/lib/deploy-receiver/args';
 import { registerCleanup, tmpDir } from './helpers/link-audit-evidence-fixtures';
 import { bundleConfigs, classicImages, containerdImages, DOCKER_NOISE, fp12, manifestFor, SENTINEL_EMAIL, SENTINEL_HOST, SENTINEL_URL, SHA40, sha256, testKey, trustFile, trustLine, validHostVars } from './helpers/deploy-receiver-fakes';
@@ -41,8 +41,26 @@ test('P9.3a artefato: build REPRODUTÍVEL (duas pastas, mesmos bytes), 0444, e o
   assert.equal(first.sha256, createHash('sha256').update(fs.readFileSync(first.file)).digest('hex'));
   assert.equal(versionedReceiverHashes().get(DEPLOY_RECEIVER_FILE_NAME), first.sha256, 'receivers.sha256 = o hash recompilado (refaça o arquivo quando o fonte mudar)');
   const lines = fs.readFileSync(RECEIVERS_HASH_FILE, 'utf8').split('\n').filter((line) => line !== '' && !line.startsWith('#'));
-  assert.deepEqual(lines, [receiverHashLine(first)], 'só o receptor de deploy por enquanto (o de manifestos entra na P9.3b, com a própria linha)');
+  const templateLines = RECEIVER_TEMPLATES.map((name) => `${sha256(fs.readFileSync(path.join(RECEIVER_TEMPLATES_DIR, name)))}  ${name}`);
+  assert.deepEqual(lines, [receiverHashLine(first), ...templateLines], 'o receptor de deploy e os dois modelos de wrapper (o de manifestos entra na P9.3b, com as próprias linhas)');
   assert.deepEqual(RECEIVER_ARTIFACTS.map((spec) => spec.fileName), [DEPLOY_RECEIVER_FILE_NAME]);
+  assert.deepEqual([...VERSIONED_FILE_NAMES], [DEPLOY_RECEIVER_FILE_NAME, 'gmn-deploy.modelo.sh', 'gmn-hml-deploy.modelo.sh']);
+});
+
+test('revisão do PR #70 (item 1): o build copia os modelos de wrapper (0444) para a pasta de saída, e o sha256sum -c --strict do receivers.sha256 confere artefato E modelos ali (o mesmo que o responsável roda no clone limpo e na VPS)', { timeout: 60_000 }, async () => {
+  const out = realTmp('dra-kit-');
+  const kit = await buildReceiverArtifacts({ outDir: out });
+  assert.deepEqual(kit.map((item) => path.basename(item.file)), [...VERSIONED_FILE_NAMES]);
+  for (const name of RECEIVER_TEMPLATES) {
+    assert.deepEqual(fs.readFileSync(path.join(out, name)), fs.readFileSync(path.join(RECEIVER_TEMPLATES_DIR, name)));
+    assert.equal(fs.statSync(path.join(out, name)).mode & 0o777, 0o444);
+  }
+  const check = spawnSync('sha256sum', ['-c', '--strict', RECEIVERS_HASH_FILE], { cwd: out, encoding: 'utf8' });
+  assert.equal(check.status, 0, check.stdout + check.stderr);
+  assert.equal(check.stdout, VERSIONED_FILE_NAMES.map((name) => `${name}: OK\n`).join(''));
+  fs.chmodSync(path.join(out, 'gmn-hml-deploy.modelo.sh'), 0o644);
+  fs.appendFileSync(path.join(out, 'gmn-hml-deploy.modelo.sh'), '\n# alterado\n');
+  assert.notEqual(spawnSync('sha256sum', ['-c', '--strict', RECEIVERS_HASH_FILE], { cwd: out, encoding: 'utf8' }).status, 0, 'modelo alterado ⇒ sha256sum -c falha');
 });
 
 test('P9.3a artefato: o arquivo final só carrega a lista LITERAL (child_process, crypto, fs, fs/promises, path) por require estático; nada de rede, os, carregamento dinâmico ou marcador do build', async () => {
@@ -77,10 +95,13 @@ test('P9.3a artefato (mutação): módulo fora da lista do receptor (node:os, no
     fs.writeFileSync(file, text);
     return file;
   };
-  for (const text of ['', `${'a'.repeat(64)} gmn-deploy-receiver.cjs\n`, `${'a'.repeat(64)}  outro.cjs\n`, `${'a'.repeat(64)}  gmn-deploy-receiver.cjs\n${'b'.repeat(64)}  gmn-deploy-receiver.cjs\n`]) {
+  const templates = `${'c'.repeat(64)}  gmn-deploy.modelo.sh\n${'d'.repeat(64)}  gmn-hml-deploy.modelo.sh\n`;
+  for (const text of ['', `${'a'.repeat(64)} gmn-deploy-receiver.cjs\n${templates}`, `${'a'.repeat(64)}  outro.cjs\n${templates}`, `${'a'.repeat(64)}  gmn-deploy-receiver.cjs\n${'b'.repeat(64)}  gmn-deploy-receiver.cjs\n${templates}`, `${'a'.repeat(64)}  gmn-deploy-receiver.cjs\n`, `${templates}${'a'.repeat(64)}  gmn-deploy-receiver.cjs\n`]) {
     assert.throws(() => versionedReceiverHashes(write(text)), (error: unknown) => error instanceof ArtifactBuildError && error.code === 'HASH_MISMATCH', JSON.stringify(text));
   }
-  assert.equal(versionedReceiverHashes(write(`# comentário\n${'a'.repeat(64)}  gmn-deploy-receiver.cjs\n`)).get(DEPLOY_RECEIVER_FILE_NAME), 'a'.repeat(64));
+  const parsed = versionedReceiverHashes(write(`# comentário\n${'a'.repeat(64)}  gmn-deploy-receiver.cjs\n${templates}`));
+  assert.equal(parsed.get(DEPLOY_RECEIVER_FILE_NAME), 'a'.repeat(64));
+  assert.equal(parsed.get('gmn-hml-deploy.modelo.sh'), 'd'.repeat(64));
 });
 
 /* ===================================================================================================================== processo real */
@@ -463,7 +484,7 @@ test('P9.3a artefato: a entrada configura o zod SEM JIT antes de qualquer esquem
   assert.equal(run.status, 29);
 });
 
-test('CI: job "receivers artifact (build, hash)" no ci.yml, como o sign-artifact: só leitura, sem segredo, recompila, confere o hash versionado com sha256sum -c --strict e roda os testes do artefato em modo estrito', () => {
+test('CI: job "receivers artifact (build, hash)" no ci.yml, como o sign-artifact: só leitura, sem segredo, recompila, confere o hash versionado (artefato e modelos) com sha256sum -c --strict, roda os testes do artefato em modo estrito e sobe artefato, modelos e hash', () => {
   const ci = fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'ci.yml'), 'utf8');
   const job = /\n {2}receivers-artifact:\n([\s\S]*?)(?=\n {2}[a-z][\w-]*:\n|\n?$)/.exec(ci)?.[1] ?? '';
   assert.match(job, /name: receivers artifact \(build, hash\)/);
@@ -474,5 +495,24 @@ test('CI: job "receivers artifact (build, hash)" no ci.yml, como o sign-artifact
   assert.match(job, /sha256sum -c --strict "\$GITHUB_WORKSPACE\/deploy\/hostinger\/receivers\.sha256"/);
   assert.match(job, /DEPLOY_RECEIVER_ARTIFACT_STRICT: '1'/);
   assert.match(job, /tests\/deploy-receiver-artifact\.test\.ts/);
+  for (const name of [...VERSIONED_FILE_NAMES, 'receivers.sha256']) assert.ok(job.includes(`\${{ runner.temp }}/receivers-artifact/${name}`), `upload de ${name}`);
   for (const uses of job.matchAll(/uses: ([^\s#]+)/g)) assert.match(uses[1] as string, /@[0-9a-f]{40}$/, 'action fixada por SHA');
+});
+
+test('runbook H-04 (revisão do PR #70, item 1): pastas privadas (mktemp -d), nenhum caminho fixo do /tmp; modelos conferidos por sha256sum -c no clone limpo e de novo na VPS ANTES de preencher; instalação 0755 do root e sha256 do wrapper instalado registrado', () => {
+  const runbook = fs.readFileSync(path.join(__dirname, '..', 'deploy', 'hostinger', 'RUNBOOK-DEPLOY-PELO-CI.md'), 'utf8');
+  const h04 = runbook.slice(runbook.indexOf('### H-04'), runbook.indexOf('### H-05'));
+  const commands = (h04.match(/```bash[\s\S]*?```/g) ?? []).join('\n');
+  assert.ok(!/\/tmp\/gmn|\/tmp\//.test(commands), 'nenhum caminho fixo do /tmp');
+  assert.ok((commands.match(/mktemp -d/g) ?? []).length >= 3, 'estação, recebimento na VPS e preenchimento: pastas privadas');
+  assert.match(commands, /npm run --silent deploy:receivers-artifact -- --out "\$D\/receptores" --check/);
+  const vpsCheck = commands.indexOf('( cd "$S" && sha256sum -c --strict receivers.sha256 )');
+  const vpsInstall = commands.indexOf('sudo install -m 0444 -o root -g root "$S/gmn-deploy-receiver.cjs" "$S/gmn-deploy.modelo.sh" "$S/gmn-hml-deploy.modelo.sh"');
+  assert.ok(vpsCheck > 0 && vpsInstall > vpsCheck, 'na VPS: sha256sum -c dos três antes de instalar');
+  const fill = commands.indexOf('"$K/gmn-hml-deploy.modelo.sh" > "$T/gmn-hml-deploy"');
+  const recheck = commands.indexOf('( cd "$K" && sha256sum -c --strict receivers.sha256 )');
+  assert.ok(recheck > 0 && fill > recheck, 'o modelo instalado é conferido de novo antes de preencher');
+  assert.match(commands, /sudo install -m 0755 -o root -g root "\$T\/gmn-hml-deploy" \/opt\/gmn-receivers\/bin\/gmn-hml-deploy/);
+  assert.match(commands, /sha256sum \/opt\/gmn-receivers\/bin\/gmn-hml-deploy\s+# registrar/);
+  assert.match(h04, /<PASTA_PRIVADA>/);
 });

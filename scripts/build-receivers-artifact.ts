@@ -6,9 +6,9 @@
  * O mesmo padrão do artefato do `sign` (`scripts/build-sign-artifact.ts`), reaproveitado e não copiado: o esbuild travado no lockfile, as MESMAS
  * opções fixas (`artifactBuildOptions`, só o `define` muda) e as MESMAS guardas sobre a saída (`checkMetafileImports` e `checkArtifactText`), cada
  * artefato com a própria lista LITERAL de módulos. O arquivo só é gravado (`0444`) depois das guardas.
- * Imprime uma linha `<sha256>  <arquivo>` por artefato (formato do `sha256sum`). `--check` compara com `deploy/hostinger/receivers.sha256`, que tem
- * exatamente uma linha por artefato de `RECEIVER_ARTIFACTS`, na mesma ordem (linhas que começam com `#` são comentários, ignorados também pelo
- * `sha256sum -c`). O responsável instala no host só o que passou no `sha256sum -c` desse arquivo no commit; o CI nunca atualiza receptor. Sem rede.
+ * Imprime uma linha `<sha256>  <arquivo>` por artefato e por modelo de wrapper copiado (formato do `sha256sum`). `--check` compara com
+ * `deploy/hostinger/receivers.sha256`, que tem exatamente uma linha por nome de `VERSIONED_FILE_NAMES`, na mesma ordem (linhas que começam com
+ * `#` são comentários, ignorados também pelo `sha256sum -c`). O responsável instala no host só o que passou no `sha256sum -c` desse arquivo no commit; o CI nunca atualiza receptor. Sem rede.
  */
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
@@ -37,8 +37,18 @@ export const RECEIVER_ARTIFACTS: readonly ReceiverArtifactSpec[] = [
   { fileName: DEPLOY_RECEIVER_FILE_NAME, entry: path.join(REPO_ROOT, 'scripts', 'deploy-receiver.ts'), defineName: 'GMN_DEPLOY_RECEIVER_ARTIFACT', modules: DEPLOY_RECEIVER_NODE_MODULES },
 ];
 export const RECEIVERS_HASH_FILE = path.join(REPO_ROOT, 'deploy', 'hostinger', 'receivers.sha256');
+/**
+ * Os modelos dos wrappers do comando forçado (revisão do PR #70): o hash deles também é versionado em `receivers.sha256`, depois dos
+ * artefatos, e o build os copia para a pasta de saída. Assim o `sha256sum -c` do clone limpo e o da VPS conferem os bytes do modelo ANTES de
+ * o responsável preenchê-lo e instalá-lo como root. A P9.3b acrescenta aqui o modelo do wrapper de manifestos.
+ */
+export const RECEIVER_TEMPLATES_DIR = path.join(REPO_ROOT, 'deploy', 'hostinger', 'receivers');
+export const RECEIVER_TEMPLATES: readonly string[] = ['gmn-deploy.modelo.sh', 'gmn-hml-deploy.modelo.sh'];
+/** Os nomes do arquivo de hash, na ordem: os artefatos e depois os modelos. */
+export const VERSIONED_FILE_NAMES: readonly string[] = [...RECEIVER_ARTIFACTS.map((spec) => spec.fileName), ...RECEIVER_TEMPLATES];
+const TEMPLATE_MODE = 0o444;
 const DEFAULT_OUT_DIR = path.join(REPO_ROOT, '.cache', 'receivers-artifact');
-const HASH_LINE = /^([0-9a-f]{64}) {2}([a-z0-9][a-z0-9.-]*\.cjs)$/;
+const HASH_LINE = /^([0-9a-f]{64}) {2}([a-z0-9][a-z0-9.-]*\.(?:cjs|sh))$/;
 
 /** Monta, confere e só então grava `<outDir>/<arquivo>` (0444). Qualquer guarda que falha ⇒ `ArtifactBuildError`, nada gravado. */
 export async function buildReceiverArtifact(spec: ReceiverArtifactSpec, options: { readonly outDir: string; readonly entry?: string }): Promise<BuiltArtifact> {
@@ -66,27 +76,40 @@ export async function buildReceiverArtifact(spec: ReceiverArtifactSpec, options:
   return { file, sha256: createHash('sha256').update(bytes).digest('hex'), bytes, requires };
 }
 
-/** Todos os artefatos de `RECEIVER_ARTIFACTS`, na ordem. */
-export async function buildReceiverArtifacts(options: { readonly outDir: string }): Promise<BuiltArtifact[]> {
-  const built: BuiltArtifact[] = [];
+/** Uma cópia (`0444`) de cada modelo de wrapper na pasta de saída, com o sha256 dos bytes. */
+export function copyReceiverTemplates(outDir: string): Array<{ readonly file: string; readonly sha256: string }> {
+  return RECEIVER_TEMPLATES.map((name) => {
+    const bytes = fs.readFileSync(path.join(RECEIVER_TEMPLATES_DIR, name));
+    const file = path.join(path.resolve(outDir), name);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    if (fs.existsSync(file)) fs.chmodSync(file, 0o644);
+    fs.writeFileSync(file, bytes);
+    fs.chmodSync(file, TEMPLATE_MODE);
+    return { file, sha256: createHash('sha256').update(bytes).digest('hex') };
+  });
+}
+
+/** Todos os artefatos de `RECEIVER_ARTIFACTS`, na ordem, e as cópias dos modelos de wrapper. */
+export async function buildReceiverArtifacts(options: { readonly outDir: string }): Promise<Array<{ readonly file: string; readonly sha256: string }>> {
+  const built: Array<{ readonly file: string; readonly sha256: string }> = [];
   for (const spec of RECEIVER_ARTIFACTS) built.push(await buildReceiverArtifact(spec, options));
-  return built;
+  return [...built, ...copyReceiverTemplates(options.outDir)];
 }
 
 /** A linha do arquivo versionado (`<sha256>  <arquivo>`, formato do `sha256sum -c`). */
-export const receiverHashLine = (built: BuiltArtifact): string => `${built.sha256}  ${path.basename(built.file)}`;
+export const receiverHashLine = (built: { readonly file: string; readonly sha256: string }): string => `${built.sha256}  ${path.basename(built.file)}`;
 
-/** Os hashes versionados, na ordem: exatamente um por artefato de `RECEIVER_ARTIFACTS`, mesmo nome, mesma ordem; `#` = comentário. */
+/** Os hashes versionados, na ordem: exatamente um por nome de `VERSIONED_FILE_NAMES` (artefatos e modelos), mesma ordem; `#` = comentário. */
 export function versionedReceiverHashes(file: string = RECEIVERS_HASH_FILE): ReadonlyMap<string, string> {
   const lines = fs.readFileSync(file, 'utf8').split('\n').filter((line) => line !== '' && !line.startsWith('#'));
   const hashes = new Map<string, string>();
   lines.forEach((line, index) => {
     const match = HASH_LINE.exec(line);
-    const expected = RECEIVER_ARTIFACTS[index]?.fileName;
-    if (!match || expected === undefined || match[2] !== expected || hashes.has(expected)) throw new ArtifactBuildError('HASH_MISMATCH', `${path.relative(REPO_ROOT, file)}: linha ${index + 1} fora do formato "<sha256>  <arquivo>" ou fora da ordem de RECEIVER_ARTIFACTS`);
+    const expected = VERSIONED_FILE_NAMES[index];
+    if (!match || expected === undefined || match[2] !== expected || hashes.has(expected)) throw new ArtifactBuildError('HASH_MISMATCH', `${path.relative(REPO_ROOT, file)}: linha ${index + 1} fora do formato "<sha256>  <arquivo>" ou fora da ordem (artefatos, depois modelos)`);
     hashes.set(expected, match[1] as string);
   });
-  if (hashes.size !== RECEIVER_ARTIFACTS.length) throw new ArtifactBuildError('HASH_MISMATCH', `${path.relative(REPO_ROOT, file)}: ${hashes.size} linhas para ${RECEIVER_ARTIFACTS.length} artefatos`);
+  if (hashes.size !== VERSIONED_FILE_NAMES.length) throw new ArtifactBuildError('HASH_MISMATCH', `${path.relative(REPO_ROOT, file)}: ${hashes.size} linhas para ${VERSIONED_FILE_NAMES.length} arquivos`);
   return hashes;
 }
 
@@ -105,15 +128,13 @@ async function main(argv: readonly string[]): Promise<number> {
   }
   try {
     const built = await buildReceiverArtifacts({ outDir });
-    for (const artifact of built) {
-      console.log(receiverHashLine(artifact));
-      console.error(`Artefato: ${path.basename(artifact.file)} (${artifact.bytes.length} bytes); módulos: ${artifact.requires.join(', ')}`);
-    }
+    for (const artifact of built) console.log(receiverHashLine(artifact));
+    console.error(`Arquivos em ${path.relative(process.cwd(), path.resolve(outDir)) || outDir}: ${built.map((artifact) => path.basename(artifact.file)).join(', ')}`);
     if (!argv.includes('--check')) return 0;
     const versioned = versionedReceiverHashes();
     const differing = built.filter((artifact) => versioned.get(path.basename(artifact.file)) !== artifact.sha256);
     if (differing.length === 0) return 0;
-    console.error(`FALHA: hash recompilado difere do versionado em ${path.relative(REPO_ROOT, RECEIVERS_HASH_FILE)} (${differing.map((artifact) => path.basename(artifact.file)).join(', ')}). Build não reprodutível ou fonte mudada sem atualizar o hash.`);
+    console.error(`FALHA: hash recompilado (ou do modelo) difere do versionado em ${path.relative(REPO_ROOT, RECEIVERS_HASH_FILE)} (${differing.map((artifact) => path.basename(artifact.file)).join(', ')}). Build não reprodutível ou fonte mudada sem atualizar o hash.`);
     return 3;
   } catch (error) {
     console.error(error instanceof ArtifactBuildError ? `FALHA (${error.code}): ${error.message}` : 'FALHA inesperada no build dos artefatos.');
