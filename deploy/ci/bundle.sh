@@ -2,6 +2,8 @@
 # Passo 5 do job `deploy` (spec docs/specs/ci-deploy-and-seal-delivery.md §5.5.1): `docker save` das duas imagens | `gzip -n` num
 # arquivo em $RUNNER_TEMP, com sha256 e tamanho. O pacote NUNCA vira artefato do Actions nem vai a registry ou cache: segue só pelo
 # SSH ao receptor de deploy (passo 8) e é apagado na limpeza (`if: always()`).
+# `gzip -n` só estabiliza o cabeçalho do gzip (sem nome nem data). O sha256 é a INTEGRIDADE do pacote desta execução, conferida pelo
+# receptor; não é prova de build reprodutível (duas execuções do mesmo commit podem gerar pacotes diferentes).
 # Ambiente: GMN_AMB, GMN_SHA, RUNNER_TEMP. Saídas do passo: sha256, bytes.
 set -euo pipefail
 cd "$(dirname "$0")/../.."

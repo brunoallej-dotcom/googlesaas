@@ -290,7 +290,7 @@ test('P9.4 build: a saída do docker build (que pode repetir valores do ambiente
   assertNoLeak(failed, SUPABASE_URL_SENTINEL, 'erro do build');
 });
 
-test('P9.4 pacote: docker save das duas tags | gzip -n em $RUNNER_TEMP (0700/0600), sha256 e tamanho nas saídas', (t) => {
+test('P9.4 pacote: docker save das duas tags | gzip -n (cabeçalho sem nome nem data) em $RUNNER_TEMP (0700/0600), sha256 de integridade do pacote desta execução e tamanho nas saídas', (t) => {
   const tar = 'conteudo-falso-do-docker-save';
   const sandbox = makeSandbox(t, { commands: { docker: [{ match: ['save'], responses: [{ stdout: tar }] }] } });
   const result = runScript(sandbox, 'bundle.sh', [], { GMN_AMB: 'producao', GMN_SHA: SHA });

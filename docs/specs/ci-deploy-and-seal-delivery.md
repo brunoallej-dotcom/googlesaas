@@ -400,6 +400,8 @@ dispara e aprova as próprias execuções (risco aceito, §11.2).
   `BUNDLE_MISSING`, `BUNDLE_CHANGED`, `TRUST_LIST_CHANGED`, `SSH_CONNECT_FAILED`, `RECEIVER_FAILED`, `RECEIVER_BAD_OUTPUT`,
   `TRUST_LIST_INSTALLED_MISMATCH`, `EX_CONFIG_INVALID`, `EX_CHECK_FAILED` (o que fazer em cada um: runbook §0.1).
 - **Verificação externa:** até 12 tentativas em até 2 min, `curl --proto =https --tlsv1.2 --max-redirs 0`, sem `-k`, sem cookie.
+- **Pacote:** `gzip -n` só estabiliza o cabeçalho do gzip (sem nome nem data). O sha256 do pacote é a **integridade** do pacote daquela
+  execução, conferida pelo receptor; não é prova de build reprodutível entre execuções.
 - Até a P9.5, `acao = entregar-selos` não roda nenhum job, e o gatilho `push` no caminho dos manifestos ainda não existe.
 - **Fusão da sobreposição (conferida offline com o `docker stack config` do Docker CLI 29.10):** os 12 `name: gmn-hml_*`, o `target`
   `gmn_*` e o `replicas: 0` do Worker valem; um `SERPER_API_KEY_FILE: ""` **não** sobrescreveria a variável (a fusão ignora valor
