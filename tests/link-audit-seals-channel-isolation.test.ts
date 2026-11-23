@@ -77,10 +77,17 @@ test('isolamento: nenhum disco direto, rede, processo filho, ambiente, relógio 
   const consumers = [...fs.readdirSync(path.join(ROOT, 'src'), { recursive: true, encoding: 'utf8' })].filter((rel) => /\.(ts|tsx)$/.test(rel) && !rel.startsWith(path.join('lib', 'link-audit-seals-channel')));
   // P9.3a: o receptor de deploy reaproveita SÓ o módulo da lista (parser, regra de ambiente, transição) e o tipo do ambiente; nada do app
   const DEPLOY_RECEIVER_IMPORTS: ReadonlySet<string> = new Set(['../link-audit-seals-channel/trust-list', '../link-audit-seals-channel/paths']);
+  // P9.3b: o receptor de manifestos reaproveita a gramática (tipo do ambiente), as regras por arquivo (S-05 a S-08), a lista, a cadeia (S-10), o
+  // fecho (S-11) e os conjuntos fechados de razões e motivos; nunca o comando, o check inteiro, o resumo nem o teto da execução do CI
+  const SEAL_RECEIVER_IMPORTS: ReadonlySet<string> = new Set(['codes', 'paths', 'trust-list', 'files', 'chains', 'closures'].map((file) => `../link-audit-seals-channel/${file}`));
   for (const rel of consumers) {
     const source = fs.readFileSync(path.join(ROOT, 'src', rel), 'utf8');
     if (rel.startsWith(path.join('lib', 'deploy-receiver') + path.sep)) {
       for (const specifier of importsOf(source).filter((spec) => spec.includes('link-audit-seals-channel'))) assert.ok(DEPLOY_RECEIVER_IMPORTS.has(specifier), `${rel} importa ${specifier}`);
+      continue;
+    }
+    if (rel.startsWith(path.join('lib', 'seal-receiver') + path.sep)) {
+      for (const specifier of importsOf(source).filter((spec) => spec.includes('link-audit-seals-channel'))) assert.ok(SEAL_RECEIVER_IMPORTS.has(specifier), `${rel} importa ${specifier}`);
       continue;
     }
     assert.ok(!/link-audit-seals-channel/.test(strip(source)), `${rel} não importa o canal (nenhum consumidor no app)`);

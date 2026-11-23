@@ -298,6 +298,14 @@ const CHANNEL_CLI = 'scripts/link-audit-seals-check.ts';
 const CHANNEL_TARGETS: ReadonlySet<string> = new Set(['fs-ops.ts']);
 const CHANNEL_CLI_TARGETS: ReadonlySet<string> = new Set(['node-fs-ops.ts']);
 const CHANNEL_EVIDENCE_IMPORTS: readonly string[] = ['provenance-core', 'simulated'];
+/**
+ * P9.3b (spec `ci-deploy-and-seal-delivery.md` §5.7): o receptor de manifestos usa do módulo SÓ a porta de disco (tipos e `errorCode`) e, no
+ * adaptador de produção, o disco padrão estreito (`nodeFsOps`). Conferido arquivo a arquivo em `link-audit-seal-receiver-isolation.test.ts`.
+ */
+const SEAL_RECEIVER_DIR = 'src/lib/seal-receiver/';
+const SEAL_RECEIVER_TARGETS: ReadonlySet<string> = new Set(['fs-ops.ts']);
+const SEAL_RECEIVER_ADAPTER = 'src/lib/seal-receiver/node-adapters.ts';
+const SEAL_RECEIVER_ADAPTER_TARGETS: ReadonlySet<string> = new Set(['fs-ops.ts', 'node-fs-ops.ts']);
 const CLIENT_DIRS = ['src/components/link-audit/', 'src/app/auditoria-por-link/'];
 /** Único valor (não só tipo) que o navegador pode importar: constantes puras, sem nenhum import. */
 const CLIENT_VALUE_IMPORTS: ReadonlySet<string> = new Set(['methodology']);
@@ -364,6 +372,9 @@ test('isolamento reverso: só os consumidores declarados importam o módulo, e s
         assert.ok(STORAGE_TARGETS.has(withExtension), `${name} importa "${statement.specifier}", fora da lista fechada do módulo neutro de armazenamento`);
       } else if (isRuntime) {
         continue;
+      } else if (name.startsWith(SEAL_RECEIVER_DIR)) {
+        const withExtension = target.endsWith('.ts') ? target : `${target}.ts`;
+        assert.ok((name === SEAL_RECEIVER_ADAPTER ? SEAL_RECEIVER_ADAPTER_TARGETS : SEAL_RECEIVER_TARGETS).has(withExtension), `${name} importa "${statement.specifier}", fora da lista fechada do receptor de manifestos`);
       } else if (name.startsWith(CHANNEL_DIR) || name === CHANNEL_CLI) {
         const withExtension = target.endsWith('.ts') ? target : `${target}.ts`;
         assert.ok((name === CHANNEL_CLI ? CHANNEL_CLI_TARGETS : CHANNEL_TARGETS).has(withExtension), `${name} importa "${statement.specifier}", fora da lista fechada do canal de manifestos`);
@@ -563,6 +574,15 @@ test('Onda 5A/5B: só o runtime, os comandos e as rotas de leitura importam o se
         if (resolved === null || !(resolved === evidenceRoot || resolved.startsWith(evidenceRoot + path.sep))) continue;
         const allowed = ATTESTATION_EVIDENCE_IMPORTS.get(name);
         assert.ok(allowed !== undefined && allowed.some((target) => resolved === path.join(evidenceRoot, target)), `${name} importa "${statement.specifier}": fora da lista fechada do núcleo de atestação`);
+      }
+      continue;
+    }
+    if (name.startsWith(SEAL_RECEIVER_DIR)) {
+      // P9.3b: o receptor de manifestos usa SÓ o núcleo do verificador (sem disco padrão, sem a fachada)
+      for (const statement of importStatements(fs.readFileSync(file, 'utf8'))) {
+        const resolved = resolveImport(file, statement.specifier);
+        if (resolved === null || !(resolved === evidenceRoot || resolved.startsWith(evidenceRoot + path.sep))) continue;
+        assert.ok(resolved === path.join(evidenceRoot, 'provenance-core'), `${name} importa "${statement.specifier}": fora da lista fechada do receptor de manifestos`);
       }
       continue;
     }
