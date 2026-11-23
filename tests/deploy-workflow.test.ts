@@ -5,10 +5,10 @@ import test from 'node:test';
 import { isYamlMap, parseYamlSubset, YamlSubsetError, type YamlMap, type YamlValue } from './helpers/yaml-subset';
 
 /*
- * P9.4: teste ESTÁTICO do workflow de deploy pelo CI (.github/workflows/deploy.yml; spec docs/specs/ci-deploy-and-seal-delivery.md §5.5
- * e §5.5.1; critérios P9-W01 a P9-W08 e P9-W11), dos scripts que ele chama (deploy/ci/) e do runbook do responsável. Nada aqui dispara
- * workflow, abre rede ou lê segredo. A estrutura vem do leitor de YAML restrito dos testes (tests/helpers/yaml-subset.ts), que recusa o
- * que não cobre. A execução dos scripts com comandos falsos fica em tests/deploy-ci-scripts.test.ts.
+ * P9.4 e P9.5: teste ESTÁTICO do workflow de deploy pelo CI (.github/workflows/deploy.yml; spec docs/specs/ci-deploy-and-seal-delivery.md
+ * §5.5, §5.5.1 e §5.5.2; critérios P9-W01 a P9-W09 e P9-W11), dos scripts que ele chama (deploy/ci/) e do runbook do responsável. Nada aqui
+ * dispara workflow, abre rede ou lê segredo. A estrutura vem do leitor de YAML restrito dos testes (tests/helpers/yaml-subset.ts), que recusa
+ * o que não cobre. A execução dos scripts com comandos falsos fica em tests/deploy-ci-scripts.test.ts e tests/deploy-seals-delivery.test.ts.
  */
 const ROOT = path.join(__dirname, '..');
 const read = (rel: string): string => fs.readFileSync(path.join(ROOT, rel), 'utf8');
@@ -16,7 +16,7 @@ const workflowText = read('.github/workflows/deploy.yml');
 const ciText = read('.github/workflows/ci.yml');
 const CI_SCRIPTS = fs.readdirSync(path.join(ROOT, 'deploy', 'ci')).filter((name) => name.endsWith('.sh')).sort();
 const scriptText = (name: string): string => read(`deploy/ci/${name}`);
-/** Todo o código que roda no job `deploy`: o workflow e os scripts de deploy/ci/. */
+/** Todo o código dos jobs do deploy.yml: o workflow e os scripts de deploy/ci/. */
 const jobCode = (): Array<[string, string]> => [['deploy.yml', workflowText], ...CI_SCRIPTS.map((name): [string, string] => [name, scriptText(name)])];
 const withoutComments = (text: string): string => text.replace(/^\s*#.*$/gm, '');
 
@@ -31,7 +31,17 @@ const listAt = (value: YamlValue | undefined, label: string): YamlValue[] => {
 const workflow = mapAt(parseYamlSubset(workflowText), 'deploy.yml');
 const jobs = mapAt(workflow.jobs, 'jobs');
 const deployJob = mapAt(jobs.deploy, 'jobs.deploy');
-const steps = listAt(deployJob.steps, 'steps').map((step, i) => mapAt(step, `steps[${i}]`));
+const verifyJob = mapAt(jobs['seals-verify'], 'jobs.seals-verify');
+const deliverJob = mapAt(jobs['seals-deliver'], 'jobs.seals-deliver');
+const stepsOfJob = (job: YamlMap, label: string): YamlMap[] => listAt(job.steps, `${label}.steps`).map((step, i) => mapAt(step, `${label}.steps[${i}]`));
+const steps = stepsOfJob(deployJob, 'deploy');
+const verifySteps = stepsOfJob(verifyJob, 'seals-verify');
+const deliverSteps = stepsOfJob(deliverJob, 'seals-deliver');
+const deliverStep = (id: string): YamlMap => {
+  const step = deliverSteps.find((item) => item.id === id);
+  assert.ok(step, `seals-deliver: passo ${id} ausente`);
+  return step;
+};
 const stepIndex = (id: string): number => {
   const index = steps.findIndex((step) => step.id === id);
   assert.ok(index >= 0, `passo ${id} ausente`);
@@ -44,13 +54,23 @@ const allSteps = (): YamlMap[] =>
 /** As actions do ci.yml (o conjunto permitido, SHA a SHA). */
 const ciActions = new Set([...ciText.matchAll(/uses: (\S+@[0-9a-f]{40})\b/g)].map((m) => m[1] ?? ''));
 
-/** Segredos por passo (spec §5.5): só de ambiente, só no `env:` do passo que os usa, e nada além disto. */
-const SECRETS_BY_STEP: Readonly<Record<string, Readonly<Record<string, string>>>> = {
-  build: { NEXT_PUBLIC_SUPABASE_URL: 'GMN_BUILD_SUPABASE_URL', NEXT_PUBLIC_SUPABASE_ANON_KEY: 'GMN_BUILD_SUPABASE_ANON_KEY' },
-  ssh: { GMN_DEPLOY_SSH_KEY: 'GMN_DEPLOY_SSH_KEY', GMN_SSH_KNOWN_HOSTS: 'GMN_SSH_KNOWN_HOSTS', GMN_SSH_HOST: 'GMN_SSH_HOST', GMN_SSH_PORT: 'GMN_SSH_PORT' },
-  deploy: { GMN_BUILD_SUPABASE_URL: 'GMN_BUILD_SUPABASE_URL' },
-  external: { GMN_PUBLIC_HOST: 'GMN_PUBLIC_HOST' },
+/** Segredos por job e por passo (spec §5.5): só de ambiente, só no `env:` do passo que os usa, e nada além disto. */
+const SECRETS_BY_STEP: Readonly<Record<string, Readonly<Record<string, Readonly<Record<string, string>>>>>> = {
+  deploy: {
+    build: { NEXT_PUBLIC_SUPABASE_URL: 'GMN_BUILD_SUPABASE_URL', NEXT_PUBLIC_SUPABASE_ANON_KEY: 'GMN_BUILD_SUPABASE_ANON_KEY' },
+    ssh: { GMN_DEPLOY_SSH_KEY: 'GMN_DEPLOY_SSH_KEY', GMN_SSH_KNOWN_HOSTS: 'GMN_SSH_KNOWN_HOSTS', GMN_SSH_HOST: 'GMN_SSH_HOST', GMN_SSH_PORT: 'GMN_SSH_PORT' },
+    deploy: { GMN_BUILD_SUPABASE_URL: 'GMN_BUILD_SUPABASE_URL' },
+    external: { GMN_PUBLIC_HOST: 'GMN_PUBLIC_HOST' },
+  },
+  // §5.5: o seals-verify não tem segredo nenhum; o seals-deliver, só a chave de manifestos e os de conexão
+  'seals-verify': {},
+  'seals-deliver': {
+    ssh: { GMN_SEALS_SSH_KEY: 'GMN_SEALS_SSH_KEY', GMN_SSH_KNOWN_HOSTS: 'GMN_SSH_KNOWN_HOSTS', GMN_SSH_HOST: 'GMN_SSH_HOST', GMN_SSH_PORT: 'GMN_SSH_PORT' },
+  },
 };
+/** Os scripts que cada job chama (P9-W09: os do seals-deliver não podem rodar npm, node nem npx). */
+const scriptsOf = (jobSteps: readonly YamlMap[]): string[] =>
+  [...new Set(jobSteps.map(runOf).flatMap((run) => [...run.matchAll(/^bash deploy\/ci\/([a-z-]+\.sh)(?: [a-z]+)?$/gm)].map((m) => m[1] ?? '')))].sort();
 /** Opções fixas do ssh (spec §5.5.1 passo 7), escritas na configuração privada do `ssh-setup.sh` (o `ssh -F` ignora qualquer outra). */
 const SSH_CONFIG_OPTIONS = [
   'IdentitiesOnly yes',
@@ -75,9 +95,11 @@ test('yaml-subset: o leitor dos testes recusa o que não cobre (âncora, alias, 
   });
 });
 
-test('P9-W01 gatilhos e permissões: só workflow_dispatch (P9.4) com as entradas do §5.5; topo contents: read; todo job declara permissões, deploy = contents + actions de leitura; nenhum write', () => {
+test('P9-W01 gatilhos e permissões: exatamente os do §5.5 (dispatch com ambiente e ação; push na main só no caminho dos manifestos); topo contents: read; todo job declara permissões, deploy = contents + actions de leitura, seals-verify e seals-deliver = contents de leitura; nenhum write', () => {
   const on = mapAt(workflow.on, 'on');
-  assert.deepEqual(Object.keys(on), ['workflow_dispatch'], 'P9.4: só o dispatch; o push no caminho dos manifestos entra na P9.5 com os jobs seals-*');
+  assert.deepEqual(Object.keys(on), ['workflow_dispatch', 'push']);
+  assert.deepEqual(on.push, { branches: ['main'], paths: ['link-audit-seals/*/seals/**'] }, 'push só na main e só no caminho dos manifestos (nunca trust-keys.txt)');
+  assert.deepEqual(Object.keys(jobs), ['deploy', 'seals-verify', 'seals-deliver'], 'os três jobs do §5.5');
   const inputs = mapAt(mapAt(on.workflow_dispatch, 'workflow_dispatch').inputs, 'inputs');
   assert.deepEqual(Object.keys(inputs), ['ambiente', 'acao']);
   const { description: _ambiente, ...ambiente } = mapAt(inputs.ambiente, 'ambiente');
@@ -85,10 +107,14 @@ test('P9-W01 gatilhos e permissões: só workflow_dispatch (P9.4) com as entrada
   const { description: _acao, ...acao } = mapAt(inputs.acao, 'acao');
   assert.deepEqual(acao, { type: 'choice', required: true, default: 'deploy', options: ['deploy', 'entregar-selos'] });
   assert.deepEqual(workflow.permissions, { contents: 'read' }, 'o topo fica só como padrão');
+  const expectedPermissions: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+    deploy: { contents: 'read', actions: 'read' },
+    'seals-verify': { contents: 'read' },
+    'seals-deliver': { contents: 'read' },
+  };
   for (const [name, job] of Object.entries(jobs)) {
     const permissions = mapAt(mapAt(job, name).permissions, `${name}.permissions`);
-    const expected = name === 'deploy' ? { contents: 'read', actions: 'read' } : { contents: 'read' };
-    assert.deepEqual(permissions, expected, `${name}: permissões efetivas exatamente ${JSON.stringify(expected)}`);
+    assert.deepEqual(permissions, expectedPermissions[name], `${name}: permissões efetivas exatamente ${JSON.stringify(expectedPermissions[name])}`);
   }
   assert.ok(!/:\s*write\b|write-all|read-all/.test(withoutComments(workflowText)), 'nenhuma permissão de escrita');
   for (const forbidden of [/pull_request_target/, /^\s*workflow_run:/m, /^\s*schedule:/m, /repository_dispatch/, /id-token/]) assert.ok(!forbidden.test(withoutComments(workflowText)), `${forbidden}`);
@@ -103,7 +129,26 @@ test('P9-W02 deploy só por dispatch na main, com acao = deploy, no ambiente da 
   assert.equal(deployJob['timeout-minutes'], 60, 'spec §5.5: 60 min no deploy');
   assert.deepEqual(deployJob.env, { GMN_AMB: '${{ inputs.ambiente }}', GMN_SHA: '${{ github.sha }}' }, 'o env do job não leva segredo');
   assert.equal(workflow.env, undefined, 'sem env no topo');
-  if (jobs['seals-deliver'] !== undefined) assert.equal(mapAt(jobs['seals-deliver'], 'seals-deliver').environment, '${{ matrix.ambiente }}');
+});
+
+test('P9-W02 (P9.5) seals-verify sem ambiente nem segredo, só na main, no push ou no dispatch com acao = entregar-selos; seals-deliver na main, depois do seals-verify verde, no ambiente da matriz, e a matriz só com os nomes do conjunto fechado', () => {
+  assert.equal(verifyJob.if, "github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.acao == 'entregar-selos'))");
+  assert.equal(verifyJob.environment, undefined, 'seals-verify sem ambiente (sem segredo)');
+  assert.equal(verifyJob['timeout-minutes'], 15);
+  assert.deepEqual(verifyJob.outputs, { ambientes: '${{ steps.verify.outputs.ambientes }}' });
+  assert.equal(deliverJob.needs, 'seals-verify');
+  assert.equal(deliverJob.environment, '${{ matrix.ambiente }}');
+  assert.equal(deliverJob['timeout-minutes'], 20, 'spec §5.5: 20 min no seals-deliver');
+  assert.equal(deliverJob['runs-on'], 'ubuntu-latest');
+  assert.deepEqual(deliverJob.strategy, { 'fail-fast': false, matrix: { ambiente: '${{ fromJSON(needs.seals-verify.outputs.ambientes) }}' } });
+  const allowed = ['["homologacao"]', '["producao"]', '["homologacao","producao"]'];
+  assert.equal(
+    deliverJob.if,
+    `github.ref == 'refs/heads/main' && needs.seals-verify.result == 'success' && (${allowed.map((value) => `needs.seals-verify.outputs.ambientes == '${value}'`).join(' || ')})`,
+    'o consumidor só aceita a matriz do conjunto fechado (nunca [] nem outro nome: um ambiente desconhecido seria criado sem proteção)',
+  );
+  assert.deepEqual(deliverJob.env, { GMN_AMB: '${{ matrix.ambiente }}', GMN_SHA: '${{ github.sha }}' }, 'o env do job não leva segredo');
+  assert.ok(!JSON.stringify(verifyJob).includes('secrets.'), 'seals-verify sem segredo');
 });
 
 test('P9-W03 toda action fixada por SHA de 40 hex e só entre as do ci.yml; checkout do SHA exato sem credencial persistida', () => {
@@ -117,6 +162,12 @@ test('P9-W03 toda action fixada por SHA de 40 hex e só entre as do ci.yml; chec
   const checkout = stepById('checkout');
   assert.match(String(checkout.uses), /^actions\/checkout@/);
   assert.deepEqual(checkout.with, { ref: '${{ github.sha }}', 'persist-credentials': false });
+  const verifyCheckout = verifySteps.find((step) => step.id === 'checkout');
+  assert.match(String(verifyCheckout?.uses), /^actions\/checkout@/);
+  assert.deepEqual(verifyCheckout?.with, { ref: '${{ github.sha }}', 'fetch-depth': 0, 'persist-credentials': false }, 'seals-verify: histórico completo (base = before no push)');
+  assert.match(String(deliverStep('checkout').uses), /^actions\/checkout@/);
+  assert.deepEqual(deliverStep('checkout').with, { ref: '${{ github.sha }}', 'persist-credentials': false });
+  assert.equal(allSteps().filter((step) => String(step.uses ?? '').startsWith('actions/checkout@')).length, 3, 'um checkout por job');
 });
 
 test('P9-W04 nenhum artefato, registry, login ou cache do GitHub no workflow nem nos scripts do job; o pacote só em $RUNNER_TEMP', () => {
@@ -142,27 +193,37 @@ test('P9-W05 nenhuma expressão ${{ }} dentro de run:, sem rastreamento do shell
     }
   }
   let declared = 0;
-  for (const step of steps) {
-    const env = isYamlMap(step.env) ? step.env : {};
-    const secrets = Object.fromEntries(Object.entries(env).filter(([, value]) => String(value).includes('secrets.')).map(([key, value]) => [key, String(value)]));
-    const expected = SECRETS_BY_STEP[String(step.id)] ?? {};
-    assert.deepEqual(secrets, Object.fromEntries(Object.entries(expected).map(([key, secret]) => [key, `\${{ secrets.${secret} }}`])), `${String(step.id)}: segredos do passo`);
-    declared += Object.keys(secrets).length;
-    for (const field of ['run', 'with', 'if', 'name']) assert.ok(!JSON.stringify(step[field] ?? '').includes('secrets.'), `${String(step.id)}: segredo em ${field}`);
+  for (const [jobName, jobSteps] of [['deploy', steps], ['seals-verify', verifySteps], ['seals-deliver', deliverSteps]] as const) {
+    for (const step of jobSteps) {
+      const env = isYamlMap(step.env) ? step.env : {};
+      const secrets = Object.fromEntries(Object.entries(env).filter(([, value]) => String(value).includes('secrets.')).map(([key, value]) => [key, String(value)]));
+      const expected = SECRETS_BY_STEP[jobName]?.[String(step.id)] ?? {};
+      assert.deepEqual(secrets, Object.fromEntries(Object.entries(expected).map(([key, secret]) => [key, `\${{ secrets.${secret} }}`])), `${jobName}.${String(step.id)}: segredos do passo`);
+      declared += Object.keys(secrets).length;
+      for (const field of ['run', 'with', 'if', 'name']) assert.ok(!JSON.stringify(step[field] ?? '').includes('secrets.'), `${jobName}.${String(step.id)}: segredo em ${field}`);
+    }
   }
   assert.equal(workflowText.split('${{ secrets.').length - 1, declared, 'nenhum segredo fora do env: de um passo');
   assert.ok(!workflowText.includes('secrets.GITHUB_TOKEN'), 'o token do job entra como github.token, só onde é usado');
   const inputUses = [...withoutComments(workflowText).matchAll(/\$\{\{ inputs\.[a-z]+ \}\}/g)].length;
-  assert.equal(inputUses, 4, 'inputs só no nome, ambiente, grupo de concorrência e env do job (e na condição sem ${{ }})');
+  assert.equal(inputUses, 5, 'inputs só no nome, ambiente, grupo de concorrência e env do job deploy e no env do passo do seals-verify (e nas condições sem ${{ }})');
+  assert.deepEqual(verifySteps.find((step) => step.id === 'verify')?.env, {
+    GMN_SHA: '${{ github.sha }}',
+    GMN_EVENT: '${{ github.event_name }}',
+    GMN_BEFORE: '${{ github.event.before }}',
+    GMN_DISPATCH_AMB: '${{ inputs.ambiente }}',
+  }, 'seals-verify: as entradas do evento só pelo ambiente do passo');
+  assert.deepEqual(deliverStep('deliver').env, { GMN_TRUST_SHA256: '${{ steps.files.outputs.trust_sha256 }}' });
 });
 
-test('P9-W06 concorrência por operação e ambiente (gmn-<amb>-deploy), sem cancelar o que está em andamento; nenhum grupo no topo', () => {
+test('P9-W06 concorrência por operação e ambiente (gmn-<amb>-deploy no deploy, gmn-<amb>-seals no seals-deliver), sem cancelar o que está em andamento; nenhum grupo comum nem no topo', () => {
   assert.deepEqual(deployJob.concurrency, { group: 'gmn-${{ inputs.ambiente }}-deploy', 'cancel-in-progress': false });
+  assert.deepEqual(deliverJob.concurrency, { group: 'gmn-${{ matrix.ambiente }}-seals', 'cancel-in-progress': false });
+  assert.equal(verifyJob.concurrency, undefined, 'seals-verify sem segredo nem efeito: sem fila');
   assert.equal(workflow.concurrency, undefined, 'um grupo no topo juntaria deploy e entrega');
   assert.ok(!/cancel-in-progress: true/.test(workflowText));
-  if (jobs['seals-deliver'] !== undefined) {
-    assert.deepEqual(mapAt(jobs['seals-deliver'], 'seals-deliver').concurrency, { group: 'gmn-${{ matrix.ambiente }}-seals', 'cancel-in-progress': false });
-  }
+  const groups = Object.entries(jobs).map(([name, job]) => mapAt(job, name).concurrency).filter(isYamlMap).map((item) => String(item.group));
+  assert.equal(new Set(groups).size, groups.length, 'nenhum grupo comum às duas operações');
 });
 
 test('P9-W07 todo ssh pela configuração privada com as opções fixas (StrictHostKeyChecking yes, UserKnownHostsFile explícito, GlobalKnownHostsFile /dev/null); host e porta fora da linha de comando; nenhum ssh fora do script do receptor', () => {
@@ -172,20 +233,25 @@ test('P9-W07 todo ssh pela configuração privada com as opções fixas (StrictH
   const lines = config.split('\n').map((line) => line.trim());
   assert.deepEqual(lines.slice(0, 4), ['Host ${GMN_CI_SSH_ALIAS}', 'HostName ${GMN_SSH_HOST}', 'Port ${ssh_port}', 'User ${ssh_user}']);
   for (const option of SSH_CONFIG_OPTIONS) assert.ok(lines.includes(option), `opção fixa ${option}`);
-  assert.match(scriptText('lib.sh'), /readonly GMN_CI_SSH_ALIAS="gmn-receiver"/);
-  const receiver = scriptText('receiver-call.sh');
-  const invocations = [...withoutComments(receiver).matchAll(/(?:^|[\s(])ssh (.+?) "\$remote_command"/gm)].map((m) => m[1]);
-  assert.deepEqual(invocations, ['-F "$GMN_CI_SSH_CONFIG" -T "$GMN_CI_SSH_ALIAS"'], 'uma chamada, só pela configuração privada');
-  assert.ok(!/GMN_SSH_HOST|GMN_SSH_PORT/.test(withoutComments(receiver)), 'o script do receptor não vê host nem porta');
-  const sources: Array<[string, string]> = [['deploy.yml (run:)', allSteps().map(runOf).join('\n')], ...CI_SCRIPTS.filter((name) => name !== 'receiver-call.sh').map((name): [string, string] => [name, scriptText(name)])];
-  for (const [name, text] of sources) assert.ok(!/(?:^|[\s(;|&])(?:ssh|scp|sftp)\s/m.test(withoutComments(text)), `${name}: ssh fora do script do receptor`);
+  // P9.5: um apelido, uma chave e um usuário por papel (deploy / seals), só literais fixos em lib.sh
+  const lib = scriptText('lib.sh');
+  assert.match(lib, /deploy\)\n\s+GMN_CI_SSH_KEY_VAR=GMN_DEPLOY_SSH_KEY\n\s+GMN_CI_SSH_KEY_NAME=id_deploy\n\s+GMN_CI_SSH_ALIAS=gmn-receiver\n\s+case "\$\{GMN_AMB:-\}" in producao\) GMN_CI_SSH_USER=gmn-deploy ;; homologacao\) GMN_CI_SSH_USER=gmn-hml-deploy ;;/);
+  assert.match(lib, /seals\)\n\s+GMN_CI_SSH_KEY_VAR=GMN_SEALS_SSH_KEY\n\s+GMN_CI_SSH_KEY_NAME=id_seals\n\s+GMN_CI_SSH_ALIAS=gmn-seal-receiver\n\s+case "\$\{GMN_AMB:-\}" in producao\) GMN_CI_SSH_USER=gmn-seals ;; homologacao\) GMN_CI_SSH_USER=gmn-hml-seals ;;/);
+  // a ÚNICA chamada ssh dos jobs fica em lib.sh (gmn_receiver_ssh), só pela configuração privada
+  const invocations = CI_SCRIPTS.flatMap((name) => [...withoutComments(scriptText(name)).matchAll(/(?:^|[\s(])ssh (.+?)$/gm)].map((m) => `${name}: ${m[1] ?? ''}`));
+  assert.deepEqual(invocations, ['lib.sh: -F "$GMN_CI_SSH_CONFIG" -T "$GMN_CI_SSH_ALIAS" "$1" <"$2" 2>"$GMN_SSH_STDERR")"'], 'uma chamada, só pela configuração privada');
+  for (const name of ['receiver-call.sh', 'seals-deliver.sh']) {
+    assert.ok(!/GMN_SSH_HOST|GMN_SSH_PORT/.test(withoutComments(scriptText(name))), `${name}: o script do receptor não vê host nem porta`);
+    assert.ok(scriptText(name).includes('gmn_receiver_ssh "$remote_command"'), `${name}: chama o receptor só pela chamada única`);
+  }
+  assert.ok(!/(?:^|[\s(;|&])(?:ssh|scp|sftp)\s/m.test(withoutComments(allSteps().map(runOf).join('\n'))), 'deploy.yml (run:): nenhum ssh');
   assert.match(scriptText('lib.sh'), /readonly GMN_CI_SSH_DIR="\$\{RUNNER_TEMP:\?RUNNER_TEMP ausente\}\/gmn-ssh"/);
 });
 
 test('P9-W08 a chave só é escrita depois do build e do pacote, e a limpeza com if: always() apaga a chave, o pacote e a saída do Docker', () => {
   const ssh = stepIndex('ssh');
   assert.ok(ssh > stepIndex('build') && ssh > stepIndex('bundle'), 'chave depois do build');
-  assert.equal(runOf(stepById('ssh')), 'bash deploy/ci/ssh-setup.sh');
+  assert.equal(runOf(stepById('ssh')), 'bash deploy/ci/ssh-setup.sh deploy');
   const keySteps = steps.filter((step) => JSON.stringify(step.env ?? {}).includes('GMN_DEPLOY_SSH_KEY')).map((step) => step.id);
   assert.deepEqual(keySteps, ['ssh'], 'a chave privada só entra no passo que a escreve');
   const cleanup = steps.findIndex((step) => step.name === 'Limpeza da chave, do pacote e da saída do Docker');
@@ -196,6 +262,62 @@ test('P9-W08 a chave só é escrita depois do build e do pacote, e a limpeza com
   for (const [name, condition] of [['Resumo do job', "always() && steps.checkout.outcome == 'success'"], ['Resumo do job (recusado antes do checkout)', "always() && steps.checkout.outcome != 'success'"]]) {
     assert.equal(steps.find((step) => step.name === name)?.if, condition, `${name} sempre roda`);
   }
+});
+
+test('P9-W08 (P9.5) seals-deliver: a chave de manifestos só entra no passo que a escreve (ssh-setup.sh seals), depois do cálculo da lista; limpeza da chave com if: always() logo depois da entrega; resumo e limpeza da lista sempre', () => {
+  const ids = deliverSteps.map((step) => step.id ?? step.name);
+  assert.deepEqual(ids, ['checkout', 'files', 'ssh', 'head', 'deliver', 'Limpeza da chave', 'Resumo da entrega (RC-08)', 'Resumo da entrega (checkout falhou)', 'Limpeza da lista de arquivos']);
+  assert.equal(runOf(deliverStep('ssh')), 'bash deploy/ci/ssh-setup.sh seals');
+  const keySteps = deliverSteps.filter((step) => JSON.stringify(step.env ?? {}).includes('GMN_SEALS_SSH_KEY')).map((step) => step.id);
+  assert.deepEqual(keySteps, ['ssh'], 'a chave privada só entra no passo que a escreve');
+  assert.ok(!JSON.stringify(deliverSteps).includes('GMN_DEPLOY_SSH_KEY'), 'a chave de deploy nunca no seals-deliver');
+  assert.ok(!JSON.stringify(steps).includes('GMN_SEALS_SSH_KEY'), 'a chave de manifestos nunca no deploy');
+  const byName = (name: string): YamlMap | undefined => deliverSteps.find((step) => step.name === name);
+  assert.equal(byName('Limpeza da chave')?.if, 'always()');
+  assert.equal(runOf(byName('Limpeza da chave') as YamlMap), 'rm -rf -- "$RUNNER_TEMP/gmn-ssh"');
+  assert.equal(byName('Resumo da entrega (RC-08)')?.if, "always() && steps.checkout.outcome == 'success'");
+  assert.equal(runOf(byName('Resumo da entrega (RC-08)') as YamlMap), 'bash deploy/ci/seals-summary.sh');
+  assert.equal(byName('Resumo da entrega (checkout falhou)')?.if, "always() && steps.checkout.outcome != 'success'");
+  assert.equal(byName('Limpeza da lista de arquivos')?.if, 'always()');
+  assert.equal(runOf(byName('Limpeza da lista de arquivos') as YamlMap), 'rm -rf -- "$RUNNER_TEMP/gmn-seals"');
+  assert.match(scriptText('lib.sh'), /readonly GMN_CI_SEALS_DIR="\$\{RUNNER_TEMP\}\/gmn-seals"/);
+});
+
+test('P9-W09 seals-deliver não roda npm, node nem npx: nem no workflow (sem setup-node), nem nos scripts que chama; só git, sha256sum e ssh', () => {
+  const called = scriptsOf(deliverSteps);
+  assert.deepEqual(called, ['seals-deliver.sh', 'seals-files.sh', 'seals-summary.sh', 'ssh-setup.sh']);
+  const forbidden = /(?:^|[^A-Za-z0-9_.\/-])(?:npm|npx|node|tsx|corepack|yarn|pnpm)(?=$|[^A-Za-z0-9_-])/m;
+  for (const step of deliverSteps) {
+    assert.ok(!String(step.uses ?? '').startsWith('actions/setup-node@'), 'nenhum setup-node no seals-deliver');
+    assert.ok(!forbidden.test(withoutComments(runOf(step))), `${String(step.name)}: npm/node/npx no run:`);
+  }
+  for (const name of [...called, 'lib.sh']) assert.ok(!forbidden.test(withoutComments(scriptText(name))), `${name}: npm/node/npx no script do seals-deliver`);
+  assert.ok(/git -c core\.quotePath=false ls-tree -r -z HEAD -- /.test(scriptText('seals-files.sh')) && /git hash-object --no-filters/.test(scriptText('seals-files.sh')), 'a lista sai do git');
+  assert.ok(/sha256sum/.test(scriptText('lib.sh')), 'sha256sum de cada arquivo');
+});
+
+test('P9.5 NOT_MAIN_HEAD no seals-deliver: o commit ainda é a cabeça da main imediatamente antes do primeiro put, com o MESMO texto do deploy (spec omissa, decisão da P9.5)', () => {
+  const head = deliverStep('head');
+  assert.equal(runOf(head), runOf(stepById('head')), 'o mesmo código do deploy');
+  assert.deepEqual(head.env, { GH_TOKEN: '${{ github.token }}' }, 'só o token do job (leitura, contents: read)');
+  const ids = deliverSteps.map((step) => step.id);
+  assert.equal(ids.indexOf('head'), ids.indexOf('deliver') - 1, 'imediatamente antes da entrega');
+  assert.equal(deliverSteps.filter((step) => runOf(step).includes('fail NOT_MAIN_HEAD')).length, 1);
+});
+
+test('P9.5 seals-verify: sem segredo, Node 22 sem cache, npm ci do commit e o script do passo; nada de artefato nem de escrita', () => {
+  assert.deepEqual(verifySteps.map((step) => step.id ?? step.name), ['checkout', 'Node 22 (sem cache)', 'install', 'verify']);
+  const setup = verifySteps[1] as YamlMap;
+  assert.match(String(setup.uses), /^actions\/setup-node@[0-9a-f]{40}$/);
+  assert.deepEqual(setup.with, { 'node-version': '22' }, 'sem cache:');
+  assert.equal(runOf(verifySteps[2] as YamlMap), 'npm ci');
+  assert.equal(runOf(verifySteps[3] as YamlMap), 'bash deploy/ci/seals-verify.sh');
+  assert.deepEqual(scriptsOf(verifySteps), ['seals-verify.sh']);
+  const verify = scriptText('seals-verify.sh');
+  assert.ok(verify.includes('bash .github/scripts/seals-prepare.sh'), 'push: o mesmo preparo do job seals do ci.yml');
+  assert.ok(verify.includes('npm run --silent link-audit:seals-check -- "$@" | tee -a "$GITHUB_STEP_SUMMARY"'), 'o mesmo comando da P9.2');
+  assert.ok(verify.includes('seals_check --tree "$env" --modes'), 'o modo árvore por ambiente');
+  assert.match(verify, /readonly ALLOWED_MATRICES=' \[\] \["homologacao"\] \["producao"\] \["homologacao","producao"\] '/);
 });
 
 test('P9-W11 NOT_MAIN_HEAD (cabeça da main pela API, só leitura) no início, antes do checkout e do build, e de novo imediatamente antes do deploy por SSH, com o mesmo texto; CI verde conferido primeiro', () => {
@@ -216,10 +338,12 @@ test('P9-W11 NOT_MAIN_HEAD (cabeça da main pela API, só leitura) no início, a
   for (const id of ['ci', 'head', 'head2']) assert.deepEqual(stepById(id).env, { GH_TOKEN: '${{ github.token }}' }, `${id}: só o token do job (leitura)`);
 });
 
-test('P9.4 os passos com script chamam deploy/ci/<script>.sh existente; todo script de deploy/ci/ é usado; scripts com bash estrito e sem valor por argumento', () => {
-  const invoked = steps.map(runOf).flatMap((run) => [...run.matchAll(/^bash deploy\/ci\/([a-z-]+\.sh)(?: (?:upload|deploy))?$/gm)].map((m) => m[1] ?? ''));
+test('P9.4 os passos com script chamam deploy/ci/<script>.sh existente; todo script de deploy/ci/ é usado; scripts com bash estrito e sem valor por argumento (só os literais fixos de verbo e papel)', () => {
+  const invoked = allSteps().map(runOf).flatMap((run) => [...run.matchAll(/^bash deploy\/ci\/([a-z-]+\.sh)(?: (?:upload|deploy|seals))?$/gm)].map((m) => m[1] ?? ''));
   assert.deepEqual([...new Set(invoked)].sort(), CI_SCRIPTS.filter((name) => name !== 'lib.sh'));
   assert.deepEqual(steps.filter((step) => runOf(step).includes('receiver-call.sh')).map((step) => runOf(step)), ['bash deploy/ci/receiver-call.sh upload', 'bash deploy/ci/receiver-call.sh deploy']);
+  assert.deepEqual(allSteps().filter((step) => runOf(step).includes('ssh-setup.sh')).map((step) => runOf(step)), ['bash deploy/ci/ssh-setup.sh deploy', 'bash deploy/ci/ssh-setup.sh seals']);
+  for (const step of allSteps()) assert.ok(!/^bash deploy\/ci\//m.test(runOf(step)) || /^bash deploy\/ci\/[a-z-]+\.sh(?: (?:upload|deploy|seals))?$/.test(runOf(step)), `${String(step.name)}: script chamado sem argumento variável`);
   for (const name of CI_SCRIPTS.filter((item) => item !== 'lib.sh')) {
     const text = scriptText(name);
     assert.match(text, /^#!\/usr\/bin\/env bash\n/, `${name}: bash`);

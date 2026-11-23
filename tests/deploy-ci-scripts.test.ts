@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { gunzipSync } from 'node:zlib';
+import { assertNoLeak, assertRefused, baseEnv, calls, makeSandbox, outputs, runScript, setScenario, TRUST_LIST, type FakeResponse, type FakeRule, type RunResult, type Sandbox, type Scenario } from './helpers/deploy-ci-sandbox';
 import { isYamlMap, parseYamlSubset } from './helpers/yaml-subset';
 
 /*
@@ -15,9 +15,7 @@ import { isYamlMap, parseYamlSubset } from './helpers/yaml-subset';
  * chama Docker ou SSH reais, nem lê segredo: os valores são sentinelas fictícias, e cada teste confere que elas não vazam para a saída.
  */
 const ROOT = path.join(__dirname, '..');
-const CI_DIR = path.join(ROOT, 'deploy', 'ci');
 const WORKFLOW = parseYamlSubset(fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'deploy.yml'), 'utf8'));
-const FAKES = ['docker', 'ssh', 'curl', 'git', 'gh', 'sleep', 'date'] as const;
 
 const SHA = '0123456789abcdef0123456789abcdef01234567';
 const OTHER_SHA = 'fedcba9876543210fedcba9876543210fedcba98';
@@ -29,7 +27,6 @@ const ANON_SENTINEL = 'anon-sentinela-de-teste';
 const PEM_LABEL = ['OPENSSH', 'PRIVATE', 'KEY'].join(' ');
 const KEY_SENTINEL = `-----BEGIN ${PEM_LABEL}-----\nsentinela-chave-falsa\n-----END ${PEM_LABEL}-----`;
 const KNOWN_HOSTS_LINE = `${HOST_SENTINEL} ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeFakeFakeFakeFakeFakeFakeFakeFakeFake`;
-const TRUST_LIST = 'ensaio-a1b2:QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2:active\n';
 const sha256 = (data: string | Buffer): string => createHash('sha256').update(data).digest('hex');
 const HEX64_A = 'a'.repeat(64);
 const IMAGE_WEB = `sha256:${'1'.repeat(64)}`;
@@ -61,137 +58,6 @@ const EXPECTED_SSH_CONFIG = (sshDir: string, port: string, user: string): string
 ].join('\n');
 const SSH_SETUP_ENV = { GMN_AMB: 'producao', GMN_SSH_HOST: HOST_SENTINEL, GMN_DEPLOY_SSH_KEY: KEY_SENTINEL, GMN_SSH_KNOWN_HOSTS: KNOWN_HOSTS_LINE };
 
-interface FakeResponse {
-  readonly stdout?: string;
-  readonly stderr?: string;
-  readonly rc?: number;
-}
-interface FakeRule {
-  readonly match?: readonly string[];
-  /** Trechos que o stdin tem de conter (só para comandos em `readStdin`). */
-  readonly matchStdin?: readonly string[];
-  readonly responses: readonly FakeResponse[];
-}
-interface Scenario {
-  readonly commands?: Readonly<Record<string, readonly FakeRule[]>>;
-  readonly readStdin?: readonly string[];
-  readonly recordEnv?: readonly string[];
-}
-interface FakeCall {
-  readonly argv: string[];
-  readonly env: Record<string, string>;
-  readonly stdinSha256?: string;
-  readonly stdinBytes?: number;
-}
-interface RunResult {
-  readonly status: number | null;
-  readonly stdout: string;
-  readonly stderr: string;
-}
-interface Sandbox {
-  readonly root: string;
-  readonly fakeDir: string;
-  readonly runnerTemp: string;
-  readonly sshDir: string;
-  readonly bundleFile: string;
-  readonly outputFile: string;
-  readonly summaryFile: string;
-}
-
-/** Comando falso: registra argv, as variáveis pedidas e o sha256 do stdin; responde pela primeira regra cujo `match` casa o argv. */
-const FAKE_IMPL = `'use strict';
-const fs = require('node:fs');
-const crypto = require('node:crypto');
-const path = require('node:path');
-const name = process.argv[2];
-const argv = process.argv.slice(3);
-const dir = process.env.FAKE_DIR;
-const scenario = JSON.parse(fs.readFileSync(path.join(dir, 'scenario.json'), 'utf8'));
-const entry = { argv, env: {} };
-for (const key of scenario.recordEnv || []) if (process.env[key] !== undefined) entry.env[key] = process.env[key];
-let stdinText = '';
-if ((scenario.readStdin || []).includes(name)) {
-  const data = fs.readFileSync(0);
-  stdinText = data.toString('utf8');
-  entry.stdinBytes = data.length;
-  entry.stdinSha256 = crypto.createHash('sha256').update(data).digest('hex');
-}
-fs.appendFileSync(path.join(dir, name + '.calls.jsonl'), JSON.stringify(entry) + '\\n');
-const rules = (scenario.commands || {})[name] || [];
-const index = rules.findIndex((rule) => (rule.match || []).every((m) => argv.some((a) => a.includes(m))) && (rule.matchStdin || []).every((m) => stdinText.includes(m)));
-if (index >= 0) {
-  const counter = path.join(dir, name + '.' + index + '.count');
-  const n = fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) : 0;
-  fs.writeFileSync(counter, String(n + 1));
-  const responses = rules[index].responses;
-  const response = responses[Math.min(n, responses.length - 1)];
-  if (response.stdout) process.stdout.write(response.stdout);
-  if (response.stderr) process.stderr.write(response.stderr);
-  process.exitCode = response.rc || 0;
-}
-`;
-
-function makeSandbox(t: { after: (fn: () => void) => void }, scenario: Scenario = {}): Sandbox {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gmn-deploy-ci-'));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const ciDir = path.join(root, 'deploy', 'ci');
-  fs.mkdirSync(ciDir, { recursive: true });
-  for (const name of fs.readdirSync(CI_DIR)) fs.copyFileSync(path.join(CI_DIR, name), path.join(ciDir, name));
-  fs.mkdirSync(path.join(root, 'deploy', 'hostinger'), { recursive: true });
-  // a impressão canônica do Supabase (revisão do PR #70), a mesma do receptor e do runbook
-  fs.copyFileSync(path.join(ROOT, 'deploy', 'hostinger', 'supabase-fp12.sh'), path.join(root, 'deploy', 'hostinger', 'supabase-fp12.sh'));
-  fs.writeFileSync(path.join(root, 'deploy', 'hostinger', 'stack.yml'), 'services: {}\n');
-  fs.writeFileSync(path.join(root, 'deploy', 'hostinger', 'stack-hml.yml'), 'services: {}\nsecrets: {}\n');
-  for (const amb of ['producao', 'homologacao']) {
-    fs.mkdirSync(path.join(root, 'link-audit-seals', amb), { recursive: true });
-    fs.writeFileSync(path.join(root, 'link-audit-seals', amb, 'trust-keys.txt'), amb === 'homologacao' ? TRUST_LIST : '');
-  }
-  const fakeDir = path.join(root, 'fake');
-  const bin = path.join(fakeDir, 'bin');
-  fs.mkdirSync(bin, { recursive: true });
-  fs.writeFileSync(path.join(fakeDir, 'impl.cjs'), FAKE_IMPL);
-  for (const name of FAKES) {
-    fs.writeFileSync(path.join(bin, name), `#!/bin/sh\nexec "${process.execPath}" "${path.join(fakeDir, 'impl.cjs')}" ${name} "$@"\n`, { mode: 0o755 });
-  }
-  const runnerTemp = path.join(root, 'runner-temp');
-  fs.mkdirSync(runnerTemp);
-  const sandbox: Sandbox = {
-    root,
-    fakeDir,
-    runnerTemp,
-    sshDir: path.join(runnerTemp, 'gmn-ssh'),
-    bundleFile: path.join(runnerTemp, 'gmn-bundle', 'gmn-images.tar.gz'),
-    outputFile: path.join(root, 'github-output'),
-    summaryFile: path.join(root, 'step-summary.md'),
-  };
-  setScenario(sandbox, scenario);
-  return sandbox;
-}
-
-function setScenario(sandbox: Sandbox, scenario: Scenario): void {
-  fs.writeFileSync(path.join(sandbox.fakeDir, 'scenario.json'), JSON.stringify(scenario));
-  for (const name of fs.readdirSync(sandbox.fakeDir)) if (/\.(calls\.jsonl|count)$/.test(name)) fs.rmSync(path.join(sandbox.fakeDir, name));
-  fs.rmSync(sandbox.outputFile, { force: true });
-}
-
-function baseEnv(sandbox: Sandbox, env: Record<string, string>): NodeJS.ProcessEnv {
-  const vars: Record<string, string> = {
-    PATH: `${path.join(sandbox.fakeDir, 'bin')}:/usr/bin:/bin`,
-    LC_ALL: 'C',
-    FAKE_DIR: sandbox.fakeDir,
-    RUNNER_TEMP: sandbox.runnerTemp,
-    GITHUB_OUTPUT: sandbox.outputFile,
-    GITHUB_STEP_SUMMARY: sandbox.summaryFile,
-    ...env,
-  };
-  return vars as unknown as NodeJS.ProcessEnv;
-}
-
-function runScript(sandbox: Sandbox, script: string, args: readonly string[], env: Record<string, string>): RunResult {
-  const result = spawnSync('bash', [path.join(sandbox.root, 'deploy', 'ci', script), ...args], { cwd: sandbox.root, env: baseEnv(sandbox, env), encoding: 'utf8' });
-  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
-}
-
 /** O texto `run:` de um passo do workflow, executado como o Actions faz com `shell: bash` (bash -eo pipefail). */
 function inlineRun(stepId: string): string {
   assert.ok(isYamlMap(WORKFLOW) && isYamlMap(WORKFLOW.jobs) && isYamlMap(WORKFLOW.jobs.deploy));
@@ -208,26 +74,6 @@ function runInline(sandbox: Sandbox, stepId: string, env: Record<string, string>
   const result = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', file], { cwd: sandbox.root, env: baseEnv(sandbox, env), encoding: 'utf8' });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
-
-function calls(sandbox: Sandbox, name: string): FakeCall[] {
-  const file = path.join(sandbox.fakeDir, `${name}.calls.jsonl`);
-  if (!fs.existsSync(file)) return [];
-  return fs.readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as FakeCall);
-}
-
-function outputs(sandbox: Sandbox): Record<string, string> {
-  if (!fs.existsSync(sandbox.outputFile)) return {};
-  return Object.fromEntries(fs.readFileSync(sandbox.outputFile, 'utf8').trim().split('\n').map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
-}
-
-const assertNoLeak = (result: RunResult, ...sentinels: string[]): void => {
-  for (const sentinel of sentinels) assert.ok(!`${result.stdout}\n${result.stderr}`.includes(sentinel), `vazou para a saída: ${sentinel.slice(0, 24)}`);
-};
-const assertRefused = (sandbox: Sandbox, result: RunResult, code: string, detail?: string): void => {
-  assert.equal(result.status, 1, `saída 1 (${result.stderr.trim()})`);
-  assert.match(result.stderr, new RegExp(`^ERRO ${code}${detail === undefined ? '' : ` ${detail}`}$`, 'm'));
-  assert.equal(outputs(sandbox).code, code, 'código na saída do passo (para o resumo)');
-};
 
 /* ------------------------------------------------------------------------------------------------ build, pacote e hashes */
 
@@ -338,7 +184,7 @@ test('P9.4 hashes declarados: stack, sobreposição só em homologação ("-" em
 
 test('P9-W07 P9-W08 chave: escrita em $RUNNER_TEMP/gmn-ssh (0700) com arquivos 0600 e a configuração privada do ssh (apelido fixo, opções fixas, usuário do ambiente, porta 22 por padrão); nada impresso', (t) => {
   const sandbox = makeSandbox(t);
-  const result = runScript(sandbox, 'ssh-setup.sh', [], SSH_SETUP_ENV);
+  const result = runScript(sandbox, 'ssh-setup.sh', ['deploy'], SSH_SETUP_ENV);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(fs.statSync(sandbox.sshDir).mode & 0o777, 0o700);
   for (const name of ['id_deploy', 'known_hosts', 'config']) assert.equal(fs.statSync(path.join(sandbox.sshDir, name)).mode & 0o777, 0o600);
@@ -348,7 +194,7 @@ test('P9-W07 P9-W08 chave: escrita em $RUNNER_TEMP/gmn-ssh (0700) com arquivos 0
   assertNoLeak(result, 'sentinela-chave-falsa', HOST_SENTINEL);
 
   setScenario(sandbox, {});
-  assert.equal(runScript(sandbox, 'ssh-setup.sh', [], { ...SSH_SETUP_ENV, GMN_AMB: 'homologacao', GMN_SSH_PORT: '2222' }).status, 0);
+  assert.equal(runScript(sandbox, 'ssh-setup.sh', ['deploy'], { ...SSH_SETUP_ENV, GMN_AMB: 'homologacao', GMN_SSH_PORT: '2222' }).status, 0);
   assert.equal(fs.readFileSync(path.join(sandbox.sshDir, 'config'), 'utf8'), EXPECTED_SSH_CONFIG(sandbox.sshDir, '2222', 'gmn-hml-deploy'), 'homologação: usuário próprio, porta do segredo');
 });
 
@@ -371,7 +217,7 @@ test('P9-W07 chave: host ou porta fora do padrão (inclusive opção disfarçada
   ];
   for (const [extra, code, detail] of cases) {
     setScenario(sandbox, {});
-    const result = runScript(sandbox, 'ssh-setup.sh', [], { ...SSH_SETUP_ENV, ...extra });
+    const result = runScript(sandbox, 'ssh-setup.sh', ['deploy'], { ...SSH_SETUP_ENV, ...extra });
     assertRefused(sandbox, result, code, detail);
     assertNoLeak(result, 'sentinela-chave-falsa', HOST_SENTINEL);
     assert.ok(!fs.existsSync(sandbox.sshDir), 'nada escrito');

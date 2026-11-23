@@ -1,16 +1,18 @@
 name: deploy
 
-# Deploy pelo CI (P-9). Spec docs/specs/ci-deploy-and-seal-delivery.md §5.5 e §5.5.1; ADR-0004; ameaças
-# docs/security/threats/deploy-pelo-ci.md (DC-01 a DC-22); runbook do responsável deploy/hostinger/RUNBOOK-DEPLOY-PELO-CI.md.
+# Deploy pelo CI e entrega dos manifestos selados (P-9). Spec docs/specs/ci-deploy-and-seal-delivery.md §5.5, §5.5.1 e §5.5.2; ADR-0004;
+# ameaças docs/security/threats/deploy-pelo-ci.md (DC-01 a DC-22); runbook do responsável deploy/hostinger/RUNBOOK-DEPLOY-PELO-CI.md.
 #
-# P9.4: só o job `deploy`, disparado à mão na `main` e aprovado pelo responsável no ambiente protegido (`homologacao` ou `producao`).
-# Os jobs `seals-verify` e `seals-deliver` e o gatilho `push` no caminho dos manifestos (`link-audit-seals/*/seals/**`) entram na
-# P9.5, neste mesmo arquivo. Até lá, um dispatch com `acao = entregar-selos` não roda nenhum job.
+# P9.4: o job `deploy`, disparado à mão na `main` e aprovado pelo responsável no ambiente protegido (`homologacao` ou `producao`).
+# P9.5: os jobs `seals-verify` (sem segredo e sem ambiente: o mesmo seals-check do ci.yml sobre o commit, e a matriz de ambientes) e
+# `seals-deliver` (um por ambiente com arquivos, no ambiente protegido: só git, sha256sum e ssh, um `put` por arquivo, para no primeiro erro),
+# no push na `main` que toca o caminho dos manifestos (`link-audit-seals/*/seals/**`) ou por dispatch com `acao = entregar-selos`.
 #
 # Regras (tests/deploy-workflow.test.ts): permissões declaradas por job, só de leitura; segredos só de AMBIENTE, no `env:` do passo
 # que os usa; nenhuma expressão `${{ }}` dentro de `run:`; sem rastreamento do shell nem ssh verboso; actions só as do ci.yml, fixadas
-# por SHA; nada de artefato, registry, login ou cache. A lógica fica em deploy/ci/ (tests/deploy-ci-scripts.test.ts), menos as duas
-# conferências que precisam rodar ANTES do checkout (CI verde e cabeça da `main`), escritas aqui e testadas pelo mesmo texto.
+# por SHA; nada de artefato, registry, login ou cache. A lógica fica em deploy/ci/ (tests/deploy-ci-scripts.test.ts e
+# tests/deploy-seals-delivery.test.ts), menos as conferências que rodam fora de um script (CI verde e cabeça da `main`), escritas aqui e
+# testadas pelo mesmo texto.
 on:
   workflow_dispatch:
     inputs:
@@ -20,11 +22,14 @@ on:
         required: true
         options: [homologacao, producao]
       acao:
-        description: deploy (P9.4) ou entregar-selos (P9.5, ainda sem job)
+        description: deploy (job deploy) ou entregar-selos (jobs seals-verify e seals-deliver)
         type: choice
         required: true
         default: deploy
         options: [deploy, entregar-selos]
+  push:
+    branches: [main]
+    paths: ['link-audit-seals/*/seals/**']
 
 permissions:
   contents: read
@@ -113,7 +118,7 @@ jobs:
           GMN_SSH_KNOWN_HOSTS: ${{ secrets.GMN_SSH_KNOWN_HOSTS }}
           GMN_SSH_HOST: ${{ secrets.GMN_SSH_HOST }}
           GMN_SSH_PORT: ${{ secrets.GMN_SSH_PORT }}
-        run: bash deploy/ci/ssh-setup.sh
+        run: bash deploy/ci/ssh-setup.sh deploy
 
       - name: Receptor - upload (pacote no stdin)
         id: upload
@@ -205,3 +210,146 @@ jobs:
             echo
             echo "Recusado antes do checkout: \`$code\` (execução \`$GITHUB_RUN_ID\`, commit \`$GMN_SHA\`). Nada foi construído nem enviado."
           } >>"$GITHUB_STEP_SUMMARY"
+
+  # P9.5 (spec §5.5, tabela dos jobs): sem ambiente e sem segredo. O código que verifica é o do próprio commit, que já está na `main` (revisado
+  # e mesclado com o check `seals` verde); a lógica fica em deploy/ci/seals-verify.sh e no comando da P9.2.
+  seals-verify:
+    name: seals-verify
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.acao == 'entregar-selos'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      ambientes: ${{ steps.verify.outputs.ambientes }}
+    steps:
+      - name: Checkout do SHA (histórico completo, sem credencial persistida)
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Node 22 (sem cache)
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+
+      - name: Install (dependências do commit, sem segredo)
+        id: install
+        run: npm ci
+
+      - name: seals-check sobre o commit e matriz de ambientes (S-01 a S-14 no push; S-03 a S-08 em toda a árvore do ambiente)
+        id: verify
+        env:
+          GMN_SHA: ${{ github.sha }}
+          GMN_EVENT: ${{ github.event_name }}
+          GMN_BEFORE: ${{ github.event.before }}
+          GMN_DISPATCH_AMB: ${{ inputs.ambiente }}
+        run: bash deploy/ci/seals-verify.sh
+
+  # P9.5 (spec §5.5.2): um job por ambiente da matriz (só os nomes do conjunto fechado, conferidos também aqui), no ambiente protegido, com a
+  # chave de manifestos. Sem npm, node ou código do repositório (P9-W09): só git, sha256sum e ssh. Antes do primeiro `put`, o commit ainda
+  # tem de ser a cabeça da `main` (o mesmo texto do deploy; spec omissa, decisão da P9.5).
+  seals-deliver:
+    name: seals-deliver (${{ matrix.ambiente }})
+    needs: seals-verify
+    if: github.ref == 'refs/heads/main' && needs.seals-verify.result == 'success' && (needs.seals-verify.outputs.ambientes == '["homologacao"]' || needs.seals-verify.outputs.ambientes == '["producao"]' || needs.seals-verify.outputs.ambientes == '["homologacao","producao"]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        ambiente: ${{ fromJSON(needs.seals-verify.outputs.ambientes) }}
+    environment: ${{ matrix.ambiente }}
+    permissions:
+      contents: read
+    # Um grupo por operação e ambiente (nunca o do deploy); o mais novo substitui o pendente (a entrega manda todos os arquivos).
+    concurrency:
+      group: gmn-${{ matrix.ambiente }}-seals
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+    env:
+      GMN_AMB: ${{ matrix.ambiente }}
+      GMN_SHA: ${{ github.sha }}
+    steps:
+      - name: Checkout do SHA (sem credencial persistida)
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Arquivos a entregar em ordem e sha256 da lista de confiança (git e sha256sum)
+        id: files
+        run: bash deploy/ci/seals-files.sh
+
+      - name: Chave de manifestos, known_hosts e configuração privada do ssh
+        id: ssh
+        env:
+          GMN_SEALS_SSH_KEY: ${{ secrets.GMN_SEALS_SSH_KEY }}
+          GMN_SSH_KNOWN_HOSTS: ${{ secrets.GMN_SSH_KNOWN_HOSTS }}
+          GMN_SSH_HOST: ${{ secrets.GMN_SSH_HOST }}
+          GMN_SSH_PORT: ${{ secrets.GMN_SSH_PORT }}
+        run: bash deploy/ci/ssh-setup.sh seals
+
+      - name: Commit ainda é a cabeça da main (NOT_MAIN_HEAD, imediatamente antes do primeiro put)
+        id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          fail() { printf 'code=%s\n' "$1" >>"$GITHUB_OUTPUT"; printf 'ERRO %s\n' "$1" >&2; exit 1; }
+          [[ "$GMN_SHA" =~ ^[0-9a-f]{40}$ ]] || fail INPUT_INVALID
+          [[ "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail INPUT_INVALID
+          # Cabeça atual da main pela API, só leitura (contents: read); o gh autentica com o GH_TOKEN do ambiente, nada é montado.
+          head="$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" || fail NOT_MAIN_HEAD
+          [ "$head" = "$GMN_SHA" ] || fail NOT_MAIN_HEAD
+          echo "o commit ainda é a cabeça da main"
+
+      - name: Receptor de manifestos - um put por arquivo, para no primeiro erro
+        id: deliver
+        env:
+          GMN_TRUST_SHA256: ${{ steps.files.outputs.trust_sha256 }}
+        run: bash deploy/ci/seals-deliver.sh
+
+      - name: Limpeza da chave
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/gmn-ssh"
+
+      - name: Resumo da entrega (RC-08)
+        if: always() && steps.checkout.outcome == 'success'
+        env:
+          GMN_O_CHECKOUT: ${{ steps.checkout.outcome }}
+          GMN_O_FILES: ${{ steps.files.outcome }}
+          GMN_E_FILES: ${{ steps.files.outputs.code }}
+          GMN_O_SSH: ${{ steps.ssh.outcome }}
+          GMN_E_SSH: ${{ steps.ssh.outputs.code }}
+          GMN_O_HEAD: ${{ steps.head.outcome }}
+          GMN_E_HEAD: ${{ steps.head.outputs.code }}
+          GMN_O_DELIVER: ${{ steps.deliver.outcome }}
+          GMN_E_DELIVER: ${{ steps.deliver.outputs.code }}
+          GMN_V_TRUST_SHA256: ${{ steps.files.outputs.trust_sha256 }}
+        run: bash deploy/ci/seals-summary.sh
+
+      - name: Resumo da entrega (checkout falhou)
+        if: always() && steps.checkout.outcome != 'success'
+        run: |
+          set -euo pipefail
+          amb=-
+          case "$GMN_AMB" in homologacao | producao) amb="$GMN_AMB" ;; esac
+          {
+            echo "### Entrega de manifestos ($amb)"
+            echo
+            echo "Checkout falhou (execução \`$GITHUB_RUN_ID\`, commit \`$GMN_SHA\`): nada foi enviado."
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Limpeza da lista de arquivos
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/gmn-seals"

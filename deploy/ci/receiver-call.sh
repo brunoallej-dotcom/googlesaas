@@ -5,8 +5,8 @@
 #   deploy <sha40> <bundle-sha256> <stack-sha256> <overlay-sha256|-> <trust-sha256> <supabase-fp12>   (lista no stdin)
 # Uso: deploy/ci/receiver-call.sh upload|deploy. Ambiente: GMN_AMB, GMN_SHA, GMN_BUNDLE_SHA256 e, no upload, GMN_BUNDLE_BYTES; no
 # deploy, GMN_STACK_SHA256, GMN_OVERLAY_SHA256, GMN_TRUST_SHA256 e GMN_BUILD_SUPABASE_URL (segredo; só a impressão de 12 hex vai ao
-# receptor, nunca impressa). Host, porta, usuário e opções fixas vêm da configuração privada escrita no passo 7 (ssh-setup.sh):
-# `ssh -F <config> gmn-receiver`, nada disso na linha de comando.
+# receptor, nunca impressa). Host, porta, usuário e opções fixas vêm da configuração privada escrita no passo 7 (ssh-setup.sh deploy):
+# `ssh -F <config> gmn-receiver` (a chamada única de lib.sh, gmn_receiver_ssh), nada disso na linha de comando.
 # Saída pública: a linha `OK …` do receptor ou uma linha `ERRO <CÓDIGO>[ <DETALHE>]`. O stderr do ssh NUNCA vai ao log (as mensagens
 # dele repetem host e endereço). O erro do receptor também não passa adiante como veio: o código tem de ser um do conjunto FECHADO do
 # §5.8 (com a saída numérica correspondente), o detalhe tem de vir da lista fechada daquele código, e a linha pública é remontada aqui.
@@ -15,7 +15,6 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 . deploy/ci/lib.sh
 
-readonly SSH_CONNECT_FAILED_RC=255
 readonly MAX_COMMAND_BYTES=512
 readonly PUBLIC_ERROR_LINE='^ERRO E_[A-Z0-9_]+( [A-Za-z0-9_-]{1,64})?$'
 # Códigos do receptor de deploy e os comuns aos dois receptores (spec §5.8), com a saída numérica de cada um.
@@ -60,9 +59,8 @@ receiver_error() {
 verb="${1:-}"
 gmn_require_amb
 gmn_require_sha
-gmn_regular_file "$GMN_CI_SSH_DIR/id_deploy" || gmn_fail SSH_CONFIG_MISSING id_deploy
-gmn_regular_file "$GMN_CI_SSH_DIR/known_hosts" || gmn_fail SSH_CONFIG_MISSING known_hosts
-gmn_regular_file "$GMN_CI_SSH_CONFIG" || gmn_fail SSH_CONFIG_MISSING config
+gmn_ssh_role deploy
+gmn_require_ssh_files
 gmn_is_hex "${GMN_BUNDLE_SHA256:-}" 64 || gmn_fail INPUT_INVALID GMN_BUNDLE_SHA256
 
 prepare_upload() {
@@ -106,17 +104,14 @@ case "$verb" in
 esac
 [ "${#remote_command}" -le "$MAX_COMMAND_BYTES" ] || gmn_fail INTERNAL command-length
 
-stderr_file="$(mktemp "${RUNNER_TEMP}/gmn-ssh-stderr.XXXXXX")"
-set +e
-response="$(LC_ALL=C ssh -F "$GMN_CI_SSH_CONFIG" -T "$GMN_CI_SSH_ALIAS" "$remote_command" <"$stdin_file" 2>"$stderr_file")"
-rc=$?
-set -e
-public_error="$(receiver_error "$rc" "$stderr_file")"
-ssh_hint=OTHER
-if grep -q 'Host key verification failed' "$stderr_file"; then ssh_hint=HOST_KEY; elif grep -q 'Permission denied' "$stderr_file"; then ssh_hint=AUTH; fi
-rm -f -- "$stderr_file"
+gmn_receiver_ssh "$remote_command" "$stdin_file"
+rc="$GMN_SSH_RC"
+response="$GMN_SSH_RESPONSE"
+public_error="$(receiver_error "$rc" "$GMN_SSH_STDERR")"
+ssh_hint="$(gmn_ssh_hint "$GMN_SSH_STDERR")"
+rm -f -- "$GMN_SSH_STDERR"
 
-if [ "$rc" -eq "$SSH_CONNECT_FAILED_RC" ]; then gmn_fail SSH_CONNECT_FAILED "$ssh_hint"; fi
+if [ "$rc" -eq "$GMN_CI_SSH_CONNECT_FAILED_RC" ]; then gmn_fail SSH_CONNECT_FAILED "$ssh_hint"; fi
 if [ "$rc" -ne 0 ]; then
   [ -n "$public_error" ] || gmn_fail RECEIVER_UNKNOWN_ERROR "EXIT_${rc}"
   read -r code detail <<<"$public_error"
