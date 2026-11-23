@@ -176,10 +176,17 @@ não guardam estado.
 
 ### DC-04 [MÉDIA] Adulteração — manifesto forjado ou alterado no PR
 
-- **Vetor**: PR com manifesto não assinado, de outra auditoria, fora de ordem ou com bytes reformatados.
+- **Vetor**: PR com manifesto não assinado, de outra auditoria, fora de ordem ou com bytes reformatados. Também (revisão do PR #68): o
+  PR troca o próprio verificador (o preparo, o núcleo do canal ou o comando) para que ele aprove o que não devia, ou esconde do diff um
+  gitlink sob `link-audit-seals/` com um `.gitmodules` de `ignore = all`.
 - **Mitigação**: verificador `v2` real com a lista do commit e cadeia completa (P9-S08); forma canônica (P9-S06); nome = corpo
-  (P9-S07); o conferente compara o `sha256sum` do resumo com o livro.
-- **Status**: aberto (P9.2).
+  (P9-S07); o conferente compara o `sha256sum` do resumo com o livro. O job `seals` roda o preparo, o `npm ci` e o comando a partir
+  da revisão **base** (uma `git worktree` em `$RUNNER_TEMP`); o PR é só dado. Só enquanto a base não tem o verificador (até a P9.2 estar
+  na `main`) ele usa o do PR, com o aviso fixo `SEALS_BOOTSTRAP` no resumo. O diff do preparo usa `--ignore-submodules=none` (o
+  gitlink aparece com modo `160000` e é recusado, `SEALS_BAD_MODE`). Como o workflow em si vem do PR no `pull_request`, o CODEOWNERS
+  do responsável (P9-O02) cobre `.github/workflows/ci.yml`, `.github/scripts/seals-prepare.sh`, `src/lib/link-audit-seals-channel/**`
+  e `scripts/link-audit-seals-check.ts`, além do check obrigatório.
+- **Status**: mitigado no código (P9.2); o CODEOWNERS e o check obrigatório são ações do responsável (P9-O02, H-10).
 
 ### DC-09 [MÉDIA] Informação — `auditId` ou metadados revelam o cliente
 
@@ -274,8 +281,11 @@ não guardam estado.
 
 - **Vetor**: arquivos enormes, JSON profundo, nomes estranhos.
 - **Mitigação**: teto de tamanho antes de ler, teto de quantidade, regex ancorada sem retrocesso catastrófico, porta de texto
-  estrita do verificador antes do `JSON.parse`; o job não tem segredo e tem `timeout-minutes`.
-- **Status**: aberto (P9.2).
+  estrita do verificador antes do `JSON.parse`; o job não tem segredo e tem `timeout-minutes`. Desde a revisão do PR #68: um teto
+  único de leitura por execução (64 MiB sobre os arquivos novos, a releitura das cadeias, as cabeças dos fechos e as listas;
+  esgotado ⇒ `SEALS_TOO_MANY`), o tamanho da lista do commit-base conferido antes de ser lida, e uma falha inesperada numa etapa não
+  apaga as recusas já coletadas (spec §5.4, "Implementação").
+- **Status**: mitigado no código (P9.2).
 
 ### DC-21 [ALTA] Adulteração — execução aprovada antiga reverte a lista de confiança (e a aplicação)
 
