@@ -86,22 +86,36 @@ não prova (decisão da W4.6); o controle é esta conferência.
 
 ## 3. Linha exata de execução do `sign` (spec §5.5.1, notas da W4.6)
 
+Primeiro, a conferência humana do caminho (o `namei` só mostra; quem decide é o custodiante, §2):
+
 ```
 namei -m <PASTA_DO_ARTEFATO>/link-audit-sign.cjs
-( cd <PASTA_DO_ARTEFATO> && sha256sum -c p1-sign-artifact.sha256 ) && \
-env -i <NODE22> --disable-sigusr1 --permission \
-  --allow-fs-read=<PASTA_DO_ARTEFATO> --allow-fs-read=<PASTA_DAS_ENTRADAS> \
-  --allow-fs-read=<PASTA_DE_MANIFESTOS> --allow-fs-write=<PASTA_DE_MANIFESTOS> \
-  --allow-fs-read=<PASTA_DA_CHAVE> <um --allow-fs-read=<pasta>/.git para CADA pasta acima de <PASTA_DA_CHAVE>, até /.git> \
-  --allow-fs-read=/tmp --allow-fs-read=/var/tmp --allow-fs-read=/dev/shm \
-  --allow-fs-read=/proc/self/cmdline --allow-fs-read=/proc/self/environ --allow-fs-read=/proc/self/fd \
-  <PASTA_DO_ARTEFATO>/link-audit-sign.cjs sign \
-  --audit <AUDITORIA> --package <PASTA_DAS_ENTRADAS>/<PACOTE>.json --approval <PASTA_DAS_ENTRADAS>/approval.json \
-  --dossier <PASTA_DAS_ENTRADAS>/<DOSSIE_PARTE_A> --risk-acceptance <PASTA_DAS_ENTRADAS>/<ACEITE_DE_RISCO> \
-  --seals-dir <PASTA_DE_MANIFESTOS> --expect-seq <N> [--first] \
-  --key-id <KEY_ID> --key-source file:<PASTA_DA_CHAVE>/<ARQUIVO_DA_CHAVE> --custodian CUST-01 \
-  --trust-keys '<LISTA_DE_CHAVES_COM_ESTADO>' --json > <PASTA_DE_SAIDA>/<AUDITORIA>-seal-<NNNN>.json
 ```
+
+Depois, a execução, num subshell que para no primeiro erro, sem rastreamento e sem sobrescrever a saída:
+
+```
+( set -euo pipefail; set +x; set -o noclobber
+  SAIDA=<PASTA_DE_SAIDA>/<AUDITORIA>-seal-<NNNN>.json
+  test ! -e "$SAIDA" || { echo "PARE: a saída já existe; nada foi executado"; exit 1; }
+  ( cd <PASTA_DO_ARTEFATO> && sha256sum -c p1-sign-artifact.sha256 )
+  env -i <NODE22> --disable-sigusr1 --permission \
+    --allow-fs-read=<PASTA_DO_ARTEFATO> --allow-fs-read=<PASTA_DAS_ENTRADAS> \
+    --allow-fs-read=<PASTA_DE_MANIFESTOS> --allow-fs-write=<PASTA_DE_MANIFESTOS> \
+    --allow-fs-read=<PASTA_DA_CHAVE> <um --allow-fs-read=<pasta>/.git para CADA pasta acima de <PASTA_DA_CHAVE>, até /.git> \
+    --allow-fs-read=/tmp --allow-fs-read=/var/tmp --allow-fs-read=/dev/shm \
+    --allow-fs-read=/proc/self/cmdline --allow-fs-read=/proc/self/environ --allow-fs-read=/proc/self/fd \
+    <PASTA_DO_ARTEFATO>/link-audit-sign.cjs sign \
+    --audit <AUDITORIA> --package <PASTA_DAS_ENTRADAS>/<PACOTE>.json --approval <PASTA_DAS_ENTRADAS>/approval.json \
+    --dossier <PASTA_DAS_ENTRADAS>/<DOSSIE_PARTE_A> --risk-acceptance <PASTA_DAS_ENTRADAS>/<ACEITE_DE_RISCO> \
+    --seals-dir <PASTA_DE_MANIFESTOS> --expect-seq <N> [--first] \
+    --key-id <KEY_ID> --key-source file:<PASTA_DA_CHAVE>/<ARQUIVO_DA_CHAVE> --custodian CUST-01 \
+    --trust-keys '<LISTA_DE_CHAVES_COM_ESTADO>' --json > "$SAIDA" )
+echo "código de saída: $?"
+```
+
+O subshell isola o `set -e`: uma recusa encerra só ele, e o `echo` mostra o código de saída do `sign` (ou `1`, se a saída já
+existia ou o `sha256sum -c` falhou). Com `noclobber`, o shell nunca sobrescreve uma saída anterior.
 
 - Opções do `sign`: `src/lib/link-audit-attestation/sign-args.ts:33-34` e `sign-cli.ts:28-35`. `--first` só com
   `--expect-seq 1` (`sign-args.ts:144`). `--risk-acceptance` só quando conferente e custodiante coincidem (hoje, sempre; §8).
@@ -122,20 +136,66 @@ env -i <NODE22> --disable-sigusr1 --permission \
 3. Digita a frase da chave, sem eco, uma vez (errou: rode de novo).
 4. Confere que a pública impressa é a da lista para `<KEY_ID>` (o `sign` já recusa a diferença com `SIGN_KEY_MISMATCH`).
 
-### 3.2 Recibo de assinatura (parte B do dossiê)
+### 3.2 Depois da execução: três casos, conforme o código e a saída
 
-Código de saída `0` e o arquivo começando por `{"ok":true` ⇒ o manifesto foi gravado em
-`<PASTA_DE_MANIFESTOS>/<AUDITORIA>/seal-<NNNN>.json`. Então:
+Os códigos de saída são `0` assinado, `1` uso, `3` recusa e `4` falha inesperada (`sign-cli.ts:102-114`, `:271-293`). Leia
+sempre o código **e** o campo `code` do objeto gravado na saída.
+
+**Caso A — sucesso.** Código `0` e a saída é **um** objeto JSON completo que começa por `{"ok":true` e termina em `}`. O
+manifesto existe em `<PASTA_DE_MANIFESTOS>/<AUDITORIA>/seal-<NNNN>.json`, gravado e confirmado em disco. Então, de novo num
+subshell que para no primeiro erro e nunca sobrescreve um recibo:
 
 ```
-chmod 0444 <PASTA_DE_SAIDA>/<AUDITORIA>-seal-<NNNN>.json
-mv <PASTA_DE_SAIDA>/<AUDITORIA>-seal-<NNNN>.json <PASTA_DE_RECIBOS>/
+( set -euo pipefail; set +x
+  SAIDA=<PASTA_DE_SAIDA>/<AUDITORIA>-seal-<NNNN>.json
+  RECIBO=<PASTA_DE_RECIBOS>/<AUDITORIA>-seal-<NNNN>.json
+  test ! -e "$RECIBO" || { echo "PARE: já existe recibo com esse nome; nada foi movido"; exit 1; }
+  sha256sum <PASTA_DE_MANIFESTOS>/<AUDITORIA>/seal-<NNNN>.json
+  chmod 0444 "$SAIDA"
+  ln "$SAIDA" "$RECIBO"      # link exclusivo: falha se o destino existir (mesmo sistema de arquivos)
+  rm "$SAIDA" )
 ```
 
-O recibo vai para a pasta de recibos **só** no sucesso: o `close-key` recusa a pasta inteira se houver um arquivo que não seja
-recibo válido (`sign-receipts.ts:12-19`, nada é ignorado em silêncio), inclusive oculto, temporário ou `{ok:false}`. Copiar o
-recibo também para o dossiê parte B e registrar a linha no livro. Código `3` (`RECUSADO`) ou `4`: nada foi assinado; apagar a
-saída bruta e seguir o §11.
+Anotar o `sha256sum` do manifesto e o recibo no livro (§2 do livro) e copiar o recibo para o dossiê parte B. O recibo só vai
+para a pasta de recibos neste caso: o `close-key` recusa a pasta inteira se houver um arquivo que não seja recibo válido
+(`sign-receipts.ts:12-19`; nada é ignorado em silêncio), inclusive oculto, temporário ou `{ok:false}`.
+
+**Caso B — recusa ANTES da gravação.** Código `1` (uso) ou código `3` com um destes `code`. Todos saem antes da chamada de
+gravação (`publishSeal`, `sign-run.ts:163`) e nenhum toca a pasta de manifestos:
+
+- barreiras de partida (`sign-cli.ts:276-285`): `SECRET_VIA_ARGV_FORBIDDEN`, `SECRET_VIA_ENV_FORBIDDEN`, `SIGN_RUNTIME_UNSAFE`,
+  `SIGN_ARTIFACT_UNREADABLE`, `SIGN_ARTIFACT_UNSAFE`, `SIGN_KEY_SOURCE_UNSUPPORTED`, `SIGN_RUNTIME_NO_FSYNC`;
+- entradas, cadeia e passos 1–11 (`sign-run.ts:142-153`): `SIGN_INPUT_UNREADABLE`, `SIGN_AUDIT_MISMATCH`, `SIGN_PACKAGE_INVALID`,
+  `SIGN_PACKAGE_MISMATCH`, `SIGN_APPROVAL_INVALID`, `SIGN_INTEGRITY_NOT_OK`, `SIGN_LEGACY_NOT_ATTESTABLE`,
+  `SIGN_CHECK_NOT_EXECUTED`, `SIGN_DOSSIER_MISMATCH`, `SIGN_SEAL_CHAIN_INVALID`, `SIGN_SEQ_MISMATCH`, `SIGN_EVIDENCE_CHANGED`,
+  `SIGN_ROLE_SEPARATION`, `SIGN_CLOCK_REGRESSION`, `SIGN_KEY_NOT_ACTIVE`, `SIGN_CONFIRMATION_FAILED`;
+- chave, assinatura e autoteste (`sign-run.ts:154-162`): `SECRET_PATH_UNSAFE`, `SECRET_NOT_ENCRYPTED`, `SIGN_KEY_UNPROTECTED`,
+  `SIGN_KEY_REJECTED`, `SIGN_KEY_MISMATCH`, `SIGN_TOO_MANY_ENTRIES`, `SIGN_SELFTEST_FAILED`.
+
+Nada foi assinado nem gravado. Anotar o código na linha da sessão do livro, apagar a saída bruta (ela só tem o objeto da
+recusa), corrigir a causa (§11) e rodar de novo.
+
+**Caso C — gravação tentada ou estado desconhecido.** Qualquer um destes:
+
+- código `3` com `SIGN_WRITE_UNCONFIRMED`: o `seal-<NNNN>.json` **foi criado**, mas o `fsync` da pasta ou a remoção do temporário
+  falhou depois do `link()` (`sign-run.ts:88-89`, `:256-258`);
+- código `3` com `SIGN_WRITE_FAILED`: o nome final não foi criado por esta execução, mas pode ter sobrado um temporário
+  `.seal-<NNNN>.json.tmp-<hex>` e a subpasta da auditoria pode ter sido criada (`sign-run.ts:83`, `:85`, `:240-255`);
+- código `3` com `SIGN_SEQ_CONFLICT`: já existia um `seal-<NNNN>.json` de outra execução na cópia da estação (`sign-run.ts:86-87`, `:254`);
+- **qualquer código `4`**: não diz nada sobre o disco. A captura do erro inesperado cobre também a saída do sucesso, que roda
+  depois de `runSign` (`sign-cli.ts:286-292`): pode haver manifesto gravado e confirmado sem recibo na saída;
+- saída vazia, incompleta, com mais de um objeto, ou o processo interrompido (sinal, queda de energia).
+
+Nesses casos:
+
+1. **preservar tudo**: a saída bruta, a cópia da pasta de manifestos, os temporários e o terminal. Nada é apagado nem movido;
+2. **não repetir a assinatura** e **não atualizar a tabela de manifestos do livro**;
+3. conferir, só lendo, o que existe: `ls -la <PASTA_DE_MANIFESTOS>/<AUDITORIA>/` e o `sha256sum` de cada arquivo da subpasta,
+   comparando com o livro (último `seq` e hashes já registrados) e com a saída bruta;
+4. registrar o incidente no livro (§8 do livro): código, o que existe, os hashes e o que foi preservado;
+5. só então decidir, com o responsável, o que fazer (por exemplo: entregar ou não um manifesto que exista, refazer a cópia da
+   pasta a partir do servidor). Um `seal-<NNNN>.json` nunca é apagado; um manifesto sem gravação confirmada nunca é entregue
+   nem recebe recibo; um temporário só é apagado depois do registro (spec §5.5.1 item 4).
 
 ## 4. Chave K1: gerar, cifrar e conferir o perfil (D11, D15.4)
 
@@ -167,15 +227,28 @@ A chave do ensaio **nunca** vira a real, e a real **nunca** entra na pilha de ho
 
 ### 4.3 Geração (mesmos comandos nas duas cerimônias, na estação, sem rede)
 
+Num subshell que para no primeiro erro (inclusive dentro do pipe), sem rastreamento, que exige pasta e arquivo inexistentes e
+nunca sobrescreve:
+
 ```
-umask 077
-mkdir -m 0700 <PASTA_DA_CHAVE>
-openssl genpkey -algorithm ed25519 | \
-  openssl pkcs8 -topk8 -v2 aes-256-cbc -scrypt -scrypt_N 131072 -scrypt_r 8 -scrypt_p 1 \
-  -out <PASTA_DA_CHAVE>/<ARQUIVO_DA_CHAVE>
-chmod 0600 <PASTA_DA_CHAVE>/<ARQUIVO_DA_CHAVE>
+( set -euo pipefail; set +x; set -o noclobber; umask 077
+  PASTA=<PASTA_DA_CHAVE>
+  ARQ="$PASTA/<ARQUIVO_DA_CHAVE>"
+  test ! -e "$PASTA" || { echo "PARE: a pasta da chave já existe; nada foi feito"; exit 1; }
+  mkdir -m 0700 "$PASTA"     # sem -p: falha se a pasta já existir (corrida entre o teste e o mkdir)
+  openssl genpkey -algorithm ed25519 | \
+    openssl pkcs8 -topk8 -v2 aes-256-cbc -scrypt -scrypt_N 131072 -scrypt_r 8 -scrypt_p 1 > "$ARQ"
+  chmod 0600 "$ARQ"
+  stat -c '%a %h %U' "$PASTA" "$ARQ" )
+echo "código de saída: $?"
 ```
 
+- O arquivo é gravado pelo redirecionamento do shell com `noclobber` (nunca pelo `-out` do `openssl`, que sobrescreve um
+  arquivo existente). Com `umask 077`, ele já nasce `0600`; o `chmod` só confirma.
+- Esperado: código `0` e o `stat` mostrando `700 2 <usuário>` para a pasta e `600 1 <usuário>` para o arquivo. Se o bloco abortar
+  depois do `mkdir` (frase digitada diferente nas duas vezes, interrupção), a pasta recém-criada contém no máximo um arquivo
+  incompleto **desta tentativa**: conferir que é mesmo a pasta criada agora (`ls -la`), destruí-la como no §10 e repetir o bloco.
+  Uma pasta de chave que já existia nunca é apagada para "abrir caminho".
 - A chave em claro só passa pelo pipe (memória), nunca por disco. A frase é pedida pelo `openssl pkcs8` no terminal, duas vezes.
   **Nunca** use `-passout` nem `-passin` com valor: ficaria em `ps`, no histórico e em `/proc`.
 - Alternativa PBKDF2 (§4.1): troque `-scrypt -scrypt_N 131072 -scrypt_r 8 -scrypt_p 1` por `-v2prf hmacWithSHA256 -iter 600000`
@@ -208,8 +281,9 @@ cifrada (o `[HEX DUMP]` dos `OCTET STRING`), que não devem ser copiados para lu
 | cifra | `OBJECT :aes-256-cbc` | `OBJECT :aes-256-cbc` |
 
 Um INTEGER a mais logo depois de r/p ou das iterações é o `keyLength` opcional (para AES-256, `:20` = 32 bytes). Qualquer outra
-coisa (outro OID, N menor, r ≠ 8, p ≠ 1, PRF ausente ou SHA-1, outra cifra): **não use a chave**; cifre de novo pelo §4.3 e
-confira outra vez. Registrar no livro só as linhas de OID e de INTEGER.
+coisa (outro OID, N menor, r ≠ 8, p ≠ 1, PRF ausente ou SHA-1, outra cifra): **não use a chave**. Como ela ainda não foi
+registrada na lista, destrua-a (§10) e gere outra pelo §4.3, com a conferência de novo. Registrar no livro só as linhas de OID e
+de INTEGER.
 
 > **Ponto a confirmar no ensaio (W5.3).** Esta fatia não executou os comandos acima: é só documentação, e o ambiente de
 > desenvolvimento bloqueia arquivos de chave, como deve ser. O formato exato das linhas do `asn1parse` (rótulos dos OIDs, forma
@@ -220,6 +294,19 @@ confira outra vez. Registrar no livro só as linhas de OID e de INTEGER.
 
 1. **Duas mídias offline** (`<MIDIA_1>`, `<MIDIA_2>`), cada uma com uma cópia do arquivo cifrado tal como gerado (mesmo
    `sha256sum`, anotado no livro). Nunca VPS, nuvem, e-mail, chat, repositório ou pasta de evidências, manifestos ou recibos.
+   Cópia para cada mídia, sem nunca sobrescrever um arquivo de chave que já esteja nela:
+
+   ```
+   ( set -euo pipefail; set +x; set -o noclobber; umask 077
+     ORIGEM=<PASTA_DA_CHAVE>/<ARQUIVO_DA_CHAVE>
+     DESTINO=<PONTO_DE_MONTAGEM_DA_MIDIA>/<ARQUIVO_DA_CHAVE>
+     test ! -e "$DESTINO" || { echo "PARE: já existe arquivo de chave nesta mídia; nada foi copiado"; exit 1; }
+     cat "$ORIGEM" > "$DESTINO"
+     sync
+     sha256sum "$ORIGEM" "$DESTINO" )
+   ```
+
+   Os dois hashes têm de ser iguais; anotar no livro.
 2. **Dois locais físicos distintos** (`<LOCAL_1>`, `<LOCAL_2>`) sob controle do titular. Os locais ficam **só no dossiê
    offline**.
 3. **A frase nunca fica junto de uma mídia** (nem no mesmo local físico, nem escrita nela).
@@ -268,7 +355,7 @@ coleta LIVE --json ─► export ─► conferência + dossiê A + approval.json
 O `sign` lê a cadeia na cópia da estação para calcular o `seq`, verificar a cadeia e fazer o autoteste. Antes de cada sessão,
 trazer do servidor (homologação ou produção) uma cópia somente leitura da pasta de manifestos (`<auditId>/` e `_closures/`) e
 conferi-la contra o livro (último `seq` e `sealSha256` de cada auditoria). Divergência (manifesto a mais, a menos ou com outro
-hash) é incidente: não assine. Um temporário `.seal-NNNN.json.tmp-<hex>` deixado por queda pode ser apagado (spec §5.5.1
+hash) é incidente: não assine. Um temporário `.seal-NNNN.json.tmp-<hex>` deixado por queda pode ser apagado depois de registrado no livro (spec §5.5.1
 item 4); um `seal-NNNN.json`, nunca.
 
 ## 8. Aceite de risco e revisão posterior (D15.1, D15.6)
@@ -295,16 +382,36 @@ faz `lstat` de cada pasta ACIMA da pasta de recibos e da cópia do servidor, at�
 `close-key` usa `--allow-fs-read=/` e escreve **só** em `<PASTA_DE_MANIFESTOS>/_closures`:
 
 ```
-mkdir -p <PASTA_DE_MANIFESTOS>/_closures
 namei -m <PASTA_DO_ARTEFATO>/link-audit-sign.cjs
-( cd <PASTA_DO_ARTEFATO> && sha256sum -c p1-sign-artifact.sha256 ) && \
-env -i <NODE22> --disable-sigusr1 --permission \
-  --allow-fs-read=/ --allow-fs-write=<PASTA_DE_MANIFESTOS>/_closures \
-  <PASTA_DO_ARTEFATO>/link-audit-sign.cjs close-key \
-  --retired-key-id <R> --seals-dir <PASTA_DE_MANIFESTOS> --receipts-dir <PASTA_DE_RECIBOS> \
-  --key-id <S> --key-source file:<PASTA_DA_CHAVE_S>/<ARQUIVO_DA_CHAVE_S> --custodian CUST-01 \
-  --trust-keys '<LISTA_DE_CHAVES_COM_ESTADO>' --json > <PASTA_DE_SAIDA>/fecho-<R>.json
+( set -euo pipefail; set +x; set -o noclobber
+  SAIDA=<PASTA_DE_SAIDA>/fecho-<R>.json
+  test ! -e "$SAIDA" || { echo "PARE: a saída já existe; nada foi executado"; exit 1; }
+  test ! -e <PASTA_DE_MANIFESTOS>/_closures/<R>.json || { echo "PARE: já existe fecho de <R>; reemissão só pelo runbook de chaves"; exit 1; }
+  test -d <PASTA_DE_MANIFESTOS>/_closures || mkdir -m 0700 <PASTA_DE_MANIFESTOS>/_closures
+  ( cd <PASTA_DO_ARTEFATO> && sha256sum -c p1-sign-artifact.sha256 )
+  env -i <NODE22> --disable-sigusr1 --permission \
+    --allow-fs-read=/ --allow-fs-write=<PASTA_DE_MANIFESTOS>/_closures \
+    <PASTA_DO_ARTEFATO>/link-audit-sign.cjs close-key \
+    --retired-key-id <R> --seals-dir <PASTA_DE_MANIFESTOS> --receipts-dir <PASTA_DE_RECIBOS> \
+    --key-id <S> --key-source file:<PASTA_DA_CHAVE_S>/<ARQUIVO_DA_CHAVE_S> --custodian CUST-01 \
+    --trust-keys '<LISTA_DE_CHAVES_COM_ESTADO>' --json > "$SAIDA" )
+echo "código de saída: $?"
 ```
+
+Depois da execução valem os três casos do §3.2, com estas diferenças:
+
+- **Caso A:** código `0` e a saída é um objeto `{"ok":true…}` completo; o fecho existe em `_closures/<R>.json`. A saída bruta é
+  o resumo do fecho (não é recibo de assinatura: **não** vai para a pasta de recibos); vai para o livro e para o dossiê.
+- **Caso B:** código `1`, ou código `3` com as barreiras de partida do §3.2 (iguais às do `sign`, `sign-cli.ts:356-364`), ou com
+  `CLOSE_KEY_STATE_INVALID`, `CLOSE_RECEIPTS_INVALID`, `CLOSE_RECEIPTS_CONFLICT`, `CLOSE_SERVER_COPY_INVALID`,
+  `CLOSE_TOO_MANY_HEADS`, `SIGN_KEY_NOT_ACTIVE`, `SIGN_CLOCK_REGRESSION`, `SIGN_CONFIRMATION_FAILED`, os códigos da chave do
+  §3.2 ou `SIGN_SELFTEST_FAILED`. Todos saem antes da gravação do fecho (`publishClosure`, `sign-closure.ts:398`, depois do
+  autoteste em `:396`).
+- **Caso C:** `SIGN_WRITE_UNCONFIRMED` (o fecho foi criado sem confirmação em disco), `SIGN_WRITE_FAILED`,
+  `CLOSE_ALREADY_EXISTS` (vem da conferência antecipada, `sign-closure.ts:223`, ou do `link()` exclusivo, `sign-run.ts:320-321`;
+  nos dois casos já havia um fecho com esse nome), qualquer código `4` (a captura do erro inesperado cobre também a saída do
+  sucesso, `sign-cli.ts:365-371`) ou saída incompleta: o procedimento do incidente do §3.2, sobre `_closures/`. Um fecho sem
+  gravação confirmada nunca é entregue e o hash dele nunca é fixado.
 
 - Opções: `sign-args.ts:35-36` e `sign-cli.ts:37-42`. A escrita só em `_closures` é a regra do código para o `close-key`
   (`sign-args.ts:531-532`).
@@ -351,8 +458,9 @@ No fim do ensaio da W5.3, antes de arquivar o relatório:
 | `SIGN_SEQ_MISMATCH` / `SIGN_SEAL_CHAIN_INVALID` | cópia da pasta divergente do livro: §7, incidente; nunca "recomeçar do 1" |
 | `SIGN_PACKAGE_MISMATCH` / `SIGN_DOSSIER_MISMATCH` | bytes diferentes dos aprovados: volte à conferência; nunca reexporte para "acertar" |
 | `SIGN_ROLE_SEPARATION` | falta o aceite de risco, ou os bytes de `--risk-acceptance` não batem com a aprovação (§8) |
-| `SIGN_WRITE_UNCONFIRMED` | o manifesto foi gravado, mas sem prova de durabilidade: **não entregue, não emita recibo**, não apague; registre incidente no livro e leve ao responsável |
-| `SIGN_SEQ_CONFLICT` | já existe `seal-NNNN.json` na cópia: incidente (§7) |
+| `SIGN_WRITE_UNCONFIRMED`, `SIGN_WRITE_FAILED`, `SIGN_SEQ_CONFLICT`, `CLOSE_ALREADY_EXISTS`, qualquer código `4` ou saída incompleta | **caso C do §3.2**: preservar tudo, não repetir, não atualizar a tabela de manifestos do livro, conferir a pasta (o que existe, hashes), registrar o incidente e só então decidir com o responsável |
+
+Todo código `3` desta tabela fora da última linha é do caso B do §3.2 (recusa antes da gravação: nada foi assinado nem gravado).
 
 ## 12. Suplente (D15.1, D10)
 
