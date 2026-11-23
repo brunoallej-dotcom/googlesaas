@@ -27,7 +27,8 @@ const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   'package-hash.ts': new Set(['../link-audit/canonical', './schemas']),
   'schemas.ts': new Set(['zod', '../link-audit-evidence/types']),
   // P1 W2: montagem PURA do pacote candidato (a função única basis → evidências e o padrão do auditId)
-  'export.ts': new Set(['../link-audit-evidence/evidence-to-prove', '../link-audit-evidence/types', './package-hash', './schemas']),
+  // W5.2b (spec §5.7, decisão do manager): + o rótulo e a regra PURA da trava de homologação (simulated.ts não lê ambiente), reexportados ao CLI
+  'export.ts': new Set(['../link-audit-evidence/evidence-to-prove', '../link-audit-evidence/simulated', '../link-audit-evidence/types', './package-hash', './schemas']),
   // P1 W2: o ÚNICO arquivo do módulo com disco: lê pelos leitores existentes (FsOps injetado) e cria só o --out; fora do índice público
   'export-run.ts': new Set(['node:path', 'zod', '../link-audit/snapshot-store', '../link-audit-evidence/provenance', '../link-audit-evidence/reader', '../link-audit-evidence/scoring-basis', '../link-audit-evidence/store', './export', './schemas']),
   // P1 W4.1: núcleo PURO das recusas do `sign` (só o hash do dossiê vem de node:crypto); nunca o verificador, o leitor nem disco
@@ -333,8 +334,7 @@ test('P1 W4.6: sign-runtime.ts só LÊ (o bloco original do exec em /proc/self e
 
 /** P1 W2: o CLI `scripts/link-audit-seal.ts` é o ÚNICO consumidor, e só destes arquivos; P1 W4.4: o `sign` entra por UM arquivo, sign-cli.ts. */
 const CLI_FILE = path.join(ROOT, 'scripts', 'link-audit-seal.ts');
-// W5.2b (spec §5.7, decisão do manager): o rótulo e a trava de homologação do `export --simulated` (só a variável da trava; nunca arquivo de ambiente)
-const CLI_ALLOWED: ReadonlySet<string> = new Set(['@/lib/link-audit-attestation/export', '@/lib/link-audit-attestation/export-run', '@/lib/link-audit-attestation/schemas', '@/lib/link-audit-attestation/sign-cli', '@/lib/link-audit-evidence/simulated']);
+const CLI_ALLOWED: ReadonlySet<string> = new Set(['@/lib/link-audit-attestation/export', '@/lib/link-audit-attestation/export-run', '@/lib/link-audit-attestation/schemas', '@/lib/link-audit-attestation/sign-cli']);
 /** P1 W4.6: a entrada do ARTEFATO ÚNICO (sign e close-key, sem o export) é o segundo consumidor, e só de sign-cli.ts. */
 const ARTIFACT_ENTRY = path.join(ROOT, 'scripts', 'link-audit-sign-artifact.ts');
 

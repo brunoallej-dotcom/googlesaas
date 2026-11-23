@@ -23,10 +23,9 @@
  * sem essa fixação, R não conta. Também em `sign-cli.ts` (mesmas barreiras, terminal sem eco e chave K1 do `sign`).
  */
 import path from 'node:path';
-import { captureLabel, isValidAuditId, MAX_GAP_HOURS, type ExportRefusal } from '@/lib/link-audit-attestation/export';
+import { captureLabel, HOMOLOGATION_LOCK_ENV, isHomologationLockOn, isValidAuditId, MAX_GAP_HOURS, SIMULATED_LABEL, type ExportRefusal } from '@/lib/link-audit-attestation/export';
 import { exportCandidatePackage, serializePackage, type DeltaStatus, type FsOps } from '@/lib/link-audit-attestation/export-run';
 import { isSafeText, type CandidatePackage } from '@/lib/link-audit-attestation/schemas';
-import { HOMOLOGATION_LOCK_ENV, homologationLockFromProcess, isHomologationLockOn, SIMULATED_LABEL, type EnvReader } from '@/lib/link-audit-evidence/simulated';
 import { CLOSE_KEY_USAGE, runCloseKeyCli, runSignCli, SIGN_USAGE, type SignCliDeps } from '@/lib/link-audit-attestation/sign-cli';
 
 export const USAGE = [
@@ -137,7 +136,7 @@ export interface SealCliDeps {
   /** Dependências do `sign` e do `close-key` (terminal, ambiente, disco, pastas temporárias proibidas; testes). A raiz do projeto vem de `projectRoot`. */
   readonly sign?: Omit<SignCliDeps, 'projectRoot'>;
   /** Ambiente do comando (testes), só para a trava de homologação do `export --simulated`. Padrão: a variável da trava no processo; nunca um arquivo de ambiente. */
-  readonly getEnv?: () => EnvReader;
+  readonly getEnv?: () => Readonly<Record<string, string | undefined>>;
 }
 
 type Line = (line: string) => void;
@@ -215,7 +214,8 @@ function refuseSimulated(message: string): ExportRefusal {
 
 async function runExport(args: ExportArgs, out: Line, err: Line, now: () => Date, deps: SealCliDeps): Promise<number> {
   // a trava é conferida ANTES de ler a pasta; sem `--simulated` + trava, o `export` recusa a captura simulada que encontrar
-  const lockOn = deps.getEnv ? isHomologationLockOn(deps.getEnv()) : homologationLockFromProcess();
+  // a ÚNICA leitura do ambiente do processo neste CLI: a variável da trava (nunca um arquivo de ambiente; teste IA-05 estático)
+  const lockOn = isHomologationLockOn(deps.getEnv ? deps.getEnv() : { [HOMOLOGATION_LOCK_ENV]: process.env.GMN_LINK_AUDIT_HOMOLOGATION });
   if (args.simulated && !lockOn) return refusal(SIMULATED_WITHOUT_LOCK, args.json, out, err);
   const outcome = await exportCandidatePackage(
     { evidenceDir: args.evidenceDir, auditId: args.auditId, collectorHashes: args.collectorHashes, maxGapHours: args.maxGapHours, gapJustification: args.gapJustification, sealsDir: args.sealsDir, out: args.out, projectRoot: deps.projectRoot ?? path.resolve(__dirname, '..'), now, allowSimulated: args.simulated, homologationLock: lockOn },

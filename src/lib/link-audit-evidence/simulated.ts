@@ -20,10 +20,21 @@ export type EnvReader = Readonly<Record<string, string | undefined>>;
 export const isHomologationLockOn = (env: EnvReader): boolean => env[HOMOLOGATION_LOCK_ENV] === HOMOLOGATION_LOCK_ON;
 
 /**
- * A trava lida do ambiente do PROCESSO: só esta variável, nunca um arquivo de ambiente. É o único acesso ao ambiente de que o `export --simulated`
- * precisa (o CLI do P1 e os módulos do `export` continuam sem olhar o ambiente; spec do P1 §5.7).
+ * Prefixo RESERVADO do id das chaves de ensaio (W5.2b, revisão do PR #62): o modo fica visível no próprio manifesto assinado (o `keyId`). O `sign
+ * --simulated` só assina com chave `ensaio-…`, o `sign` real recusa essa chave, e o servidor sem a trava de homologação recusa a lista que a contém.
  */
-export const homologationLockFromProcess = (): boolean => isHomologationLockOn({ [HOMOLOGATION_LOCK_ENV]: process.env[HOMOLOGATION_LOCK_ENV] });
+export const REHEARSAL_KEY_PREFIX = 'ensaio-' as const;
+export const isRehearsalKeyId = (keyId: string): boolean => keyId.startsWith(REHEARSAL_KEY_PREFIX);
+
+/**
+ * A lista de chaves PÚBLICAS de confiança como o servidor a usa: com qualquer id `ensaio-` e SEM a trava de homologação, a lista inteira é recusada
+ * (`undefined` ⇒ política fechada: nada autentica, nada é finalizável). Com a trava (pilha de homologação), passa como está. Só os ids são olhados.
+ */
+export function trustKeysForServer(raw: string | undefined, homologation: boolean): string | undefined {
+  if (raw === undefined || homologation) return raw;
+  const ids = raw.split(',').map((item) => item.trim().split(':')[0] ?? '');
+  return ids.some(isRehearsalKeyId) ? undefined : raw;
+}
 
 /** Marca de uma captura (qualquer uma das duas basta para tratá-la como simulada: na dúvida, simulada). */
 export const isSimulatedCapture = (file: { readonly provider: string; readonly simulated?: boolean }): boolean => file.simulated === true || file.provider === SIMULATED_PROVIDER;

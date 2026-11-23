@@ -295,10 +295,13 @@ test('IA-05 (estático): o grafo de imports do CLI não inclui Supabase, Serper,
   }
   const envFileReads = new RegExp(['loadEnvConfig', '@next/' + 'env', 'dot' + 'env', `['"\`]\\.${'env'}`].join('|'));
   for (const file of files) assert.ok(!envFileReads.test(strip(fs.readFileSync(file, 'utf8'))), `${path.relative(ROOT, file)} lê arquivo de ambiente`);
-  // os arquivos NOVOS da W2 nem sequer olham o ambiente do processo (redact.ts, já existente, só usa process.env em memória como padrão)
+  // os arquivos NOVOS da W2 nem sequer olham o ambiente do processo (redact.ts, já existente, só usa process.env em memória como padrão). Exceção
+  // única (W5.2b, spec §5.7, decisão do manager): o CLI lê SÓ a variável da trava de homologação do `export --simulated`, uma vez
   const processEnv = new RegExp(`process\\.${'env'}`);
+  const withoutLock = (code: string): string => code.replace(/process\.env\.GMN_LINK_AUDIT_HOMOLOGATION\b/, '');
   for (const name of ['scripts/link-audit-seal.ts', 'src/lib/link-audit-attestation/export.ts', 'src/lib/link-audit-attestation/export-run.ts']) {
-    assert.ok(!processEnv.test(strip(fs.readFileSync(path.join(ROOT, name), 'utf8'))), `${name} lê o ambiente`);
+    const code = strip(fs.readFileSync(path.join(ROOT, name), 'utf8'));
+    assert.ok(!processEnv.test(name === 'scripts/link-audit-seal.ts' ? withoutLock(code) : code), `${name} lê o ambiente`);
     assert.ok(!/\bfetch\s*\(|XMLHttpRequest|WebSocket|child_process|\beval\s*\(|new Function\s*\(/.test(strip(fs.readFileSync(path.join(ROOT, name), 'utf8'))), `${name} usa rede, processo ou avaliação dinâmica`);
   }
 });

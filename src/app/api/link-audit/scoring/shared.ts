@@ -3,10 +3,9 @@ import { ledgerDirOf, ledgerForRoutes } from '../decisions/ledger-wiring';
 import { NextResponse } from 'next/server';
 import { isErrorResponse, requireOperator } from '@/lib/auth/require-operator';
 import { AUDIT_ID_PATTERN, createDecisionService, type ResultsLedgerPort } from '@/lib/link-audit-decisions';
-import { createEvidenceReader, createProvenanceRecheck, EvidenceAccessError, type EvidenceActor, type ProvenanceRecheckPort } from '@/lib/link-audit-evidence';
+import { createEvidenceReader, createProvenanceRecheck, EvidenceAccessError, isHomologationLockOn, trustKeysForServer, type EvidenceActor, type ProvenanceRecheckPort } from '@/lib/link-audit-evidence';
 import { createScoringBasisReader } from '@/lib/link-audit-evidence/scoring-basis';
 import { evidenceProvenanceFromConfig } from '@/lib/link-audit-evidence/provenance';
-import { homologationLockFromProcess } from '@/lib/link-audit-evidence/simulated';
 import { originConfigFromEnv } from '@/lib/link-audit-origin';
 import { createResultsKnownHeads, createScoringPreviewService, createScoringResultsService, PREVIEW_HTTP_STATUS, PREVIEW_MESSAGE, RESULTS_HTTP_STATUS, RESULTS_MESSAGE, type PreviewFailure, type ResultsFailure, type ScoringResultsService } from '@/lib/link-audit-scoring-runs';
 import { SlidingWindowLimiter } from '@/lib/rate-limit';
@@ -102,7 +101,10 @@ async function prepare(request: Request, limiter: SlidingWindowLimiter, evidence
   // PROVA de que as evidências vieram da coleta: manifestos assinados FORA da pasta de evidências (somente leitura) + chaves PÚBLICAS de confiança. Sem as duas
   // coisas a política é a FECHADA (nada é autêntico ⇒ nenhuma finalização). Não existe valor que "confie em tudo".
   // Production accepts ONLY v2 manifests, at every position (contract of the v2 verifier §4.2, V2-19): v1 only by an explicit homologation option.
-  const trustKeys = process.env.GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS; // lida UMA vez: a política e a porta de reconferência (R2.2) usam a mesma lista
+  // W5.2b: só a pilha de homologação liga GMN_LINK_AUDIT_HOMOLOGATION=1 (evidência SIMULADA vira aviso; chaves `ensaio-` aceitas na lista)
+  const homologation = isHomologationLockOn(process.env);
+  // lida UMA vez: a política e a porta de reconferência (R2.2) usam a mesma lista; sem a trava, lista com chave `ensaio-` ⇒ recusada (política fechada)
+  const trustKeys = trustKeysForServer(process.env.GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS, homologation);
   const evidenceProvenance = evidenceProvenanceFromConfig({
     sealsDir: configuredDir(process.env.GMN_LINK_AUDIT_EVIDENCE_SEALS_DIR),
     trustKeys,
@@ -115,8 +117,8 @@ async function prepare(request: Request, limiter: SlidingWindowLimiter, evidence
   const knownHeads = resultsDir && resultsAnchorDir ? createResultsKnownHeads({ baseDir: resultsDir, anchorDir: resultsAnchorDir, otherDirs: [decisionsDir, anchorDir, evidenceDir, ledgerDirOf()], ...(prepareOrigin.ok ? { origin: prepareOrigin.authenticator } : {}) }) : async () => ({ ok: false as const, reason: 'NOT_CONFIGURED' as const }); // sem as pastas de resultados: NÃO RESOLVIDO (falha fechada), nunca "sem inconsistência"
   // só LEITURA das decisões (sem escrita não há o que assinar), com a TESTEMUNHA dos resultados selados; o MESMO livro grava os RUN_* da finalização pela porta de escrita
   const decisions = createDecisionService({ baseDir: decisionsDir, anchorDir, evidence: reader, evidenceBaseDir: evidenceDir, knownHeads, ledger: ledgerForRoutes([decisionsDir, anchorDir, evidenceDir, resultsDir, resultsAnchorDir]) });
-  // W5.2b (spec do P1 §5.7): só a pilha de homologação liga GMN_LINK_AUDIT_HOMOLOGATION=1; sem ela, evidência SIMULADA bloqueia a finalização
-  const preview = createScoringPreviewService({ basisReader, evidenceProvenance, decisions, clock: serverClock, homologation: homologationLockFromProcess() });
+  // W5.2b (spec do P1 §5.7): sem a trava, evidência SIMULADA bloqueia a finalização
+  const preview = createScoringPreviewService({ basisReader, evidenceProvenance, decisions, clock: serverClock, homologation });
   const provenanceRecheck = createProvenanceRecheck({ policy: evidenceProvenance, trustKeys });
   return { actor, preview, basisReader, dirs: { evidence: evidenceDir, decisions: decisionsDir, anchors: anchorDir }, resultsLedger: decisions.resultsLedger, provenanceRecheck };
 }

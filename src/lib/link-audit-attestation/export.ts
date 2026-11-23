@@ -1,5 +1,7 @@
 import { evidenceToProveFromBasis } from '../link-audit-evidence/evidence-to-prove';
 import { AUDIT_ID_PATTERN } from '../link-audit-evidence/types';
+// W5.2b (spec §5.7): o rótulo e a regra da trava de homologação, reexportados para o CLI do P1 (que só importa o módulo de atestação)
+export { HOMOLOGATION_LOCK_ENV, isHomologationLockOn, SIMULATED_LABEL } from '../link-audit-evidence/simulated';
 import { computePackageSha256, PackageHashError } from './package-hash';
 import { ATTESTATION_SCHEMA_VERSION, candidatePackageSchema, CHECK_IDS, hasNoControlChars, MAX_PACKAGE_ENTRIES, PACKAGE_KIND, type CandidatePackage, type PackageBody } from './schemas';
 

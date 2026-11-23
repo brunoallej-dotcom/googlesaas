@@ -17,7 +17,8 @@ import { SIMULATED_LABEL, SIMULATED_SOURCE_LABEL } from '../src/lib/link-audit-e
 import { createScoringPreviewService } from '../src/lib/link-audit-scoring-runs';
 import { evidenceKeys, sealAuditV2ForTests, TRUSTING_EVIDENCE_POLICY } from './helpers/link-audit-evidence-provenance-fixtures';
 import { evidenceToProveFromBasis } from '../src/lib/link-audit-evidence/evidence-to-prove';
-import { evidenceProvenanceFromConfig } from '../src/lib/link-audit-evidence/provenance';
+import { CLOSED_EVIDENCE_PROVENANCE, evidenceProvenanceFromConfig } from '../src/lib/link-audit-evidence/provenance';
+import { trustKeysForServer } from '../src/lib/link-audit-evidence/simulated';
 import { fakeList } from './helpers/link-audit-preview-fixtures';
 import { makeService, OP_A, resultsEnv, treeOf } from './helpers/link-audit-results-fixtures';
 import { canonicalJson, sha256Hex } from '../src/lib/link-audit/canonical';
@@ -144,10 +145,10 @@ test('hash (2b): tirar a marca da captura e "consertar" todos os hashes (captura
 test('export (2c): o único acesso ao ambiente do processo é a variável da trava, em simulated.ts; o CLI do P1 e os módulos do export continuam sem olhar o ambiente', () => {
   const root = path.join(__dirname, '..');
   const read = (file: string): string => fs.readFileSync(path.join(root, file), 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '');
-  const simulated = read('src/lib/link-audit-evidence/simulated.ts');
-  assert.deepEqual([...simulated.matchAll(/process\.env(\[[^\]]+\]|\.\w+)?/g)].map((m) => m[0]), ['process.env[HOMOLOGATION_LOCK_ENV]'], 'só a variável da trava');
-  assert.ok(!/loadEnvConfig|dotenv|@next\/env|readFile/.test(simulated), 'nunca arquivo de ambiente');
-  for (const file of ['scripts/link-audit-seal.ts', 'src/lib/link-audit-attestation/export.ts', 'src/lib/link-audit-attestation/export-run.ts']) assert.ok(!/process\.env/.test(read(file)), file);
+  // o serviço de evidências não lê ambiente nenhum (isolamento da Onda 5A); o CLI do P1 lê SÓ a variável da trava, uma vez; os módulos do export, nada
+  assert.ok(!/process\.env|loadEnvConfig|dotenv|@next\/env|readFile/.test(read('src/lib/link-audit-evidence/simulated.ts')));
+  assert.deepEqual([...read('scripts/link-audit-seal.ts').matchAll(/process\.env(\[[^\]]+\]|\.\w+)?/g)].map((m) => m[0]), ['process.env.GMN_LINK_AUDIT_HOMOLOGATION'], 'só a variável da trava');
+  for (const file of ['src/lib/link-audit-attestation/export.ts', 'src/lib/link-audit-attestation/export-run.ts']) assert.ok(!/process\.env/.test(read(file)), file);
 });
 
 /* ------------------------------------------------------------------ leitor e interface: "SIMULADA — ensaio" (2c) */
@@ -270,7 +271,11 @@ test('prévia (2c): base REAL não ganha bloqueio nenhum, com ou sem a trava', a
 test('servidor (2c): as rotas montam a prévia com a trava lida SÓ de GMN_LINK_AUDIT_HOMOLOGATION; a stack de PRODUÇÃO não declara a variável', () => {
   const root = path.join(__dirname, '..');
   const shared = fs.readFileSync(path.join(root, 'src/app/api/link-audit/scoring/shared.ts'), 'utf8');
-  assert.match(shared, /createScoringPreviewService\(\{[^}]*homologation: homologationLockFromProcess\(\)/);
+  assert.match(shared, /const homologation = isHomologationLockOn\(process\.env\);/);
+  assert.match(shared, /createScoringPreviewService\(\{[^}]*homologation \}\)/);
+  // item 3(c): a lista de confiança passa pelo filtro das chaves de ensaio ANTES da política e da reconferência
+  assert.match(shared, /const trustKeys = trustKeysForServer\(process\.env\.GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS, homologation\);/);
+  assert.equal((shared.match(/GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS/g) ?? []).length, 1, 'a lista é lida uma vez, só pelo filtro');
   const stack = fs.readFileSync(path.join(root, 'deploy/hostinger/stack.yml'), 'utf8');
   assert.ok(!stack.includes('GMN_LINK_AUDIT_HOMOLOGATION'), 'produção nunca liga a trava de homologação');
   for (const file of ['deploy/hostinger/Dockerfile', 'deploy/hostinger/docker-entrypoint.sh']) assert.ok(!fs.readFileSync(path.join(root, file), 'utf8').includes('GMN_LINK_AUDIT_HOMOLOGATION'), file);
@@ -442,4 +447,20 @@ test('origem (item 2): a tela da auditoria (empresa e matriz de critérios) da c
   const realEv = await realPreview.evaluate(OP_A, real.auditId);
   assert.ok(realEv.ok);
   assert.match(textOf(renderToStaticMarkup(createElement(CriteriaMatrix, { preview: realEv.value.payload, canAct: false, onRegister: noop }))), /Serper/);
+});
+
+/* ------------------------------------------------------------------ revisão do PR #62 (confirmação), item 3(c): chaves `ensaio-` fora da produção */
+
+test('chaves de ensaio (item 3c): a lista de confiança do servidor com id ensaio- é RECUSADA inteira (política fechada) sem a trava de homologação; com a trava, passa; lista sem ensaio- não muda', () => {
+  const real = evidenceKeys('ek-real-0001').trustKeys;
+  const rehearsal = evidenceKeys('ensaio-w5-k1').trustKeys;
+  const mixed = `${real},${rehearsal}`;
+  for (const list of [rehearsal, mixed, `${real}, ${rehearsal}:retired`]) {
+    assert.equal(trustKeysForServer(list, false), undefined, `sem a trava: ${list.slice(0, 20)}…`);
+    assert.equal(trustKeysForServer(list, true), list, 'com a trava, a lista da homologação passa');
+  }
+  assert.equal(trustKeysForServer(real, false), real);
+  assert.equal(trustKeysForServer(undefined, false), undefined);
+  // a política montada com a lista filtrada fica FECHADA: nada autentica
+  assert.equal(evidenceProvenanceFromConfig({ sealsDir: tmpDir('lasim-tk-'), trustKeys: trustKeysForServer(mixed, false), acceptedVersions: [2] }), CLOSED_EVIDENCE_PROVENANCE);
 });
