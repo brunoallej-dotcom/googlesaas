@@ -165,9 +165,47 @@ test('G1.b.2b leitor × migração 004 (estático): o SQL fixo do leitor cita s�
   assert.match(harness, /reconciliação real: verificações a menos/);
   assert.ok(!/pulad/.test(harness), 'nenhuma etapa pulada');
   const workflow = fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'guard-migration.yml'), 'utf8');
-  for (const filter of ["'src/lib/link-audit-guard-reconcile/**'", "'scripts/link-audit-guard-reconcile.ts'", "'src/lib/link-audit-ledger/config.ts'", "'tests/helpers/link-audit-guard-reconcile-fixtures.ts'"]) {
+  for (const filter of ["'src/lib/link-audit-guard-reconcile/**'", "'scripts/link-audit-guard-reconcile.ts'", "'src/lib/link-audit-ledger/**'", "'tests/helpers/link-audit-guard-reconcile-fixtures.ts'"]) {
     assert.equal(workflow.split(`- ${filter}`).length - 1, 2, `${filter} em pull_request e em push`);
   }
   assert.match(workflow, /supabase\/proposed\/local-test\/guard-reconcile-run\.ts/);
   assert.match(READER_ROWS_SQL, /rows from \(pg_catalog\.unnest\(\$1::text\[\]\), pg_catalog\.unnest\(\$2::text\[\]\)\)/);
+});
+
+test('G1.b.2b CI (revisão do PR #64): o `guard-migration.yml` dispara para TODO arquivo que o teste local e o CLI da reconciliação executam — fecho transitivo REAL dos imports dos executores, mais o carregador TS, o lockfile e a migração', () => {
+  const root = path.join(__dirname, '..');
+  const entries = ['supabase/proposed/local-test/guard-reconcile-run.ts', 'supabase/proposed/local-test/guard-adapter-run.ts', 'scripts/link-audit-guard-reconcile.ts'];
+  const importRe = /(?:^|\n)\s*(?:import|export)\s[^;]*?from\s*['"]([^'"]+)['"]|import\s*\(\s*['"]([^'"]+)['"]\s*\)|require\(\s*['"]([^'"]+)['"]\s*\)/g;
+  const resolveSpec = (from: string, spec: string): string | null => {
+    const base = spec.startsWith('@/') ? path.join(root, 'src', spec.slice(2)) : spec.startsWith('.') ? path.resolve(path.dirname(from), spec) : null;
+    if (base === null) return null; // pacote (node:*, pg, zod): vem do lockfile
+    const found = [base, `${base}.ts`, `${base}.tsx`, path.join(base, 'index.ts')].find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile());
+    assert.ok(found, `import não resolvido: ${spec} em ${path.relative(root, from)}`);
+    return found as string;
+  };
+  const seen = new Set<string>();
+  const queue = entries.map((entry) => path.join(root, entry));
+  while (queue.length > 0) {
+    const file = queue.pop() as string;
+    if (seen.has(file)) continue;
+    seen.add(file);
+    const source = fs.readFileSync(file, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    for (const match of source.matchAll(importRe)) {
+      const target = resolveSpec(file, (match[1] ?? match[2] ?? match[3]) as string);
+      if (target) queue.push(target);
+    }
+  }
+  const executed = [...[...seen].map((file) => path.relative(root, file).split(path.sep).join('/')), 'tests/register-typescript.cjs', 'package-lock.json', 'supabase/proposed/004_link_audit_guard.sql', 'supabase/proposed/004_link_audit_guard.rollback.sql', 'supabase/proposed/local-test/guard-run.sh'];
+  const workflow = fs.readFileSync(path.join(root, '.github', 'workflows', 'guard-migration.yml'), 'utf8');
+  const filtersOf = (event: string): string[] => {
+    const block = new RegExp(`\\n  ${event}:\\n(?: {4}.*\\n)*? {4}paths:\\n((?: {6}- '[^']+'\\n)+)`).exec(workflow)?.[1] ?? '';
+    return [...block.matchAll(/- '([^']+)'/g)].map((match) => match[1] as string);
+  };
+  const pr = filtersOf('pull_request');
+  assert.ok(pr.length > 0);
+  assert.deepEqual(filtersOf('push'), pr, 'os mesmos caminhos em pull_request e em push');
+  const asRegExp = (glob: string): RegExp => new RegExp(`^${glob.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*/g, '\u0000').replace(/\*/g, '[^/]*').replace(/\u0000/g, '.*')}$`);
+  const uncovered = executed.filter((file) => !pr.some((glob) => asRegExp(glob).test(file)));
+  assert.deepEqual(uncovered, [], 'arquivos executados sem gatilho no workflow');
+  for (const folder of ["'src/lib/link-audit-ledger/**'", "'src/lib/link-audit-guard-reconcile/**'", "'package-lock.json'", "'tests/register-typescript.cjs'"]) assert.ok(workflow.includes(`- ${folder}`), folder);
 });

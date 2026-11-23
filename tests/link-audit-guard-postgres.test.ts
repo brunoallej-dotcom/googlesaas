@@ -389,7 +389,8 @@ test('CI da migração (revisão do PR #61): workflow próprio, fora do ci.yml, 
   const workflow = read('.github/workflows/guard-migration.yml');
   const ci = read('.github/workflows/ci.yml');
   const harness = read('supabase/proposed/local-test/guard-run.sh');
-  for (const filter of ["'supabase/proposed/004*'", "'supabase/proposed/local-test/**'", "'src/lib/link-audit-ledger/guard-*'"]) {
+  // G1.b.2b (revisão do PR #64): a pasta inteira do livro (cobre `guard-*`); o fecho completo dos imports é travado em link-audit-guard-reconcile-reader.test.ts
+  for (const filter of ["'supabase/proposed/004*'", "'supabase/proposed/local-test/**'", "'src/lib/link-audit-ledger/**'"]) {
     assert.equal(workflow.split(`- ${filter}`).length - 1, 2, `${filter} em pull_request e em push`);
   }
   assert.match(workflow, /^permissions:\n {2}contents: read$/m);

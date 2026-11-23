@@ -50,7 +50,10 @@ bash supabase/proposed/local-test/guard-run.sh <imagem>   # outra imagem já pre
 ```
 
 **No CI:** `.github/workflows/guard-migration.yml` puxa a imagem pelo mesmo digest e roda este script, só quando mudam a 004, esta
-pasta, `src/lib/link-audit-ledger/guard-*`, `src/lib/link-audit-guard-reconcile/**` ou `scripts/link-audit-guard-reconcile.ts`. A saída verde desse job no SHA exato da 004 é **evidência obrigatória** antes de
+pasta ou algum arquivo do **fecho transitivo real** dos imports do que o script executa e do CLI da reconciliação (as pastas do livro,
+da reconciliação, das decisões, das evidências, da origem, do armazenamento e do núcleo da Fase 6, quatro arquivos soltos de
+`src/lib`, as fixtures de teste usadas, `tests/register-typescript.cjs` e o `package-lock.json`; revisão do PR #64). Um import novo
+sem gatilho no workflow faz `tests/link-audit-guard-reconcile-reader.test.ts` falhar. A saída verde desse job no SHA exato da 004 é **evidência obrigatória** antes de
 aplicá-la (spec dos portões, GE-E4 e PG-G08).
 
 Não substitui o PG-G08 no laboratório: a prova pela Data API (REST) e o *Exposed schemas* só existem num projeto
