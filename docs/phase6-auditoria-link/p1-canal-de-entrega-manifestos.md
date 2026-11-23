@@ -3,8 +3,12 @@
 > **Status:** procedimento e requisitos escritos na fatia **W5.1** (22/11/2026). **O canal ainda não existe:** nenhum workflow
 > entrega manifestos (`.github/workflows/ci.yml` só tem typecheck, test, build, sign-artifact, security, sca e sast) e o volume
 > de manifestos no `stack.yml` é da onda G1.a (fase 2 do ADR 6C-03). O que falta de código está no §5 (pendências da W5.2).
-> **O desenho do canal (quem, onde, credencial) aguarda a decisão do responsável sobre o deploy pelo CI (P-9)**; a recomendação
-> do manager e as decisões que valem até lá estão no §6.
+> **Atualização 23/11/2026 — P-9 decidido.** O responsável aceitou a recomendação do manager do §6.3 (pipeline único de deploy
+> pelo CI com job de entrega; manifesto por PR com `auditId` opaco; verificação `v2` no CI antes do merge; entrega por job em
+> ambiente protegido, com aprovação, por chave SSH restrita a um comando receptor que verifica de novo e grava com criação
+> exclusiva e `fsync`). O desenho completo está em **`docs/specs/ci-deploy-and-seal-delivery.md`** (ADR-0004; ameaças
+> `docs/security/threats/deploy-pelo-ci.md`), e o código, nas fatias P9.2 a P9.5 do plano. Os pontos em aberto do §4 estão
+> resolvidos por referência lá. **O canal continua não existindo até a P9.5**; até lá, o que vale para o ensaio é o §6.1.
 >
 > **Decisões aplicadas:** D7 (o canal é o pipeline de CI, nunca cópia manual) e **D15.5** (só o canal do CI escreve no volume
 > de manifestos; o servidor confere a assinatura contra a lista de chaves fixada antes de aceitar; o administrador da VPS fica
@@ -60,15 +64,23 @@ novo `--expect-seq` do livro (spec §7.3).
   periódica do livro contra o servidor (`p1-livro-de-manifestos.md` §5).
 - **Mesma conta do GitHub** para código, CI, artefato do `sign` e canal: comprometê-la dá acesso a todos (spec dos portões,
   concentração; spec P1 §5.5.1 item 6).
-- **Pendência do responsável: por onde o manifesto entra no CI** (parte da decisão do P-9; recomendação do manager no §6). O
+- **~~Pendência do responsável: por onde o manifesto entra no CI~~ — resolvida em 23/11/2026:** alternativa (a), commit no
+  repositório público, por PR, em `link-audit-seals/<ambiente>/seals/`, com `auditId` na forma opaca `aud-<16 hex>` exigida pelo
+  CI (spec `ci-deploy-and-seal-delivery.md` §5.2). Texto original, para o registro: por onde o manifesto entra no CI
+  (parte da decisão do P-9; recomendação do manager no §6). O
   repositório é
   **público**. Pôr os manifestos em commits expõe `auditId`, datas e frequência das atestações (não há dado pessoal no
   manifesto, mas um `auditId` com nome de empresa revelaria o cliente). Alternativas: (a) commit no repositório público, com a
   regra de que o `auditId` nunca carrega nome de empresa; (b) repositório privado só para o canal (plano gratuito: sem proteção
   de branch, spec dos portões); (c) entrada manual do workflow com o arquivo anexado por outro meio que não fique público.
   Cada uma muda o código da W5.2.
-- **Ponto em aberto: de onde o CI lê a "lista fixada"** para o RC-06. Precisa ser a mesma lista do servidor de destino; se ela
-  for versionada no repositório, a edição desse arquivo passa a ser mais um ponto de controle a conferir no livro.
+- **~~Ponto em aberto: de onde o CI lê a "lista fixada"~~ — resolvido em 23/11/2026:** a lista de cada ambiente passa a ser o
+  arquivo versionado `link-audit-seals/<ambiente>/trust-keys.txt`. O CI a lê do commit; o receptor de deploy a passa ao servidor
+  (a mesma variável `GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS`, sem mudar o servidor) e a instala no host; o receptor de manifestos
+  confere o hash dela a cada entrega. Regras de transição no CI, e a chave de manifestos nunca troca a lista (spec
+  `ci-deploy-and-seal-delivery.md` §5.3). Como previsto aqui, a edição desse arquivo é mais um ponto de controle a conferir no
+  livro. Texto original: precisa ser a mesma lista do servidor de destino; se ela for versionada no repositório, a edição desse
+  arquivo passa a ser mais um ponto de controle a conferir no livro.
 
 ## 5. Pendências de código (W5.2)
 
@@ -92,8 +104,10 @@ novo `--expect-seq` do livro (spec §7.3).
    - quem fez, quando e o hash, no relatório do ensaio e no livro.
 2. **Conferência do livro contra o servidor:** antes de cada sessão de assinatura e, no mínimo, trimestralmente
    (`p1-livro-de-manifestos.md` §5).
-3. **O canal (quem, onde, credencial) aguarda a decisão do responsável sobre o deploy pelo CI (P-9 da spec dos portões).**
-   Pendência do responsável. **Recomendação do manager:**
+3. **O canal (quem, onde, credencial): decidido pelo responsável em 23/11/2026, que aceitou a recomendação abaixo** (P-9 da
+   spec dos portões). Desenho completo, com os detalhes escolhidos pelo manager dentro da recomendação (stack instalada pelo
+   responsável e conferida por hash, lista de confiança versionada, dois usuários de host por ambiente, pilha de homologação
+   `gmn-hml`): `docs/specs/ci-deploy-and-seal-delivery.md`; ADR-0004. Texto da recomendação aceita:
    - um único pipeline de deploy pelo CI, com um job de entrega de manifestos;
    - o manifesto entra por **PR**, com `auditId` **opaco** (nunca nome de empresa, porque o repositório é público);
    - verificação `v2` no CI **antes do merge** (RC-06: formato, assinatura, cadeia e estado da chave contra a lista fixada);
@@ -102,4 +116,6 @@ novo `--expect-seq` do livro (spec §7.3).
      RC-06).
 
    Com essa forma, as pendências CE-1 (workflow e ambiente protegido), CE-2 (verificação antes do merge) e CE-3 (receptor como
-   comando único da chave SSH, com a segunda verificação) ficam definidas. Elas só viram código depois da decisão do P-9.
+   comando único da chave SSH, com a segunda verificação) ficam definidas. ~~Elas só viram código depois da decisão do P-9.~~
+   Com a decisão tomada, viram código nas fatias P9.2 (CE-2), P9.3b (CE-3, CE-5) e P9.4/P9.5 (CE-1); o CE-4 já está na `main`
+   (G1.a), com o dono e o modo da pasta emendados na spec §5.10.
