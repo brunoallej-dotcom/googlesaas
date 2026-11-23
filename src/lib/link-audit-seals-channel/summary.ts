@@ -72,8 +72,10 @@ export function summaryLines(report: SealsCheckReport): string[] {
     SUMMARY_TITLE,
     '',
     result,
+    ...(report.incomplete ? ['', 'Verificação INCOMPLETA: uma etapa falhou de forma inesperada (falha fechada; as recusas abaixo valem).'] : []),
     ...table('#### Recusas', REFUSAL_HEADER, shown),
     ...(hidden > 0 ? ['', `… e mais ${hidden} recusa(s) não listadas.`] : []),
     ...CHANNEL_ENVIRONMENTS.flatMap((env) => environmentSection(report, env)),
+    ...(report.chainsTruncated ? ['', 'Informação das cadeias TRUNCADA: o teto de leitura informativo acabou (nada é recusado por isso).'] : []),
   ];
 }

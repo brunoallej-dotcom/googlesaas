@@ -11,16 +11,23 @@ import { AUDIT_ID_CHANNEL_PATTERN } from './paths';
  * auditorias com arquivo novo são verificadas: uma revogação legítima deixa cadeias antigas `SEAL_KEY_REVOKED` sem travar o CI (P9-S12).
  */
 
-/** Os `seq` dos `seal-NNNN.json` da pasta da auditoria no checkout (pasta ausente ⇒ nenhum). */
-export async function seqsOnDisk(fs: FsOps, auditDir: string): Promise<number[]> {
-  let names: string[];
+/** Estado de uma pasta do checkout pelo `lstat` (sem seguir link): ausente, diretório real, ou outra coisa (arquivo, link, FIFO). */
+export async function directoryState(fs: FsOps, dir: string): Promise<'absent' | 'directory' | 'not-directory'> {
   try {
-    names = await fs.readdir(auditDir);
+    const info = await fs.lstat(dir);
+    return info.isDirectory() && !info.isSymbolicLink() ? 'directory' : 'not-directory';
   } catch (error) {
-    if (errorCode(error) === 'ENOENT') return [];
+    if (errorCode(error) === 'ENOENT') return 'absent';
     throw error;
   }
-  return names.flatMap((name) => {
+}
+
+/** Os `seq` dos `seal-NNNN.json` da pasta da auditoria no checkout (pasta ausente ⇒ nenhum; não diretório ⇒ `null`, nunca listado). */
+export async function seqsOnDisk(fs: FsOps, auditDir: string): Promise<number[] | null> {
+  const state = await directoryState(fs, auditDir);
+  if (state === 'absent') return [];
+  if (state === 'not-directory') return null;
+  return (await fs.readdir(auditDir)).flatMap((name) => {
     const match = SEAL_FILE.exec(name);
     return match ? [Number(match[1])] : [];
   });
@@ -55,23 +62,27 @@ export interface ChainVerdict {
   readonly verdict: string;
   readonly headSeq: number | null;
 }
+export type ChainVerdicts =
+  | { readonly kind: 'listed'; readonly verdicts: readonly ChainVerdict[]; /** O teto informativo acabou antes da última cadeia. */ readonly truncated: boolean }
+  /** `<amb>/seals` existe e não é diretório real: nada é listado (quem chama recusa). */
+  | { readonly kind: 'not-directory' };
 
-/** Informação, quando a lista muda (§5.4): o veredito de cada cadeia do ambiente sob a lista nova. Não recusa nada. */
-export async function chainVerdicts(sealsDir: string, trustValue: string, fs: FsOps): Promise<ChainVerdict[]> {
-  let names: string[];
-  try {
-    names = await fs.readdir(sealsDir);
-  } catch (error) {
-    if (errorCode(error) === 'ENOENT') return [];
-    throw error;
-  }
+/**
+ * Informação, quando a lista muda (§5.4): o veredito de cada cadeia do ambiente sob a lista nova. Não recusa nada. `isExhausted` é o teto
+ * informativo: esgotado, a lista para (truncada) e a cadeia que estava sendo lida não entra.
+ */
+export async function chainVerdicts(sealsDir: string, trustValue: string, fs: FsOps, isExhausted: () => boolean = () => false): Promise<ChainVerdicts> {
+  const state = await directoryState(fs, sealsDir);
+  if (state === 'not-directory') return { kind: 'not-directory' };
+  if (state === 'absent') return { kind: 'listed', verdicts: [], truncated: false };
   const verdicts: ChainVerdict[] = [];
-  for (const auditId of names.filter((name) => AUDIT_ID_CHANNEL_PATTERN.test(name)).sort()) {
+  for (const auditId of (await fs.readdir(sealsDir)).filter((name) => AUDIT_ID_CHANNEL_PATTERN.test(name)).sort()) {
     const facts = await readSealChain({ sealsDir, auditId, trustKeys: trustValue }, { fs });
+    if (isExhausted()) return { kind: 'listed', verdicts, truncated: true };
     if (facts.status === 'VERIFIED') verdicts.push({ auditId, verdict: 'AUTHENTICATED', headSeq: facts.last.seq });
     else verdicts.push({ auditId, verdict: facts.status === 'INVALID' ? sealV2Code(facts.reason).slice('SEAL_V2_'.length) : 'NO_SEAL', headSeq: null });
   }
-  return verdicts;
+  return { kind: 'listed', verdicts, truncated: false };
 }
 
 export const auditDirOf = (sealsDir: string, auditId: string): string => nodePath.join(sealsDir, auditId);

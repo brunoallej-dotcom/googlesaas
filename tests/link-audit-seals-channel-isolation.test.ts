@@ -46,7 +46,9 @@ const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   'closures.ts': new Set(['node:path', PORT, SIGN_CHAIN, VERIFIER, './codes', './files', './paths']),
   // S-12/S-13 e a lista do commit
   'trust-rules.ts': new Set([PORT, VERIFIER, './closures', './codes', './files', './paths', './trust-list']),
-  'check.ts': new Set([PORT, VERIFIER, './chains', './changes', './closures', './codes', './files', './paths', './trust-rules', './trust-list']),
+  // revisão do PR #68 (correção 5): o teto único de leitura da execução, uma porta embrulhada (só tipos da porta)
+  'budget.ts': new Set([PORT]),
+  'check.ts': new Set([PORT, VERIFIER, './budget', './chains', './changes', './closures', './codes', './files', './paths', './trust-rules', './trust-list']),
   'summary.ts': new Set(['./check', './codes', './paths']),
   // o comando: zod na fronteira, a porta de disco (o script entrega o adaptador), node:path
   'cli.ts': new Set(['node:path', 'zod', PORT, './changes', './check', './codes', './paths', './summary', './trust-list', './trust-rules']),

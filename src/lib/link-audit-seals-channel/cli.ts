@@ -15,8 +15,9 @@ import type { BaseTrustList } from './trust-rules';
  * Saída: o resumo público em Markdown no stdout (o job o acrescenta a `$GITHUB_STEP_SUMMARY`) e, na recusa, UMA linha `ERRO <CÓDIGO>` no
  * stderr. Nunca conteúdo de arquivo, caminho de disco ou valor recebido.
  *
- * Códigos de saída: 0 nada recusado (ou nada sob `link-audit-seals/`); 1 recusa (S-01 a S-13, código da primeira); 2 uso ou entrada
- * ilegível (`SEALS_USAGE`, `SEALS_INPUT_INVALID`); 3 falha inesperada (`SEALS_INTERNAL`). Tudo diferente de 0 deixa o job vermelho.
+ * Códigos de saída: 0 nada recusado (ou nada sob `link-audit-seals/`); 1 recusa (S-01 a S-13, código da primeira, mesmo que uma etapa
+ * posterior tenha falhado); 2 uso ou entrada ilegível (`SEALS_USAGE`, `SEALS_INPUT_INVALID`); 3 falha inesperada sem nenhuma recusa
+ * (`SEALS_INTERNAL`). Tudo diferente de 0 deixa o job vermelho.
  */
 
 export const SEALS_CHECK_EXIT = { OK: 0, REFUSED: 1, USAGE: 2, UNEXPECTED: 3 } as const;
@@ -96,7 +97,7 @@ async function repoRootOf(fs: BytesFsOps, repo: string): Promise<string> {
   }
 }
 
-const TOO_MANY_CHANGES: SealsCheckReport = { touched: true, refusals: [refusal('S-05', 'SEALS_TOO_MANY')], manifests: [], closures: [], trustLists: [], chains: [] };
+const TOO_MANY_CHANGES: SealsCheckReport = { touched: true, refusals: [refusal('S-05', 'SEALS_TOO_MANY')], manifests: [], closures: [], trustLists: [], chains: [], chainsTruncated: false, incomplete: false };
 
 async function buildReport(args: SealsCheckArgs, fs: BytesFsOps): Promise<SealsCheckReport> {
   const repoRoot = await repoRootOf(fs, args.repo);
@@ -128,7 +129,13 @@ export async function runSealsCheckCli(argv: readonly string[], out: Line, err: 
   }
   summaryLines(report).forEach(out);
   const first = firstRefusalCode(report);
-  if (first === null) return SEALS_CHECK_EXIT.OK;
-  err(`ERRO ${first}`);
-  return SEALS_CHECK_EXIT.REFUSED;
+  if (first !== null) {
+    err(`ERRO ${first}`);
+    return SEALS_CHECK_EXIT.REFUSED; // uma etapa que falhou depois não apaga as recusas já coletadas
+  }
+  if (report.incomplete) {
+    err('ERRO SEALS_INTERNAL');
+    return SEALS_CHECK_EXIT.UNEXPECTED;
+  }
+  return SEALS_CHECK_EXIT.OK;
 }

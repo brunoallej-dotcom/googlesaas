@@ -137,6 +137,7 @@ export interface CheckOptions {
   readonly modeOverrides?: Readonly<Record<string, string>>;
   readonly baseTrust?: Partial<Record<ChannelEnvironment, BaseTrustList>>;
   readonly fs?: BytesFsOps;
+  readonly readBudgetBytes?: number;
 }
 
 /** O núcleo sobre o checkout fictício, com as entradas montadas como o workflow as entrega. Por padrão a lista do commit-base = a do commit. */
@@ -145,7 +146,19 @@ export async function check(w: World, changes: ReadonlyArray<readonly [ChangeSta
   const modes = parseTreeModes(modesBytes(w.root, options.modeOverrides));
   if (!parsed.ok || modes === null) throw new Error('entrada de teste fora da forma');
   const baseTrust = { producao: options.baseTrust?.producao ?? sameBase(w, 'producao'), homologacao: options.baseTrust?.homologacao ?? sameBase(w, 'homologacao') };
-  return runSealsCheck({ repoRoot: w.root, changes: parsed.entries, modes, baseTrust }, { fs: options.fs ?? nodeFsOps });
+  return runSealsCheck({ repoRoot: w.root, changes: parsed.entries, modes, baseTrust }, { fs: options.fs ?? nodeFsOps, ...(options.readBudgetBytes === undefined ? {} : { readBudgetBytes: options.readBudgetBytes }) });
+}
+
+/** As entradas do comando em arquivos (como o workflow as entrega): devolve o argv. `base` = texto da lista do commit-base por ambiente. */
+export function cliArgs(w: World, changes: ReadonlyArray<readonly [ChangeStatus | string, ...string[]]>, base: Partial<Record<ChannelEnvironment, string>> = {}): string[] {
+  const dir = tmpDir('p92-cli-');
+  fs.writeFileSync(path.join(dir, 'changes'), changesBytes(changes));
+  fs.writeFileSync(path.join(dir, 'modes'), modesBytes(w.root));
+  for (const [env, text] of Object.entries(base)) {
+    fs.mkdirSync(path.join(dir, 'base', env), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'base', env, 'trust-keys.txt'), text);
+  }
+  return ['--changes', path.join(dir, 'changes'), '--modes', path.join(dir, 'modes'), '--base-trust', path.join(dir, 'base'), '--repo', w.root];
 }
 
 export const codes = (report: SealsCheckReport): string[] => report.refusals.map((item) => item.code);

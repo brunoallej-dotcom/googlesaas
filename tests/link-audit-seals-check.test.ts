@@ -11,9 +11,9 @@ import { parseNameStatus, parseTreeModes } from '../src/lib/link-audit-seals-cha
 import { runSealsCheckCli, SEALS_CHECK_EXIT } from '../src/lib/link-audit-seals-channel/cli';
 import { classifyChannelPath } from '../src/lib/link-audit-seals-channel/paths';
 import { closureSummaryLine, manifestSummaryLine, summaryLines } from '../src/lib/link-audit-seals-channel/summary';
-import { registerCleanup, tmpDir } from './helpers/link-audit-evidence-fixtures';
+import { errno, registerCleanup, tmpDir } from './helpers/link-audit-evidence-fixtures';
 import { E1, E2, signer } from './helpers/link-audit-seal-close-key-fixtures';
-import { AUD_A, AUD_B, AUD_C, canonicalText, chainInRepo, changesBytes, check, closureFor, closureRepoPath, codes, listItem, modesBytes, nextSeal, sealRepoPath, world, writeRepoFile, writeTrustList, type World } from './helpers/link-audit-seals-fixtures';
+import { AUD_A, AUD_B, AUD_C, canonicalText, chainInRepo, changesBytes, check, cliArgs, closureFor, closureRepoPath, codes, listFile, listItem, modesBytes, nextSeal, sealRepoPath, world, writeRepoFile, writeTrustList, type World } from './helpers/link-audit-seals-fixtures';
 
 /*
  * P9.2 — o job `seals` (spec `docs/specs/ci-deploy-and-seal-delivery.md` §5.4, S-01 a S-14; critérios P9-S01 a P9-S12; o P9-S10 é o teste
@@ -400,4 +400,70 @@ test('o resumo nunca ecoa um caminho fora da gramática nem um auditId fora do p
   assert.ok(text.includes('SEALS_UNEXPECTED_PATH') && !text.includes('padaria'), 'só o código');
   const line = closureSummaryLine({ env: 'producao', relativePath: '_closures/ek-canal-a.json', bytesSha256: null, retiredKeyId: 'ek-canal-a', signerKeyId: 'ek-canal-b', heads: [{ auditId: 'padaria-exemplo-0001', seq: 1, sealSha256: '9'.repeat(64) }] });
   assert.ok(line.includes('`<fora do padrão>:1:999999999999`') && !line.includes('padaria'));
+});
+
+/* ------------------------------------------------------------------------------------------------------------------- revisão do PR #68 */
+
+const runCli = async (argv: readonly string[], fsPort: BytesFsOps = nodeFsOps): Promise<{ readonly exit: number; readonly out: string[]; readonly err: string[] }> => {
+  const out: string[] = [];
+  const err: string[] = [];
+  const exit = await runSealsCheckCli(argv, (line) => out.push(line), (line) => err.push(line), { fs: fsPort });
+  return { exit, out, err };
+};
+
+test('correção 4: lista válida alterada + um ARQUIVO comum em `<amb>/seals` ⇒ SEALS_UNEXPECTED_PATH (nunca SEALS_INTERNAL); a etapa informativa não lista o que não é diretório', async () => {
+  const w = world();
+  writeTrustList(w, [listItem(KEY_A)]);
+  writeRepoFile(w.root, 'link-audit-seals/producao/seals', 'não é uma pasta\n');
+  const added = await check(w, [['M', 'link-audit-seals/producao/trust-keys.txt'], ['A', 'link-audit-seals/producao/seals']], { baseTrust: { producao: { kind: 'absent' } } });
+  assert.equal(added.incomplete, false);
+  assert.deepEqual(added.refusals.map((item) => [item.rule, item.code, item.detail]), [['S-03', 'SEALS_UNEXPECTED_PATH', null], ['S-03', 'SEALS_UNEXPECTED_PATH', 'producao/seals']]);
+  const cli = await runCli(cliArgs(w, [['M', 'link-audit-seals/producao/trust-keys.txt'], ['A', 'link-audit-seals/producao/seals']]));
+  assert.equal(cli.exit, SEALS_CHECK_EXIT.REFUSED);
+  assert.deepEqual(cli.err, ['ERRO SEALS_UNEXPECTED_PATH']);
+  // o arquivo já estava lá (fora da mudança): a própria etapa informativa recusa, sem listar
+  const onlyList = await check(w, [['M', 'link-audit-seals/producao/trust-keys.txt']], { baseTrust: { producao: { kind: 'absent' } } });
+  assert.deepEqual(onlyList.refusals.map((item) => [item.code, item.detail]), [['SEALS_UNEXPECTED_PATH', 'producao/seals']]);
+  assert.deepEqual(onlyList.chains, []);
+});
+
+test('correção 4: uma etapa que lança depois de recusas coletadas não as apaga (saída 1 com a primeira); sem recusa nenhuma, a falha é SEALS_INTERNAL (saída 3)', async () => {
+  const { w, chain } = baseWorld();
+  const added = addNext(w, chain, { signer: KEY_A });
+  const broken: BytesFsOps = { ...nodeFsOps, readdir: async () => { throw errno('EIO'); } };
+  const report = await check(w, [['D', sealRepoPath(AUD_A, 1)], ['A', added]], { fs: broken });
+  assert.equal(report.incomplete, true, 'a etapa das cadeias falhou');
+  assert.deepEqual(codes(report), ['SEALS_NOT_APPEND_ONLY'], 'a recusa do S-01 continua');
+  const withRefusal = await runCli(cliArgs(w, [['D', sealRepoPath(AUD_A, 1)], ['A', added]]), broken);
+  assert.equal(withRefusal.exit, SEALS_CHECK_EXIT.REFUSED);
+  assert.deepEqual(withRefusal.err, ['ERRO SEALS_NOT_APPEND_ONLY']);
+  assert.ok(withRefusal.out.some((line) => line.startsWith('Verificação INCOMPLETA')));
+  const alone = await runCli(cliArgs(w, [['A', added]]), broken);
+  assert.equal(alone.exit, SEALS_CHECK_EXIT.UNEXPECTED);
+  assert.deepEqual(alone.err, ['ERRO SEALS_INTERNAL'], 'falha fechada');
+});
+
+test('correção 5: teto ÚNICO de leitura da execução (arquivos novos + releitura da cadeia + cabeças + listas) ⇒ SEALS_TOO_MANY `READ_BUDGET`; o teto informativo só trunca', async () => {
+  const { w, chain } = baseWorld();
+  addNext(w, chain, { signer: KEY_A });
+  addNext(w, chain, { signer: KEY_A });
+  const added = addNext(w, chain, { signer: KEY_A });
+  const newBytes = fs.statSync(path.join(w.root, ...added.split('/'))).size;
+  const listBytes = fs.statSync(path.join(w.root, 'link-audit-seals', 'producao', 'trust-keys.txt')).size;
+  assert.deepEqual(codes(await check(w, [['A', added]])), [], 'com o teto padrão passa');
+  // cabe o arquivo novo e as listas, não cabe a releitura da cadeia inteira pelo verificador (S-10)
+  const tight = await check(w, [['A', added]], { readBudgetBytes: newBytes + listBytes + 16 });
+  assert.deepEqual(tight.refusals[0], { rule: 'S-05', code: 'SEALS_TOO_MANY', path: null, detail: 'READ_BUDGET' }, 'a primeira recusa é a do teto');
+  // lista alterada com teto informativo pequeno: a informação das cadeias trunca, nada é recusado
+  const info = world();
+  writeTrustList(info, [listItem(KEY_A), listItem(KEY_B)]);
+  chainInRepo(info, AUD_A, [KEY_A, KEY_A]);
+  chainInRepo(info, AUD_B, [KEY_A]);
+  const listOnly = await check(info, [['M', 'link-audit-seals/producao/trust-keys.txt']], { baseTrust: { producao: { kind: 'bytes', bytes: Buffer.from(listFile([listItem(KEY_A)])) } }, readBudgetBytes: 4 * listBytes + newBytes });
+  assert.deepEqual(listOnly.refusals, []);
+  assert.equal(listOnly.chainsTruncated, true);
+  assert.ok(summaryLines(listOnly).some((line) => line.startsWith('Informação das cadeias TRUNCADA')));
+  const full = await check(info, [['M', 'link-audit-seals/producao/trust-keys.txt']], { baseTrust: { producao: { kind: 'bytes', bytes: Buffer.from(listFile([listItem(KEY_A)])) } } });
+  assert.deepEqual(full.chains.map((item) => [item.auditId, item.verdict, item.headSeq]), [[AUD_A, 'AUTHENTICATED', 2], [AUD_B, 'AUTHENTICATED', 1]]);
+  assert.equal(full.chainsTruncated, false);
 });

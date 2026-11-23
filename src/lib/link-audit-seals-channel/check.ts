@@ -1,5 +1,6 @@
 import type { BytesFsOps } from '../link-audit/fs-ops';
 import { sealSha256 as sealDigestOf } from '../link-audit-evidence/provenance-core';
+import { budgetedFs, readBudget } from './budget';
 import { auditDirOf, chainRefusalCode, chainVerdicts, isAtEnd, seqsOnDisk, type ChainVerdict } from './chains';
 import type { ChangeEntry } from './changes';
 import { closureMotive } from './closures';
@@ -25,6 +26,8 @@ export interface SealsCheckInput {
 }
 export interface SealsCheckDeps {
   readonly fs: BytesFsOps;
+  /** Teto de leitura da execução (padrão `MAX_RUN_READ_BYTES`); só os testes passam outro. */
+  readonly readBudgetBytes?: number;
 }
 
 /** S-14, manifesto: caminho relativo à pasta de manifestos do ambiente, `sha256sum` dos bytes, `seq` e `sealSha256` (null = não apurado). */
@@ -62,6 +65,10 @@ export interface SealsCheckReport {
   readonly trustLists: readonly TrustListLine[];
   /** Só informação: o veredito de cada cadeia do ambiente sob a lista nova, quando a lista mudou. */
   readonly chains: readonly ChainInfoLine[];
+  /** O teto informativo acabou antes da última cadeia (a informação está incompleta; nada é recusado por isso). */
+  readonly chainsTruncated: boolean;
+  /** Uma etapa falhou de forma inesperada: as recusas coletadas valem, mas a verificação não terminou (falha fechada). */
+  readonly incomplete: boolean;
 }
 
 type SealPath = Extract<ChannelPath, { readonly kind: 'seal' }>;
@@ -71,7 +78,7 @@ const isSealFile = (file: ReadFile): file is ReadFile & { readonly channel: Seal
 const isClosureFile = (file: ReadFile): file is ReadFile & { readonly channel: ClosurePath } => file.channel.kind === 'closure';
 const isTrustFile = (file: ReadFile): file is ReadFile & { readonly channel: TrustPath } => file.channel.kind === 'trust-list';
 
-const EMPTY_REPORT: SealsCheckReport = { touched: false, refusals: [], manifests: [], closures: [], trustLists: [], chains: [] };
+const EMPTY_REPORT: SealsCheckReport = { touched: false, refusals: [], manifests: [], closures: [], trustLists: [], chains: [], chainsTruncated: false, incomplete: false };
 
 function classify(changes: readonly ChangeEntry[]): ClassifiedChange[] {
   return changes.flatMap((entry) => {
@@ -113,33 +120,44 @@ function chainGroups(candidates: readonly Candidate[], judged: readonly JudgedSe
   return [...groups.values()].sort((a, b) => (`${a.env}/${a.auditId}` < `${b.env}/${b.auditId}` ? -1 : 1));
 }
 
+/** O que as etapas compartilham: a entrada, a porta já com o teto de leitura, as listas do commit e o coletor de recusas. */
+interface Run {
+  readonly input: SealsCheckInput;
+  readonly fs: BytesFsOps;
+  readonly refusals: SealsRefusal[];
+  trust: ReadonlyMap<ChannelEnvironment, CommitTrust>;
+}
+
+/** Recusa de `<amb>/seals` (ou da pasta de uma auditoria) que existe e não é diretório real: nunca é listada. */
+const notDirectory = (env: ChannelEnvironment, detail = `${env}/${SEALS_SUBDIR}`): SealsRefusal => refusal('S-03', 'SEALS_UNEXPECTED_PATH', null, detail);
+
 /** S-09 (nomes) e S-10 (cadeia pelo verificador real), por auditoria com arquivo novo. O S-10 só roda se todo arquivo novo dela passou do S-04 ao S-08. */
-async function chainRefusals(groups: readonly ChainGroup[], input: SealsCheckInput, trust: ReadonlyMap<ChannelEnvironment, CommitTrust>, fs: BytesFsOps): Promise<SealsRefusal[]> {
-  const refusals: SealsRefusal[] = [];
+async function chainStage(run: Run, groups: readonly ChainGroup[]): Promise<void> {
   for (const group of groups) {
-    const sealsDir = sealsDirOf(input.repoRoot, group.env);
+    const sealsDir = sealsDirOf(run.input.repoRoot, group.env);
     const newSeqs = group.candidates.map((candidate) => candidate.channel.seq);
-    const baseSeqs = (await seqsOnDisk(fs, auditDirOf(sealsDir, group.auditId))).filter((seq) => !newSeqs.includes(seq));
+    const onDisk = await seqsOnDisk(run.fs, auditDirOf(sealsDir, group.auditId));
+    if (onDisk === null) {
+      run.refusals.push(notDirectory(group.env, `${group.env}/${SEALS_SUBDIR}/${group.auditId}`));
+      continue;
+    }
     const lastPath = group.candidates.reduce((best, item) => (item.channel.seq > best.channel.seq ? item : best)).publicPath;
-    if (!isAtEnd(baseSeqs, newSeqs)) refusals.push(refusal('S-09', 'SEALS_NOT_AT_END', lastPath));
+    if (!isAtEnd(onDisk.filter((seq) => !newSeqs.includes(seq)), newSeqs)) run.refusals.push(refusal('S-09', 'SEALS_NOT_AT_END', lastPath));
     const passed = group.judged.filter((item): item is Extract<JudgedSeal, { readonly ok: true }> => item.ok);
     if (passed.length !== group.candidates.length) continue; // um arquivo novo recusado do S-04 ao S-08: a cadeia não é julgada
     const lastNew = passed.reduce((best, item) => (item.channel.seq > best.channel.seq ? item : best));
-    const code = await chainRefusalCode({ sealsDir, auditId: group.auditId, trustValue: trust.get(group.env)?.value ?? '', lastNew: lastNew.seal }, fs);
-    if (code !== null) refusals.push(refusal('S-10', code, lastNew.publicPath));
+    const code = await chainRefusalCode({ sealsDir, auditId: group.auditId, trustValue: run.trust.get(group.env)?.value ?? '', lastNew: lastNew.seal }, run.fs);
+    if (code !== null) run.refusals.push(refusal('S-10', code, lastNew.publicPath));
   }
-  return refusals;
 }
 
 /** S-11 em cada fecho novo que passou do S-04 ao S-08, contra a lista do commit do ambiente. */
-async function closureRefusals(closures: readonly JudgedClosure[], input: SealsCheckInput, trust: ReadonlyMap<ChannelEnvironment, CommitTrust>, fs: BytesFsOps): Promise<SealsRefusal[]> {
-  const refusals: SealsRefusal[] = [];
+async function closureStage(run: Run, closures: readonly JudgedClosure[]): Promise<void> {
   for (const item of closures) {
     if (!item.ok) continue;
-    const motive = await closureMotive(item.closure, trust.get(item.channel.env)?.ring ?? null, sealsDirOf(input.repoRoot, item.channel.env), fs);
-    if (motive !== null) refusals.push(refusal('S-11', `CLOSURE_${motive}`, item.publicPath));
+    const motive = await closureMotive(item.closure, run.trust.get(item.channel.env)?.ring ?? null, sealsDirOf(run.input.repoRoot, item.channel.env), run.fs);
+    if (motive !== null) run.refusals.push(refusal('S-11', `CLOSURE_${motive}`, item.publicPath));
   }
-  return refusals;
 }
 
 async function commitTrustByEnvironment(repoRoot: string, fs: BytesFsOps): Promise<Map<ChannelEnvironment, CommitTrust>> {
@@ -166,30 +184,45 @@ function closureLines(candidates: readonly Candidate[], judged: readonly JudgedC
   });
 }
 
-
-interface TrustStage {
-  readonly refusals: SealsRefusal[];
-  readonly lines: TrustListLine[];
-  readonly chains: ChainInfoLine[];
-}
-
-/** S-12 em cada lista alterada e lida, e o veredito informativo das cadeias do ambiente sob a lista nova. */
-async function trustStage(files: readonly ReadFile[], candidates: readonly Candidate[], input: SealsCheckInput, addedClosures: Readonly<Record<ChannelEnvironment, ReadonlySet<string>>>, fs: BytesFsOps): Promise<TrustStage> {
-  const stage: TrustStage = { refusals: [], lines: [], chains: [] };
+/** S-12 em cada lista alterada e lida. Devolve as linhas do resumo e, por ambiente, a lista nova (para o veredito informativo). */
+async function trustStage(run: Run, files: readonly ReadFile[], candidates: readonly Candidate[], lines: TrustListLine[]): Promise<Map<ChannelEnvironment, string>> {
+  const nextValues = new Map<ChannelEnvironment, string>();
+  const addedClosures = addedClosuresByEnvironment(candidates);
   for (const candidate of candidates) {
     if (candidate.channel.kind !== 'trust-list') continue;
     const env = candidate.channel.env;
     const file = files.filter(isTrustFile).find((item) => item.repoPath === candidate.repoPath);
     if (!file) {
-      stage.lines.push({ env, bytesSha256: null, items: null, notices: [] });
+      lines.push({ env, bytesSha256: null, items: null, notices: [] });
       continue;
     }
-    const outcome = await judgeTrustList({ file, base: input.baseTrust[env], repoRoot: input.repoRoot, addedClosureKeyIds: addedClosures[env] }, fs);
-    stage.refusals.push(...outcome.refusals);
-    stage.lines.push({ env, bytesSha256: file.bytesSha256, items: outcome.items, notices: outcome.notices });
-    if (outcome.nextValue !== null) stage.chains.push(...(await chainVerdicts(sealsDirOf(input.repoRoot, env), outcome.nextValue, fs)).map((verdict) => ({ ...verdict, env })));
+    const outcome = await judgeTrustList({ file, base: run.input.baseTrust[env], repoRoot: run.input.repoRoot, addedClosureKeyIds: addedClosures[env] }, run.fs);
+    run.refusals.push(...outcome.refusals);
+    lines.push({ env, bytesSha256: file.bytesSha256, items: outcome.items, notices: outcome.notices });
+    if (outcome.nextValue !== null) nextValues.set(env, outcome.nextValue);
   }
-  return stage;
+  return nextValues;
+}
+
+/**
+ * Só informação (§5.4): o veredito de cada cadeia do ambiente sob a lista nova, com teto de leitura PRÓPRIO (esgotado, trunca). A única
+ * recusa possível é a de `<amb>/seals` que não é diretório real (nunca listado).
+ */
+async function informativeStage(run: Run, nextValues: ReadonlyMap<ChannelEnvironment, string>, budgetBytes: number | undefined, out: { chains: ChainInfoLine[]; truncated: boolean }, rawFs: BytesFsOps): Promise<void> {
+  const budget = readBudget(budgetBytes);
+  const fs = budgetedFs(rawFs, budget);
+  for (const [env, value] of nextValues) {
+    const listed = await chainVerdicts(sealsDirOf(run.input.repoRoot, env), value, fs, () => budget.exhausted);
+    if (listed.kind === 'not-directory') {
+      run.refusals.push(notDirectory(env));
+      continue;
+    }
+    out.chains.push(...listed.verdicts.map((verdict) => ({ ...verdict, env })));
+    if (listed.truncated) {
+      out.truncated = true;
+      return;
+    }
+  }
 }
 
 function addedClosuresByEnvironment(candidates: readonly Candidate[]): Record<ChannelEnvironment, Set<string>> {
@@ -198,28 +231,48 @@ function addedClosuresByEnvironment(candidates: readonly Candidate[]): Record<Ch
   return added;
 }
 
+/** Roda uma etapa sem deixar uma falha inesperada apagar as recusas já coletadas: a falha só marca a execução como incompleta. */
+async function guarded(state: { incomplete: boolean }, stage: () => Promise<void>): Promise<void> {
+  try {
+    await stage();
+  } catch {
+    state.incomplete = true;
+  }
+}
+
 /**
- * As regras S-01 a S-13 (§5.4) sobre a mudança. Nunca lança por conteúdo de arquivo (um erro de E/S inesperado do checkout sobe a quem chama,
- * que responde com falha fechada). Nada é escrito.
+ * As regras S-01 a S-13 (§5.4) sobre a mudança. Uma falha inesperada numa etapa não apaga as recusas já coletadas: a execução fica
+ * `incomplete` (quem chama recusa com a primeira recusa ou, sem nenhuma, com falha interna). Toda leitura conta no teto único da execução
+ * (`MAX_RUN_READ_BYTES`); esgotado ⇒ `SEALS_TOO_MANY` (`READ_BUDGET`). Nada é escrito.
  */
 export async function runSealsCheck(input: SealsCheckInput, deps: SealsCheckDeps): Promise<SealsCheckReport> {
   const classified = classify(input.changes);
   if (classified.length === 0) return EMPTY_REPORT;
-  const refusals = structuralRefusals(classified);
-  const candidates = candidatesOf(classified);
   const touched = environmentsTouched(classified);
-  refusals.push(...togetherRefusals(touched.trust, touched.seals));
+  const candidates = candidatesOf(classified);
+  const refusals = [...structuralRefusals(classified), ...togetherRefusals(touched.trust, touched.seals)];
   if (candidates.length > MAX_NEW_FILES) return { ...EMPTY_REPORT, touched: true, refusals: sortRefusals([...refusals, refusal('S-05', 'SEALS_TOO_MANY')]) };
-  const moded = await checkModes(candidates, input.modes, input.repoRoot, deps.fs);
-  const read = await readWithinLimits(moded.sized, input.repoRoot, deps.fs);
-  refusals.push(...moded.refusals, ...read.refusals);
-  const seals = read.files.filter(isSealFile).map(judgeSeal);
-  const closures = read.files.filter(isClosureFile).map(judgeClosure);
-  for (const item of [...seals, ...closures]) if (!item.ok) refusals.push(item.refusal);
-  const trust = await commitTrustByEnvironment(input.repoRoot, deps.fs);
-  refusals.push(...(await chainRefusals(chainGroups(candidates, seals), input, trust, deps.fs)));
-  refusals.push(...(await closureRefusals(closures, input, trust, deps.fs)));
-  const stage = await trustStage(read.files, candidates, input, addedClosuresByEnvironment(candidates), deps.fs);
-  refusals.push(...stage.refusals);
-  return { touched: true, refusals: sortRefusals(refusals), manifests: manifestLines(candidates, seals), closures: closureLines(candidates, closures), trustLists: stage.lines, chains: stage.chains };
+  const budget = readBudget(deps.readBudgetBytes);
+  const run: Run = { input, fs: budgetedFs(deps.fs, budget), refusals, trust: new Map() };
+  const state = { incomplete: false };
+  const out = { files: [] as ReadFile[], seals: [] as JudgedSeal[], closures: [] as JudgedClosure[], lines: [] as TrustListLine[], chains: [] as ChainInfoLine[], truncated: false, next: new Map<ChannelEnvironment, string>() };
+  await guarded(state, async () => {
+    const moded = await checkModes(candidates, input.modes, input.repoRoot, run.fs);
+    refusals.push(...moded.refusals);
+    const read = await readWithinLimits(moded.sized, input.repoRoot, run.fs);
+    refusals.push(...read.refusals);
+    out.files = read.files;
+    out.seals = read.files.filter(isSealFile).map(judgeSeal);
+    out.closures = read.files.filter(isClosureFile).map(judgeClosure);
+    for (const item of [...out.seals, ...out.closures]) if (!item.ok) refusals.push(item.refusal);
+    run.trust = await commitTrustByEnvironment(input.repoRoot, run.fs);
+  });
+  await guarded(state, () => chainStage(run, chainGroups(candidates, out.seals)));
+  await guarded(state, () => closureStage(run, out.closures));
+  await guarded(state, async () => {
+    out.next = await trustStage(run, out.files, candidates, out.lines);
+  });
+  await guarded(state, () => informativeStage(run, out.next, deps.readBudgetBytes, out, deps.fs));
+  if (budget.exhausted) refusals.push(refusal('S-05', 'SEALS_TOO_MANY', null, 'READ_BUDGET'));
+  return { touched: true, refusals: sortRefusals(refusals), manifests: manifestLines(candidates, out.seals), closures: closureLines(candidates, out.closures), trustLists: out.lines, chains: out.chains, chainsTruncated: out.truncated, incomplete: state.incomplete };
 }
