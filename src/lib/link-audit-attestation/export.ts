@@ -1,5 +1,7 @@
 import { evidenceToProveFromBasis } from '../link-audit-evidence/evidence-to-prove';
 import { AUDIT_ID_PATTERN } from '../link-audit-evidence/types';
+// W5.2b (spec §5.7): o rótulo e a regra da trava de homologação, reexportados para o CLI do P1 (que só importa o módulo de atestação)
+export { HOMOLOGATION_LOCK_ENV, isHomologationLockOn, SIMULATED_LABEL } from '../link-audit-evidence/simulated';
 import { computePackageSha256, PackageHashError } from './package-hash';
 import { ATTESTATION_SCHEMA_VERSION, candidatePackageSchema, CHECK_IDS, hasNoControlChars, MAX_PACKAGE_ENTRIES, PACKAGE_KIND, type CandidatePackage, type PackageBody } from './schemas';
 
@@ -20,6 +22,8 @@ export const EXPORT_REFUSAL_CODES = [
   'EXPORT_OUT_UNSAFE',
   'EXPORT_OUT_WRITE_FAILED',
   'EXPORT_TOO_MANY_ENTRIES',
+  // W5.2b (spec §5.7): captura SIMULADA sem a trava de homologação, ou `--simulated` sem trava / sem captura simulada
+  'EXPORT_SIMULATED_CAPTURE',
   'UNEXPECTED',
 ] as const;
 export type ExportRefusalCode = (typeof EXPORT_REFUSAL_CODES)[number];
@@ -46,7 +50,7 @@ export const captureLabel = (n: number): string => `c${String(n).padStart(4, '0'
 /** Forma mínima da base de pontuação (`ScoringBasis` a satisfaz); estrutural para este arquivo não importar o leitor. */
 export interface ExportBasis {
   readonly layout: 'VERSIONED' | 'LEGACY';
-  readonly evidences: ReadonlyArray<{ readonly ref: string; readonly kind: 'CAPTURE' | 'REPORT'; readonly capture: number; readonly observedAt: string; readonly contentSha256: string; readonly legacy: boolean }>;
+  readonly evidences: ReadonlyArray<{ readonly ref: string; readonly kind: 'CAPTURE' | 'REPORT'; readonly capture: number; readonly observedAt: string; readonly contentSha256: string; readonly legacy: boolean; readonly simulated?: true }>;
   readonly artifacts?: ReadonlyArray<{ readonly ref: string; readonly contentSha256: string; readonly legacy: boolean }>;
 }
 /** O que o leitor de evidências expõe por captura (`VersionEntry`). */
@@ -72,6 +76,10 @@ export interface CandidateInput {
   readonly maxGapHours: number | null;
   readonly gapJustification: string | null;
   readonly now: Date;
+  /** `--simulated`: quem chama AFIRMA que a auditoria é a coleta SIMULADA do ensaio. Sozinho não basta. */
+  readonly allowSimulated?: boolean;
+  /** Trava de homologação lida por quem chama (`GMN_LINK_AUDIT_HOMOLOGATION=1`). Ausente = desligada. Só a opção E a trava juntas exportam captura simulada. */
+  readonly homologationLock?: boolean;
 }
 export type CandidateResult = { readonly ok: true; readonly package: CandidatePackage } | ExportRefusal;
 export interface CandidateDelta {
@@ -160,10 +168,27 @@ function legacyChecks(input: CandidateInput): Decided {
   return { ok: true, statuses: {}, gap: null };
 }
 
+/** A base tem evidência da coleta SIMULADA do ensaio (marca da captura, spec §5.7). */
+export const basisIsSimulated = (basis: ExportBasis): boolean => basis.evidences.some((e) => e.simulated === true);
+
+/**
+ * W5.2b: captura simulada só com `--simulated` + trava; e `--simulated` só numa auditoria simulada (a opção AFIRMA que ela é simulada). Esta é a
+ * segunda camada: confere a trava de novo, independente da recusa antecipada do CLI.
+ */
+function simulationRefusal(basis: ExportBasis, allowSimulated: boolean, homologationLock: boolean): ExportRefusal | null {
+  if (allowSimulated && !homologationLock) return refuse('EXPORT_SIMULATED_CAPTURE', '--simulated sem a trava de homologação ligada: nada foi exportado.');
+  const simulated = basisIsSimulated(basis);
+  if (simulated && !allowSimulated) return refuse('EXPORT_SIMULATED_CAPTURE', 'Captura SIMULADA (ensaio de homologação): não é evidência real. O export só a aceita com --simulated e a trava de homologação. Nada foi exportado.');
+  if (!simulated && allowSimulated) return refuse('EXPORT_SIMULATED_CAPTURE', '--simulated informado, mas esta auditoria não tem captura simulada. Nada foi exportado.');
+  return null;
+}
+
 /** Monta o pacote candidato ou recusa. Nunca lança por causa do conteúdo lido. */
 export function buildCandidatePackage(input: CandidateInput): CandidateResult {
   const nowMs = input.now.getTime();
   if (!Number.isFinite(nowMs)) return refuse('UNEXPECTED', 'Relógio inválido.');
+  const simulation = simulationRefusal(input.basis, input.allowSimulated === true, input.homologationLock === true);
+  if (simulation) return simulation;
   const entries = evidenceToProveFromBasis(input.basis).sort(byRef);
   if (entries.length > MAX_PACKAGE_ENTRIES) return refuse('EXPORT_TOO_MANY_ENTRIES', `Mais de ${MAX_PACKAGE_ENTRIES} entradas; o pacote não é produzido.`);
   const captures = input.basis.evidences.filter((e) => e.kind === 'CAPTURE');
@@ -196,6 +221,8 @@ export function buildCandidatePackage(input: CandidateInput): CandidateResult {
     checks: CHECK_IDS.map((id) => ({ id, status: decided.statuses[id] ?? 'NOT_EXECUTED' })),
     gap: decided.gap,
     entries,
+    // a marca da coleta SIMULADA entra no corpo (e no hash) só quando a exportação simulada foi permitida (opção + trava)
+    ...(basisIsSimulated(input.basis) ? { simulated: true as const } : {}),
   };
   let packageSha256: string;
   try {

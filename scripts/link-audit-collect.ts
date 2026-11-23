@@ -11,6 +11,10 @@
  * `GMN_LINK_AUDIT_AUTH_ID=<mesmo id>` no ambiente daquele comando. Faz no máximo UMA chamada ao Serper /maps,
  * nenhuma ao /reviews, e marca a autorização como usada antes de chamar (repetir o comando é recusado).
  * Nada é gravado além desse marcador. Este arquivo nunca altera o `.env.local`.
+ *
+ * Modo SIMULATED (SÓ o ensaio da W5 em homologação; W5.2b, spec do P1 §5.7): `--simulated --audit <auditId> --operator <e-mail>
+ * --evidence-dir <pasta>` MAIS `GMN_LINK_AUDIT_HOMOLOGATION=1` no ambiente do comando. Link, identificadores e empresa são fixos e sintéticos;
+ * nenhuma rede, nenhum arquivo de ambiente lido, nenhum provedor real. Grava a captura e o relatório MARCADOS como SIMULADA (dentro do hash).
  */
 import path from 'node:path';
 import { loadEnvConfig } from '@next/env';
@@ -26,6 +30,9 @@ import { describeRuntimeConfig, readRuntimeConfig, type EnvLike, type RuntimeCon
 import { runLinkAuditCollection, type RunOutcome } from '@/lib/link-audit-runtime/run';
 import { assertSerperMapsUrl, createSerperMapsProvider } from '@/lib/link-audit-runtime/serper-maps-provider';
 import { SITE_MAX_HTTP_REQUESTS, createSiteProvider } from '@/lib/link-audit-runtime/site-provider';
+import { simulatedCollectionInput } from '@/lib/link-audit-runtime/simulated-provider';
+import { HOMOLOGATION_LOCK_ENV, isHomologationLockOn, SIMULATED_LABEL } from '@/lib/link-audit-evidence/simulated';
+import { AUDIT_ID_PATTERN } from '@/lib/link-audit-evidence/types';
 import {
   createFileUsedStore,
   defaultUsedAuthorizationDirectory,
@@ -45,8 +52,11 @@ export interface CliDeps {
   readonly evidenceOptions?: { readonly fs?: FsOps; readonly projectRoot?: string };
 }
 
-const VALUE_FLAGS = new Set(['link', 'name', 'city', 'uf', 'operator', 'snapshot-id', 'authorization-id', 'max-maps-calls', 'expires-in-minutes', 'evidence-dir']);
-const BOOLEAN_FLAGS = new Set(['live', 'ack-cost', 'json', 'help']);
+const VALUE_FLAGS = new Set(['link', 'name', 'city', 'uf', 'operator', 'snapshot-id', 'authorization-id', 'max-maps-calls', 'expires-in-minutes', 'evidence-dir', 'audit']);
+const BOOLEAN_FLAGS = new Set(['live', 'ack-cost', 'json', 'help', 'simulated']);
+/** Opções que NÃO existem no modo SIMULATED: as do LIVE e as que poriam dado de empresa (link, nome, cidade, UF são fixos e sintéticos). */
+const NOT_IN_SIMULATED = ['live', 'ack-cost', 'authorization-id', 'max-maps-calls', 'expires-in-minutes', 'link', 'name', 'city', 'uf'] as const;
+const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 export const USAGE = [
   'Uso: npm run link-audit:collect -- --link <link> --operator <e-mail> [--name <nome>] [--city <cidade>] [--uf <UF>] [--json]',
@@ -54,6 +64,8 @@ export const USAGE = [
   'LIVE (somente com autorização escrita): --live --authorization-id <id> --max-maps-calls 1 --ack-cost --evidence-dir <pasta privada>',
   '  --evidence-dir é OBRIGATÓRIO no LIVE: a resposta paga é gravada automaticamente (e o LIVE é bloqueado se o armazenamento não estiver pronto).',
   '  + no ambiente do comando: GMN_LINK_AUDIT_LIVE=on GMN_LINK_AUDIT_MAX_MAPS_CALLS=1 GMN_LINK_AUDIT_AUTH_ID=<mesmo id>',
+  'SIMULATED (SÓ o ensaio em homologação; dados sintéticos fixos, sem rede): --simulated --audit <auditId> --operator <e-mail> --evidence-dir <pasta> [--snapshot-id <id>] [--json]',
+  `  + no ambiente do comando: ${HOMOLOGATION_LOCK_ENV}=1 (sem a trava, recusado). Não aceita --link, --name, --city, --uf nem as opções do LIVE.`,
 ];
 
 interface ParsedArgs {
@@ -132,8 +144,13 @@ export async function runCli(argv: readonly string[], deps: CliDeps): Promise<nu
     USAGE.forEach(deps.out);
     return 0;
   }
+  if (flags.has('simulated')) return runSimulated(values, flags, deps);
+  if (values.audit !== undefined) {
+    deps.err('--audit só existe no modo --simulated (no LIVE, o id da auditoria é o da autorização).');
+    return 1;
+  }
   const operator = values.operator?.trim() ?? '';
-  if (!values.link || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(operator)) {
+  if (!values.link || !EMAIL.test(operator)) {
     deps.err('Informe --link e --operator (e-mail de quem está executando).');
     USAGE.forEach(deps.err);
     return 1;
@@ -231,10 +248,15 @@ export async function runCli(argv: readonly string[], deps: CliDeps): Promise<nu
     },
   );
   print(deps, outcome, asJson);
+  return persistedExit(outcome, deps); // depois de consumida a autorização, nunca "recusado antes de qualquer chamada"
+}
+
+/** Código de saída de uma coleta que GRAVA (LIVE ou SIMULATED): 5 = resposta não totalmente persistida; 4 = relatório não gerado. */
+function persistedExit(outcome: RunOutcome, deps: CliDeps): number {
   if (!outcome.ok) {
     if (outcome.persisted) {
       outcome.persisted.errors.forEach((error) => deps.err(`ATENÇÃO: ${redactUrlsInText(error)}`));
-      return outcome.persisted.errors.length > 0 ? 5 : 4; // a autorização já foi consumida: nunca "recusado antes de qualquer chamada"
+      return outcome.persisted.errors.length > 0 ? 5 : 4;
     }
     return outcome.code === 'PROVIDER_SETUP_FAILED' ? 4 : 3;
   }
@@ -243,6 +265,47 @@ export async function runCli(argv: readonly string[], deps: CliDeps): Promise<nu
     if (!outcome.persisted.storedReport) return 4;
   }
   return 0;
+}
+
+/**
+ * SIMULATED gravado (ensaio da W5 em homologação, spec do P1 §5.7). A trava vem SÓ do ambiente deste comando: o arquivo de ambiente nunca é
+ * lido aqui (nem a chave do Serper), nenhum provedor real é criado e o registro de autorizações não é tocado.
+ */
+async function runSimulated(values: Readonly<Record<string, string>>, flags: ReadonlySet<string>, deps: CliDeps): Promise<number> {
+  const conflicts = NOT_IN_SIMULATED.filter((name) => flags.has(name) || values[name] !== undefined);
+  if (conflicts.length > 0) {
+    deps.err(`O modo SIMULATED (ensaio) não aceita ${conflicts.map((name) => `--${name}`).join(', ')}: link, empresa e identificadores são fixos e sintéticos, e não há consulta paga.`);
+    USAGE.forEach(deps.err);
+    return 1;
+  }
+  const operator = values.operator?.trim() ?? '';
+  const auditId = values.audit ?? '';
+  if (!EMAIL.test(operator) || !AUDIT_ID_PATTERN.test(auditId) || !values['evidence-dir']) {
+    deps.err('No modo SIMULATED informe --audit <auditId> (8 a 64 caracteres: minúsculas, números, _ e -), --operator <e-mail> e --evidence-dir <pasta>.');
+    USAGE.forEach(deps.err);
+    return 1;
+  }
+  const env = deps.getEnv();
+  if (!isHomologationLockOn(env)) {
+    const production = env.NODE_ENV === 'production' ? ' NODE_ENV=production sem a trava de homologação.' : '';
+    deps.err(`SIMULATED recusado: falta a trava de homologação (${HOMOLOGATION_LOCK_ENV}=1 no ambiente deste comando).${production} Nada foi gravado.`);
+    return 3;
+  }
+  const asJson = flags.has('json');
+  const stamp = deps.now().toISOString().replace(/\D/g, '').slice(0, 14);
+  const input = simulatedCollectionInput({ operator, confirmedAt: deps.now().toISOString(), snapshotId: values['snapshot-id'] ?? `ensaio-${stamp}` });
+  if (!asJson) deps.out(`${SIMULATED_LABEL}: coleta SINTÉTICA de homologação; nenhuma consulta foi feita e nada disto é evidência real.`);
+  const outcome = await runLinkAuditCollection(
+    { mode: 'SIMULATED', input, auditId },
+    {
+      now: deps.now,
+      homologation: true,
+      // projectRoot fixo na raiz do projeto, como no LIVE: a proibição de public/, src/ etc. vale de qualquer pasta
+      evidence: { baseDir: path.resolve(values['evidence-dir'] as string), projectRoot: path.resolve(__dirname, '..'), ...(deps.evidenceOptions ?? {}) },
+    },
+  );
+  print(deps, outcome, asJson);
+  return persistedExit(outcome, deps);
 }
 
 function defaultDeps(): CliDeps {

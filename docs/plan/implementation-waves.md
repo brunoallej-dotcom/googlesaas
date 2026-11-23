@@ -20,7 +20,7 @@
 | R1 | ADR-0002: confirmação de resultados pelo livro de cabeças (fase C do resultado só pelo autor) | W0 (§16.17 revisada), W1, W3 | W2 | ✅ R1.1–R1.6 mergeadas (#39, #41, #45, #46, #49 e o PR da R1.6); portão da R1 satisfeito no código, nada implantado |
 | R2 | Resultado confirmado registra a proveniência que o atestou (`headSeq`, `headSealSha256`, `keyIds`); `UNAUTHENTICATED` na releitura ⇒ revisão humana | W3, R1 | W4 | ✅ R2.1 (#55: prova na avaliação, campo gravado e validado) e R2.2 (reconferência na releitura, porta, estado e rótulos na interface) neste PR; portão da R2 satisfeito no código, nada implantado |
 | W4 | CLI `sign` (manifesto `v2`) | W1, W3, decisões §13.2 itens 1, 2 e 4 (tomadas: D10, D11, D12/D14) | — | 🟡 W4.1 (#38), W4.2 (#40), W4.3 (#42), W4.4 (#44) e W4.5 (#48) mergeadas; W4.6 em revisão |
-| W5 | Procedimento, dossiê e ensaio ponta a ponta em homologação com chave descartável | W4, R1, R2 | — | 🟡 W5.1 (documentação) ✅ neste PR; W5.2 (pendências de código) e W5.3 (ensaio em homologação) a seguir |
+| W5 | Procedimento, dossiê e ensaio ponta a ponta em homologação com chave descartável | W4, R1, R2 | — | 🟡 W5.1 (documentação, PR #58) ✅; W5.2a (PR #59) ✅; W5.2b (coleta SIMULADA) ✅; resta da W5.2 só o canal de entrega pelo CI (aguarda o P-9); W5.3 (ensaio em homologação) a seguir |
 | W6 | Coleta LIVE nova da AUD-001 (fora do código) | W5 + autorização escrita específica (**dada em 20/11/2026, D16**) | — | ⬜ autorizada; roda depois do ensaio da W5 |
 
 Ordem prática: W0 → {W1 ∥ W3} → {W2 ∥ R1} → {R2 ∥ W4} → W5 → W6. A R1 espera a W3 porque as duas mexem nos validadores da
@@ -429,9 +429,11 @@ interface (`audit-page/validators.ts`).
 
   | Fatia | Entrega | Status |
   |---|---|---|
-  | W5.1 | Documentação, sem código: `p1-runbook-custodiante.md` (estação, artefato, linha exata do `sign`, chave K1 e conferência do perfil do KDF, cópias, fluxo, aceite de risco, `close-key`, destruição da chave do ensaio, suplente), `p1-runbook-conferente.md`, `p1-modelo-dossie.md` (partes A e B, aceite formal de risco), `p1-livro-de-manifestos.md` (formato e conferência periódica), `p1-canal-de-entrega-manifestos.md` (requisitos RC-01 a RC-10 e procedimento do canal pelo CI) e `p1-relatorio-ensaio-modelo.md` (roteiro do ensaio e verificação de entrada da nota 6 da R2.1) | ✅ neste PR |
-  | W5.2 | Pendências de código achadas na W5.1 (lista abaixo), com testes antes do código | ⬜ |
-  | W5.3 | Ensaio em homologação com chave descartável e o relatório `p1-relatorio-ensaio.md` (goal da onda). Depende dos itens 1, 2 e 4 da W5.2 (o item 2 só para o passo opcional do `close-key`) e da pilha de homologação isolada criada pelo responsável (D-G0-12), com o volume de manifestos (G1.a). **Não** depende do canal do CI: a entrega é manual, como desvio declarado (decisão a abaixo) | ⬜ |
+  | W5.1 | Documentação, sem código: `p1-runbook-custodiante.md` (estação, artefato, linha exata do `sign`, chave K1 e conferência do perfil do KDF, cópias, fluxo, aceite de risco, `close-key`, destruição da chave do ensaio, suplente), `p1-runbook-conferente.md`, `p1-modelo-dossie.md` (partes A e B, aceite formal de risco), `p1-livro-de-manifestos.md` (formato e conferência periódica), `p1-canal-de-entrega-manifestos.md` (requisitos RC-01 a RC-10 e procedimento do canal pelo CI) e `p1-relatorio-ensaio-modelo.md` (roteiro do ensaio e verificação de entrada da nota 6 da R2.1) | ✅ PR #58 |
+  | W5.2a | Itens 1 e 2 das pendências abaixo: D15.6(d) (`operator = custodiante` marca `requiresLaterReview`) e o `close-key` sob `--permission` com a linha larga, exercitado no CI; notas e histórico do hash do artefato na spec do P1 §5.5.1 | ✅ PR #59 |
+  | W5.2b | Item 4 das pendências abaixo: coleta SIMULADA para o ensaio (spec do P1 §5.7, D15.8). Entregue: `--simulated` no CLI de coleta, só com `GMN_LINK_AUDIT_HOMOLOGATION=1` no ambiente do comando (nunca lê arquivo de ambiente, nunca cria provedor real); dados sintéticos fixos ("Empresa de Ensaio", FID `0x0:0xe5a10`, CID `940560`); runtime que grava só com `homologation: true`, só com o gerador sintético e só com a identidade sintética; marca persistente `provider: "SIMULATED"` + `simulated: true` na captura (dentro do hash, sem mudar o formato do pacote nem do manifesto `v2`) e no relatório; simulada e real nunca na mesma auditoria; `export` que recusa a captura simulada (`EXPORT_SIMULATED_CAPTURE`) salvo com `--simulated` + a trava, em duas camadas (CLI e módulo); marca também no pacote (`simulated: true`, dentro do `packageSha256`, ausente nos reais) e `sign` que só assina pacote simulado com a opção própria `--simulated` (aviso "SIMULADA — ensaio" na confirmação; revisão do PR #62); relatório e telas atribuindo os dados ao gerador sintético, nunca ao Serper; pré-checagem de mistura que falha fechada; leitor e telas das evidências com "SIMULADA — ensaio"; bloqueio `SIMULATED_EVIDENCE` na prévia (`BLOCKING` sem a trava no servidor, `WARNING` com ela), que impede a finalização e a conclusão de pendente fora da homologação; a `stack.yml` de produção não declara a trava (teste). Testes `tests/link-audit-simulated-collection.test.ts` e `tests/link-audit-simulated-guards.test.ts` (zero rede por armadilhas, mutações à mão: cada camada morre sozinha); hash do artefato refeito no merge com a W5.2a (`78de412e…`) e depois da revisão do PR #62 (`37797893…`, e `2fbf9851…` na confirmação dela); confirmação da revisão: reserva exclusiva do modo da auditoria (`audit-mode.json`; a resposta paga que não grava, por qualquer motivo, vai para um arquivo novo da quarentena `_quarentena-resgate-live`, fora das auditorias, com recuperação manual), nenhuma atribuição ao Serper no simulado (base, relatório, prévia e telas) e chaves de ensaio com o prefixo reservado `ensaio-` (`sign --simulated` só com elas, `sign` real nunca, servidor sem a trava recusa a lista); limite declarado: o SIMULATED da Onda 4B sem gravação não exige a trava e nenhum CLI ou rota o alcança (teste estático); roteiro do ensaio (S-02, S-03, PC-5 para S-12/S-13, AT-W5-08, D-02) e runbooks atualizados | ✅ |
+  | W5.2 (resto) | Só o item 3 abaixo: o canal de entrega pelo CI. **Aguarda a decisão do responsável sobre o P-9** (decisão c); não bloqueia a W5.3 (decisão a), bloqueia a G2 e a produção | ⬜ aguarda o P-9 |
+  | W5.3 | Ensaio em homologação com chave descartável e o relatório `p1-relatorio-ensaio.md` (goal da onda). As dependências de código (itens 1, 2 e 4 da W5.2) estão entregues (W5.2a e W5.2b); falta a pilha de homologação isolada criada pelo responsável (D-G0-12), com o volume de manifestos (G1.a) e o web com `GMN_LINK_AUDIT_HOMOLOGATION=1` (PC-5 do roteiro; nunca em produção). **Não** depende do canal do CI: a entrega é manual, como desvio declarado (decisão a abaixo) | ⬜ |
 
   **Decisões do manager sob a delegação D15 (22/11/2026, revisão do PR #58):**
   - **a.** O ensaio W5.3 pode rodar em homologação com entrega **manual** do manifesto, registrada no relatório como desvio
@@ -445,21 +447,21 @@ interface (`audit-page/validators.ts`).
     protegido, com aprovação do responsável, por chave SSH restrita a um comando receptor que confere de novo a assinatura e grava
     com criação exclusiva e `fsync`.
 
-  **Pendências de código da W5.2:**
-  1. **D15.6(d)** (`operator = custodiante` passa a marcar `requiresLaterReview: true`): hoje a marca é `roleException ||
+  **Pendências de código da W5.2** (1, 2 e 4 entregues pela W5.2a e pela W5.2b; resta só a 3):
+  1. ✅ (W5.2a) **D15.6(d)** (`operator = custodiante` passa a marcar `requiresLaterReview: true`): hoje a marca é `roleException ||
      sameRole(operator, approvedBy)` (`src/lib/link-audit-attestation/sign-core.ts:366`); falta o caso operador = custodiante, com
      teste (IA-16) e a spec §5.5 passo 9 atualizada. Decisão do manager registrada na W5.1: não implementar na fatia de documentação.
-  2. **`close-key` sob `--permission`:** aceitar `--allow-fs-read=/` só no `close-key` e só como o único grant de leitura (`/` é
+  2. ✅ (W5.2a) **`close-key` sob `--permission`:** aceitar `--allow-fs-read=/` só no `close-key` e só como o único grant de leitura (`/` é
      prefixo de texto de todos), mantendo a escrita só em `_closures`. Hoje `isNarrowPath` recusa `/` nos dois subcomandos
      (`src/lib/link-audit-attestation/sign-args.ts:493`, aplicado em `:510`; o comentário de `:495-501` já registra o limite até a
      W5). Falta também exercitar o `close-key` completo pelo artefato sob `--permission` no CI (nunca exercitado: notas da W4.6,
      revisão item 5) e confirmar se criar `_closures` e o `fsync` da pasta funcionam com o grant de escrita só em `_closures`.
-  3. **Canal de entrega pelo CI** (D7, D15.5): workflow, comando de pré-verificação com o verificador `v2`, receptor no host com
+  3. ⬜ **Canal de entrega pelo CI** (D7, D15.5): workflow, comando de pré-verificação com o verificador `v2`, receptor no host com
      criação exclusiva e `fsync`, testes (CE-1, CE-2, CE-3 e CE-5 de `p1-canal-de-entrega-manifestos.md` §5; o CE-4, volume no
      `stack.yml`, é da G1.a). **Aguarda a decisão do responsável sobre o P-9** (decisão c acima); só depois dela vira código.
      Falta decidir também de onde o CI lê a lista fixada (§4 do mesmo documento). Não bloqueia a W5.3 (decisão a); bloqueia a G2
      e a produção.
-  4. **Coleta sintética para a homologação:** a pilha não tem Serper (D-G0-12), e o CLI de coleta só expõe DRY_RUN e LIVE
+  4. ✅ (W5.2b, spec do P1 §5.7) **Coleta sintética para a homologação:** a pilha não tem Serper (D-G0-12), e o CLI de coleta só expõe DRY_RUN e LIVE
      (`scripts/link-audit-collect.ts:51-56`); o modo SIMULATED existe só no runtime, com provedores injetados
      (`src/lib/link-audit-runtime/run.ts:158-160`). Sem um comando (ou semente) que grave uma captura no layout versionado e
      imprima o relatório `--json` com `source.capture.sha256`, o passo S-02 do ensaio não tem como produzir o hash do coletor que o

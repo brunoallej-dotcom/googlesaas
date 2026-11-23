@@ -23,7 +23,7 @@
  * sem essa fixação, R não conta. Também em `sign-cli.ts` (mesmas barreiras, terminal sem eco e chave K1 do `sign`).
  */
 import path from 'node:path';
-import { captureLabel, isValidAuditId, MAX_GAP_HOURS, type ExportRefusal } from '@/lib/link-audit-attestation/export';
+import { captureLabel, HOMOLOGATION_LOCK_ENV, isHomologationLockOn, isValidAuditId, MAX_GAP_HOURS, SIMULATED_LABEL, type ExportRefusal } from '@/lib/link-audit-attestation/export';
 import { exportCandidatePackage, serializePackage, type DeltaStatus, type FsOps } from '@/lib/link-audit-attestation/export-run';
 import { isSafeText, type CandidatePackage } from '@/lib/link-audit-attestation/schemas';
 import { CLOSE_KEY_USAGE, runCloseKeyCli, runSignCli, SIGN_USAGE, type SignCliDeps } from '@/lib/link-audit-attestation/sign-cli';
@@ -33,6 +33,7 @@ export const USAGE = [
   '       [--gap-justification <texto curto>] [--seals-dir <pasta>] [--out <arquivo novo>] [--show-summary] [--json]',
   '  --collector-hash: uma por captura nova (o hash que o operador registrou do coletor em --json); é a única opção repetível.',
   '  --max-gap-hours: obrigatório para captura nova, sem valor padrão. Sem --out, o pacote só vai para a saída padrão com --show-summary.',
+  `  --simulated: SÓ o ensaio em homologação, com ${HOMOLOGATION_LOCK_ENV}=1 no ambiente; sem os dois, captura simulada é recusada (EXPORT_SIMULATED_CAPTURE).`,
   ...SIGN_USAGE,
   ...CLOSE_KEY_USAGE,
 ];
@@ -41,7 +42,7 @@ const UNEXPECTED_MESSAGE = 'Falha inesperada.';
 const EXIT = { OK: 0, USAGE: 1, REFUSED: 3, UNEXPECTED: 4 } as const;
 
 const VALUE_FLAGS: ReadonlySet<string> = new Set(['evidence-dir', 'audit', 'collector-hash', 'max-gap-hours', 'gap-justification', 'seals-dir', 'out']);
-const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(['show-summary', 'json']);
+const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(['show-summary', 'json', 'simulated']);
 const REPEATABLE_FLAG = 'collector-hash';
 const COLLECTOR_HASH = /^c(\d{4})=([0-9a-f]{64})$/;
 const POSITIVE_INTEGER = /^[1-9]\d*$/;
@@ -60,6 +61,8 @@ export interface ExportArgs {
   readonly out: string | null;
   readonly showSummary: boolean;
   readonly json: boolean;
+  /** Afirma que a auditoria é a coleta SIMULADA do ensaio (exige a trava de homologação). */
+  readonly simulated: boolean;
 }
 
 function unknownFlag(token: string): string {
@@ -121,7 +124,7 @@ function validateExportArgs(values: ReadonlyMap<string, string>, hashes: readonl
   if (out === false) return '--out inválido.';
   const showSummary = flags.has('show-summary');
   if (out === null && !showSummary) return 'Sem --out, o pacote vai para a saída padrão e contém nome/cidade/UF da empresa: informe --out <arquivo novo> ou, para imprimir mesmo assim, --show-summary.';
-  return { evidenceDir, auditId, collectorHashes, maxGapHours, gapJustification, sealsDir, out, showSummary, json: flags.has('json') };
+  return { evidenceDir, auditId, collectorHashes, maxGapHours, gapJustification, sealsDir, out, showSummary, json: flags.has('json'), simulated: flags.has('simulated') };
 }
 
 export interface SealCliDeps {
@@ -132,6 +135,8 @@ export interface SealCliDeps {
   readonly projectRoot?: string;
   /** Dependências do `sign` e do `close-key` (terminal, ambiente, disco, pastas temporárias proibidas; testes). A raiz do projeto vem de `projectRoot`. */
   readonly sign?: Omit<SignCliDeps, 'projectRoot'>;
+  /** Ambiente do comando (testes), só para a trava de homologação do `export --simulated`. Padrão: a variável da trava no processo; nunca um arquivo de ambiente. */
+  readonly getEnv?: () => Readonly<Record<string, string | undefined>>;
 }
 
 type Line = (line: string) => void;
@@ -153,10 +158,11 @@ const yesNo = (value: boolean): string => (value ? 'sim' : 'não');
 const orNotVerified = (value: string | null): string => value ?? 'NOT_VERIFIED';
 
 /** Saída humana (pt-BR): só auditId, contagens, hashes e códigos; nome/cidade/UF somente com --show-summary (RS-21). Nunca caminhos. */
-function humanLines(pkg: CandidatePackage, deltaStatus: DeltaStatus, output: 'FILE' | 'STDOUT', showSummary: boolean): string[] {
+function humanLines(pkg: CandidatePackage, deltaStatus: DeltaStatus, output: 'FILE' | 'STDOUT', showSummary: boolean, simulated: boolean): string[] {
   const { summary, gap, delta } = pkg;
   const lines = [
     'PACOTE CANDIDATO P1 (somente leitura: nada foi gravado na pasta de evidências)',
+    ...(simulated ? [`ATENÇÃO: ${SIMULATED_LABEL} — captura SINTÉTICA de homologação; este pacote nunca atesta evidência real.`] : []),
     `Auditoria: ${pkg.auditId}`,
     `Camada: ${pkg.layout} · atestável: ${pkg.attestable ? 'sim' : 'NÃO ATESTÁVEL (coleta legada: serve só como relatório; o sign recusa)'}`,
     `Capturas: ${summary.captures} · revisões de relatório: ${summary.reportRevisions} · artefatos: ${summary.artifacts} · entradas: ${pkg.entries.length} · contém legado: ${yesNo(summary.containsLegacy)}`,
@@ -179,11 +185,13 @@ function humanLines(pkg: CandidatePackage, deltaStatus: DeltaStatus, output: 'FI
 }
 
 /** `--json`: um único objeto, forma estável. Justificativa (texto livre) nunca é ecoada; a empresa só com --show-summary. */
-function jsonResult(pkg: CandidatePackage, deltaStatus: DeltaStatus, output: 'FILE' | 'STDOUT', showSummary: boolean): Record<string, unknown> {
+function jsonResult(pkg: CandidatePackage, deltaStatus: DeltaStatus, output: 'FILE' | 'STDOUT', showSummary: boolean, simulated: boolean): Record<string, unknown> {
   return {
     ok: true,
     code: null,
     auditId: pkg.auditId,
+    // só na coleta SIMULADA do ensaio: a forma estável das exportações reais não muda
+    ...(simulated ? { simulated: true } : {}),
     layout: pkg.layout,
     attestable: pkg.attestable,
     packageSha256: pkg.packageSha256,
@@ -199,17 +207,26 @@ function jsonResult(pkg: CandidatePackage, deltaStatus: DeltaStatus, output: 'FI
   };
 }
 
+const SIMULATED_WITHOUT_LOCK = refuseSimulated(`--simulated só vale no ensaio em homologação, com ${HOMOLOGATION_LOCK_ENV}=1 no ambiente deste comando. Nada foi exportado.`);
+function refuseSimulated(message: string): ExportRefusal {
+  return { ok: false, code: 'EXPORT_SIMULATED_CAPTURE', message };
+}
+
 async function runExport(args: ExportArgs, out: Line, err: Line, now: () => Date, deps: SealCliDeps): Promise<number> {
+  // a trava é conferida ANTES de ler a pasta; sem `--simulated` + trava, o `export` recusa a captura simulada que encontrar
+  // a ÚNICA leitura do ambiente do processo neste CLI: a variável da trava (nunca um arquivo de ambiente; teste IA-05 estático)
+  const lockOn = isHomologationLockOn(deps.getEnv ? deps.getEnv() : { [HOMOLOGATION_LOCK_ENV]: process.env.GMN_LINK_AUDIT_HOMOLOGATION });
+  if (args.simulated && !lockOn) return refusal(SIMULATED_WITHOUT_LOCK, args.json, out, err);
   const outcome = await exportCandidatePackage(
-    { evidenceDir: args.evidenceDir, auditId: args.auditId, collectorHashes: args.collectorHashes, maxGapHours: args.maxGapHours, gapJustification: args.gapJustification, sealsDir: args.sealsDir, out: args.out, projectRoot: deps.projectRoot ?? path.resolve(__dirname, '..'), now },
+    { evidenceDir: args.evidenceDir, auditId: args.auditId, collectorHashes: args.collectorHashes, maxGapHours: args.maxGapHours, gapJustification: args.gapJustification, sealsDir: args.sealsDir, out: args.out, projectRoot: deps.projectRoot ?? path.resolve(__dirname, '..'), now, allowSimulated: args.simulated, homologationLock: lockOn },
     { ...(deps.fs ? { fs: deps.fs } : {}), ...(deps.outFs ? { outFs: deps.outFs } : {}) },
   );
   if (!outcome.ok) return refusal(outcome, args.json, out, err);
   if (args.json) {
-    out(JSON.stringify(jsonResult(outcome.package, outcome.deltaStatus, outcome.output, args.showSummary)));
+    out(JSON.stringify(jsonResult(outcome.package, outcome.deltaStatus, outcome.output, args.showSummary, outcome.simulated)));
     return EXIT.OK;
   }
-  const lines = humanLines(outcome.package, outcome.deltaStatus, outcome.output, args.showSummary);
+  const lines = humanLines(outcome.package, outcome.deltaStatus, outcome.output, args.showSummary, outcome.simulated);
   if (outcome.output === 'FILE') lines.forEach((line) => out(line));
   else {
     // a saída padrão é o PACOTE (mesmos bytes do --out, redirecionável); o resumo humano vai para stderr

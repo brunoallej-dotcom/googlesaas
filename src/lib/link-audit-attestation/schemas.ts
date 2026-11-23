@@ -89,6 +89,11 @@ const packageBodyShape = {
   /** `null` quando não há captura nova a medir (pacote legado, não atestável). Ambiguidade da spec resolvida de forma conservadora. */
   gap: gapSchema.nullable(),
   entries: z.array(entrySchema).min(1).max(MAX_PACKAGE_ENTRIES),
+  /**
+   * W5.2b (spec §5.7, revisão do PR #62): coleta SIMULADA do ensaio em homologação. Só o literal `true`, só no pacote simulado e DENTRO do
+   * `packageSha256`; ausente nos reais (a forma e o hash dos pacotes reais não mudam). O `sign` só o assina com `--simulated`.
+   */
+  simulated: z.literal(true).optional(),
 };
 
 const countRefs = (entries: ReadonlyArray<{ ref: string }>, prefix: string): number => entries.filter((e) => e.ref.startsWith(prefix)).length;

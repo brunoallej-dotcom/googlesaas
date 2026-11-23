@@ -4,6 +4,7 @@ import { nodeFsOps, errorCode, type FsOps } from '../link-audit/snapshot-store';
 import { sanitizeForOutput } from '../link-audit/url-redaction';
 import { AUDIT_ID_PATTERN } from './types';
 import { readLegacyAudit } from './legacy';
+import { isSimulatedCapture, SIMULATED_SOURCE_LABEL } from './simulated';
 import { assertAllowedBase, listAuditFiles, locate, readCapture, readReport, verifyAudit, type AuditState } from './store';
 
 /*
@@ -56,6 +57,8 @@ export interface AuditSummary {
   readonly captureCount: number;
   readonly reportRevisions: number;
   readonly integrity: IntegrityInfo;
+  /** Coleta SIMULADA do ensaio (W5.2b, spec do P1 §5.7): presente só quando alguma captura tem a marca. */
+  readonly simulated?: true;
 }
 
 export interface EvidenceItem {
@@ -107,6 +110,8 @@ export interface AuditView {
   readonly scoring: 'NOT_AVAILABLE_PENDING_D3';
   readonly integrity: IntegrityInfo;
   readonly versions: readonly VersionEntry[];
+  /** Coleta SIMULADA do ensaio (W5.2b): presente só quando alguma captura tem a marca; a fonte vira "SIMULADA — ensaio". */
+  readonly simulated?: true;
 }
 
 export interface EvidenceReaderOptions {
@@ -179,7 +184,16 @@ export function createEvidenceReader(options: EvidenceReaderOptions) {
   /** Legado: delega a `legacy.ts` (a mesma verificação é usada pelo leitor de pontuação). */
   const readLegacy = (dir: string): ReturnType<typeof readLegacyAudit> => readLegacyAudit(ops, dir);
 
-  function summarize(auditId: string, layout: AuditLayout, state: ViewState, report: Record<string, unknown> | null, counts: { captures: number; revisions: number }, info: IntegrityInfo): AuditSummary {
+  /** Alguma captura da auditoria tem a marca SIMULADA (captura ilegível não decide nada aqui: a verificação de integridade já a trata). */
+  async function hasSimulatedCapture(auditId: string, captures: readonly number[]): Promise<boolean> {
+    for (const n of captures) {
+      const capture = await readCapture(options.baseDir, auditId, n, storeOptions);
+      if (capture.ok && isSimulatedCapture(capture.value)) return true;
+    }
+    return false;
+  }
+
+  function summarize(auditId: string, layout: AuditLayout, state: ViewState, report: Record<string, unknown> | null, counts: { captures: number; revisions: number }, info: IntegrityInfo, simulated = false): AuditSummary {
     // Conteúdo de arquivo que não confere nunca é exibido: só o estado e a integridade.
     const r = info.status === 'MISMATCH' ? {} : (report ?? {});
     return {
@@ -193,6 +207,7 @@ export function createEvidenceReader(options: EvidenceReaderOptions) {
       captureCount: counts.captures,
       reportRevisions: counts.revisions,
       integrity: info,
+      ...(simulated ? { simulated: true as const } : {}),
     };
   }
 
@@ -206,6 +221,7 @@ export function createEvidenceReader(options: EvidenceReaderOptions) {
     methodologyVersion: string | null;
     info: IntegrityInfo;
     versions: VersionEntry[];
+    simulated?: boolean;
   }): AuditView {
     const { report } = params;
     const source = rec(report.source);
@@ -219,7 +235,7 @@ export function createEvidenceReader(options: EvidenceReaderOptions) {
       collectedAt: str(source.collectedAt),
       methodologyVersion: params.methodologyVersion,
       source: {
-        provider: 'Serper /maps (intermediário; não é a API oficial do Google Business Profile)',
+        provider: params.simulated ? SIMULATED_SOURCE_LABEL : 'Serper /maps (intermediário; não é a API oficial do Google Business Profile)',
         officialGoogleApi: false,
         description: str(source.description),
         httpStatus: num(source.httpStatus),
@@ -243,6 +259,7 @@ export function createEvidenceReader(options: EvidenceReaderOptions) {
       scoring: 'NOT_AVAILABLE_PENDING_D3',
       integrity: params.info,
       versions: params.versions,
+      ...(params.simulated ? { simulated: true as const } : {}),
     };
     return sanitizeForOutput(view) as AuditView;
   }
@@ -351,6 +368,7 @@ export function createEvidenceReader(options: EvidenceReaderOptions) {
             report?.ok ? rec(report.value.report) : null,
             { captures: verification.value.captures.length, revisions: verification.value.reports.length },
             integrity(verification.value.state === 'CORRUPT' ? 'MISMATCH' : verification.value.state === 'COMPLETE' ? 'OK' : 'INCOMPLETE', verification.value.captures.length + verification.value.reports.length, verification.value.issues),
+            verification.value.state !== 'CORRUPT' && (await hasSimulatedCapture(name, verification.value.captures)),
           ),
         );
       }
@@ -418,6 +436,7 @@ export function createEvidenceReader(options: EvidenceReaderOptions) {
         methodologyVersion: file.value.methodologyVersion,
         info: integrity(verification.value.state === 'COMPLETE' ? 'OK' : 'INCOMPLETE', verification.value.captures.length + verification.value.reports.length, verification.value.issues),
         versions,
+        simulated: await hasSimulatedCapture(auditId, verification.value.captures),
       });
     },
   };

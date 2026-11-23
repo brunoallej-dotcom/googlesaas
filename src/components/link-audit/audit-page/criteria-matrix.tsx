@@ -96,7 +96,12 @@ export function CriteriaMatrix(props: MatrixProps): React.JSX.Element {
   const hasPoints = props.preview.criteria.some((criterion) => criterion.subcriteria.some((sub) => sub.obtainedHalfPoints !== undefined));
   return (
     <div className="space-y-3">
-      <p className="text-xs text-gmn-muted">“Não verificado” não é zero: o subcritério fica fora do cálculo até haver evidência. Origem rotulada: dados do perfil vêm da Serper, um intermediário (não é a API oficial do Google).</p>
+      <p className="text-xs text-gmn-muted">
+        “Não verificado” não é zero: o subcritério fica fora do cálculo até haver evidência.{' '}
+        {props.preview.evidence.simulated === true
+          ? 'Origem rotulada: SIMULADA — ensaio; os dados do perfil vêm do gerador sintético da homologação (nenhuma consulta foi feita).'
+          : 'Origem rotulada: dados do perfil vêm da Serper, um intermediário (não é a API oficial do Google).'}
+      </p>
       {props.preview.criteria.map((criterion) => (
         <CriterionTable key={criterion.id} criterion={criterion} hasPoints={hasPoints} {...props} />
       ))}

@@ -22,7 +22,10 @@ export const captureSchema = z
     captureNumber: z.number().int().positive().max(9999),
     methodologyVersion: z.string().min(1).max(60),
     collectedAt: iso,
-    provider: z.literal('serper-maps'),
+    /** `SIMULATED` só na coleta sintética do ensaio em homologação (W5.2b, spec §5.7), sempre junto de `simulated: true`. */
+    provider: z.enum(['serper-maps', 'SIMULATED']),
+    /** Marca persistente da coleta SIMULADA (dentro do `contentSha256`). Ausente em toda captura real; nunca `false`. */
+    simulated: z.literal(true).optional(),
     request: z.object({ method: z.literal('POST'), url: z.string().max(300), body: z.record(z.string(), z.unknown()) }).strict(),
     response: z
       .object({
@@ -41,7 +44,9 @@ export const captureSchema = z
     input: z.object({ snapshotId: z.string().min(1).max(100), originalLink: z.string().max(2048), identity: z.record(z.string(), z.unknown()) }).strict(),
     contentSha256: hex64,
   })
-  .strict();
+  .strict()
+  // a marca é inequívoca: provedor SIMULATED e `simulated: true` juntos, ou nenhum dos dois
+  .refine((file) => (file.provider === 'SIMULATED') === (file.simulated === true), { message: 'provider SIMULATED e simulated:true andam juntos' });
 export type CaptureFile = z.infer<typeof captureSchema>;
 
 export const siteSchema = z

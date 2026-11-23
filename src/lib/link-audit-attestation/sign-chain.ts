@@ -16,7 +16,7 @@ import {
   type EvidenceToProve,
 } from '../link-audit-evidence/provenance-core';
 import { auditId as auditIdSchema, MAX_PACKAGE_ENTRIES } from './schemas';
-import { runSignCore, SIGN_KEY_ID_PATTERN, type SealChainFacts, type SignCoreDeps, type SignCoreInput, type SignCoreResult, type SigningKeyStatus, type SignPlan, type SignRefusal } from './sign-core';
+import { keyModeRefusal, runSignCore, SIGN_KEY_ID_PATTERN, type SealChainFacts, type SignCoreDeps, type SignCoreInput, type SignCoreResult, type SigningKeyStatus, type SignPlan, type SignRefusal } from './sign-core';
 
 /*
  * P1 W4.2 — a CADEIA e o MANIFESTO do `sign` (spec §5.5 passos 7 e 13; §5.5.1 item 2; §7.1; contrato do verificador v2 §2–§6). Único arquivo do
@@ -236,6 +236,9 @@ export interface SignWithChainDeps<K> extends SignCoreDeps<K> {
 export async function runSignWithChain<K>(input: SignWithChainInput, deps: SignWithChainDeps<K>): Promise<SignCoreResult<K>> {
   const { sealsDir, trustKeys, keyId, ...core } = input;
   if (typeof keyId !== 'string' || !SIGN_KEY_ID_PATTERN.test(keyId)) return BAD_KEY_ID;
+  // W5.2b (revisão do PR #62): a mesma regra do analisador, aqui também (defesa em profundidade para quem chama sem o CLI)
+  const keyMode = keyModeRefusal(keyId, core.simulated === true);
+  if (keyMode) return keyMode;
   const chain = await readSealChain({ sealsDir, auditId: core.auditId, trustKeys }, { fs: deps.fs });
   return runSignCore({ ...core, chain, signingKeyStatus: signingKeyStatus(trustKeys, keyId) }, { now: deps.now, confirm: deps.confirm, openKey: deps.openKey });
 }

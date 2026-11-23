@@ -143,7 +143,9 @@ function basisProblem(basis: unknown): string | null {
     if (typeof contentSha256 !== 'string' || !HEX64.test(contentSha256)) return 'EVIDENCE_HASH_INVALID';
     if (bodySha256 !== null && (typeof bodySha256 !== 'string' || !HEX64.test(bodySha256))) return 'EVIDENCE_BODY_HASH_INVALID';
     if (typeof observedAt !== 'string' || parseDayFromIso(observedAt) === null) return 'EVIDENCE_DATE_INVALID';
-    if (raw.origin !== 'GOOGLE_NATIVE' || raw.provider !== 'serper-maps' || raw.intermediary !== true) return 'EVIDENCE_ORIGIN_UNSUPPORTED';
+    // W5.2b: o provedor SIMULATED só vale junto da marca `simulated: true` (e a marca só com ele); a prévia bloqueia a simulada fora da homologação
+    const providerOk = raw.simulated === true ? raw.provider === 'SIMULATED' : raw.simulated === undefined && raw.provider === 'serper-maps';
+    if (raw.origin !== 'GOOGLE_NATIVE' || !providerOk || raw.intermediary !== true) return 'EVIDENCE_ORIGIN_UNSUPPORTED';
     if (typeof raw.legacy !== 'boolean' || typeof raw.superseded !== 'boolean') return 'EVIDENCE_FLAGS_INVALID';
   }
   if (captures === 0) return 'NO_CAPTURE';

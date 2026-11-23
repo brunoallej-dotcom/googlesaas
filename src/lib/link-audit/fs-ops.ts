@@ -10,6 +10,9 @@ export interface FileInfo {
   isSymbolicLink(): boolean;
   readonly size: number;
   readonly mtimeMs: number;
+  /** Bits de modo e dono (o `Stats` do Node os traz); opcionais para os `FsOps` de teste. Ausentes ⇒ quem confere permissões não pode garantir. */
+  readonly mode?: number;
+  readonly uid?: number;
 }
 
 /** Operações de disco usadas pelo armazenamento. Injetável para simular quedas nos testes. */

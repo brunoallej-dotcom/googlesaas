@@ -6,6 +6,7 @@ import { sanitizeForOutput } from '../link-audit/url-redaction';
 import { deriveWebsite, type WebsiteDerivation } from './derive-url';
 import { integrityInfo, readLegacyAudit } from './legacy';
 import { EvidenceAccessError, type EvidenceActor, type EvidenceReaderOptions, type IntegrityInfo } from './reader';
+import { isSimulatedCapture } from './simulated';
 import { locate, readCapture, readReport, verifyAudit } from './store';
 import { pad, type CaptureFile } from './types';
 
@@ -47,8 +48,14 @@ export interface BasisEvidence {
   readonly legacy: boolean;
   /** O Serper é um intermediário: o `GOOGLE_NATIVE` do contrato do motor não significa API oficial do Google. */
   readonly origin: 'GOOGLE_NATIVE';
-  readonly provider: 'serper-maps';
+  /** `SIMULATED` só junto de `simulated: true` (coleta sintética do ensaio, W5.2b): o dado veio do gerador sintético, não do Serper. */
+  readonly provider: 'serper-maps' | 'SIMULATED';
   readonly intermediary: true;
+  /**
+   * Coleta SIMULADA do ensaio (W5.2b, spec do P1 §5.7): presente SÓ na captura marcada e nos relatórios dela. A forma (origem, provedor) é a
+   * do pipeline de sempre; quem consome a base decide pela marca (a prévia bloqueia sem a trava de homologação; o `export` recusa).
+   */
+  readonly simulated?: true;
 }
 
 export interface BasisSource {
@@ -279,8 +286,9 @@ export function createScoringBasisReader(options: EvidenceReaderOptions) {
         superseded: false,
         legacy: false,
         origin: 'GOOGLE_NATIVE',
-        provider: 'serper-maps',
+        provider: isSimulatedCapture(capture.value) ? 'SIMULATED' : 'serper-maps',
         intermediary: true,
+        ...(isSimulatedCapture(capture.value) ? { simulated: true as const } : {}),
       });
     }
     // Revisões de relatório contíguas (1..n) por captura: lacuna = arquivo removido.
@@ -315,8 +323,9 @@ export function createScoringBasisReader(options: EvidenceReaderOptions) {
         superseded: r.revision < Math.max(...reports.filter((x) => x.capture === r.capture).map((x) => x.revision)),
         legacy: false,
         origin: 'GOOGLE_NATIVE',
-        provider: 'serper-maps',
+        provider: isSimulatedCapture(owner) ? 'SIMULATED' : 'serper-maps',
         intermediary: true,
+        ...(isSimulatedCapture(owner) ? { simulated: true as const } : {}),
       });
     }
 

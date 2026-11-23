@@ -16,7 +16,7 @@ registerCleanup();
 const AUDIT_ID = 'auth-teste-0001';
 const AUTH: ConsumptionAuthorization = {
   authorizationId: AUDIT_ID, snapshotId: 'snap-exemplo-0001', identifiersFingerprint: identifiersFingerprint({ cid: CID, featureId: FID }),
-  maxMapsCalls: 1, maxSiteHttpRequests: 8, expiresAt: '2026-10-21T13:00:00.000Z', costAcknowledged: true, operator: 'ana@empresa.com',
+  maxMapsCalls: 1, maxSiteHttpRequests: 8, expiresAt: '2026-10-21T13:00:00.000Z', costAcknowledged: true, operator: 'ana@example.invalid',
 };
 const pages = { '/': { status: 403, body: '' }, '/robots.txt': { body: '' } };
 const capture = (hooks: { onCapture: (info: never) => Promise<void> }, text = bodyText()) =>
@@ -84,8 +84,8 @@ test('LIVE com armazenamento pronto: a resposta paga é gravada ANTES do site; c
   assert.equal(raw.response.bodyText, bodyText(), 'resposta original preservada');
   assert.equal(raw.input.identity.confirmation?.confirmedBy, 'ana@empresa.com', 'confirmação do operador preservada');
   // o leitor da futura interface enxerga a auditoria, sem o corpo bruto
-  const reader = createEvidenceReader({ baseDir: base, authorize: (a) => a.email === 'ana@empresa.com' });
-  const view = await reader.getAudit({ email: 'ana@empresa.com' }, AUDIT_ID);
+  const reader = createEvidenceReader({ baseDir: base, authorize: (a) => a.email === 'ana@example.invalid' });
+  const view = await reader.getAudit({ email: 'ana@example.invalid' }, AUDIT_ID);
   assert.equal(view?.state, 'COMPLETE');
   assert.ok(!JSON.stringify(view).includes('internalNote'));
 });
@@ -96,7 +96,7 @@ test('falha ao gravar a resposta paga é EXPLÍCITA (nunca silenciosa) e o armaz
   const brokenAfterPreflight = faulty({
     writeExclusive: async (...args) => {
       writes += 1;
-      if (writes > 1) throw errno('EIO', 'falha de disco'); // 1ª = sonda do pré-voo; depois, falha
+      if (writes > 2) throw errno('EIO', 'falha de disco'); // 1ª = sonda do pré-voo; 2ª = reserva do modo da auditoria (W5.2b); depois, falha
       return (await import('../src/lib/link-audit/snapshot-store')).nodeFsOps.writeExclusive(...args);
     },
   });
@@ -107,7 +107,7 @@ test('falha ao gravar a resposta paga é EXPLÍCITA (nunca silenciosa) e o armaz
   assert.equal(r.persisted?.captureNumber, null);
   assert.equal(r.persisted?.storedReport, null);
   const afterFailure = writes;
-  assert.ok(afterFailure <= 3, 'poucas tentativas de escrita e nenhuma depois do erro fatal');
+  assert.ok(afterFailure <= 4, 'poucas tentativas de escrita e nenhuma depois do erro fatal');
   clearStorageFatal(base);
 });
 
@@ -128,7 +128,7 @@ test('CLI LIVE: exige --evidence-dir, imprime o relatório armazenado e sai com 
     };
     return { deps, out, err };
   };
-  const BASE = ['--link', LINK, '--operator', 'ana@empresa.com', '--name', 'Padaria Exemplo', '--city', 'Cidade Exemplo', '--uf', 'go'];
+  const BASE = ['--link', LINK, '--operator', 'ana@example.invalid', '--name', 'Padaria Exemplo', '--city', 'Cidade Exemplo', '--uf', 'go'];
   const LIVE = ['--live', '--authorization-id', AUDIT_ID, '--max-maps-calls', '1', '--ack-cost'];
   const none = mk();
   assert.equal(await runCli([...BASE, ...LIVE], none.deps), 3);
@@ -146,7 +146,8 @@ test('CLI LIVE: exige --evidence-dir, imprime o relatório armazenado e sai com 
   fs.rmSync(path.join(usedDir, `${AUDIT_ID}.json`));
   const ev2 = tmpDir();
   let writes = 0;
-  const failing = faulty({ writeExclusive: async (...args) => { writes += 1; if (writes > 1) throw errno('ENOSPC', 'sem espaço'); return (await import('../src/lib/link-audit/snapshot-store')).nodeFsOps.writeExclusive(...args); } });
+  // 1ª escrita = sonda do pré-voo; 2ª = reserva do modo da auditoria (W5.2b, antes de pagar); depois, falha
+  const failing = faulty({ writeExclusive: async (...args) => { writes += 1; if (writes > 2) throw errno('ENOSPC', 'sem espaço'); return (await import('../src/lib/link-audit/snapshot-store')).nodeFsOps.writeExclusive(...args); } });
   const bad = mk(failing);
   assert.equal(await runCli([...BASE, ...LIVE, '--evidence-dir', ev2], bad.deps), 5);
   assert.match(bad.err.join('\n'), /ATENÇÃO: A resposta paga NÃO foi persistida/);
@@ -195,7 +196,7 @@ test('revisão 5A: resposta sem corpo utilizável (HTTP 500): captura preservada
     usedStore: () => createFileUsedStore(used),
     createLiveProviders: (_c, hooks) => ({ maps: { search: async () => { await hooks.onCapture({ url: 'https://google.serper.dev/maps', requestBody: { q: 'x' }, httpStatus: 500, bodyText: null, attempts: 1, failure: null, capturedAt: '2026-10-21T12:10:00.000Z' }); return { state: 'FAILED' as const, reason: 'HTTP 500' }; } } }),
   };
-  const BASE = ['--link', LINK, '--operator', 'ana@empresa.com', '--name', 'Padaria Exemplo', '--city', 'Cidade Exemplo', '--uf', 'go'];
+  const BASE = ['--link', LINK, '--operator', 'ana@example.invalid', '--name', 'Padaria Exemplo', '--city', 'Cidade Exemplo', '--uf', 'go'];
   const LIVE = ['--live', '--authorization-id', AUDIT_ID, '--max-maps-calls', '1', '--ack-cost'];
   assert.equal(await runCli([...BASE, ...LIVE, '--evidence-dir', tmpDir()], deps), 4);
   assert.match(err.join('\n'), /AVISO: Relatório não gerado/);

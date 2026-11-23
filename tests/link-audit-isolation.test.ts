@@ -263,7 +263,8 @@ const ATTESTATION_EVIDENCE_IMPORTS: ReadonlyMap<string, readonly string[]> = new
   ['src/lib/link-audit-attestation/index.ts', ['evidence-to-prove']],
   ['src/lib/link-audit-attestation/schemas.ts', ['types']],
   // P1 W2: a montagem pura do pacote (função única basis → evidências) e o adaptador de disco do `export` (só os leitores e o FsOps)
-  ['src/lib/link-audit-attestation/export.ts', ['evidence-to-prove', 'types']],
+  // W5.2b (spec §5.7): + simulated (rótulo e regra pura da trava de homologação, reexportados ao CLI do P1)
+  ['src/lib/link-audit-attestation/export.ts', ['evidence-to-prove', 'simulated', 'types']],
   ['src/lib/link-audit-attestation/export-run.ts', ['provenance', 'reader', 'scoring-basis', 'store']],
   // P1 W4.2: a cadeia do `sign` é lida e verificada pelo verificador v2 real (só ele); W4.6: pelo NÚCLEO, sem o disco padrão da fachada
   ['src/lib/link-audit-attestation/sign-chain.ts', ['provenance-core']],
