@@ -11,11 +11,15 @@ import test from 'node:test';
  * responsável (23/11/2026), os arquivos atuais foram saneados (rótulos opacos como AUD-001), o histórico NÃO foi
  * reescrito e esta trava roda no job `test` do CI para impedir que os dados voltem.
  *
- * Como funciona: lista os arquivos versionados com `git ls-files`, ignora binários e `node_modules`, tokeniza o texto
- * (sem acentos, minúsculas, separado por não-alfanumérico; também pedaços camelCase, sequências de dígitos com e sem
- * zeros à esquerda e sequências hexadecimais longas) e compara o SHA-256 com separação de domínio
- * (`gmn.repo-guard.v1:` + token) com a lista fixa FORBIDDEN. Termos de duas palavras são conferidos como pares de
- * palavras vizinhas.
+ * Como funciona: lista os arquivos versionados com `git ls-files -s` (ignora `node_modules`), tokeniza o texto (sem
+ * acentos, minúsculas, separado por não-alfanumérico; também pedaços camelCase, sequências de dígitos com e sem zeros à
+ * esquerda, sequências hexadecimais longas, janelas de 8 e 9 dígitos de trechos com cara de telefone e coordenadas
+ * decimais) e compara o SHA-256 com separação de domínio (`gmn.repo-guard.v1:` + token) com a lista fixa FORBIDDEN.
+ * Termos de duas ou três palavras são conferidos como sequências de palavras vizinhas.
+ *
+ * Falha FECHADA para o que o scanner não lê: PDF, documento de escritório, arquivo compactado ou imagem versionados,
+ * link simbólico, submódulo e qualquer binário fora dos tipos reconhecidos (fontes e tiles vetoriais públicos) fazem o
+ * teste falhar, salvo uma exceção explícita e justificada em UNREADABLE_EXCEPTIONS (hoje vazia).
  *
  * Os hashes NÃO escondem os termos: são termos de baixa entropia e o histórico público já os contém. O objetivo é
  * apenas não deixá-los em claro neste arquivo e impedir que voltem a qualquer arquivo versionado. A falha aponta
@@ -28,10 +32,30 @@ const DOMAIN = 'gmn.repo-guard.v1:';
 const ROOT = path.join(__dirname, '..');
 const MIN_HEX_RUN = 8;
 const GIT_MAX_BUFFER = 64 * 1024 * 1024;
-const BINARY_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.pdf', '.zip', '.gz', '.woff', '.woff2', '.ttf', '.otf', '.pbf', '.mbtiles', '.sqlite']);
+const MAX_WORDS = 3;
+const PHONE_WINDOWS = [8, 9] as const;
+const MODE_SYMLINK = '120000';
+const MODE_SUBMODULE = '160000';
+/* Tipos que o scanner não lê como texto e que podem carregar dado de cliente (relatórios, prints, planilhas, pacotes). */
+const UNREADABLE_EXTENSIONS = new Set([
+  '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ods', '.odt', '.odp', '.ppt', '.pptx', '.rtf',
+  '.zip', '.7z', '.rar', '.tar', '.gz', '.tgz', '.bz2', '.xz',
+  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tif', '.tiff', '.heic', '.ico',
+  '.sqlite', '.db', '.mbtiles',
+]);
+/* Binários reconhecidos que o scanner pula (não são documentos e não carregam dado de cliente). */
+const KNOWN_BINARY_EXTENSIONS: ReadonlyMap<string, string> = new Map([
+  ['.woff', 'fonte tipográfica (Inter) usada nos PDFs'],
+  ['.woff2', 'fonte tipográfica'],
+  ['.ttf', 'fonte tipográfica'],
+  ['.otf', 'fonte tipográfica'],
+  ['.pbf', 'tile vetorial público (OpenStreetMap) das fixtures do mapa do PDF'],
+]);
+/* Exceções explícitas (caminho → justificativa) para itens que, de outra forma, fariam a trava falhar. Hoje: nenhuma. */
+const UNREADABLE_EXCEPTIONS: ReadonlyMap<string, string> = new Map();
 
 interface ForbiddenTerm {
-  /** SHA-256 de `gmn.repo-guard.v1:` + termo normalizado (um token, ou duas palavras separadas por um espaço). */
+  /** SHA-256 de `gmn.repo-guard.v1:` + termo normalizado (um token, ou duas/três palavras separadas por um espaço). */
   readonly sha256: string;
   /** Tipo do termo, sem revelá-lo. */
   readonly kind: string;
@@ -52,6 +76,11 @@ const FORBIDDEN: readonly ForbiddenTerm[] = [
   { sha256: 'd707d07f4094a7fbc8903ade66870b155256ccb982d5f1c3f9b24bf05dcd07be', kind: 'nome de outro cliente (duas palavras)' },
   { sha256: '59b8e733e6668d2ba5f52a2fa61742a9a8ad5f4fbcf9e757b4c16d6935b2d779', kind: 'nome de outro cliente (duas palavras)' },
   { sha256: 'fc936931818339a3c6d1991e3b0b1d1a980feb5096930cc1d6f929c92407ee07', kind: 'placeId de outro perfil' },
+  { sha256: '316e613377c4056034fca7f474dabad7b5d25779b5b030ab57f5459723b22bf0', kind: 'telefone (9 dígitos do assinante)' },
+  { sha256: 'dc6b501a0588a863bf81791d5ed4508673cbae5b99d12e8bd677183bf102f693', kind: 'coordenada (latitude, sem sinal)' },
+  { sha256: 'f7f1cd46242003ae8b3206bc040b1b61598ce51c9116788ae3e1c618efe23999', kind: 'coordenada (longitude, sem sinal)' },
+  // A regra do .gitignore que mantém a pasta privada de evidências fora do repositório precisa citar o nome dela.
+  { sha256: 'b03ab0be748ebd8c8a882f1f596cdf657e537c7f8e23e0f7e00a740f5c2bf660', kind: 'pasta privada de evidências (três palavras)', allowedIn: ['.gitignore'] },
 ];
 
 const INDEX_BY_HASH = new Map(FORBIDDEN.map((term, index) => [term.sha256, index]));
@@ -61,6 +90,14 @@ interface Finding {
   readonly line: number;
   readonly termIndex: number;
 }
+
+/** Entrada do índice do git: modo (`100644`, `120000`…) e caminho relativo à raiz. */
+interface IndexEntry {
+  readonly mode: string;
+  readonly file: string;
+}
+
+type Verdict = { readonly kind: 'TEXT' } | { readonly kind: 'SKIP'; readonly reason: string } | { readonly kind: 'UNREADABLE'; readonly reason: string };
 
 class RepoGuardSetupError extends Error {}
 
@@ -95,6 +132,19 @@ function candidates(raw: string): Set<string> {
   return out;
 }
 
+/** Candidatos de uma linha inteira: janelas de dígitos de trechos com cara de telefone e coordenadas decimais. */
+function lineCandidates(content: string): Set<string> {
+  const out = new Set<string>();
+  for (const match of content.match(/\+?\d[\d \t().-]{6,}\d/g) ?? []) {
+    const digits = match.replace(/\D/g, '');
+    for (const size of PHONE_WINDOWS) {
+      for (let start = 0; start + size <= digits.length; start += 1) out.add(digits.slice(start, start + size));
+    }
+  }
+  for (const match of content.match(/\d{1,3}[.,]\d{5,}/g) ?? []) out.add(match.replace(',', '.'));
+  return out;
+}
+
 /** Procura os termos proibidos num texto. `file` é o caminho relativo à raiz (usado nas exceções `allowedIn`). */
 function scanText(text: string, file: string): Finding[] {
   const findings: Finding[] = [];
@@ -107,30 +157,61 @@ function scanText(text: string, file: string): Finding[] {
       findings.push({ file, line, termIndex });
     }
   };
-  let previous: { word: string; line: number } | null = null;
+  const recent: Array<{ word: string; line: number }> = [];
   stripAccents(text).split('\n').forEach((content, offset) => {
     const line = offset + 1;
+    for (const candidate of lineCandidates(content)) report(line, forbiddenIndex(candidate));
     for (const raw of content.split(/[^A-Za-z0-9]+/)) {
       if (!raw) continue;
       for (const candidate of candidates(raw)) report(line, forbiddenIndex(candidate));
       for (const word of camelPieces(raw)) {
-        if (previous) report(previous.line, forbiddenIndex(`${previous.word} ${word}`));
-        previous = { word, line };
+        recent.push({ word, line });
+        if (recent.length > MAX_WORDS) recent.shift();
+        for (let size = 2; size <= recent.length; size += 1) {
+          const sequence = recent.slice(-size);
+          report(sequence[0]!.line, forbiddenIndex(sequence.map((entry) => entry.word).join(' ')));
+        }
       }
     }
   });
   return findings;
 }
 
-function isBinary(file: string, buffer: Buffer): boolean {
-  return BINARY_EXTENSIONS.has(path.extname(file).toLowerCase()) || buffer.includes(0);
+/**
+ * O que fazer com um arquivo versionado. `buffer` é o conteúdo em disco (`null` se o item não é um arquivo comum no disco).
+ * Tudo o que o scanner não consegue ler vira UNREADABLE (falha), salvo exceção explícita.
+ */
+function classify(entry: IndexEntry, buffer: Buffer | null): Verdict {
+  const exception = UNREADABLE_EXCEPTIONS.get(entry.file);
+  const unreadable = (reason: string): Verdict => (exception ? { kind: 'SKIP', reason: `exceção: ${exception}` } : { kind: 'UNREADABLE', reason });
+  if (entry.mode === MODE_SYMLINK) return unreadable('link simbólico versionado');
+  if (entry.mode === MODE_SUBMODULE) return unreadable('submódulo versionado');
+  const extension = path.extname(entry.file).toLowerCase();
+  if (UNREADABLE_EXTENSIONS.has(extension)) return unreadable(`arquivo ${extension} versionado (o guardião não lê PDF, documento, pacote nem imagem)`);
+  if (buffer === null) return unreadable('item versionado que não é um arquivo comum no disco');
+  if (buffer.includes(0)) {
+    const known = KNOWN_BINARY_EXTENSIONS.get(extension);
+    return known ? { kind: 'SKIP', reason: known } : unreadable('binário versionado de tipo não reconhecido');
+  }
+  return { kind: 'TEXT' };
+}
+
+/** Entradas do índice (`git ls-files -s -z`: `<modo> <objeto> <estágio>\t<caminho>`). */
+function parseIndex(output: string): IndexEntry[] {
+  return output
+    .split('\0')
+    .filter((record) => record !== '')
+    .map((record) => {
+      const tab = record.indexOf('\t');
+      return { mode: record.slice(0, record.indexOf(' ')), file: record.slice(tab + 1) };
+    });
 }
 
 /** Arquivos versionados (relativos à raiz). Falha fechada: sem git ou fora de um repositório, a trava não passa. */
-function listVersionedFiles(root: string): string[] {
+function listVersionedFiles(root: string): IndexEntry[] {
   let output: Buffer;
   try {
-    output = execFileSync('git', ['-C', root, 'ls-files', '-z'], { maxBuffer: GIT_MAX_BUFFER, stdio: ['ignore', 'pipe', 'pipe'] });
+    output = execFileSync('git', ['-C', root, 'ls-files', '-s', '-z'], { maxBuffer: GIT_MAX_BUFFER, stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') {
@@ -138,24 +219,28 @@ function listVersionedFiles(root: string): string[] {
     }
     throw new RepoGuardSetupError(`A trava de dados de cliente não conseguiu listar os arquivos versionados com \`git ls-files\` em ${root} (não é um repositório git?). Ela falha fechada: rode a partir de um checkout git.`);
   }
-  const files = output.toString('utf8').split('\0').filter((file) => file !== '' && !file.split('/').includes('node_modules'));
-  if (files.length === 0) throw new RepoGuardSetupError(`\`git ls-files\` não listou nenhum arquivo em ${root}; a trava falha fechada.`);
-  return files;
+  const entries = parseIndex(output.toString('utf8')).filter((entry) => !entry.file.split('/').includes('node_modules'));
+  if (entries.length === 0) throw new RepoGuardSetupError(`\`git ls-files\` não listou nenhum arquivo em ${root}; a trava falha fechada.`);
+  return entries;
 }
 
-function scanRepository(root: string): { findings: Finding[]; scanned: number } {
+function scanRepository(root: string): { findings: Finding[]; unreadable: string[]; scanned: number } {
   const findings: Finding[] = [];
+  const unreadable: string[] = [];
   let scanned = 0;
-  for (const file of listVersionedFiles(root)) {
-    const full = path.join(root, file);
+  for (const entry of listVersionedFiles(root)) {
+    const full = path.join(root, entry.file);
     const stat = fs.lstatSync(full, { throwIfNoEntry: false });
-    if (!stat?.isFile()) continue;
-    const buffer = fs.readFileSync(full);
-    if (isBinary(file, buffer)) continue;
+    // Removido do disco mas ainda no índice (exclusão local não confirmada): o CI confere a árvore completa.
+    if (stat === undefined && entry.mode !== MODE_SYMLINK && entry.mode !== MODE_SUBMODULE) continue;
+    const buffer = stat?.isFile() ? fs.readFileSync(full) : null;
+    const verdict = classify(entry, buffer);
+    if (verdict.kind === 'UNREADABLE') unreadable.push(`${entry.file}: ${verdict.reason}`);
+    if (verdict.kind !== 'TEXT' || buffer === null) continue;
     scanned += 1;
-    findings.push(...scanText(buffer.toString('utf8'), file));
+    findings.push(...scanText(buffer.toString('utf8'), entry.file));
   }
-  return { findings, scanned };
+  return { findings, unreadable, scanned };
 }
 
 /** Mensagem de falha: arquivo:linha e índice/tipo do termo; nunca o termo. */
@@ -164,8 +249,9 @@ function formatFinding(finding: Finding): string {
 }
 
 test('repositório: nenhum arquivo versionado contém dado real de cliente da lista proibida', () => {
-  const { findings, scanned } = scanRepository(ROOT);
+  const { findings, unreadable, scanned } = scanRepository(ROOT);
   assert.ok(scanned > 100, `poucos arquivos de texto conferidos (${scanned}); a listagem parece incompleta`);
+  assert.deepEqual(unreadable, [], 'arquivo versionado que o guardião não lê: remova-o do repositório ou registre uma exceção justificada em UNREADABLE_EXCEPTIONS');
   assert.deepEqual(
     findings.map(formatFinding),
     [],
@@ -186,6 +272,10 @@ const CITY = decode('TW9naSBHdWHDp3U=');
 const CLIENT_B = decode('RXN0w6l0aWNhIERhbmllbGUgQ2FyZG9zbw==');
 const CLIENT_C = decode('RnVuZXLDoXJpYSBQYXogVW5pdmVyc2Fs');
 const OTHER_PLACE = decode('Q2hJSmpZWUltV0NsWHBNUnZmdDJYV01uQ1Bj');
+const PHONE = decode('KzU1IDE5IDk5ODM2LTExOTc=');
+const LATITUDE = decode('LTIyLjM0NzE5NzE=');
+const LONGITUDE = decode('LTQ2Ljk0NjMwNTI=');
+const PRIVATE_PATH = decode('RDpcZ21uLWV2aWRlbmNpYXMtcHJpdmFkYXNcbGluay1hdWRpdA==');
 
 const indexes = (text: string, file = 'docs/x.md'): number[] => [...new Set(scanText(text, file).map((f) => f.termIndex))].sort();
 
@@ -207,6 +297,50 @@ test('guardião: acusa cada termo proibido em formas variadas (caixa, acento, UR
   assert.deepEqual(indexes(`listAuditsForLeadKeyword('${OTHER_PLACE}', 'x')`), [8]);
 });
 
+test('guardião: telefone em qualquer formatação (só dígitos), inclusive grudado em outros números', () => {
+  const digits = PHONE.replace(/\D/g, '');
+  const local = digits.slice(-9);
+  for (const form of [PHONE, `(${digits.slice(2, 4)}) ${local.slice(0, 5)}-${local.slice(5)}`, `https://wa.me/${digits}`, digits, `${local.slice(0, 5)}-${local.slice(5)} (12 arquivos)`, `tel.: ${digits.slice(2, 4)}.${local.slice(0, 5)}.${local.slice(5)}`]) {
+    assert.deepEqual(indexes(`telefone ${form}`), [9], 'telefone formatado');
+  }
+  assert.deepEqual(indexes(`telefone ${local.slice(0, 5)} e depois ${local.slice(5)}`), [], 'pedaços separados por texto não formam o número');
+});
+
+test('guardião: coordenadas com a precisão dos documentos, com ou sem sinal, ponto ou vírgula', () => {
+  assert.deepEqual(indexes(`location: { latitude: ${LATITUDE}, longitude: ${LONGITUDE} }`), [10, 11]);
+  assert.deepEqual(indexes(`lat ${LATITUDE.replace('-', '').replace('.', ',')}`), [10]);
+  assert.deepEqual(indexes(`lon ${LONGITUDE}`), [11]);
+  assert.deepEqual(indexes(`lat ${LATITUDE.slice(0, -2)}`), [], 'outra precisão não é o mesmo ponto');
+});
+
+test('guardião: caminho da pasta privada de evidências é acusado fora do .gitignore', () => {
+  assert.deepEqual(indexes(`cd ${PRIVATE_PATH}`), [12]);
+  assert.deepEqual(indexes(`base: '${PRIVATE_PATH.replace(/\\/g, '/').replace('D:', '/mnt/d')}'`), [12]);
+  const rule = `/${PRIVATE_PATH.split('\\')[1]}/`;
+  assert.deepEqual(indexes(rule, '.gitignore'), [], 'a regra do .gitignore fica');
+  assert.deepEqual(indexes(rule, 'docs/x.md'), [12]);
+  assert.deepEqual(indexes('a pasta <EVIDENCIAS_PRIVADAS> e as evidências privadas do responsável'), [], 'marcador e frase comum');
+});
+
+test('guardião: falha fechada para PDF, documento, pacote, imagem, link simbólico, submódulo e binário desconhecido', () => {
+  const text = Buffer.from('texto');
+  const binary = Buffer.from([0x50, 0x00, 0x01]);
+  const kind = (mode: string, file: string, buffer: Buffer | null): string => classify({ mode, file }, buffer).kind;
+  for (const file of ['docs/relatorio.pdf', 'docs/RELATORIO.PDF', 'docs/a.docx', 'docs/a.doc', 'docs/a.xlsx', 'docs/a.xls', 'docs/a.odt', 'docs/print.png', 'docs/pacote.zip']) {
+    assert.equal(kind('100644', file, text), 'UNREADABLE', file);
+  }
+  assert.equal(kind(MODE_SYMLINK, 'docs/atalho.md', null), 'UNREADABLE', 'link simbólico');
+  assert.equal(kind(MODE_SUBMODULE, 'vendor/x', null), 'UNREADABLE', 'submódulo');
+  assert.equal(kind('100644', 'dados/x.bin', binary), 'UNREADABLE', 'binário de tipo desconhecido');
+  assert.equal(kind('100644', 'docs/x.md', null), 'UNREADABLE', 'item que não é arquivo comum no disco');
+  assert.equal(kind('100644', 'assets/fonts/Inter.woff', binary), 'SKIP', 'fonte');
+  assert.equal(kind('100644', 'tests/fixtures/tiles/1/2/3.pbf', binary), 'SKIP', 'tile vetorial');
+  assert.equal(kind('100644', 'docs/x.md', text), 'TEXT');
+  assert.equal(kind('100755', 'scripts/x.sh', text), 'TEXT');
+  assert.equal(UNREADABLE_EXCEPTIONS.size, 0, 'nenhuma exceção hoje; cada uma precisa de justificativa');
+  assert.deepEqual(parseIndex(`100644 ${'a'.repeat(40)} 0\tdocs/a b.md\0${MODE_SYMLINK} ${'b'.repeat(40)} 0\tlink\0`), [{ mode: '100644', file: 'docs/a b.md' }, { mode: MODE_SYMLINK, file: 'link' }]);
+});
+
 test('guardião: nomes de outros clientes só contam como par; cada palavra sozinha é livre', () => {
   const words = [...CLIENT_B.split(' '), ...CLIENT_C.split(' ')];
   for (const word of words) assert.deepEqual(scanText(`texto com ${word} solto`, 'docs/x.md'), [], 'palavra comum isolada');
@@ -218,7 +352,7 @@ test('guardião: aponta arquivo:linha e índice, nunca o termo; a exceção por 
   assert.deepEqual(findings, [{ file: 'docs/exemplo.md', line: 2, termIndex: 0 }]);
   const message = formatFinding(findings[0]!);
   assert.equal(message, 'docs/exemplo.md:2: termo proibido #0 (nome da empresa)');
-  for (const term of [NAME, CID, FID_1, FID_2, PLACE, CITY, CLIENT_B, CLIENT_C, OTHER_PLACE]) assert.ok(!message.toLowerCase().includes(term.toLowerCase()));
+  for (const term of [NAME, CID, FID_1, FID_2, PLACE, CITY, CLIENT_B, CLIENT_C, OTHER_PLACE, PHONE, LATITUDE, LONGITUDE, PRIVATE_PATH]) assert.ok(!message.toLowerCase().includes(term.toLowerCase()));
   assert.deepEqual(indexes(`"nome": "${CITY}"`, 'src/data/municipios.json'), [], 'lista pública de municípios');
   assert.deepEqual(indexes(`"nome": "${CITY}" ${NAME}`, 'src/data/municipios.json'), [0], 'a exceção não cobre outros termos');
 });

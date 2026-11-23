@@ -44,7 +44,12 @@ voltem.
   SHA-256 com separação de domínio de cada token com uma lista fixa de hashes dos termos proibidos. A falha aponta
   arquivo:linha e o índice do termo, nunca o termo. Os hashes não escondem os termos (o histórico público já os contém):
   servem para não deixá-los em claro e impedir a volta. Para proibir um termo novo, calcule o hash fora da árvore e
-  acrescente só o hash.
+  acrescente só o hash. Telefones são comparados só pelos dígitos e coordenadas com a precisão registrada.
+- **O que o guardião não lê não entra:** PDF, documento de escritório (doc/docx/xls/xlsx/odt…), arquivo compactado,
+  imagem (prints de painel são evidência de cliente), link simbólico, submódulo ou binário de tipo não reconhecido
+  versionados fazem o CI falhar, salvo exceção explícita e justificada no próprio teste. Caminhos locais da máquina do
+  responsável (backups, unidade externa, pastas de projeto) também viram marcadores, como `<DESTINO_BACKUP_LOCAL>` e
+  `<UNIDADE_EXTERNA>`.
 
 ## See also
 
