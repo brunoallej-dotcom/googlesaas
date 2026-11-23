@@ -103,7 +103,8 @@ export interface CaptureReport {
   readonly identityBasis: IdentityBasis;
   readonly providerResult: ProviderResultFields | null;
   readonly data: {
-    readonly googleMaps: (ProfileSummary & { readonly source: 'serper-maps'; readonly queriedAt: string | null }) | null;
+    /** `SIMULATED` só na coleta SIMULADA do ensaio (W5.2b): os dados vêm do gerador sintético, não do Serper. */
+    readonly googleMaps: (ProfileSummary & { readonly source: 'serper-maps' | 'SIMULATED'; readonly queriedAt: string | null }) | null;
     readonly site: (SiteObservation & { readonly source: 'site-check'; readonly observedInOriginalRun: true; readonly note: string }) | null;
   };
   readonly evidences: readonly Evidence[];
@@ -163,6 +164,19 @@ function sameResult(raw: Record<string, unknown>, returned: MapsIdentifiers): bo
 const REAL_SOURCE_DESCRIPTION = 'Dados coletados via Serper /maps (intermediário de coleta da listagem pública do Google Maps). NÃO vêm da API oficial do Google Business Profile e o perfil não foi aberto diretamente no Google.';
 const SIMULATED_SOURCE_DESCRIPTION = 'SIMULADA — ensaio: dados SINTÉTICOS gerados pelo modo SIMULATED do coletor na homologação. Nenhuma consulta foi feita ao Serper nem ao Google; nunca é evidência real.';
 const SIMULATED_LIMITATION = 'SIMULADA — ensaio: captura sintética de homologação (nenhuma consulta foi feita); não descreve nenhuma empresa real e nunca é evidência real.';
+/** No simulado, a origem de cada dado do perfil é o gerador sintético (nenhum texto atribui o dado a um provedor; revisão do PR #62). */
+const SIMULATED_ORIGIN_NOTE = 'SIMULADA — ensaio: dado sintético do gerador da homologação; nenhuma consulta externa foi feita.';
+const SIMULATED_NOT_PROVIDED = 'SIMULADA — ensaio: o gerador sintético não traz este dado; nenhuma consulta externa foi feita.';
+const PROVIDER_ATTRIBUTION = /Serper/;
+const PROVIDER_NOT_PROVIDED = /não disponibiliza/;
+
+/** Texto do pipeline (feito para a coleta real) que atribui o dado ao provedor ⇒ a mesma informação, atribuída ao gerador sintético. */
+function simulatedText(text: string): string {
+  if (!PROVIDER_ATTRIBUTION.test(text)) return text;
+  return PROVIDER_NOT_PROVIDED.test(text) ? SIMULATED_NOT_PROVIDED : SIMULATED_ORIGIN_NOTE;
+}
+/** Evidências da coleta simulada: só a `limitation` muda de origem (status, ids e datas são os do pipeline). */
+const simulatedEvidences = (evidences: readonly Evidence[]): Evidence[] => evidences.map((e) => (e.limitation ? { ...e, limitation: simulatedText(e.limitation) } : e));
 
 const SITE_NOT_RUN = /^Verificação do site não executada: (?:nenhum provedor configurado|orçamento igual a zero)\.$/;
 const validIso = (value: string): boolean => /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(value) && !Number.isNaN(Date.parse(value));
@@ -230,7 +244,11 @@ export async function buildReportFromCapture(params: CaptureReportInput): Promis
   }
   if (identity.name === undefined) limitations.push('O nome da empresa não foi informado pelo operador; a busca usou a dica do link.');
   const simulated = params.simulated === true;
-  if (simulated) limitations.unshift(SIMULATED_LIMITATION);
+  if (simulated) {
+    for (let i = 0; i < limitations.length; i++) limitations[i] = simulatedText(limitations[i] ?? '');
+    limitations.unshift(SIMULATED_LIMITATION);
+  }
+  const evidences = simulated ? simulatedEvidences(result.evidences) : result.evidences;
 
   const report: CaptureReport = {
     schemaVersion: 1,
@@ -271,7 +289,7 @@ export async function buildReportFromCapture(params: CaptureReportInput): Promis
     identityBasis: result.identityBasis,
     providerResult: rawMatch ? pickProviderResult(rawMatch) : null,
     data: {
-      googleMaps: result.profile ? { ...result.profile, source: 'serper-maps', queriedAt: result.queriedAt.maps } : null,
+      googleMaps: result.profile ? { ...result.profile, source: simulated ? 'SIMULATED' : 'serper-maps', queriedAt: result.queriedAt.maps } : null,
       site: result.siteObservation
         ? {
             ...result.siteObservation,
@@ -282,8 +300,8 @@ export async function buildReportFromCapture(params: CaptureReportInput): Promis
           }
         : null,
     },
-    evidences: result.evidences,
-    verified: result.evidences
+    evidences,
+    verified: evidences
       .filter((e) => e.status === 'VERIFIED')
       .map((e) => ({
         id: e.id,
@@ -292,11 +310,11 @@ export async function buildReportFromCapture(params: CaptureReportInput): Promis
         origin: e.origin,
         consultedAt: e.consultedAt,
         limitation: e.limitation ?? null,
-        // `GOOGLE_NATIVE` aqui significa "atributo nativo do perfil", mas o dado veio do Serper (intermediário).
-        viaSerper: e.id.startsWith('maps-'),
-        originNote: e.id.startsWith('maps-') ? MAPS_ORIGIN_LIMITATION : null,
+        // `GOOGLE_NATIVE` aqui significa "atributo nativo do perfil", mas o dado veio do Serper (intermediário); no simulado, do gerador sintético.
+        viaSerper: !simulated && e.id.startsWith('maps-'),
+        originNote: e.id.startsWith('maps-') ? (simulated ? SIMULATED_ORIGIN_NOTE : MAPS_ORIGIN_LIMITATION) : null,
       })),
-    unverified: result.evidences
+    unverified: evidences
       .filter((e) => e.status === 'NOT_VERIFIED')
       .map((e) => ({ id: e.id, criterionId: e.criterionId, reason: e.limitation ?? 'sem motivo registrado' })),
     limitations: [...new Set(limitations)],

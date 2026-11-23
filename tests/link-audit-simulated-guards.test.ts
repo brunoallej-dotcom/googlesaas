@@ -341,3 +341,20 @@ test('export (2c), segunda camada SOZINHA: o módulo do export com allowSimulate
   const both = await exportCandidatePackage(options(newOut(), { allowSimulated: true, homologationLock: true }));
   assert.ok(both.ok && both.simulated, both.ok ? '' : both.message);
 });
+
+test('interface (PR #62, item 2): o detalhe da coleta SIMULADA nunca diz "via Serper" nem "Devolvido pelo Serper"; a real continua dizendo', async () => {
+  const evidence = tmpDir('lasim-ui2-');
+  await collectSimulated(evidence);
+  const actor = { email: 'leitor@exemplo.invalid' };
+  const view = await createEvidenceReader({ baseDir: evidence, authorize: () => true }).getAudit(actor, SIM_AUDIT_ID);
+  assert.ok(view);
+  const noop = (): void => undefined;
+  const html = textOf(renderToStaticMarkup(createElement(StoredAuditDetail, { detail: toAuditDetailDto(view), loading: false, onSelectRevision: noop })));
+  assert.doesNotMatch(html, /via Serper|pelo Serper|Serper \/maps|intermediário de coleta/i);
+  assert.match(html, /gerador sintético/);
+  const real = await makeAudit();
+  const realView = await createEvidenceReader({ baseDir: real.base, authorize: () => true }).getAudit(actor, real.auditId);
+  assert.ok(realView);
+  const realHtml = textOf(renderToStaticMarkup(createElement(StoredAuditDetail, { detail: toAuditDetailDto(realView), loading: false, onSelectRevision: noop })));
+  assert.match(realHtml, /via Serper/);
+});

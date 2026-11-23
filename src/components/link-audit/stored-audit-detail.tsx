@@ -38,6 +38,7 @@ import {
   placeLine,
   SIMULATED_BADGE,
   SIMULATED_NOTICE,
+  SIMULATED_ORIGIN_LABEL,
   STATE_LABELS,
 } from './evidence-labels';
 
@@ -84,7 +85,7 @@ function Row({ icon: Icon, label, children }: { readonly icon?: LucideIcon; read
 
 const Dash = (): React.JSX.Element => <span className="text-gmn-muted">não informado</span>;
 
-function EvidenceItem({ item, verified, sharedLimitation }: { readonly item: EvidenceDto; readonly verified: boolean; readonly sharedLimitation?: string | null }): React.JSX.Element {
+function EvidenceItem({ item, verified, sharedLimitation, simulated = false }: { readonly item: EvidenceDto; readonly verified: boolean; readonly sharedLimitation?: string | null; readonly simulated?: boolean }): React.JSX.Element {
   const criterion = CRITERION_LABEL[item.criterionId];
   return (
     <li className={`rounded-lg border p-3 ${verified ? 'border-gmn-success/25 bg-gmn-success/[0.05]' : 'border-dashed border-white/15 bg-white/[0.02]'}`}>
@@ -94,7 +95,7 @@ function EvidenceItem({ item, verified, sharedLimitation }: { readonly item: Evi
       </div>
       {verified ? <p className="mt-1 break-words text-sm text-gmn-text">{item.claim}</p> : <p className="mt-1 break-words text-xs text-gmn-muted">{item.limitation ?? 'Sem motivo registrado.'}</p>}
       <p className="mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-gmn-muted">
-        <span>Origem: {ORIGIN_LABELS[item.origin] ?? item.origin}</span>
+        <span>Origem: {simulated && item.origin === 'GOOGLE_NATIVE' ? SIMULATED_ORIGIN_LABEL : (ORIGIN_LABELS[item.origin] ?? item.origin)}</span>
         {criterion && <span>Critério: {criterion}</span>}
         <span>Consulta: {formatDateTime(item.consultedAt)}</span>
       </p>
@@ -213,7 +214,11 @@ export function StoredAuditDetail({ detail, loading, onSelectRevision }: StoredA
           ) : (
             <p>O perfil não foi confirmado nesta coleta: nenhum dado do estabelecimento é exibido.</p>
           )}
-          <p className="mt-3 text-[11px]">Dados do perfil obtidos via Serper /maps em {formatDateTime(est?.queriedAt ?? detail.collectedAt)}; o perfil não foi aberto diretamente no Google.</p>
+          {detail.source.simulated ? (
+            <p className="mt-3 text-[11px]">Dados SINTÉTICOS do gerador sintético do ensaio, gravados em {formatDateTime(est?.queriedAt ?? detail.collectedAt)}; nenhuma consulta foi feita.</p>
+          ) : (
+            <p className="mt-3 text-[11px]">Dados do perfil obtidos via Serper /maps em {formatDateTime(est?.queriedAt ?? detail.collectedAt)}; o perfil não foi aberto diretamente no Google.</p>
+          )}
         </Card>
 
         <Card icon={Clock} title="Horário de funcionamento">
@@ -258,7 +263,7 @@ export function StoredAuditDetail({ detail, loading, onSelectRevision }: StoredA
             {[ids.fromLink.cid && `CID ${ids.fromLink.cid}`, ids.fromLink.featureId && `FID ${ids.fromLink.featureId}`, ids.fromLink.placeId && `Place ID ${ids.fromLink.placeId}`].filter(Boolean).join(' · ') || <Dash />}
           </Row>
           <Row label="Derivado (offline)">{ids.derivedCid ? <span className="break-all font-mono text-xs">CID {ids.derivedCid.value}</span> : 'nenhum'}</Row>
-          <Row label="Devolvido pelo Serper">
+          <Row label={detail.source.simulated ? 'Devolvido pelo gerador sintético' : 'Devolvido pelo Serper'}>
             {ids.returnedByProvider ? (
               <span className="break-all font-mono text-xs">
                 {[ids.returnedByProvider.cid && `CID ${ids.returnedByProvider.cid}`, ids.returnedByProvider.featureId && `FID ${ids.returnedByProvider.featureId}`, ids.returnedByProvider.placeId && `Place ID ${ids.returnedByProvider.placeId}`].filter(Boolean).join(' · ')}
@@ -281,7 +286,7 @@ export function StoredAuditDetail({ detail, loading, onSelectRevision }: StoredA
           {detail.evidences.verified.length > 0 ? (
             <ul className="space-y-2">
               {detail.evidences.verified.map((item) => (
-                <EvidenceItem key={item.id} item={item} verified sharedLimitation={sharedLimitation} />
+                <EvidenceItem key={item.id} item={item} verified sharedLimitation={sharedLimitation} simulated={detail.source.simulated === true} />
               ))}
             </ul>
           ) : (
@@ -293,7 +298,7 @@ export function StoredAuditDetail({ detail, loading, onSelectRevision }: StoredA
           {detail.evidences.unverified.length > 0 ? (
             <ul className="space-y-2">
               {detail.evidences.unverified.map((item) => (
-                <EvidenceItem key={item.id} item={item} verified={false} />
+                <EvidenceItem key={item.id} item={item} verified={false} simulated={detail.source.simulated === true} />
               ))}
             </ul>
           ) : (
@@ -306,7 +311,7 @@ export function StoredAuditDetail({ detail, loading, onSelectRevision }: StoredA
         <Card icon={ListChecks} title={`Outras evidências (${detail.evidences.other.length})`}>
           <ul className="space-y-2">
             {detail.evidences.other.map((item) => (
-              <EvidenceItem key={item.id} item={item} verified={false} />
+              <EvidenceItem key={item.id} item={item} verified={false} simulated={detail.source.simulated === true} />
             ))}
           </ul>
         </Card>
@@ -359,7 +364,7 @@ export function StoredAuditDetail({ detail, loading, onSelectRevision }: StoredA
         <Card icon={Database} title="Origem dos dados">
           <dl className="divide-y divide-white/[0.05]">
             <Row label="Fonte">{detail.source.label}</Row>
-            <Row label="API oficial do Google">Não. Os dados vêm de um intermediário de coleta.</Row>
+            <Row label="API oficial do Google">{detail.source.simulated ? 'Não. Dados do gerador sintético do ensaio; nenhuma consulta foi feita.' : 'Não. Os dados vêm de um intermediário de coleta.'}</Row>
             <Row label="Resposta HTTP">{detail.source.httpStatus ?? <Dash />}</Row>
             <Row label="Chamadas">{detail.source.httpAttempts ?? <Dash />}</Row>
             <Row label="Créditos informados">{detail.source.creditsReportedByApi ?? <Dash />} <span className="text-xs text-gmn-muted">(informado pela própria resposta; o saldo real só o painel do provedor mostra)</span></Row>

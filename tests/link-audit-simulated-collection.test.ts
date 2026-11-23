@@ -288,3 +288,31 @@ test('zero rede (3): a coleta simulada completa (CLI → runtime → gravação)
     for (const guard of guards) guard.mock.restore();
   }
 });
+
+/* ------------------------------------------------------------------ revisão do PR #62, item 2: origem SIMULADA no relatório */
+
+const SERPER_ORIGIN = /via Serper|Serper \/maps|pelo Serper|viaSerper/i;
+/** Todos os textos (e o campo viaSerper) do relatório, com o caminho, para achar qualquer "obtido via Serper". */
+function textsOf(value: unknown, at = ''): Array<[string, string]> {
+  if (typeof value === 'string') return [[at, value]];
+  if (typeof value === 'boolean' && at.endsWith('.viaSerper')) return value ? [[at, 'viaSerper=true']] : [];
+  if (Array.isArray(value)) return value.flatMap((item, index) => textsOf(item, `${at}[${index}]`));
+  if (value && typeof value === 'object') return Object.entries(value).flatMap(([key, item]) => textsOf(item, `${at}.${key}`));
+  return [];
+}
+
+test('origem (PR #62, item 2): o relatório SIMULADO diz que a fonte é o gerador sintético — data.googleMaps.source SIMULATED, viaSerper:false e NENHUM texto "obtido via Serper"', async () => {
+  const evidence = tmpDir('lasim-orig-');
+  const { report } = await collectSimulated(evidence);
+  const full = report as unknown as { data: { googleMaps: { source: string } | null }; verified: Array<{ viaSerper: boolean; originNote: string | null }>; source: { description: string } };
+  assert.equal(full.data.googleMaps?.source, 'SIMULATED');
+  assert.ok(full.verified.length > 0 && full.verified.every((item) => item.viaSerper === false && /SIMULADA — ensaio/.test(item.originNote ?? '')));
+  const serper = textsOf(report).filter(([at, text]) => at !== '.source.description' && SERPER_ORIGIN.test(text));
+  assert.deepEqual(serper, [], 'nenhum texto do relatório simulado atribui o dado ao Serper');
+  // controle: o relatório real continua atribuindo ao Serper (intermediário), como antes
+  const text = bodyText();
+  const real = await buildReportFromCapture({ rawBody: text, body: { name: 'c0001.capture.json', sha256: 'a'.repeat(64), bytes: Buffer.byteLength(text) }, otherFiles: [], httpStatus: 200, httpAttempts: 1, collectedAt: COLLECTED_AT, input: inputFor(identity()), site: null, generatedAt: T_NOW });
+  assert.ok(real.ok);
+  assert.equal(real.report.data.googleMaps?.source, 'serper-maps');
+  assert.ok(real.report.verified.some((item) => item.viaSerper));
+});
