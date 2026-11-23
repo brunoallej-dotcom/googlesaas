@@ -4,6 +4,7 @@ import { canonicalJson, sha256Hex } from '../link-audit/canonical';
 import { METHODOLOGY_VERSION } from '../link-audit/methodology';
 import { bestEffort, errorCode, nodeFsOps, publishExclusive, withLock, type FsOps } from '../link-audit/snapshot-store';
 import { AUTH_PATTERNS, containsSecret } from './secrets';
+import { isSimulatedCapture, SIMULATED_PROVIDER } from './simulated';
 import {
   AUDIT_ID_PATTERN,
   CAPTURE_FILE,
@@ -184,7 +185,7 @@ export interface StorageStatus {
 const ACL_NOTE = 'A proteção de acesso (ACL do Windows) não é verificável pelo Node: a pasta deve estar restrita ao operador antes do uso. Cópia no mesmo disco não é backup independente.';
 
 /** Confirma que dá para publicar com segurança ANTES de qualquer consulta paga. Falha ⇒ a operação deve ser bloqueada. */
-export async function checkStorage(baseDir: string, options: StoreOptions & { readonly auditId?: string } = {}): Promise<EvidenceResult<StorageStatus>> {
+export async function checkStorage(baseDir: string, options: StoreOptions & { readonly auditId?: string; readonly simulated?: boolean } = {}): Promise<EvidenceResult<StorageStatus>> {
   const ops = options.fs ?? nodeFsOps;
   const allowed = assertAllowedBase(baseDir, options.projectRoot ?? process.cwd());
   if (!allowed.ok) return fail('STORAGE_NOT_READY', ...allowed.issues);
@@ -209,6 +210,8 @@ export async function checkStorage(baseDir: string, options: StoreOptions & { re
     } catch (error) {
       if (errorCode(error) !== 'ENOENT') return notReady(ops, real, error, 'verificação da pasta da auditoria');
     }
+    const mixed = await mixesSimulation(real, options.auditId, options.simulated === true, { ...options, fs: ops });
+    if (mixed) return fail('STORAGE_NOT_READY', mixed);
   }
 
   const probe = path.join(real, `.probe-${randomBytes(8).toString('hex')}`);
@@ -231,6 +234,20 @@ export async function checkStorage(baseDir: string, options: StoreOptions & { re
   await bestEffort(() => ops.unlink(probe));
   if (linkSupported) await bestEffort(() => ops.unlink(probeLink));
   return { ok: true, value: { baseDir: real, linkSupported, notes } };
+}
+
+/** Captura SIMULADA (ensaio) e captura real nunca dividem uma auditoria (spec do P1 §5.7): o pré-voo recusa ANTES de qualquer consulta. */
+async function mixesSimulation(root: string, auditId: string, simulated: boolean, options: StoreOptions & { readonly fs: FsOps }): Promise<string | null> {
+  const listing = await listAuditFiles(options.fs, path.join(root, auditId));
+  if (!listing.ok) return null; // pasta ainda inexistente (ou ilegível: a gravação decide)
+  for (const n of listing.value.captures) {
+    const existing = await readCapture(root, auditId, n, options);
+    if (!existing.ok || isSimulatedCapture(existing.value) === simulated) continue;
+    return simulated
+      ? 'Esta auditoria tem captura real: a coleta SIMULADA (ensaio) não é misturada a ela; use outro id de auditoria.'
+      : 'Esta auditoria tem captura SIMULADA (ensaio de homologação): a coleta real não é misturada a ela; use outro id. Nenhuma consulta foi feita e a autorização não foi consumida.';
+  }
+  return null;
 }
 
 async function notReady(ops: FsOps, root: string, error: unknown, step: string): Promise<EvidenceResult<never>> {
@@ -349,6 +366,8 @@ export interface CaptureInput {
     readonly failure?: string | null;
   };
   readonly input: { readonly snapshotId: string; readonly originalLink: string; readonly identity: Record<string, unknown> };
+  /** Coleta SIMULADA do ensaio (W5.2b, spec do P1 §5.7): grava `provider: "SIMULATED"` e `simulated: true`, dentro do hash. */
+  readonly simulated?: true;
 }
 
 export interface WrittenCapture {
@@ -402,13 +421,16 @@ export async function writeCapture(baseDir: string, input: CaptureInput, options
     const state = await ensureDirectory(ops, located.value.dir, true);
     if (!state.ok) return state;
     const bodySha = storedBody === null ? null : sha256Hex(storedBody);
+    const simulated = input.simulated === true;
     for (let attempt = 0; attempt < WRITE_RETRIES; attempt++) {
       const listing = await listAuditFiles(ops, located.value.dir);
       if (!listing.ok) return listing;
-      if (bodySha !== null) {
+      if (bodySha !== null || simulated) {
         for (const n of listing.value.captures) {
           const existing = await readCapture(baseDir, input.auditId, n, options);
-          if (existing.ok && existing.value.response.bodySha256 === bodySha) {
+          // uma captura SIMULADA nunca entra numa auditoria real (a resposta real paga, ao contrário, nunca é descartada: o pré-voo a barra antes de pagar)
+          if (simulated && existing.ok && !isSimulatedCapture(existing.value)) return fail('INVALID', 'Esta auditoria tem captura real: uma captura simulada (ensaio) não é misturada a ela; nada foi gravado.');
+          if (bodySha !== null && existing.ok && existing.value.response.bodySha256 === bodySha) {
             return { ok: true, value: { captureNumber: n, filePath: path.join(located.value.dir, captureName(n)), contentSha256: existing.value.contentSha256, duplicate: true } };
           }
         }
@@ -422,7 +444,8 @@ export async function writeCapture(baseDir: string, input: CaptureInput, options
         captureNumber: number,
         methodologyVersion: input.methodologyVersion ?? METHODOLOGY_VERSION,
         collectedAt: input.collectedAt,
-        provider: 'serper-maps',
+        provider: simulated ? SIMULATED_PROVIDER : 'serper-maps',
+        ...(simulated ? { simulated: true as const } : {}),
         request: { method: 'POST', url: input.request.url, body: input.request.body },
         response: {
           httpStatus: input.response.httpStatus,

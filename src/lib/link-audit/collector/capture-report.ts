@@ -44,6 +44,8 @@ export interface CaptureReportInput {
   /** Resultado COMPLETO da verificação do site feita na coleta (coletas a partir da Onda 5A). */
   readonly siteOutcome?: SiteCheckOutcome | null;
   readonly generatedAt: string;
+  /** Captura SIMULADA do ensaio em homologação (W5.2b, spec do P1 §5.7): o relatório leva a marca e a limitação explícita. */
+  readonly simulated?: boolean;
 }
 
 export interface ProviderResultFields {
@@ -75,7 +77,9 @@ export interface CaptureReport {
   /** Este relatório foi gerado offline: nenhuma chamada externa. */
   readonly externalCallsMadeByThisReport: 0;
   readonly source: {
-    readonly provider: 'serper-maps';
+    readonly provider: 'serper-maps' | 'SIMULATED';
+    /** Só na coleta SIMULADA (ausente nas reais). */
+    readonly simulated?: true;
     readonly description: string;
     readonly officialGoogleApi: false;
     readonly collectedAt: string;
@@ -156,6 +160,10 @@ function sameResult(raw: Record<string, unknown>, returned: MapsIdentifiers): bo
   return (returned.cid !== undefined && cid !== null && cid === returned.cid) || (returned.featureId !== undefined && fid === returned.featureId);
 }
 
+const REAL_SOURCE_DESCRIPTION = 'Dados coletados via Serper /maps (intermediário de coleta da listagem pública do Google Maps). NÃO vêm da API oficial do Google Business Profile e o perfil não foi aberto diretamente no Google.';
+const SIMULATED_SOURCE_DESCRIPTION = 'SIMULADA — ensaio: dados SINTÉTICOS gerados pelo modo SIMULATED do coletor na homologação. Nenhuma consulta foi feita ao Serper nem ao Google; nunca é evidência real.';
+const SIMULATED_LIMITATION = 'SIMULADA — ensaio: captura sintética de homologação (nenhuma consulta foi feita); não descreve nenhuma empresa real e nunca é evidência real.';
+
 const SITE_NOT_RUN = /^Verificação do site não executada: (?:nenhum provedor configurado|orçamento igual a zero)\.$/;
 const validIso = (value: string): boolean => /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(value) && !Number.isNaN(Date.parse(value));
 
@@ -221,6 +229,8 @@ export async function buildReportFromCapture(params: CaptureReportInput): Promis
     limitations.push('A coleta original não registrou o resultado da verificação do site (ou o motivo não pôde ser recuperado da captura); o site não foi consultado de novo.');
   }
   if (identity.name === undefined) limitations.push('O nome da empresa não foi informado pelo operador; a busca usou a dica do link.');
+  const simulated = params.simulated === true;
+  if (simulated) limitations.unshift(SIMULATED_LIMITATION);
 
   const report: CaptureReport = {
     schemaVersion: 1,
@@ -230,8 +240,9 @@ export async function buildReportFromCapture(params: CaptureReportInput): Promis
     methodologyVersion: METHODOLOGY_VERSION,
     externalCallsMadeByThisReport: 0,
     source: {
-      provider: 'serper-maps',
-      description: 'Dados coletados via Serper /maps (intermediário de coleta da listagem pública do Google Maps). NÃO vêm da API oficial do Google Business Profile e o perfil não foi aberto diretamente no Google.',
+      provider: simulated ? 'SIMULATED' : 'serper-maps',
+      ...(simulated ? { simulated: true as const } : {}),
+      description: simulated ? SIMULATED_SOURCE_DESCRIPTION : REAL_SOURCE_DESCRIPTION,
       officialGoogleApi: false,
       collectedAt: params.collectedAt,
       httpStatus: params.httpStatus,
