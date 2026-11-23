@@ -279,6 +279,8 @@ const ATTESTATION_EXTRA_TARGETS: ReadonlyMap<string, ReadonlySet<string>> = new 
   ['src/lib/link-audit-attestation/sign-chain.ts', new Set(['fs-ops.ts'])],
   // P1 W4.3: o disco do `sign` (tipos BytesFsOps/FsOps e `errorCode`): leitura única das entradas e a gravação temporário + link() exclusivo
   ['src/lib/link-audit-attestation/sign-run.ts', new Set(['fs-ops.ts'])],
+  // P9.3b: a criação exclusiva compartilhada (extraída de sign-run.ts sem mudança de comportamento): só a porta de disco (tipos e `errorCode`)
+  ['src/lib/link-audit-attestation/exclusive-write.ts', new Set(['fs-ops.ts'])],
   // P1 W4.4: o comando `sign` usa o disco PADRÃO (nodeFsOps, injetável nos testes) para entregá-lo a sign-run.ts; não lê nem grava por conta própria.
   // W4.6: o adaptador estreito (node-fs-ops.ts), sem o resto do snapshot-store
   ['src/lib/link-audit-attestation/sign-cli.ts', new Set(['fs-ops.ts', 'node-fs-ops.ts'])],

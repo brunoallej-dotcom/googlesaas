@@ -665,6 +665,12 @@ O hash versionado passou a `395d5ba946e3f6b45c9689828947ca49107d3a9940db4f4ca457
 - **Hash do artefato depois da confirmação da revisão do PR #62 (22/11/2026):** o `sign` passou a exigir chave de ensaio (id `ensaio-…`) com
   `--simulated` e a recusá-la sem ele (`sign-core.ts`, `sign-args.ts`, `sign-chain.ts`; §5.7). O build reprodutível dá
   `2fbf9851c34b2dd309d082cbb974669a0534eacd0b6aa3b7902d8ac841d440ab` (755 532 bytes), igual em duas pastas e conferido por `sha256sum -c`; os 19 testes do artefato passam.
+- **Hash do artefato depois da P9.3b (23/11/2026):** a criação exclusiva do `sign` (`linkExclusive`, `commitFile`, `subDir` e `rootIsReal`) saiu
+  de `sign-run.ts` para o módulo compartilhado `src/lib/link-audit-attestation/exclusive-write.ts`, **sem mudança de comportamento** (as recusas
+  continuam as do `sign`, passadas pelo chamador), para o receptor de manifestos do host usar a mesma gravação (spec
+  `docs/specs/ci-deploy-and-seal-delivery.md` §5.7 passo 7). O build reprodutível dá
+  `978121b48fb3486b4de087cef1095051dd51cf6bd310fdb1edb2f0eef7578255` (755 844 bytes), igual em duas pastas e conferido por `sha256sum -c`; os
+  testes do artefato, do disco do `sign` e do `close-key` passam sem alteração.
 - **Teste, isolamento:** a limpeza da estação no HOME dos testes do artefato passou a ser registrada no nível do arquivo. Registrada dentro de um teste antes de qualquer `await`, ela ficava presa àquele teste e apagava a pasta para os seguintes (aparecia só ao rodar parte dos testes). Registrada tarde, numa execução completa, ela não rodava e deixava a pasta no HOME.
 
 ### 5.6 Manifesto `v2` e verificador `v2` (onda W3, contrato próprio)
