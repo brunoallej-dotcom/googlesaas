@@ -470,16 +470,22 @@ Todo código `3` desta tabela fora da última linha é do caso B do §3.2 (recus
 
 ### 11.1 Resposta paga na quarentena (coleta LIVE, código 5)
 
-Se a coleta LIVE terminar com código 5 e a mensagem "foi PRESERVADA na quarentena" (spec do P1 §5.7), a resposta paga não entrou na auditoria
-pedida (modo trocado numa corrida, marcador de modo ilegível, falha de disco). Ela está num arquivo próprio em
+Se a coleta LIVE terminar com código 5 e a mensagem "foi PRESERVADA na quarentena" (ou "gravada na quarentena", spec do P1 §5.7), a resposta
+paga não entrou na auditoria pedida, ou entrou e não pôde ser conferida (modo trocado numa corrida, marcador de modo ilegível, falha de disco ou
+de releitura). Ela está num arquivo próprio em
 `<PASTA_DE_EVIDENCIAS>/_quarentena-resgate-live/<auditId>-<carimbo>-<aleatório>.json` (modo 0600), com o corpo, os metadados, o motivo e o
 `auditId` pedido. **Nenhum fluxo de auditoria lê essa pasta.** A recuperação é **manual e só do responsável**:
 
 1. não apague, não mova e não edite o arquivo; anote nome, `contentSha256` e motivo no livro (incidente);
-2. não repita a coleta (a autorização já foi consumida) sem decisão escrita do responsável;
-3. o responsável decide o destino: investigar o motivo (`MODE_CONFLICT`, `CORRUPT`, `WRITE_FAILED`…), e, se for o caso, uma auditoria nova
+2. **confira a auditoria pedida antes de qualquer recuperação.** Se a mensagem disser "PODE JÁ ESTAR na auditoria" (`reason.publishedUnverified:
+   true`), a captura de número `reason.publishedCaptureNumber` foi publicada e só a releitura falhou: confira a integridade da auditoria (leitor de
+   evidências) antes de decidir; a cópia da quarentena é uma salvaguarda, não uma segunda captura a recuperar;
+3. se a mensagem disser "durabilidade não confirmada (fsync da pasta falhou)" ou "permissões da pasta da quarentena não puderam ser garantidas",
+   confira que o arquivo continua lá e restrinja a pasta (`chmod 700`, dono = o usuário da coleta) antes de qualquer outra ação;
+4. não repita a coleta (a autorização já foi consumida) sem decisão escrita do responsável;
+5. o responsável decide o destino: investigar o motivo (`MODE_CONFLICT`, `CORRUPT`, `WRITE_FAILED`…), e, se for o caso, uma auditoria nova
    com id novo e uma decisão registrada de como a resposta preservada entra nela; nunca por cópia para a pasta de outra auditoria;
-4. se a mensagem for "NÃO foi persistida" com dois códigos, a quarentena também falhou: a resposta paga se perdeu; registre os dois códigos
+6. se a mensagem for "NÃO foi persistida" com dois códigos, a quarentena também falhou: a resposta paga se perdeu; registre os dois códigos
    e trate como incidente de armazenamento.
 
 ## 12. Suplente (D15.1, D10)

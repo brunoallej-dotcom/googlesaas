@@ -739,7 +739,16 @@ Códigos de saída como no LIVE (0 ok, 1 uso, 3 recusado antes de gravar, 4/5 fa
    sempre ("NÃO foi persistida") traz os dois códigos. A quarentena **nunca** é lida pelos fluxos de auditoria; a recuperação é manual e fica
    com o responsável (runbook do custodiante §11.1). Substitui a auditoria de resgate `<auditId>-resgate-live` da rodada anterior, que tinha
    id previsível (podia cair numa auditoria existente, ou num `MODE_CONFLICT` que perdia a resposta) e colidia por causa do corte em 64
-   caracteres. O marcador de modo não é evidência (fica fora do conjunto atestado) nem assinatura.
+   caracteres. **Casos com marca própria (rodada final da revisão do PR #62):** (i) captura PUBLICADA na auditoria pedida cuja releitura falha:
+   a cópia vai igualmente para a quarentena, com `reason.publishedUnverified: true` e `reason.publishedCaptureNumber`, e a mensagem avisa que a
+   captura pode já estar na auditoria (conferir antes de recuperar); "não publicada" mantém o motivo simples; (ii) pasta da quarentena: depois do
+   `mkdir` e do `chmod 0700`, o `lstat` confere diretório comum (link ou não diretório ⇒ recusa: o arquivo iria para outro lugar), dono = usuário do
+   processo (quando há `getuid`) e `mode & 0o077 === 0`; se não der para garantir, o arquivo AINDA é gravado 0600 (preservar a resposta paga vem
+   primeiro) e o retorno leva `dirPermissionsUnverified`, que o runtime informa como erro; (iii) fsync da pasta que falha ⇒ sucesso com
+   `durability: "UNCONFIRMED"` e a mensagem "gravada na quarentena; durabilidade não confirmada (fsync da pasta falhou)", nunca "PRESERVADA". Em
+   todos, o caso sai como erro (código 5). **Limite declarado:** a janela entre o `lstat` da pasta e a criação do arquivo não é fechada (não
+   reproduzimos `openat`); só o próprio usuário do volume de evidências consegue explorá-la, e ele já pode escrever na pasta de qualquer modo.
+   O marcador de modo não é evidência (fica fora do conjunto atestado) nem assinatura.
 4. **`export`.** Auditoria com captura simulada ⇒ `EXPORT_SIMULATED_CAPTURE` (código 3), salvo com `--simulated` **e** a mesma trava,
    conferida em duas camadas testadas cada uma sozinha (a recusa antecipada do CLI e a montagem pura do `export`, que recebe a opção e a
    trava separadas);
