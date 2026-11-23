@@ -236,13 +236,18 @@ export async function checkStorage(baseDir: string, options: StoreOptions & { re
   return { ok: true, value: { baseDir: real, linkSupported, notes } };
 }
 
-/** Captura SIMULADA (ensaio) e captura real nunca dividem uma auditoria (spec do P1 §5.7): o pré-voo recusa ANTES de qualquer consulta. */
+/**
+ * Captura SIMULADA (ensaio) e captura real nunca dividem uma auditoria (spec do P1 §5.7): o pré-voo recusa ANTES de qualquer consulta. Falha
+ * FECHADA (revisão do PR #62): só a pasta da auditoria comprovadamente inexistente (ENOENT) conta como vazia; listagem que falha por qualquer outro
+ * motivo, ou captura existente que não se lê, é recusa (não dá para provar que não há mistura).
+ */
 async function mixesSimulation(root: string, auditId: string, simulated: boolean, options: StoreOptions & { readonly fs: FsOps }): Promise<string | null> {
   const listing = await listAuditFiles(options.fs, path.join(root, auditId));
-  if (!listing.ok) return null; // pasta ainda inexistente (ou ilegível: a gravação decide)
+  if (!listing.ok) return listing.code === 'NOT_FOUND' ? null : 'A pasta desta auditoria existe mas não pôde ser listada: não dá para conferir se há captura simulada e real misturadas. Nada foi consultado.';
   for (const n of listing.value.captures) {
     const existing = await readCapture(root, auditId, n, options);
-    if (!existing.ok || isSimulatedCapture(existing.value) === simulated) continue;
+    if (!existing.ok) return `A captura ${n} desta auditoria não pôde ser lida (${existing.code}): não dá para conferir se há captura simulada e real misturadas. Nada foi consultado.`;
+    if (isSimulatedCapture(existing.value) === simulated) continue;
     return simulated
       ? 'Esta auditoria tem captura real: a coleta SIMULADA (ensaio) não é misturada a ela; use outro id de auditoria.'
       : 'Esta auditoria tem captura SIMULADA (ensaio de homologação): a coleta real não é misturada a ela; use outro id. Nenhuma consulta foi feita e a autorização não foi consumida.';
@@ -429,6 +434,7 @@ export async function writeCapture(baseDir: string, input: CaptureInput, options
         for (const n of listing.value.captures) {
           const existing = await readCapture(baseDir, input.auditId, n, options);
           // uma captura SIMULADA nunca entra numa auditoria real (a resposta real paga, ao contrário, nunca é descartada: o pré-voo a barra antes de pagar)
+          if (simulated && !existing.ok) return fail('INVALID', `A captura ${n} desta auditoria não pôde ser lida: a captura simulada (ensaio) não é gravada sem provar que não há mistura; nada foi gravado.`);
           if (simulated && existing.ok && !isSimulatedCapture(existing.value)) return fail('INVALID', 'Esta auditoria tem captura real: uma captura simulada (ensaio) não é misturada a ela; nada foi gravado.');
           if (bodySha !== null && existing.ok && existing.value.response.bodySha256 === bodySha) {
             return { ok: true, value: { captureNumber: n, filePath: path.join(located.value.dir, captureName(n)), contentSha256: existing.value.contentSha256, duplicate: true } };

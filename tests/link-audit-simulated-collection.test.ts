@@ -25,7 +25,8 @@ import {
   simulatedMapsBody,
 } from '../src/lib/link-audit-runtime/simulated-provider';
 import { inputFor, T_NOW } from './helpers/link-audit-collect-fixtures';
-import { AUDIT, bodyText, captureInput, COLLECTED_AT, identity, registerCleanup, tmpDir } from './helpers/link-audit-evidence-fixtures';
+import { AUDIT, bodyText, captureInput, COLLECTED_AT, errno, faulty, identity, registerCleanup, tmpDir } from './helpers/link-audit-evidence-fixtures';
+import { nodeFsOps } from '../src/lib/link-audit/snapshot-store';
 import { collectSimulated, HOMOLOGATION_ENV, SIM_AUDIT_ID, simArgs, simHarness } from './helpers/link-audit-simulated-fixtures';
 
 /*
@@ -315,4 +316,44 @@ test('origem (PR #62, item 2): o relatório SIMULADO diz que a fonte é o gerado
   assert.ok(real.ok);
   assert.equal(real.report.data.googleMaps?.source, 'serper-maps');
   assert.ok(real.report.verified.some((item) => item.viaSerper));
+});
+
+/* ------------------------------------------------------------------ revisão do PR #62, item 3: a pré-checagem de mistura falha FECHADA */
+
+test('mistura (PR #62, item 3): captura existente ILEGÍVEL (corrompida ou erro de leitura) ⇒ o pré-voo recusa nos dois sentidos, e a gravação simulada também', async () => {
+  const corrupt = tmpDir('lasim-mix-');
+  assert.ok((await writeCapture(corrupt, captureInput())).ok);
+  const file = path.join(corrupt, AUDIT, 'c0001.capture.json');
+  fs.chmodSync(file, 0o644);
+  fs.writeFileSync(file, '{ não é json');
+  for (const simulated of [false, true]) {
+    const refused = await checkStorage(corrupt, { auditId: AUDIT, simulated });
+    assert.ok(!refused.ok && refused.code === 'STORAGE_NOT_READY', `simulated=${simulated}`);
+    assert.match(refused.issues.join(' '), /não pôde ser lida/);
+  }
+  const written = await writeCapture(corrupt, { ...captureInput({ body: bodyText({ fixtureIndex: 4 }) }), simulated: true });
+  assert.ok(!written.ok && written.code === 'INVALID', 'nunca grava a simulada ao lado de uma captura que não se lê');
+
+  const unreadable = tmpDir('lasim-mix-');
+  assert.ok((await writeCapture(unreadable, captureInput())).ok);
+  const denyCapture = faulty({ readFile: async (target: string, max: number) => (target.endsWith('.capture.json') ? Promise.reject(errno('EACCES')) : nodeFsOps.readFile(target, max)) });
+  const denied = await checkStorage(unreadable, { auditId: AUDIT, simulated: true, fs: denyCapture });
+  assert.ok(!denied.ok && denied.code === 'STORAGE_NOT_READY');
+});
+
+test('mistura (PR #62, item 3): listagem da pasta da auditoria que FALHA (não ENOENT) ⇒ recusa; só a pasta comprovadamente inexistente conta como vazia', async () => {
+  const base = tmpDir('lasim-mix-');
+  assert.ok((await writeCapture(base, captureInput())).ok);
+  const auditDir = path.join(base, AUDIT);
+  for (const code of ['EACCES', 'EIO', 'ENOTDIR']) {
+    const failingList = faulty({ readdir: async (dir: string) => (path.resolve(dir) === path.resolve(auditDir) ? Promise.reject(errno(code)) : nodeFsOps.readdir(dir)) });
+    for (const simulated of [false, true]) {
+      const refused = await checkStorage(base, { auditId: AUDIT, simulated, fs: failingList });
+      assert.ok(!refused.ok && refused.code === 'STORAGE_NOT_READY', `${code}, simulated=${simulated}`);
+      assert.match(refused.issues.join(' '), /não pôde ser listada/);
+    }
+  }
+  // controle: a pasta da auditoria que não existe (ENOENT) é o caso normal de uma coleta nova
+  assert.ok((await checkStorage(tmpDir('lasim-mix-'), { auditId: AUDIT })).ok);
+  assert.ok((await checkStorage(tmpDir('lasim-mix-'), { auditId: AUDIT, simulated: true })).ok);
 });
