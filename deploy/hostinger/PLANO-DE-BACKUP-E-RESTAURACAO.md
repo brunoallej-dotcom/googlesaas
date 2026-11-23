@@ -111,17 +111,24 @@ PASSO="confirmar o web parado"                           # réplicas 0 E nenhum 
 [ "$(docker service inspect --format '{{.Spec.Mode.Replicated.Replicas}}' gmn_gmn-web)" = 0 ]
 [ -z "$(docker ps -q --filter label=com.docker.swarm.service.name=gmn_gmn-web)" ]
 lista() { ( cd -- "$1" && find . -type f -print0 | LC_ALL=C sort -z | tr '\0' '\n' ); }          # lista exata de arquivos de uma pasta
+manifesto() { ( cd -- "$1" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum ); }   # hashes de cada arquivo
+so_regulares() {                                         # nada além de arquivo regular e pasta (link, FIFO, socket… ⇒ falha)
+  local achados; achados="$(find "$1" ! -type f ! -type d -print -quit)"   # find que falha (pasta ilegível) também aborta
+  [ -z "$achados" ]
+}
+ORIGENS=()
 copia() {
   nome="$1"; origem="$2"; rodada="$3/$RODADA"
   PASSO="$nome: criar a rodada"; mkdir -- "$rodada"      # exclusivo: nunca reaproveita nem sobrescreve uma rodada
-  CRIADAS+=("$rodada")
-  PASSO="$nome: manifesto da origem"
-  ( cd -- "$origem" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum ) > "$rodada/SHA256SUMS"
+  CRIADAS+=("$rodada"); ORIGENS+=("$origem")
+  PASSO="$nome: origem só com arquivos regulares"; so_regulares "$origem"   # um link simbólico entraria na cópia sem conferência
+  PASSO="$nome: manifesto da origem"; manifesto "$origem" > "$rodada/SHA256SUMS"
   PASSO="$nome: cópia"; rsync -a -- "$origem"/ "$rodada/dados"/            # pasta nova: nada a sobrescrever; nunca --delete
   PASSO="$nome: conferência"
+  so_regulares "$rodada/dados"                                                 # a cópia também só tem arquivos regulares e pastas
   ( cd -- "$rodada/dados" && sha256sum --quiet --strict -c ../SHA256SUMS )    # cada arquivo do manifesto confere na cópia
   diff -- <(cut -c67- "$rodada/SHA256SUMS") <(lista "$rodada/dados")          # e a cópia tem EXATAMENTE os arquivos do manifesto
-  diff -- <(cut -c67- "$rodada/SHA256SUMS") <(lista "$origem")                # e a origem não mudou durante a janela
+  diff -- "$rodada/SHA256SUMS" <(manifesto "$origem")                          # e a origem não mudou (nomes E conteúdo) durante a cópia
   PASSO="$nome: cabeças"; cp -- "$CABECAS" "$rodada/CABECAS.json"          # as cabeças ficam DENTRO da rodada (inclusive na do livro)
 }
 copia decisoes           "$GMN_RAIZ_DADOS_DECISOES"           "<DESTINO_BACKUP_DADOS_FASE6>/decisions"
@@ -130,10 +137,16 @@ copia recibos-decisoes   "$GMN_RAIZ_DADOS_RECIBOS_DECISOES"   "<DESTINO_BACKUP_R
 copia recibos-resultados "$GMN_RAIZ_DADOS_RECIBOS_RESULTADOS" "<DESTINO_BACKUP_RECIBOS_RESULTADOS>"
 copia livro              "$GMN_RAIZ_DADOS_LIVRO"              "<DESTINO_BACKUP_LIVRO>"
 copia manifestos         "$GMN_RAIZ_DADOS_MANIFESTOS"         "<DESTINO_BACKUP_MANIFESTOS>"
-PASSO="marcar a rodada como válida"                      # só depois de as SEIS cópias conferirem
+PASSO="rechecar as seis origens"                         # antes de validar: hashes da ORIGEM de novo, contra o manifesto de cada rodada
+for i in "${!CRIADAS[@]}"; do so_regulares "${ORIGENS[$i]}"; diff -- "${CRIADAS[$i]}/SHA256SUMS" <(manifesto "${ORIGENS[$i]}"); done
+PASSO="marcar a rodada como válida"                      # só depois de as SEIS cópias conferirem e as origens seguirem iguais
 for r in "${CRIADAS[@]}"; do printf 'rodada %s VALIDA\nquando (UTC): %s\n' "$RODADA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$r/RODADA-VALIDA"; done
 echo "rodada $RODADA válida nos seis destinos"
 ```
+- **Morte abrupta do script** (`SIGKILL`, queda do host ou da sessão): o `trap` pode **não** rodar. Então o web pode ficar parado e a rodada
+  fica sem marcador nenhum. Depois de qualquer interrupção, conferir `docker service ls` (o `gmn_gmn-web` precisa estar em `1/1`) e, se
+  estiver em `0/0`, religar à mão com `docker service scale gmn_gmn-web=1`; a trava global é liberada sozinha quando o processo morre. A
+  rodada interrompida não tem `RODADA-VALIDA`: a restauração e a conferência no destino a recusam, e ela fica como está (nunca apagada).
 - **Depois:** com o web de volta, as cabeças lidas pela API precisam ser **iguais** às de `<ARQUIVO_DAS_CABECAS>`. Se mudaram, alguém gravou
   durante a janela: marcar a rodada como incompleta nas seis pastas (`printf 'rodada <RODADA> INCOMPLETA\nmotivo: cabeças mudaram durante a
   janela\n' > <destino>/<RODADA>/RODADA-INCOMPLETA`) e fazer outra, com outro rótulo; a incompleta nunca é apagada nem reaproveitada.
