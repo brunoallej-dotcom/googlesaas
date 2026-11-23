@@ -26,6 +26,7 @@ Uso **interno** (não é SaaS). Documentação detalhada por fase em `docs/`. Ú
 - Score Juiz histórico gravado nunca é recalculado; pontuações armazenada × recalculada × verificada ficam separadas.
 - Nada histórico (PDFs, auditorias) é apagado, movido ou sobrescrito sem autorização.
 - Sem DataForSEO, sem Google Business Profile API, sem novos serviços pagos.
+- **Repositório público (decisão de 23/11/2026):** nenhum dado real de cliente, domínio/host/IP de produção ou caminho local de evidência em arquivo versionado; usar rótulos opacos (`AUD-001`, `<CID>`, `<DOMINIO_PRODUCAO>`…) e ids de autorização/auditoria opacos. Arquivos atuais saneados, histórico NÃO reescrito; trava no CI em `tests/repo-client-data-guard.test.ts`. Política: `docs/security/README.md`.
 
 ## Segurança (Fase 5)
 Acesso por login (Supabase Auth + `GMN_OPERATOR_EMAILS`), falha fechada; cadastro público desligado; login real validado. Novos PDFs em `.data/audits/` (privada), download só por `/api/audit/<id>/pdf`. **PDFs históricos ainda estão em `public/audits/` e no bucket público** (**Atualização 07/11/2026:** a migração já foi feita — G1–G4 FEITOS, ver Pendências abertas, item 1; `public/audits` está vazia). Detalhes: `docs/phase5/security-review.md`.
