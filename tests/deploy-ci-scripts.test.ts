@@ -11,13 +11,13 @@ import { isYamlMap, parseYamlSubset } from './helpers/yaml-subset';
 /*
  * P9.4 (spec docs/specs/ci-deploy-and-seal-delivery.md §5.5.1, §5.6 e §5.9): os scripts do job `deploy` (deploy/ci/*.sh) e as duas
  * conferências escritas no próprio workflow (CI verde e cabeça da `main`, que rodam antes do checkout) executados de verdade, numa pasta
- * temporária que imita a raiz do repositório, com `docker`, `ssh`, `curl`, `git`, `gh` e `sleep` FALSOS no PATH. Nada aqui abre rede,
+ * temporária que imita a raiz do repositório, com `docker`, `ssh`, `curl`, `git`, `gh`, `sleep` e `date` FALSOS no PATH. Nada aqui abre rede,
  * chama Docker ou SSH reais, nem lê segredo: os valores são sentinelas fictícias, e cada teste confere que elas não vazam para a saída.
  */
 const ROOT = path.join(__dirname, '..');
 const CI_DIR = path.join(ROOT, 'deploy', 'ci');
 const WORKFLOW = parseYamlSubset(fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'deploy.yml'), 'utf8'));
-const FAKES = ['docker', 'ssh', 'curl', 'git', 'gh', 'sleep'] as const;
+const FAKES = ['docker', 'ssh', 'curl', 'git', 'gh', 'sleep', 'date'] as const;
 
 const SHA = '0123456789abcdef0123456789abcdef01234567';
 const OTHER_SHA = 'fedcba9876543210fedcba9876543210fedcba98';
@@ -52,6 +52,8 @@ interface FakeResponse {
 }
 interface FakeRule {
   readonly match?: readonly string[];
+  /** Trechos que o stdin tem de conter (só para comandos em `readStdin`). */
+  readonly matchStdin?: readonly string[];
   readonly responses: readonly FakeResponse[];
 }
 interface Scenario {
@@ -91,14 +93,16 @@ const dir = process.env.FAKE_DIR;
 const scenario = JSON.parse(fs.readFileSync(path.join(dir, 'scenario.json'), 'utf8'));
 const entry = { argv, env: {} };
 for (const key of scenario.recordEnv || []) if (process.env[key] !== undefined) entry.env[key] = process.env[key];
+let stdinText = '';
 if ((scenario.readStdin || []).includes(name)) {
   const data = fs.readFileSync(0);
+  stdinText = data.toString('utf8');
   entry.stdinBytes = data.length;
   entry.stdinSha256 = crypto.createHash('sha256').update(data).digest('hex');
 }
 fs.appendFileSync(path.join(dir, name + '.calls.jsonl'), JSON.stringify(entry) + '\\n');
 const rules = (scenario.commands || {})[name] || [];
-const index = rules.findIndex((rule) => (rule.match || []).every((m) => argv.some((a) => a.includes(m))));
+const index = rules.findIndex((rule) => (rule.match || []).every((m) => argv.some((a) => a.includes(m))) && (rule.matchStdin || []).every((m) => stdinText.includes(m)));
 if (index >= 0) {
   const counter = path.join(dir, name + '.' + index + '.count');
   const n = fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) : 0;
@@ -491,43 +495,76 @@ test('P9-D11 (lado do workflow) deploy: lista instalada diferente da enviada ⇒
 
 /* ------------------------------------------------------------------------------------------------ verificação externa */
 
-const curlRules = (login: readonly string[], health: readonly string[], evidence: readonly string[]): FakeRule[] => [
-  { match: ['/login'], responses: login.map((code) => ({ stdout: code })) },
-  { match: ['/api/system/health'], responses: health.map((code) => ({ stdout: code })) },
-  { match: ['/api/link-audit/evidence'], responses: evidence.map((code) => ({ stdout: code })) },
+const curlRules = (login: readonly FakeResponse[], health: readonly FakeResponse[], evidence: readonly FakeResponse[]): FakeRule[] => [
+  { matchStdin: ['/login"'], responses: login },
+  { matchStdin: ['/api/system/health"'], responses: health },
+  { matchStdin: ['/api/link-audit/evidence"'], responses: evidence },
 ];
+const codes = (...values: string[]): FakeResponse[] => values.map((code) => ({ stdout: code }));
+/** Relógio falso (`date +%s`): a sequência de leituras; a última se repete. */
+const clock = (...values: number[]): FakeRule[] => [{ responses: values.map((value) => ({ stdout: `${value}\n` })) }];
+const externalScenario = (curl: FakeRule[], time: FakeRule[] = clock(1000)): Scenario => ({ commands: { curl, date: time }, readStdin: ['curl'] });
+const curlConfig = (p: string): string => sha256(`url = "https://${PUBLIC_HOST_SENTINEL}${p}"\n`);
+const maxTimes = (sandbox: Sandbox): string[] => calls(sandbox, 'curl').map((call) => call.argv[call.argv.indexOf('--max-time') + 1] ?? '');
 
-test('P9.4 verificação externa: EX-01 /login 200, EX-02 e EX-03 401, por https com TLS verificado e sem seguir redirecionamento; só ids e códigos no log', (t) => {
-  const sandbox = makeSandbox(t, { commands: { curl: curlRules(['200'], ['401'], ['401']) } });
+test('P9.4 verificação externa: EX-01 /login 200, EX-02 e EX-03 401, por https com TLS verificado, sem seguir redirecionamento, URL só pelo stdin; só ids e códigos no log', (t) => {
+  const sandbox = makeSandbox(t, externalScenario(curlRules(codes('200'), codes('401'), codes('401'))));
   const result = runScript(sandbox, 'external-check.sh', [], { GMN_PUBLIC_HOST: PUBLIC_HOST_SENTINEL });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(outputs(sandbox).ex, 'EX-01:200 EX-02:401 EX-03:401');
   const curlCalls = calls(sandbox, 'curl');
-  assert.deepEqual(curlCalls.map((call) => call.argv[call.argv.length - 1]), ['/login', '/api/system/health', '/api/link-audit/evidence'].map((p) => `https://${PUBLIC_HOST_SENTINEL}${p}`));
+  assert.deepEqual(curlCalls.map((call) => call.stdinSha256), ['/login', '/api/system/health', '/api/link-audit/evidence'].map(curlConfig), 'a URL vai na configuração do stdin');
   for (const call of curlCalls) {
+    assert.equal(call.argv[0], '-q', '-q primeiro: ignora .curlrc');
+    assert.deepEqual(call.argv.slice(-2), ['--config', '-']);
     for (const flag of ['--proto', '=https', '--tlsv1.2', '--max-redirs', '0', '--max-time']) assert.ok(call.argv.includes(flag), `curl ${flag}`);
     assert.ok(!call.argv.some((arg) => ['-k', '--insecure', '-L', '--location', '-b', '--cookie', '-u', '--user', '-H', '--header'].includes(arg)), 'sem -k, redirecionamento, cookie ou credencial');
+    assert.ok(!call.argv.some((arg) => arg.includes(PUBLIC_HOST_SENTINEL) || arg.includes('https://')), 'nenhuma URL na linha de comando');
   }
+  assert.deepEqual(maxTimes(sandbox), ['10', '10', '10']);
   assertNoLeak(result, PUBLIC_HOST_SENTINEL);
   assert.equal(calls(sandbox, 'sleep').length, 0);
 });
 
 test('P9.4 verificação externa: repete enquanto o web sobe; EX-02 aberto sem sessão (200) até o fim ⇒ EX_CHECK_FAILED EX-02; host inválido ⇒ recusa sem curl', (t) => {
-  const sandbox = makeSandbox(t, { commands: { curl: curlRules(['000', '502', '200'], ['401'], ['401']) } });
+  const sandbox = makeSandbox(t, externalScenario(curlRules(codes('000', '502', '200'), codes('401'), codes('401'))));
   const recovering = runScript(sandbox, 'external-check.sh', [], { GMN_PUBLIC_HOST: PUBLIC_HOST_SENTINEL });
   assert.equal(recovering.status, 0, recovering.stderr);
   assert.deepEqual(calls(sandbox, 'sleep').map((call) => call.argv), [['10'], ['10']]);
 
-  setScenario(sandbox, { commands: { curl: curlRules(['200'], ['200'], ['401']) } });
+  setScenario(sandbox, externalScenario(curlRules(codes('200'), codes('200'), codes('401'))));
   const open = runScript(sandbox, 'external-check.sh', [], { GMN_PUBLIC_HOST: PUBLIC_HOST_SENTINEL });
   assertRefused(sandbox, open, 'EX_CHECK_FAILED', 'EX-02');
   assert.equal(outputs(sandbox).ex, 'EX-01:200 EX-02:200 EX-03:401');
   assert.equal(calls(sandbox, 'curl').length, 36, '12 tentativas, 3 verificações cada');
   assertNoLeak(open, PUBLIC_HOST_SENTINEL);
 
-  setScenario(sandbox, {});
+  setScenario(sandbox, externalScenario([]));
   assertRefused(sandbox, runScript(sandbox, 'external-check.sh', [], { GMN_PUBLIC_HOST: `https://${PUBLIC_HOST_SENTINEL}/x` }), 'EX_CONFIG_INVALID', 'GMN_PUBLIC_HOST');
   assert.equal(calls(sandbox, 'curl').length, 0);
+});
+
+test('P9.4 verificação externa: código impresso com saída do curl diferente de 0 (ex.: 28, prazo) não vale ⇒ 000 e EX_CHECK_FAILED', (t) => {
+  const sandbox = makeSandbox(t, externalScenario(curlRules([{ stdout: '200', rc: 28 }], codes('401'), codes('401'))));
+  const result = runScript(sandbox, 'external-check.sh', [], { GMN_PUBLIC_HOST: PUBLIC_HOST_SENTINEL });
+  assertRefused(sandbox, result, 'EX_CHECK_FAILED', 'EX-01');
+  assert.equal(outputs(sandbox).ex, 'EX-01:000 EX-02:401 EX-03:401');
+});
+
+test('P9.4 verificação externa: prazo de 2 min conferido antes de cada tentativa, e o --max-time de cada chamada limitado ao tempo que falta', (t) => {
+  // início, conferência da tentativa 1, três chamadas e a conferência antes da espera a 1000; a tentativa 2 começa a 1125 (passou dos 120 s)
+  const sandbox = makeSandbox(t, externalScenario(curlRules(codes('502'), codes('401'), codes('401')), clock(1000, 1000, 1000, 1000, 1000, 1000, 1125)));
+  const late = runScript(sandbox, 'external-check.sh', [], { GMN_PUBLIC_HOST: PUBLIC_HOST_SENTINEL });
+  assertRefused(sandbox, late, 'EX_CHECK_FAILED', 'EX-01');
+  assert.equal(calls(sandbox, 'curl').length, 3, 'nenhuma tentativa depois do prazo');
+  assert.deepEqual(calls(sandbox, 'sleep').map((call) => call.argv), [['10']]);
+
+  // tentativa 2 a 1115 (faltam 5 s): as chamadas recebem --max-time 5, 2 e 1, e a espera seguinte já passou do prazo
+  setScenario(sandbox, externalScenario(curlRules(codes('502'), codes('401'), codes('401')), clock(1000, 1000, 1000, 1000, 1000, 1000, 1115, 1115, 1118, 1119, 1200)));
+  const bounded = runScript(sandbox, 'external-check.sh', [], { GMN_PUBLIC_HOST: PUBLIC_HOST_SENTINEL });
+  assertRefused(sandbox, bounded, 'EX_CHECK_FAILED', 'EX-01');
+  assert.deepEqual(maxTimes(sandbox), ['10', '10', '10', '5', '2', '1']);
+  assert.equal(calls(sandbox, 'sleep').length, 1);
 });
 
 /* ------------------------------------------------------------------------------------------------ resumo do job */
