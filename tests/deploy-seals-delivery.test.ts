@@ -7,6 +7,7 @@ import test from 'node:test';
 import { parseRelpath } from '../src/lib/seal-receiver/grammar';
 import { CLOSURE_REFUSAL_DETAILS, SEAL_RECEIVER_EXIT_CODES, V2_REFUSAL_DETAILS } from '../src/lib/seal-receiver/codes';
 import { assertNoLeak, assertRefused, calls, makeSandbox, outputs, runScript, setScenario, TRUST_LIST, type FakeResponse, type FakeRule, type RunResult, type Sandbox } from './helpers/deploy-ci-sandbox';
+import { isYamlMap, parseYamlSubset } from './helpers/yaml-subset';
 
 /*
  * P9.5 (spec docs/specs/ci-deploy-and-seal-delivery.md §5.5, §5.5.2, §5.7 "Para o job de entrega", §5.8 e §5.9): os scripts dos jobs
@@ -529,4 +530,22 @@ test('P9.5 seals-verify: before todo zero ou fora do histórico ⇒ SEALS_NO_BAS
   setScenario(sandbox, { commands: { npm: [{ match: ['--tree'], responses: [{ rc: 1, stderr: 'ERRO SEAL_FORMAT\n' }] }, { responses: [{ stdout: 'ok\n' }] }] } });
   assertRefused(sandbox, verify(sandbox, { GMN_SHA: sha, GMN_EVENT: 'workflow_dispatch', GMN_DISPATCH_AMB: 'homologacao' }), 'SEALS_REFUSED');
   assert.equal(outputs(sandbox).ambientes, undefined);
+});
+
+test('P9.5 resumo com o checkout falho (passo escrito no workflow): só execução, commit e ambiente validado; nada foi enviado', (t) => {
+  const workflow = parseYamlSubset(fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'deploy.yml'), 'utf8'));
+  assert.ok(isYamlMap(workflow) && isYamlMap(workflow.jobs) && isYamlMap(workflow.jobs['seals-deliver']) && Array.isArray(workflow.jobs['seals-deliver'].steps));
+  const fallback = workflow.jobs['seals-deliver'].steps.find((item) => isYamlMap(item) && item.name === 'Resumo da entrega (checkout falhou)');
+  assert.ok(isYamlMap(fallback) && typeof fallback.run === 'string');
+  const sandbox = sandboxOf(t);
+  const file = path.join(sandbox.root, 'fallback.sh');
+  fs.writeFileSync(file, fallback.run);
+  const run = (amb: string): string => {
+    fs.rmSync(sandbox.summaryFile, { force: true });
+    const result = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', file], { env: { GITHUB_STEP_SUMMARY: sandbox.summaryFile, GITHUB_RUN_ID: '42', GMN_SHA: DELIVER_ENV.GMN_SHA, GMN_AMB: amb, PATH: '/usr/bin:/bin' } as unknown as NodeJS.ProcessEnv, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    return fs.readFileSync(sandbox.summaryFile, 'utf8');
+  };
+  assert.match(run('homologacao'), new RegExp(`### Entrega de manifestos \\(homologacao\\)\\n\\nCheckout falhou \\(execução \`42\`, commit \`${DELIVER_ENV.GMN_SHA}\`\\): nada foi enviado\\.`));
+  assert.match(run('x | y'), /### Entrega de manifestos \(-\)/);
 });
