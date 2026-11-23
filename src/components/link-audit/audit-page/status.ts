@@ -117,6 +117,8 @@ export function deriveRegistry(state: PageState, changedAfter: boolean | null): 
   const latest = latestRun(results);
   if (!latest) return { tone: 'neutral', text: 'Nenhum resultado registrado ainda.', historical: false };
   const obsolescence = runObsolescence(latest, changedAfter);
+  // R2.2: "a reconferir" vem antes de "histórico" e nunca é dito "coerente com o estado atual" (revisão humana; o registro continua consultável e não é dito inválido)
+  if (latest.provenanceState === 'RECHECK') return { tone: 'warning', text: `Último registro: ${pad(latest.seq)} confirmado — A RECONFERIR: a proveniência que o atestou precisa de revisão humana.`, historical: obsolescence.historical };
   if (obsolescence.historical) return { tone: 'warning', text: `Último registro: ${pad(latest.seq)} confirmado — HISTÓRICO: pode não representar a situação atual.`, historical: true };
   if (obsolescence.unknown) return { tone: 'neutral', text: `Último registro: ${pad(latest.seq)} confirmado — não foi possível compará-lo com o estado atual.`, historical: false };
   return { tone: 'success', text: `Último registro: ${pad(latest.seq)} confirmado e coerente com o estado atual.`, historical: false };

@@ -6,7 +6,7 @@ import { previewBlocker, type PreviewBlocker } from './blockers';
 import { MINIMUM_COVERAGE_PERCENT } from './outcome';
 import { PREVIEW_HTTP_STATUS, PREVIEW_MESSAGE, type DurabilityExpectation, type DurabilityOutcome, type Evaluation, type LedgerReason, type LedgerRunReissueStep, type LedgerView, type PreviewActor, type PreviewFailure, type PreviewFailureCode, type ResultsLedgerPort, type ResultsLedgerRead, type RunDraft, type RunRefusal, type RunStep } from './preview';
 import { appendRun, assertResultsBase, isDurabilityUnknown, nodeFsOps, probeDirectory, readRunLog, reissueRunReceipt, type FsOps, type RunAnchorSummary, type RunLedgerContextGate, type RunLedgerGate, type RunLedgerHooks, type RunLog, type RunReissueGate, type StoreErrorCode } from './results-store';
-import { finalizeBodySchema, INTEGRITY_NOTE, reissueBodySchema, RUN_FILE_KIND, RUN_SCHEMA_VERSION, RUN_SCHEMA_VERSION_LEDGER, type RunHead as Head, type ScoreRun, type ScoreRunDraft } from './results-types';
+import { evidenceProvenanceSchema, finalizeBodySchema, INTEGRITY_NOTE, reissueBodySchema, RUN_FILE_KIND, RUN_SCHEMA_VERSION, RUN_SCHEMA_VERSION_LEDGER, type EvidenceProvenanceRecord, type RunHead as Head, type ScoreRun, type ScoreRunDraft } from './results-types';
 import { toPublicRun, verifyRunRecord } from './results-verify';
 import { MAPPER_VERSION } from './types';
 
@@ -199,6 +199,8 @@ export interface RunSummaryDto {
   readonly stale: boolean | null;
   /** Só para o mais recente: o head das decisões CONFIRMADAS de hoje difere do gravado (indicador SEPARADO de `stale`: uma decisão nova pode não alterar a entrada e ainda assim tornar o resultado histórico). */
   readonly decisionsChanged: boolean | null;
+  /** R2.2: proveniência RECONFERIDA nesta leitura (calculada, nada é regravado); nunca traz ids de chave nem hashes. Ver `ProvenanceState`. */
+  readonly provenanceState: ProvenanceState;
 }
 
 /**
@@ -227,6 +229,8 @@ export interface RunDetailPayload {
   readonly stale: boolean | null;
   readonly decisionsChanged: boolean | null;
   readonly superseded: boolean;
+  /** R2.2: proveniência reconferida nesta leitura (no topo da resposta, como `stale`: a projeção do registro `run` não muda e é a mesma da finalização). */
+  readonly provenanceState: ProvenanceState;
   readonly run: Record<string, unknown>;
 }
 
@@ -283,6 +287,102 @@ export interface ResultsDeps {
    * sempre a ligam (`scoring/shared.ts`).
    */
   readonly ledger?: ResultsLedgerPort;
+  /**
+   * PORTA DE RECONFERÊNCIA DA PROVENIÊNCIA (R2.2): do domínio de evidências, composta em `scoring/shared.ts` A CADA requisição (a mesma política `[2]` e a mesma lista de chaves da
+   * prévia). Este serviço nunca importa o verificador nem lê ambiente (RL-29). AUSENTE ⇒ nenhum resultado com proveniência registrada é dito conferido (`RECHECK`); as rotas sempre
+   * a ligam.
+   */
+  readonly provenanceRecheck?: ProvenanceRecheckPort;
+}
+
+/* ------------------------------------------------------------------ reconferência da proveniência na releitura (R2.2) */
+
+/**
+ * Estado da proveniência de um resultado CONFIRMADO, calculado a cada leitura (R2.2; contrato do verificador v2 §7.3, D12 da spec do P1). Nada gravado muda:
+ *  - `NOT_RECORDED`: resultado LEGADO, gravado antes da R2.1 (sem `evidenceProvenance`) — "proveniência não registrada";
+ *  - `RECHECK`: "a reconferir" (revisão humana): uma chave gravada (ou do `classify` de hoje) está revogada pela lista ATUAL, ou o `classify` de hoje sobre a base GRAVADA não é
+ *    autenticado, ou autentica OUTRA cabeça (cadeia trocada ou estendida), ou a porta falhou / não está configurada. NÃO é falha de integridade (nunca 409) e não esconde nada;
+ *  - `VERIFIED`: tudo confere com o que o resultado gravou.
+ */
+export type ProvenanceState = 'VERIFIED' | 'RECHECK' | 'NOT_RECORDED';
+/** Por que `RECHECK` (INTERNO: nunca sai por rota, só diagnóstico e testes). Ordem de precedência: configuração/porta, revogação, autenticação, cabeça. */
+export type ProvenanceRecheckCause = 'NOT_CONFIGURED' | 'PORT_ERROR' | 'KEY_REVOKED' | 'UNAUTHENTICATED' | 'CHAIN_CHANGED';
+export interface ProvenanceVerdict {
+  readonly state: ProvenanceState;
+  readonly cause: ProvenanceRecheckCause | null;
+}
+/** Uma evidência da base gravada, como o verificador a recebe (os três campos que ele usa). */
+export interface RecheckEvidence {
+  readonly ref: string;
+  readonly contentSha256: string;
+  readonly legacy: boolean;
+}
+/**
+ * Resposta da porta para UMA base (forma ESTRUTURAL do `EvidenceTrust` do verificador: este arquivo não o importa, RL-29). `revokedKeyIds` = ids revogados pela lista de HOJE;
+ * `trust` = `classify` de HOJE sobre a base gravada. `NOT_CONFIGURED` = lista ausente ou inválida.
+ */
+export type ProvenanceRecheckOutcome =
+  | {
+      readonly kind: 'CHECKED';
+      readonly revokedKeyIds: readonly string[];
+      readonly trust: { readonly status: 'AUTHENTICATED'; readonly headSeq?: number; readonly headSealSha256?: string; readonly keyIds?: readonly string[] } | { readonly status: 'UNAUTHENTICATED' };
+    }
+  | { readonly kind: 'NOT_CONFIGURED' };
+export interface ProvenanceRecheckPort {
+  recheck(auditId: string, evidences: readonly RecheckEvidence[]): Promise<ProvenanceRecheckOutcome>;
+}
+
+const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> => typeof value === 'object' && value !== null && !Array.isArray(value);
+const isTextList = (value: unknown): value is readonly string[] => Array.isArray(value) && value.every((item) => typeof item === 'string');
+
+/**
+ * A prova de uma resposta `AUTHENTICATED` da porta, validada com o MESMO esquema estrito do registro (`evidenceProvenanceSchema`: cabeça inteira em 1..256, hash hex minúsculo de
+ * 64, `keyIds` de 1 a 16 ids distintos, em ordem estrita e no padrão da lista de chaves, nenhum campo além de `status`). `NO_HEAD` = só `{status}` (resposta do caminho v1, sem
+ * cabeça); `MALFORMED` = qualquer outra forma (lista vazia, repetida, fora de ordem, id fora do padrão, cabeça ou hash inválidos, tipo errado, campo extra). Nada é "consertado".
+ */
+function headProofOfTrust(trust: Readonly<Record<string, unknown>>): EvidenceProvenanceRecord | 'NO_HEAD' | 'MALFORMED' {
+  const { status, ...proof } = trust;
+  void status;
+  if (Object.keys(proof).length === 0) return 'NO_HEAD';
+  const parsed = evidenceProvenanceSchema.safeParse(proof);
+  return parsed.success ? parsed.data : 'MALFORMED';
+}
+
+/**
+ * Veredito PURO da reconferência de UM resultado: o registro gravado (`evidenceProvenance`, já validado pelo esquema) × a resposta da porta (ou `PORT_ERROR`). Falha fechada: forma
+ * inesperada da porta (inclusive a prova de `AUTHENTICATED` fora do esquema do registro) ⇒ `RECHECK`, nunca `VERIFIED`. A revogação é conferida ANTES do `classify` (com a pasta de
+ * manifestos apagada nada é lido e o verificador não dá o sinal; a interseção com os `keyIds` GRAVADOS dá), e também contra os `keyIds` (válidos) do `classify` de hoje (signatário
+ * de um fecho de aposentadoria assinado depois da finalização, contrato §6). `VERIFIED` exige a MESMA cabeça (número e hash): o verificador não diz se a cabeça gravada é ancestral
+ * da de hoje, então cadeia trocada ou estendida vai para revisão.
+ */
+export function provenanceVerdictOf(recorded: EvidenceProvenanceRecord | undefined, outcome: ProvenanceRecheckOutcome | 'PORT_ERROR'): ProvenanceVerdict {
+  if (recorded === undefined) return { state: 'NOT_RECORDED', cause: null };
+  const recheck = (cause: ProvenanceRecheckCause): ProvenanceVerdict => ({ state: 'RECHECK', cause });
+  if (!isRecord(outcome)) return recheck('PORT_ERROR');
+  if (outcome.kind === 'NOT_CONFIGURED') return recheck('NOT_CONFIGURED');
+  if (outcome.kind !== 'CHECKED' || !isTextList(outcome.revokedKeyIds) || !isRecord(outcome.trust)) return recheck('PORT_ERROR');
+  const trust = outcome.trust as Readonly<Record<string, unknown>>;
+  const authenticated = trust.status === 'AUTHENTICATED';
+  const proof = authenticated ? headProofOfTrust(trust) : 'NO_HEAD';
+  const revoked = new Set(outcome.revokedKeyIds);
+  const current = typeof proof === 'object' ? proof.keyIds : [];
+  if ([...recorded.keyIds, ...current].some((id) => revoked.has(id))) return recheck('KEY_REVOKED');
+  if (proof === 'MALFORMED') return recheck('PORT_ERROR');
+  if (!authenticated) return recheck('UNAUTHENTICATED');
+  if (proof === 'NO_HEAD' || proof.headSeq !== recorded.headSeq || proof.headSealSha256 !== recorded.headSealSha256) return recheck('CHAIN_CHANGED');
+  return { state: 'VERIFIED', cause: null };
+}
+
+/** A base GRAVADA no resultado como o verificador a recebe, em ordem de `ref` (a mesma base ⇒ a mesma chave de memória dentro da requisição). */
+const recheckBasisOf = (run: ScoreRun): RecheckEvidence[] =>
+  run.evidenceBasis.map((item) => ({ ref: item.ref, contentSha256: item.contentSha256, legacy: item.legacy })).sort((a, b) => (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0));
+/** Uma consulta à porta; qualquer exceção (síncrona ou não) vira `PORT_ERROR`, nunca "autenticado". */
+async function askRecheck(port: ProvenanceRecheckPort, auditId: string, evidences: readonly RecheckEvidence[]): Promise<ProvenanceRecheckOutcome | 'PORT_ERROR'> {
+  try {
+    return await port.recheck(auditId, evidences);
+  } catch {
+    return 'PORT_ERROR';
+  }
 }
 
 const ISO_MS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -786,6 +886,28 @@ export function createScoringResultsService(deps: ResultsDeps) {
       if (attempt >= OBJECT_LEDGER_ATTEMPTS) return failure('RESULT_INTEGRITY', CONSULT_MISMATCH);
     }
   }
+  /**
+   * RECONFERÊNCIA DA PROVENIÊNCIA DE UMA REQUISIÇÃO (R2.2): a memória é LOCAL a esta chamada de `list`/`get` (nunca do serviço nem do módulo). Mesma auditoria e mesma base gravada
+   * ⇒ UMA consulta à porta (a releitura do verificador custa até 16 MiB por base, até 500 resultados por listagem); nada é lembrado entre requisições, então uma revogação feita
+   * entre duas leituras aparece na seguinte. Exceção da porta ⇒ `PORT_ERROR` ("a reconferir"); porta ausente ⇒ `NOT_CONFIGURED` (idem). Nada é gravado.
+   */
+  function provenanceRechecker(auditId: string): (run: ScoreRun) => Promise<ProvenanceState> {
+    const byBasis = new Map<string, Promise<ProvenanceRecheckOutcome | 'PORT_ERROR'>>();
+    const port = deps.provenanceRecheck;
+    return async (run) => {
+      const recorded = run.evidenceProvenance;
+      if (recorded === undefined || !port) return provenanceVerdictOf(recorded, { kind: 'NOT_CONFIGURED' }).state;
+      const evidences = recheckBasisOf(run);
+      const key = JSON.stringify(evidences);
+      let outcome = byBasis.get(key);
+      if (!outcome) {
+        outcome = askRecheck(port, auditId, evidences);
+        byBasis.set(key, outcome);
+      }
+      return provenanceVerdictOf(recorded, await outcome).state;
+    };
+  }
+
   /** A prévia é fonte OPCIONAL de `stale`/`decisionsChanged` (D-14, RL-27): falha ou exceção ⇒ "não foi possível comparar", nunca bloqueia nem decide a confirmação. */
   async function evaluateOptional(actor: PreviewActor, auditId: string): Promise<Awaited<ReturnType<PreviewEvaluator['evaluate']>>> {
     try {
@@ -960,6 +1082,10 @@ export function createScoringResultsService(deps: ResultsDeps) {
       if (!now.ok && now.code === 'AUDIT_NOT_FOUND' && confirmed.length === 0 && pending === null) return failure('AUDIT_NOT_FOUND');
       const currentInputSha256 = now.ok ? now.value.inputSha256 : null;
       const currentDecisionsHead = now.ok ? now.value.decisions.head : null;
+      // R2.2: proveniência reconferida em SÉRIE (no máximo uma releitura do verificador por vez), uma consulta por base distinta; "a reconferir" nunca esconde nem recusa a lista
+      const recheck = provenanceRechecker(auditId);
+      const provenance: ProvenanceState[] = [];
+      for (const run of confirmed) provenance.push(await recheck(run));
       const results: RunSummaryDto[] = confirmed.map((run, index) => {
         const latest = index === confirmed.length - 1;
         const outcome = toPublicRun(run).outcomePreview;
@@ -978,6 +1104,7 @@ export function createScoringResultsService(deps: ResultsDeps) {
           superseded: !latest,
           stale: latest ? drift(now, run).stale : null,
           decisionsChanged: latest ? drift(now, run).decisionsChanged : null,
+          provenanceState: provenance[index] ?? 'RECHECK',
         };
       });
       return {
@@ -1014,7 +1141,9 @@ export function createScoringResultsService(deps: ResultsDeps) {
       let stale: boolean | null = null;
       let decisionsChanged: boolean | null = null;
       if (latest) ({ stale, decisionsChanged } = drift(await evaluateOptional(actor, auditId), run));
-      return { ok: true, value: { confirmation, stale, decisionsChanged, superseded: !latest, run: toPublicRun(run).detail } };
+      // R2.2: só o resultado pedido é reconferido; "a reconferir" continua exibindo o registro (nunca 409 por isso)
+      const provenanceState = await provenanceRechecker(auditId)(run);
+      return { ok: true, value: { confirmation, stale, decisionsChanged, superseded: !latest, provenanceState, run: toPublicRun(run).detail } };
     },
 
     /**
