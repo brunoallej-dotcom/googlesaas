@@ -374,6 +374,34 @@ dispara e aprova as próprias execuções (risco aceito, §11.2).
    verifica). Só os códigos vão ao log.
 11. `if: always()`: apaga a pasta da chave e escreve o resumo (§5.9).
 
+**Precisões da implementação (P9.4)** (`.github/workflows/deploy.yml`, `deploy/ci/`, testes `tests/deploy-workflow.test.ts` e
+`tests/deploy-ci-scripts.test.ts`; runbook do responsável `deploy/hostinger/RUNBOOK-DEPLOY-PELO-CI.md`):
+
+- Os passos 1 e 2 rodam antes do checkout, então são escritos no próprio workflow; a segunda conferência `NOT_MAIN_HEAD` (passo 9) é
+  o mesmo texto da primeira (teste). O token do job vai ao `git ls-remote` por cabeçalho no ambiente (`GIT_CONFIG_*`), nunca na linha
+  de comando. Os demais passos chamam scripts pequenos em `deploy/ci/`, testados com comandos falsos no `PATH`.
+- **Impressão do projeto Supabase:** os 12 primeiros hex do sha256 dos bytes da URL, **sem** quebra de linha (o receptor calcula
+  igual sobre o `NEXT_PUBLIC_SUPABASE_URL` do arquivo do host). Calculada só no passo do `deploy`, a partir do segredo, e mascarada no
+  log (`::add-mask::`); nunca vai às saídas do passo nem ao resumo.
+- **`OK DEPLOYED`:** o job aceita os ids das imagens no formato do Docker (`sha256:<64 hex>`), confere tag, stack e sobreposição
+  declaradas, e exige que a lista **instalada** seja a enviada (senão `TRUST_LIST_INSTALLED_MISMATCH`, vermelho).
+- **Saída do `ssh`:** o stderr do `ssh` nunca vai ao log (repete host e endereço). Só passa a linha `ERRO E_…` do receptor que casa a
+  gramática do §5.8. Conexão que falha (255) vira `SSH_CONNECT_FAILED HOST_KEY|AUTH|OTHER`. Às opções fixas do passo 7 soma-se
+  `-F /dev/null` (nenhum arquivo de configuração do runner). O usuário (`gmn-deploy`, `gmn-hml-deploy`) sai do ambiente, não de segredo.
+- **`GMN_SSH_PORT` é opcional (ausente = 22):** um segredo curto como `22` seria mascarado em todo o log, inclusive dentro dos hashes;
+  a porta nunca é impressa, porque o stderr do `ssh` não vai ao log.
+- **Códigos do lado do workflow**, além dos do §5.8: `INPUT_INVALID`, `GITHUB_API_FAILED`, `CI_PENDING`, `CI_NOT_GREEN`,
+  `NOT_MAIN_HEAD`, `CHECKOUT_MISMATCH`, `BUILD_CONFIG_MISSING`, `BUILD_CONFIG_INVALID`, `BUILD_FAILED`, `BUNDLE_FAILED`,
+  `BUNDLE_SIZE_OUT_OF_RANGE`, `HASH_INPUT_MISSING`, `TRUST_LIST_TOO_LARGE`, `SSH_CONFIG_MISSING`, `SSH_CONFIG_INVALID`,
+  `BUNDLE_MISSING`, `BUNDLE_CHANGED`, `TRUST_LIST_CHANGED`, `SSH_CONNECT_FAILED`, `RECEIVER_FAILED`, `RECEIVER_BAD_OUTPUT`,
+  `TRUST_LIST_INSTALLED_MISMATCH`, `EX_CONFIG_INVALID`, `EX_CHECK_FAILED` (o que fazer em cada um: runbook §0.1).
+- **Verificação externa:** até 12 tentativas em até 2 min, `curl --proto =https --tlsv1.2 --max-redirs 0`, sem `-k`, sem cookie.
+- Até a P9.5, `acao = entregar-selos` não roda nenhum job, e o gatilho `push` no caminho dos manifestos ainda não existe.
+- **Fusão da sobreposição (conferida offline com o `docker stack config` do Docker CLI 29.10):** os 12 `name: gmn-hml_*`, o `target`
+  `gmn_*` e o `replicas: 0` do Worker valem; o `SERPER_API_KEY_FILE: ""` **não** sobrescreve a variável (a fusão ignora valor vazio).
+  A garantia de homologação sem Serper é o texto fixo não secreto do `gmn-hml_serper_api_key` (§5.11); a correção definitiva fica para
+  o responsável (P9-H07). Com os padrões, a renderização de produção é a mesma de antes, a menos do `target` explícito igual à origem.
+
 #### 5.5.2 Job `seals-deliver`
 
 1. Checkout do SHA; calcula o sha256 de `link-audit-seals/<amb>/trust-keys.txt`.
@@ -641,7 +669,7 @@ Mesmo workflow, ambiente `homologacao`, mesma VPS e mesmo nó, como **stack sepa
 | Redis | o serviço `gmn-redis` da stack `gmn-hml`, na rede interna própria (`gmn-hml_gmn_internal`), dados em `/srv/gmn-hml/redis`; o `REDIS_URL` continua passando na regra do entrypoint (`docker-entrypoint.sh:49-52`) |
 | Traefik | os nomes de router, serviço e middlewares viram `${GMN_TRAEFIK_NAME:-gmn}` no `stack.yml` (produção continua `gmn`); homologação usa `gmn-hml` e `GMN_HOST=<DOMINIO_HML>`. Sem isso, as duas stacks definiriam o router `gmn` com regras diferentes, e o Traefik descartaria o router |
 | Worker | `replicas: 0` literal na sobreposição, e o receptor confere (PD-03) |
-| Serper | nenhum: a sobreposição põe `SERPER_API_KEY_FILE: ""` no web e no Worker, e o entrypoint não carrega a chave (`docker-entrypoint.sh:21-28`). O secret `gmn-hml_serper_api_key` tem de existir, porque a lista de secrets do serviço não se remove por sobreposição, e guarda um texto fixo **não secreto** |
+| Serper | nenhum: a sobreposição põe `SERPER_API_KEY_FILE: ""` no web e no Worker, e o entrypoint não carrega a chave (`docker-entrypoint.sh:21-28`). O secret `gmn-hml_serper_api_key` tem de existir, porque a lista de secrets do serviço não se remove por sobreposição, e guarda um texto fixo **não secreto**. *P9.4: a fusão do Docker não aplica o valor vazio (§5.5.1, precisões); a garantia efetiva é esse texto fixo* |
 | Trava de homologação | `GMN_LINK_AUDIT_HOMOLOGATION: "1"` **só** na sobreposição. O teste `tests/link-audit-simulated-guards.test.ts:279-280` proíbe a trava no `stack.yml`, e continua valendo |
 | Supabase | o laboratório descartável (nunca o projeto de produção): URL e chaves no ambiente `homologacao` do GitHub e nos secrets `gmn-hml_*`; o receptor confere a impressão (passo 5 do §5.6) |
 | Lista de confiança | `link-audit-seals/homologacao/trust-keys.txt`, só ids `ensaio-` |
@@ -761,40 +789,43 @@ relatório indicado.
 
 **Workflows, teste estático (P9.4 e P9.5):**
 
-- [ ] **P9-W01** `deploy.yml`: gatilhos e entradas exatamente os do §5.5. **Permissões efetivas por job**: todo job declara
+- [ ] **P9-W01** *(P9.4: entradas do dispatch, permissões efetivas por job e nenhum `write` testados em
+  `tests/deploy-workflow.test.ts`; o gatilho `push` e os jobs `seals-*` entram na P9.5, que fecha o critério)* `deploy.yml`: gatilhos e
+  entradas exatamente os do §5.5. **Permissões efetivas por job**: todo job declara
   `permissions`; `deploy` = exatamente `{contents: read, actions: read}`; `seals-verify` e `seals-deliver` = exatamente
   `{contents: read}`; nenhum `write` em lugar nenhum; topo = `contents: read`.
-- [ ] **P9-W02** `deploy` só com `github.ref == 'refs/heads/main'`; `environment` = a entrada; `seals-deliver` com `environment` da
+- [x] **P9-W02** `deploy` só com `github.ref == 'refs/heads/main'`; `environment` = a entrada; `seals-deliver` com `environment` da
   matriz.
-- [ ] **P9-W03** toda `uses:` fixada por SHA de 40 hex e só entre as actions já usadas no `ci.yml`.
-- [ ] **P9-W04** nenhum `upload-artifact`, `docker push`, `docker login`, `actions/cache`, `cache:` do `setup-node` ou `type=gha`
+- [x] **P9-W03** toda `uses:` fixada por SHA de 40 hex e só entre as actions já usadas no `ci.yml`.
+- [x] **P9-W04** nenhum `upload-artifact`, `docker push`, `docker login`, `actions/cache`, `cache:` do `setup-node` ou `type=gha`
   em `deploy.yml`.
-- [ ] **P9-W05** nenhum `${{ secrets.` e nenhum `${{ inputs.` dentro de `run:`; nenhum `set -x` nem `ssh -v`.
-- [ ] **P9-W06** `concurrency` por operação e ambiente: `gmn-<amb>-deploy` no `deploy` e `gmn-<amb>-seals` no `seals-deliver`;
+- [x] **P9-W05** nenhum `${{ secrets.` e nenhum `${{ inputs.` dentro de `run:`; nenhum `set -x` nem `ssh -v`.
+- [x] **P9-W06** `concurrency` por operação e ambiente: `gmn-<amb>-deploy` no `deploy` e `gmn-<amb>-seals` no `seals-deliver`;
   nenhum grupo comum às duas operações; nenhum `cancel-in-progress: true`.
-- [ ] **P9-W07** `StrictHostKeyChecking=yes` e `UserKnownHostsFile` explícito em todo `ssh`; nenhum `StrictHostKeyChecking=no`
+- [x] **P9-W07** `StrictHostKeyChecking=yes` e `UserKnownHostsFile` explícito em todo `ssh`; nenhum `StrictHostKeyChecking=no`
   nem `accept-new`.
-- [ ] **P9-W08** a chave só é escrita depois do passo de build, e há limpeza com `if: always()`.
+- [x] **P9-W08** a chave só é escrita depois do passo de build, e há limpeza com `if: always()`.
 - [ ] **P9-W09** `seals-deliver` não roda `npm`, `node` nem `npx`.
 - [ ] **P9-W10** `ci.yml`: job `seals` sem filtro de caminho, sem segredo, `persist-credentials: false`, base = `HEAD^1` no PR.
-- [ ] **P9-W11** o job `deploy` compara `github.sha` com `refs/heads/main` (`git ls-remote`, só leitura) no início do job, antes do
+- [x] **P9-W11** o job `deploy` compara `github.sha` com `refs/heads/main` (`git ls-remote`, só leitura) no início do job, antes do
   checkout e do build, e de novo imediatamente antes do comando `deploy` por SSH; diferença ⇒ `NOT_MAIN_HEAD` (teste estático da
   presença e da ordem dos passos).
 
 **Stack e homologação (P9.4):**
 
-- [ ] **P9-H01** `stack.yml` sem `GMN_LINK_AUDIT_HOMOLOGATION` (o teste existente continua).
-- [ ] **P9-H02** `stack-hml.yml` só acrescenta o permitido: a trava `"1"` no web, `SERPER_API_KEY_FILE: ""` no web e no Worker,
+- [x] **P9-H01** `stack.yml` sem `GMN_LINK_AUDIT_HOMOLOGATION` (o teste existente continua).
+- [x] **P9-H02** `stack-hml.yml` só acrescenta o permitido: a trava `"1"` no web, `SERPER_API_KEY_FILE: ""` no web e no Worker,
   `replicas: 0` no Worker, `name: gmn-hml_*` nos secrets de topo; nenhuma porta, bind, rede ou imagem nova.
-- [ ] **P9-H03** labels do Traefik com `${GMN_TRAEFIK_NAME:-gmn}` e, com o padrão, exatamente as de hoje.
-- [ ] **P9-H04** secrets na sintaxe longa com `target:` igual ao nome lido pelo `*_FILE`.
-- [ ] **P9-H05** `stack.yml` mantém `GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS: ${GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS:-}`.
+- [x] **P9-H03** labels do Traefik com `${GMN_TRAEFIK_NAME:-gmn}` e, com o padrão, exatamente as de hoje.
+- [x] **P9-H04** secrets na sintaxe longa com `target:` igual ao nome lido pelo `*_FILE`.
+- [x] **P9-H05** `stack.yml` mantém `GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS: ${GMN_LINK_AUDIT_EVIDENCE_TRUST_KEYS:-}`.
 - [ ] **P9-H06** **[doc]** primeiro deploy de homologação: PD-01 a PD-08 verdes, `docker service inspect` do web com
   `/run/secrets/gmn_*` e a trava; relatório do ensaio W5.3 (pré-condição).
-- [ ] **P9-H07** **[doc]** `docker stack config -c stack.yml -c stack-hml.yml` no host funde os secrets de topo (registrado
+- [ ] **P9-H07** **[doc]** *(P9.4: pré-conferido offline com o Docker CLI 29.10, §5.5.1, precisões; o `SERPER_API_KEY_FILE: ""` não
+  é aplicado pela fusão)* `docker stack config -c stack.yml -c stack-hml.yml` no host funde os secrets de topo (registrado
   junto com o P9-H06).
 - [ ] **P9-H08** `.dockerignore` exclui `link-audit-seals`; `.gitattributes` tem `link-audit-seals/** -text`.
-- [ ] **P9-H09** a sobreposição não declara `networks` (nem no topo nem nos serviços) e dá `name: gmn-hml_*` a **todos** os secrets
+- [x] **P9-H09** a sobreposição não declara `networks` (nem no topo nem nos serviços) e dá `name: gmn-hml_*` a **todos** os secrets
   de topo do `stack.yml`: nenhum secret de homologação aponta para um nome de produção (teste estático que cruza as duas listas).
 
 **Pastas (P9.3b):**
@@ -975,11 +1006,11 @@ autorização escrita da implantação (checklist §0).
   com o do `trust-keys.txt` no commit implantado. §2: juntar as tabelas de verificação e de entrega pelo id da execução, caminho
   e sha256 (P9.5).
 - **`docs/security/README.md`:** o exemplo `aud-002-autorizacao-01` não vale para auditorias atestadas (P9.2).
-- **`GUIA-DE-IMPLANTACAO.md`** §1–§2 (o build e a transferência passam ao workflow) e §3.4 (P9.4), §3.3 (P9.3b);
+- **`GUIA-DE-IMPLANTACAO.md`** §1–§2 (o build e a transferência passam ao workflow) e §3.4 (P9.4, **feita**), §3.3 (P9.3b);
   **`PLANO-DE-ROLLBACK.md`** (reversão por commit + workflow) e **`VERIFICACAO-POS-DEPLOY.md`** (nome da stack como parâmetro)
-  (P9.4).
+  (P9.4, **feitas**).
 - **`CLAUDE.md`:** "Deploy staging" passa a apontar para o ambiente `homologacao` do `deploy.yml`, e "Deploy prod" para o mesmo
-  workflow (P9.4).
+  workflow (P9.4, **feita**).
 
 ### 11.4 Opções futuras (fora de escopo)
 
