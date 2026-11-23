@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
+import dns from 'node:dns';
 import fs from 'node:fs';
+import http from 'node:http';
+import https from 'node:https';
+import net from 'node:net';
 import path from 'node:path';
-import test from 'node:test';
+import test, { mock } from 'node:test';
+import { runCli as runCollectorCli } from '../scripts/link-audit-collect';
 import { canonicalJson, sha256Hex } from '../src/lib/link-audit/canonical';
 import { buildReportFromCapture } from '../src/lib/link-audit/collector/capture-report';
 import { checkStorage, readCapture, writeCapture } from '../src/lib/link-audit-evidence/store';
@@ -21,6 +26,7 @@ import {
 } from '../src/lib/link-audit-runtime/simulated-provider';
 import { inputFor, T_NOW } from './helpers/link-audit-collect-fixtures';
 import { AUDIT, bodyText, captureInput, COLLECTED_AT, identity, registerCleanup, tmpDir } from './helpers/link-audit-evidence-fixtures';
+import { collectSimulated, HOMOLOGATION_ENV, SIM_AUDIT_ID, simArgs, simHarness } from './helpers/link-audit-simulated-fixtures';
 
 /*
  * W5.2b (spec §5.7): coleta SIMULADA para o ensaio da W5 em homologação. Dados 100% SINTÉTICOS; nenhuma rede, nenhum arquivo de
@@ -184,4 +190,101 @@ test('runtime: SIMULATED SEM gravação (fixtures em memória) continua como ant
   const outcome = await runLinkAuditCollection({ mode: 'SIMULATED', input: simInput() }, { now: simClock, providers: { maps: createSimulatedMapsProvider({ now: simClock }) } });
   assert.ok(outcome.ok && outcome.kind === 'REPORT');
   assert.equal(outcome.persisted, undefined);
+});
+
+/* ------------------------------------------------------------------ CLI de coleta: trava, opções, saída e zero rede (2a, 3) */
+
+test('CLI (2a): sem a trava de homologação o --simulated é RECUSADO (código 3) antes de qualquer pasta; NODE_ENV=production sem a trava também; só o valor exato "1" liga', async () => {
+  for (const env of [{}, { NODE_ENV: 'production' }, { GMN_LINK_AUDIT_HOMOLOGATION: 'true' }, { GMN_LINK_AUDIT_HOMOLOGATION: '0' }, { GMN_LINK_AUDIT_HOMOLOGATION: ' 1' }, { GMN_LINK_AUDIT_HOMOLOGATION: 'on', NODE_ENV: 'production' }]) {
+    const evidence = path.join(tmpDir('lasim-cli-'), 'evidencias');
+    const h = simHarness(env);
+    const code = await runCollectorCli(simArgs(evidence), h.deps);
+    assert.equal(code, 3, JSON.stringify(env));
+    assert.match(h.err.join('\n'), /GMN_LINK_AUDIT_HOMOLOGATION=1/);
+    if (env.NODE_ENV === 'production') assert.match(h.err.join('\n'), /NODE_ENV=production/);
+    assert.ok(!fs.existsSync(evidence), 'nenhuma pasta criada');
+    assert.deepEqual(h.forbidden, { loadEnv: 0, usedStore: 0, createLiveProviders: 0 });
+  }
+});
+
+test('CLI (2a): a trava vale SÓ do ambiente do comando: o modo SIMULATED nunca carrega o arquivo de ambiente (que poderia trazê-la)', async () => {
+  const evidence = path.join(tmpDir('lasim-cli-'), 'evidencias');
+  const env: Record<string, string | undefined> = {};
+  const h = simHarness(env);
+  const deps = { ...h.deps, loadEnv: () => { h.forbidden.loadEnv += 1; env.GMN_LINK_AUDIT_HOMOLOGATION = '1'; } };
+  assert.equal(await runCollectorCli(simArgs(evidence), deps), 3);
+  assert.equal(h.forbidden.loadEnv, 0);
+  assert.ok(!fs.existsSync(evidence));
+});
+
+test('CLI (2a, 2d): --simulated não aceita --live nem as opções do LIVE, nem --link/--name/--city/--uf (dados fixos e sintéticos); exige --audit, --operator e --evidence-dir', async () => {
+  const evidence = tmpDir('lasim-cli-');
+  const cases: string[][] = [
+    ['--live'], ['--ack-cost'], ['--authorization-id', 'auth-teste-0001'], ['--max-maps-calls', '1'], ['--expires-in-minutes', '5'],
+    ['--link', SIMULATED_LINK], ['--name', 'Empresa de Ensaio'], ['--city', 'Cidade de Ensaio'], ['--uf', 'ZZ'],
+  ];
+  for (const extra of cases) {
+    const h = simHarness(HOMOLOGATION_ENV);
+    assert.equal(await runCollectorCli(simArgs(evidence, extra), h.deps), 1, extra.join(' '));
+    assert.match(h.err.join('\n'), new RegExp(extra[0] as string));
+  }
+  for (const drop of ['--audit', '--operator', '--evidence-dir']) {
+    const args = simArgs(evidence);
+    const at = args.indexOf(drop);
+    args.splice(at, 2);
+    const h = simHarness(HOMOLOGATION_ENV);
+    assert.equal(await runCollectorCli(args, h.deps), 1, drop);
+  }
+  const h = simHarness(HOMOLOGATION_ENV);
+  assert.equal(await runCollectorCli(simArgs(evidence, [], 'X'), h.deps), 1, 'auditId inválido');
+  assert.deepEqual(fs.readdirSync(evidence), [], 'nada gravado');
+});
+
+test('CLI (S-02): com a trava, --json imprime UM objeto com a marca e o source.capture.sha256 IGUAL ao contentSha256 relido da captura marcada; nada real é usado', async () => {
+  const evidence = tmpDir('lasim-cli-');
+  const { report, collectorHash, harness } = await collectSimulated(evidence);
+  assert.deepEqual(harness.forbidden, { loadEnv: 0, usedStore: 0, createLiveProviders: 0 });
+  assert.equal(report.source.simulated, true);
+  assert.equal(report.source.provider, 'SIMULATED');
+  assert.match(collectorHash, /^[0-9a-f]{64}$/);
+  const capture = await readCapture(evidence, SIM_AUDIT_ID, 1);
+  assert.ok(capture.ok);
+  assert.equal(capture.value.simulated, true);
+  assert.equal(collectorHash, capture.value.contentSha256);
+  assert.equal((capture.value.input.identity as { name?: string }).name, 'Empresa de Ensaio');
+  assert.deepEqual(fs.readdirSync(path.join(evidence, SIM_AUDIT_ID)).sort(), ['c0001.capture.json', 'c0001.report-r0001.json']);
+});
+
+test('CLI: a saída legível diz "SIMULADA — ensaio" e que nenhuma consulta foi feita', async () => {
+  const evidence = tmpDir('lasim-cli-');
+  const h = simHarness(HOMOLOGATION_ENV);
+  assert.equal(await runCollectorCli(simArgs(evidence), h.deps), 0, h.err.join('\n'));
+  const text = h.out.join('\n');
+  assert.match(text, /SIMULADA — ensaio/);
+  assert.match(text, /nenhuma consulta/i);
+  assert.match(text, /RELATÓRIO \(SIMULATED\) — tráfego externo: não/);
+  assert.match(text, /Chamadas: enviadas 0/);
+});
+
+test('zero rede (3): a coleta simulada completa (CLI → runtime → gravação) com fetch, DNS, net e http(s) trocados por armadilhas, sem acioná-las', async () => {
+  const trap = (name: string) => () => {
+    throw new Error(`rede proibida: ${name}`);
+  };
+  const guards = [
+    mock.method(globalThis, 'fetch', trap('fetch')),
+    mock.method(dns, 'lookup', trap('dns.lookup') as never),
+    mock.method(dns.promises, 'lookup', trap('dns.promises.lookup') as never),
+    mock.method(net, 'connect', trap('net.connect') as never),
+    mock.method(net.Socket.prototype, 'connect', trap('net.Socket#connect') as never),
+    mock.method(http, 'request', trap('http.request') as never),
+    mock.method(https, 'request', trap('https.request') as never),
+  ];
+  try {
+    const evidence = tmpDir('lasim-net-');
+    const { report } = await collectSimulated(evidence);
+    assert.equal(report.source.simulated, true);
+    for (const guard of guards) assert.equal(guard.mock.callCount(), 0);
+  } finally {
+    for (const guard of guards) guard.mock.restore();
+  }
 });
