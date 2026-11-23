@@ -416,6 +416,22 @@ test('confirmação da revisão da W4.6 (3): no artefato, cada grant é o própr
   fs.mkdirSync(gitLink);
   fs.symlinkSync(outside, path.join(gitLink, '.git'));
   await refusedSign(() => [`--allow-fs-read=${path.join(gitLink, '.git')}`], '.git que existe e é link');
+  // revisão do PR #59 (wk2): .git que é link simbólico PENDENTE sob pai real. O realpath dá ENOENT como se não existisse; o lstat prova que existe
+  // (a custódia da chave o recusaria só depois de ler as entradas e da confirmação). Recusa no pré-teste dos grants, antes de qualquer leitura
+  const dangling = path.join(holder, 'repo-link-pendente');
+  fs.mkdirSync(dangling);
+  fs.symlinkSync(path.join(outside, 'alvo-que-nao-existe'), path.join(dangling, '.git'));
+  await refusedSign(() => [`--allow-fs-read=${path.join(dangling, '.git')}`], '.git que é link simbólico pendente sob pai real');
+  {
+    const world = homeWorld();
+    const data: string[] = [];
+    const spy = new Proxy(nodeFsOps, { get: (target, property, receiver) => (typeof Reflect.get(target, property, receiver) === 'function' ? (...args: unknown[]) => (data.push(String(property)), (Reflect.get(target, property, receiver) as (...a: unknown[]) => unknown).apply(target, args)) : Reflect.get(target, property, receiver)) });
+    const run = await runAsArtifact('sign', file, world.argv(), { typed: world.typed(), fs: spy, nodeOptions: [...base, `--allow-fs-read=${path.join(dangling, '.git')}`] });
+    assert.equal(codeOf(run), 'SIGN_RUNTIME_UNSAFE', run.err.join('\n'));
+    assert.match(String((JSON.parse(run.out[0] ?? '{}') as Record<string, unknown>).message), /próprio caminho real/);
+    assert.deepEqual(data, [], '.git pendente: nenhuma entrada lida');
+    assert.ok(!run.err.some((text) => /12 primeiros caracteres|Frase-senha/.test(text)), '.git pendente: nem confirmação nem frase');
+  }
   // segunda confirmação (b): .git AUSENTE sob um pai que é link (o pai tem de existir e ser o próprio caminho real)
   await refusedSign(() => [`--allow-fs-read=${path.join(linkOut, '.git')}`], '.git ausente sob pai que é link');
   await refusedSign(() => [`--allow-fs-read=${path.join(outside, 'nao-existe', '.git')}`], '.git ausente sob pai que não existe');
@@ -691,6 +707,15 @@ test('decisão 3 em processo REAL: com a linha do runbook, a sondagem de fsync n
   fs.symlinkSync(homeSealsDir(), path.join(holder, 'pai-link'));
   refusedBarrier(viaEnvI([...line, `--allow-fs-read=${path.join(holder, 'pai-link', '.git')}`], artifact.file, args), '.git ausente sob pai que é link (sob --permission)', /grants/);
   assert.notEqual(viaEnvI([...line, `--allow-fs-read=${path.join(path.dirname(seals), '.git')}`], artifact.file, args).stderr.includes('Código: SIGN_RUNTIME_UNSAFE'), true, '.git ausente cujo pai é ancestral de um grant real passa');
+  // revisão do PR #59 (wk2), sob --permission: o mesmo lugar com um .git que é link simbólico PENDENTE ⇒ recusa dos grants (o lstat do próprio grant
+  // é permitido), antes da sondagem e de qualquer entrada. O link é retirado logo depois, para não afetar os outros testes da pasta
+  const danglingGit = path.join(path.dirname(seals), '.git');
+  fs.symlinkSync(path.join(path.dirname(seals), 'alvo-que-nao-existe'), danglingGit);
+  try {
+    refusedBarrier(viaEnvI([...line, `--allow-fs-read=${danglingGit}`], artifact.file, args), '.git link pendente (sob --permission)', /próprio caminho real/);
+  } finally {
+    fs.unlinkSync(danglingGit);
+  }
 });
 
 /* =============================================================================================================== assinatura completa (PTY) */
