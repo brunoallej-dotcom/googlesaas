@@ -34,6 +34,18 @@ async function readListBytes(file: string, fs: BytesFsOps): Promise<Uint8Array> 
   }
 }
 
+/**
+ * O sha256 da lista instalada AGORA (as mesmas regras de leitura), ou `null` se ela sumiu ou ficou ilegível. Para a conferência de antes do `link()`
+ * (revisão do PR #72, item 1): uma troca da lista entre o começo do `put` e a gravação recusa.
+ */
+export async function currentTrustListSha256(file: string, fs: BytesFsOps): Promise<string | null> {
+  try {
+    return sha256Hex(await readListBytes(file, fs));
+  } catch {
+    return null;
+  }
+}
+
 /** A lista instalada conferida contra o hash declarado no `put`, o formato e a regra de ambiente. */
 export async function readInstalledTrustList(file: string, declaredSha256: string, env: ChannelEnvironment, fs: BytesFsOps): Promise<InstalledTrustList> {
   const bytes = await readListBytes(file, fs);

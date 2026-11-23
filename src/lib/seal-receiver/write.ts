@@ -11,9 +11,12 @@ import type { SealTarget } from './grammar';
  * do `link()` ⇒ `E_WRITE_FAILED` (nada gravado); depois ⇒ `E_WRITE_UNCONFIRMED` (o arquivo existe e NUNCA é apagado pelo receptor).
  */
 
+/** O que a conferência de antes do `link()` pode recusar (`prelink.ts`). */
+export type PreLinkRefusal = 'trust-list-changed' | 'layout-changed' | 'root-sync-failed';
+
 interface WriteRefusal {
   readonly ok: false;
-  readonly kind: 'conflict' | 'bad-suffix' | 'unsafe' | 'failed' | 'unconfirmed';
+  readonly kind: 'conflict' | 'bad-suffix' | 'unsafe' | 'failed' | 'unconfirmed' | PreLinkRefusal;
   readonly tempLeft: boolean;
 }
 
@@ -27,9 +30,16 @@ const RECEIVER_OUTCOMES: ExclusiveWriteOutcomes<WriteRefusal> = {
 
 export type WriteOutcome = { readonly outcome: 'written' } | { readonly outcome: 'conflict'; /** O temporário deste processo pode ter ficado. */ readonly tempLeft: boolean };
 
-/** Grava `text` em `<raiz>/<subpasta>/<nome>`. `written`, ou `conflict` (o nome final já existia). As outras saídas lançam o código fixo. */
-export async function writeExclusively(fs: BytesFsOps, root: string, target: SealTarget, text: string, tempSuffix: () => string): Promise<WriteOutcome> {
-  const result = await linkExclusive(fs, { root, dirName: target.dirName, fileName: target.fileName, text, conflict: (tempLeft) => refusal('conflict', tempLeft), unconfirmed: refusal('unconfirmed') }, RECEIVER_OUTCOMES, tempSuffix);
+/**
+ * Grava `text` em `<raiz>/<subpasta>/<nome>`, com `preLink` conferido logo antes do `link()` (lista, raiz e subpasta, fsync da raiz). `written`, ou
+ * `conflict` (o nome final já existia). As outras saídas lançam o código fixo; uma recusa do `preLink` remove o temporário e nada é gravado.
+ */
+export async function writeExclusively(fs: BytesFsOps, root: string, target: SealTarget, text: string, tempSuffix: () => string, preLink: () => Promise<PreLinkRefusal | null>): Promise<WriteOutcome> {
+  const beforeLink = async (): Promise<((tempLeft: boolean) => WriteRefusal) | null> => {
+    const kind = await preLink();
+    return kind === null ? null : (tempLeft: boolean) => refusal(kind, tempLeft);
+  };
+  const result = await linkExclusive(fs, { root, dirName: target.dirName, fileName: target.fileName, text, conflict: (tempLeft) => refusal('conflict', tempLeft), unconfirmed: refusal('unconfirmed'), beforeLink }, RECEIVER_OUTCOMES, tempSuffix);
   if (result.ok) return { outcome: 'written' };
   const tempNote = result.tempLeft ? ' (a temporary of this run may be left)' : '';
   switch (result.kind) {
@@ -41,6 +51,12 @@ export async function writeExclusively(fs: BytesFsOps, root: string, target: Sea
       throw new SealReceiverError('E_WRITE_UNCONFIRMED', null, 'file linked but the temporary removal or the directory fsync failed');
     case 'failed':
       throw new SealReceiverError('E_WRITE_FAILED', null, `write failed before link${tempNote}`);
+    case 'trust-list-changed':
+      throw new SealReceiverError('E_TRUST_LIST_MISMATCH', null, `installed trust list changed during the put; nothing linked${tempNote}`);
+    case 'layout-changed':
+      throw new SealReceiverError('E_UNSAFE_PATH', null, `root or subfolder replaced between the verification and the link; nothing linked${tempNote}`);
+    case 'root-sync-failed':
+      throw new SealReceiverError('E_WRITE_FAILED', null, `root fsync before the link failed; nothing linked${tempNote}`);
     default:
       throw new SealReceiverError('E_INTERNAL', null, 'temporary suffix out of form');
   }

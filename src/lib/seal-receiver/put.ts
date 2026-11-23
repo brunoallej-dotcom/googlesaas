@@ -3,8 +3,9 @@ import { inputCapOf, judgeCandidate } from './candidate';
 import { SealReceiverError } from './codes';
 import type { PutCommand } from './grammar';
 import { readCandidateInput } from './input';
-import { existingDestination, requireSafeLayout } from './layout';
+import { existingDestination, pinLayout, requireSafeLayout } from './layout';
 import type { SealReceiverDeps } from './ports';
+import { preLinkRefusal } from './prelink';
 import { readInstalledTrustList } from './trust';
 import { verifyAfterWrite, verifyOnHost } from './verify';
 import { writeExclusively } from './write';
@@ -17,7 +18,8 @@ import { writeExclusively } from './write';
  *  4. raiz e subpasta reais (`E_UNSAFE_PATH`);
  *  5. destino existente: idêntico ⇒ `OK ALREADY_PRESENT`, outro ⇒ `E_EXISTS_DIFFERENT`, outro tipo ⇒ `E_UNSAFE_PATH`;
  *  6. verificação v2 no host (`E_V2_REFUSED`, `E_CLOSURE_REFUSED`);
- *  7. gravação exclusiva e durável; `EEXIST` no `link()` ⇒ de volta ao passo 5;
+ *  7. gravação exclusiva e durável; logo antes do `link()`, a lista instalada relida (mesmo sha256), a raiz e a subpasta conferidas (as mesmas da
+ *     fotografia de antes do passo 6) e o `fsync` da raiz (`prelink.ts`); `EEXIST` no `link()` ⇒ de volta ao passo 5;
  *  8. releitura e nova classificação (`E_POSTWRITE_VERIFY`);
  *  9. `OK WRITTEN <relpath> <sha256>`.
  * Os bytes verificados nos passos 3 e 6 são os MESMOS que o passo 7 grava (nenhuma releitura do stdin nem do disco entre eles).
@@ -40,8 +42,10 @@ export async function runPut(command: PutCommand, config: SealReceiverConfig, de
       deps.log.write('put.already_present', { relpath: target.relpath, sha256: candidate.sha256, round });
       return `OK ALREADY_PRESENT ${target.relpath} ${candidate.sha256}`;
     }
+    const pin = await pinLayout(deps.fs, config.sealsRoot, target);
     await verifyOnHost(deps.fs, config.sealsRoot, trust, candidate);
-    const written = await writeExclusively(deps.fs, config.sealsRoot, target, candidate.text, () => deps.tempSuffix());
+    const preLink = () => preLinkRefusal({ fs: deps.fs, root: config.sealsRoot, target, trustFile: config.trustList, trust, pin });
+    const written = await writeExclusively(deps.fs, config.sealsRoot, target, candidate.text, () => deps.tempSuffix(), preLink);
     if (written.outcome === 'conflict') {
       deps.log.write('put.link_conflict', { relpath: target.relpath, round, tempLeft: written.tempLeft });
       continue;

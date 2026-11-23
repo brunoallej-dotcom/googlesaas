@@ -13,6 +13,9 @@ export interface FileInfo {
   /** Bits de modo e dono (o `Stats` do Node os traz); opcionais para os `FsOps` de teste. Ausentes ⇒ quem confere permissões não pode garantir. */
   readonly mode?: number;
   readonly uid?: number;
+  /** Dispositivo e inode (o `Stats` do Node os traz): quem confere que uma pasta não foi trocada (P9.3b) exige os dois; ausentes ⇒ não pode garantir. */
+  readonly dev?: number;
+  readonly ino?: number;
 }
 
 /** Operações de disco usadas pelo armazenamento. Injetável para simular quedas nos testes. */

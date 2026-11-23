@@ -47,7 +47,9 @@ const ALLOWED: Readonly<Record<string, ReadonlySet<string>>> = {
   // o autoteste do sign (selfTestSeal sobre chainSnapshot) e, depois da gravação, o S-10 e o S-11 do canal
   'verify.ts': new Set([PORT, SIGN_CHAIN, VERIFIER, CHANNEL('chains'), CHANNEL('closures'), './candidate', './codes', './grammar', './layout', './trust']),
   'write.ts': new Set([PORT, EXCLUSIVE_WRITE, './codes', './grammar']),
-  'put.ts': new Set(['./args', './candidate', './codes', './grammar', './input', './layout', './ports', './trust', './verify', './write']),
+  // revisão do PR #72: a conferência de antes do link() (lista relida, raiz e subpasta, fsync da raiz)
+  'prelink.ts': new Set([PORT, './grammar', './layout', './trust', './write']),
+  'put.ts': new Set(['./args', './candidate', './codes', './grammar', './input', './layout', './ports', './prelink', './trust', './verify', './write']),
   'receiver.ts': new Set(['node:path', './args', './codes', './grammar', './ports', './put']),
   // o ÚNICO arquivo com disco, relógio, aleatoriedade, stdin e o processo; nenhum node:child_process
   'node-adapters.ts': new Set(['node:crypto', 'node:fs', 'node:fs/promises', PORT, '../link-audit/node-fs-ops', './args', './ports']),

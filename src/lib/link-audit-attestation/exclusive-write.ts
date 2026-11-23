@@ -39,6 +39,11 @@ export interface ExclusiveTarget<R extends { readonly ok: false }> {
   readonly conflict: (tempLeft: boolean) => R;
   /** Falha depois do `link()`: o arquivo existe, mas não está confirmado. */
   readonly unconfirmed: R;
+  /**
+   * Opcional (receptor de manifestos, revisão do PR #72): conferência logo ANTES do `link()`, com o temporário já gravado e sincronizado. Devolve a
+   * recusa (o temporário é removido aqui; `tempLeft` diz se ficou) ou `null` para seguir; lançar conta como `writeFailed`. O `sign` não a usa.
+   */
+  readonly beforeLink?: () => Promise<((tempLeft: boolean) => R) | null>;
 }
 
 export type ExclusiveWriteResult<R extends { readonly ok: false }> = { readonly ok: true; readonly file: string } | R;
@@ -136,6 +141,8 @@ async function commitFile<R extends { readonly ok: false }>(fs: FsOps, target: E
     const tempLeft = errorCode(error) === 'EEXIST' ? false : !(await attempt(() => fs.unlink(temp)));
     return outcomes.writeFailed(tempLeft);
   }
+  const refused = target.beforeLink ? await guarded(target.beforeLink, outcomes) : null;
+  if (refused !== null) return refused(!(await attempt(() => fs.unlink(temp))));
   try {
     await fs.link(temp, path.join(dir, fileName));
   } catch (error) {
@@ -146,6 +153,15 @@ async function commitFile<R extends { readonly ok: false }>(fs: FsOps, target: E
   const removed = await attempt(() => fs.unlink(temp));
   const synced = await attempt(() => fs.syncDirectory(dir));
   return removed && synced ? null : target.unconfirmed;
+}
+
+/** A conferência de antes do `link()`: a recusa dela, ou `writeFailed` se ela lançar (nunca segue para o `link()` sem resposta). */
+async function guarded<R extends { readonly ok: false }>(beforeLink: () => Promise<((tempLeft: boolean) => R) | null>, outcomes: ExclusiveWriteOutcomes<R>): Promise<((tempLeft: boolean) => R) | null> {
+  try {
+    return await beforeLink();
+  } catch {
+    return outcomes.writeFailed;
+  }
 }
 
 /** Raiz real → subpasta (criada se ausente) → temporário + `link()` exclusivo + fsync (`commitFile`). Nunca lança e nunca sobrescreve. */

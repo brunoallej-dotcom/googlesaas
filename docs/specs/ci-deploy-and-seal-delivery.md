@@ -772,8 +772,9 @@ na fatia, todas de falha fechada:
 
 - **Extração da gravação do `sign`:** `linkExclusive`, `commitFile`, `subDir` e `rootIsReal` saíram de `sign-run.ts` sem mudança de
   comportamento; as recusas são passadas por quem chama (`ExclusiveWriteOutcomes`: o `sign` passa as mensagens dele, o receptor os códigos
-  dele). Novo, só de leitura: `subDirState` (a regra do `subDir` sem criar nada, para o passo 4). Hash do artefato do `sign`:
-  `978121b48fb3486b4de087cef1095051dd51cf6bd310fdb1edb2f0eef7578255` (spec do P1 §5.5.1); os testes do `sign` e do `close-key` passam sem
+  dele). Novo, só de leitura: `subDirState` (a regra do `subDir` sem criar nada, para o passo 4); e, depois da revisão do PR #72, o gancho
+  opcional `beforeLink` (conferência logo antes do `link()`, que o `sign` não passa). Hash do artefato do `sign`:
+  `4d16072f87744ab3a1a47ac85e2f331a7b35695342fa4f56631fa0c0d67c8224` (spec do P1 §5.5.1); os testes do `sign` e do `close-key` passam sem
   alteração.
 - **Wrapper.** O padrão da P9.3a: sha256 do artefato a cada execução (`E_ARTIFACT`, 17), `flock -n -E 75` num arquivo do root
   (`/var/lib/gmn-seals/<amb>/seals.flock`, H-06) ⇒ `E_LOCKED` (16), Node, `flock` ou trava ausentes ⇒ `E_INTERNAL` (29) sem caminho, `env -i

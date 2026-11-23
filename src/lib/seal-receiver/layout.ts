@@ -21,6 +21,49 @@ export async function requireSafeLayout(fs: BytesFsOps, root: string, target: Se
 
 export const destinationOf = (root: string, target: SealTarget): string => nodePath.join(root, target.dirName, target.fileName);
 
+/** Dispositivo e inode de uma pasta. */
+export interface DirIdentity {
+  readonly dev: number;
+  readonly ino: number;
+}
+
+/** A raiz e a subpasta (ou `null`, se ainda não existe) como estavam ANTES da verificação (revisão do PR #72, item 2). */
+export interface LayoutPin {
+  readonly root: DirIdentity;
+  readonly sub: DirIdentity | null;
+}
+
+/** A identidade de uma pasta comum (lstat, sem link); `absent` (ENOENT) ou `null` (outra coisa, ou sem dispositivo/inode para provar). */
+async function dirIdentity(fs: BytesFsOps, dir: string): Promise<DirIdentity | 'absent' | null> {
+  try {
+    const info = await fs.lstat(dir);
+    if (info.isSymbolicLink() || !info.isDirectory() || typeof info.dev !== 'number' || typeof info.ino !== 'number') return null;
+    return { dev: info.dev, ino: info.ino };
+  } catch (error) {
+    return errorCode(error) === 'ENOENT' ? 'absent' : null;
+  }
+}
+
+const sameIdentity = (a: DirIdentity | 'absent' | null, b: DirIdentity): boolean => a !== null && a !== 'absent' && a.dev === b.dev && a.ino === b.ino;
+
+/** Fotografa a raiz e a subpasta logo antes da verificação v2 (passo 6). Raiz ou subpasta que não é pasta comum ⇒ `E_UNSAFE_PATH`. */
+export async function pinLayout(fs: BytesFsOps, root: string, target: SealTarget): Promise<LayoutPin> {
+  const rootId = await dirIdentity(fs, root);
+  const subId = await dirIdentity(fs, nodePath.join(root, target.dirName));
+  if (rootId === null || rootId === 'absent' || subId === null) throw new SealReceiverError('E_UNSAFE_PATH', null, 'root or subfolder cannot be pinned (not a real directory)');
+  return { root: rootId, sub: subId === 'absent' ? null : subId };
+}
+
+/**
+ * Logo antes do `link()`: a raiz é a MESMA pasta (dispositivo e inode) e a subpasta também; se ela não existia na fotografia (auditoria nova), agora
+ * é a que a gravação acabou de criar, pasta comum dentro da raiz. Uma restauração ou troca no meio do `put` ⇒ `false` (`E_UNSAFE_PATH`).
+ */
+export async function layoutUnchanged(fs: BytesFsOps, root: string, target: SealTarget, pin: LayoutPin): Promise<boolean> {
+  if (!sameIdentity(await dirIdentity(fs, root), pin.root)) return false;
+  const sub = await dirIdentity(fs, nodePath.join(root, target.dirName));
+  return pin.sub === null ? sub !== null && sub !== 'absent' : sameIdentity(sub, pin.sub);
+}
+
 const READ_TOO_LARGE: ReadonlySet<string> = new Set(['ETOOBIG', 'ECHANGED']);
 const NOT_REGULAR: ReadonlySet<string> = new Set(['ELOOP', 'ENOTFILE', 'EISDIR', 'ENXIO']);
 

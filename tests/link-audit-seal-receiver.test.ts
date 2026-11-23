@@ -458,6 +458,23 @@ test('P9-R07 falha injetada no fsync do arquivo (ou na escrita, no mkdir, no lin
   assert.match(names[0] as string, /^\.seal-0001\.json\.tmp-[0-9a-f]{32}$/, 'o temporário que sobrou está fora do nome de manifesto');
 });
 
+test('P9-R07 (revisão do PR #72, item 7) retomada: a pasta da auditoria ficou de uma tentativa cujo fsync da raiz falhou; a nova entrega acha a pasta existente e ainda sincroniza a RAIZ antes do link(), e grava; se esse fsync falha ⇒ E_WRITE_FAILED, nada gravado', async () => {
+  const w = sealWorld();
+  const trust = installTrust(w, [listItem(KEY_A), listItem(KEY_B)]);
+  const [seal] = chainOf(AUD_A, [{ signer: KEY_A }]) as [ReturnType<typeof chainOf>[number]];
+  const text = canonicalText(seal);
+  const command = putLine(sealRelpath(seal), text, trust);
+  const failRootSync = faultyFs({ syncDirectory: async (dir) => { if (dir === w.sealsRoot) throw errno('EIO'); return sealReceiverFs.syncDirectory(dir); } });
+  assert.equal(stderrOf(await runReceiver(w, command, text, { fs: failRootSync })), 'ERRO E_WRITE_FAILED', 'primeira tentativa: o mkdir vingou, o fsync da raiz não');
+  assert.deepEqual(fs.readdirSync(path.join(w.sealsRoot, AUD_A)), [], 'a pasta ficou, vazia');
+  assert.equal(stderrOf(await runReceiver(w, command, text, { fs: failRootSync })), 'ERRO E_WRITE_FAILED', 'com a pasta já existente, o fsync da raiz de antes do link() ainda é exigido');
+  assert.deepEqual(fs.readdirSync(path.join(w.sealsRoot, AUD_A)), [], 'nada gravado (nem temporário)');
+  const synced: string[] = [];
+  const spy = faultyFs({ syncDirectory: async (dir) => { synced.push(dir); return sealReceiverFs.syncDirectory(dir); } });
+  assert.equal(stdoutOf(await runReceiver(w, command, text, { fs: spy })), `OK WRITTEN ${sealRelpath(seal)} ${sha256(text)}`);
+  assert.deepEqual(synced, [w.sealsRoot, path.join(w.sealsRoot, AUD_A)], 'raiz (antes do link) e a pasta da auditoria (depois)');
+});
+
 /* ===================================================================================================================== P9-R08 */
 
 test('P9-R08 duas entregas concorrentes do mesmo arquivo ⇒ uma WRITTEN e a outra ALREADY_PRESENT; de bytes diferentes no mesmo nome ⇒ uma WRITTEN e a outra E_EXISTS_DIFFERENT', async () => {
@@ -736,44 +753,91 @@ test('P9-R12 depois da gravação: o arquivo é 0444 (mesmo com umask 027) e a p
 
 /* ===================================================================================================================== P9-R13 */
 
-test('P9-R13 lista instalada trocada (rename atômico) no meio de uma sequência de put: os seguintes recusam com E_TRUST_LIST_MISMATCH e nada gravam; cada put lê a lista UMA vez e usa esses bytes para o hash, o formato e a verificação (nunca um arquivo parcial); repetidos com o hash novo, gravam', async () => {
+test('P9-R13 lista instalada trocada (rename atômico) no meio de um put: a conferência de antes do link() relê a lista e exige o MESMO sha256 do começo ⇒ E_TRUST_LIST_MISMATCH e nada gravado, seja a troca a revogação da própria chave do candidato, seja uma mudança alheia a ele, logo depois da primeira leitura ou com o temporário já gravado; os puts seguintes com o hash velho recusam; com o hash novo, gravam', async () => {
   const w = sealWorld();
   const oldList = installTrust(w, [listItem(KEY_A), listItem(KEY_B)]);
-  const seals = chainOf(AUD_A, [{ signer: KEY_A }, { signer: KEY_B, entries: E2 }, { signer: KEY_A, entries: E2 }]);
-  const texts = seals.map((seal) => canonicalText(seal));
-  const [first, second, third] = seals as [(typeof seals)[number], (typeof seals)[number], (typeof seals)[number]];
-  const newLines = [listItem(KEY_A), listItem(KEY_B), listItem(KEY_X, 'revoked')];
-  const newBytes = Buffer.from(newLines.map((line) => `${line}\n`).join(''), 'ascii');
-  // o primeiro put lê a lista antiga; logo depois da leitura (dentro do mesmo put) o deploy troca a instalada: o put segue com os bytes que leu
-  let swapped = false;
+  const seals = chainOf(AUD_A, [{ signer: KEY_A }, { signer: KEY_B, entries: E2 }]);
+  const [first, second] = seals as [(typeof seals)[number], (typeof seals)[number]];
+  const firstText = canonicalText(first);
+  const revokesOwnKey = [listItem(KEY_A, 'revoked'), listItem(KEY_B)];
+  const unrelated = [listItem(KEY_A), listItem(KEY_B), listItem(KEY_X, 'revoked')];
   const reads: string[] = [];
-  const swapping = faultyFs({
-    readFileBytes: async (file, max) => {
-      const bytes = await sealReceiverFs.readFileBytes(file, max);
-      if (file === w.trustFile) {
-        reads.push(file);
-        if (!swapped) {
-          swapped = true;
-          installTrust(w, newLines);
+  /** Troca a instalada UMA vez: logo depois da primeira leitura da lista (`afterFirstRead`) ou com o temporário já gravado (`beforeLink`). */
+  const swapping = (lines: readonly string[], moment: 'afterFirstRead' | 'beforeLink'): BytesFsOps => {
+    let swapped = false;
+    const swap = (): void => {
+      if (swapped) return;
+      swapped = true;
+      installTrust(w, lines);
+    };
+    return faultyFs({
+      readFileBytes: async (file, max) => {
+        const bytes = await sealReceiverFs.readFileBytes(file, max);
+        if (file === w.trustFile) {
+          reads.push(file);
+          if (moment === 'afterFirstRead') swap();
         }
-      }
-      return bytes;
-    },
-  });
-  assert.equal(stdoutOf(await runReceiver(w, putLine(sealRelpath(first), texts[0] as string, oldList), texts[0] as string, { fs: swapping })), `OK WRITTEN ${sealRelpath(first)} ${sha256(texts[0] as string)}`);
-  assert.equal(reads.length, 1, 'uma leitura da lista por put');
-  for (const seal of [second, third]) {
-    const text = canonicalText(seal);
-    const run = await runReceiver(w, putLine(sealRelpath(seal), text, oldList), text, { fs: swapping });
-    assert.equal(stderrOf(run), 'ERRO E_TRUST_LIST_MISMATCH');
+        return bytes;
+      },
+      writeExclusive: async (target, data, mode) => {
+        await sealReceiverFs.writeExclusive(target, data, mode);
+        if (moment === 'beforeLink') swap();
+      },
+    });
+  };
+  for (const [label, lines, moment] of [
+    ['revoga a própria chave do candidato, logo depois da primeira leitura', revokesOwnKey, 'afterFirstRead'],
+    ['revoga a própria chave do candidato, com o temporário já gravado', revokesOwnKey, 'beforeLink'],
+    ['mudança alheia ao candidato (outra chave revogada), logo depois da primeira leitura', unrelated, 'afterFirstRead'],
+    ['mudança alheia ao candidato, com o temporário já gravado', unrelated, 'beforeLink'],
+  ] as const) {
+    installTrust(w, [listItem(KEY_A), listItem(KEY_B)]);
+    reads.length = 0;
+    const run = await runReceiver(w, putLine(sealRelpath(first), firstText, oldList), firstText, { fs: swapping(lines, moment) });
+    assert.equal(run.outcome.exitCode, 14, label);
+    assert.equal(stderrOf(run), 'ERRO E_TRUST_LIST_MISMATCH', label);
+    assert.deepEqual(reads.length, 2, `${label}: a lista é lida no começo e de novo antes do link()`);
+    assert.deepEqual(listTree(w.sealsRoot).filter((name) => name.includes('seal-')), [], `${label}: nem nome final nem temporário`);
   }
-  assert.equal(reads.length, 3);
-  assert.deepEqual(fs.readdirSync(path.join(w.sealsRoot, AUD_A)), ['seal-0001.json'], 'nada gravado com a lista velha');
-  for (const seal of [second, third]) {
+  // depois de uma troca (alheia), os puts com o hash velho recusam logo no passo 2; com o hash novo, gravam
+  const newBytes = installTrust(w, unrelated);
+  assert.equal(stderrOf(await runReceiver(w, putLine(sealRelpath(first), firstText, oldList), firstText)), 'ERRO E_TRUST_LIST_MISMATCH');
+  for (const seal of [first, second]) {
     const text = canonicalText(seal);
     assert.equal(stdoutOf(await runReceiver(w, putLine(sealRelpath(seal), text, newBytes), text)), `OK WRITTEN ${sealRelpath(seal)} ${sha256(text)}`);
   }
-  assert.deepEqual(fs.readdirSync(path.join(w.sealsRoot, AUD_A)).sort(), ['seal-0001.json', 'seal-0002.json', 'seal-0003.json']);
+  // com a revogação instalada, a chave revogada não grava mais (a verificação usa a lista relida no put seguinte)
+  const revoked = installTrust(w, [listItem(KEY_A, 'revoked'), listItem(KEY_B), listItem(KEY_X, 'revoked')]);
+  const [, , third] = chainOf(AUD_A, [{ signer: KEY_A }, { signer: KEY_B, entries: E2 }, { signer: KEY_A, entries: E2 }]) as [unknown, unknown, (typeof seals)[number]];
+  const thirdText = canonicalText(third);
+  assert.match(stderrOf(await runReceiver(w, putLine(sealRelpath(third), thirdText, revoked), thirdText)) ?? '', /^ERRO E_V2_REFUSED SEAL_KEY_REVOKED$/);
+});
+
+test('P9-R06 (revisão do PR #72, item 2) a raiz ou a subpasta TROCADA entre a verificação e o link() (uma restauração no meio do put) ⇒ E_UNSAFE_PATH, nada gravado na pasta nova nem na velha', async () => {
+  for (const which of ['subpasta', 'raiz'] as const) {
+    const { w, second, text, command, first } = hostWithChain();
+    const auditDir = path.join(w.sealsRoot, AUD_A);
+    let swapped = false;
+    const restoring = faultyFs({
+      writeExclusive: async (target, data, mode) => {
+        await sealReceiverFs.writeExclusive(target, data, mode);
+        if (swapped) return;
+        swapped = true;
+        const moved = which === 'raiz' ? w.sealsRoot : auditDir;
+        fs.renameSync(moved, `${moved}.antiga`);
+        fs.mkdirSync(moved);
+        fs.chmodSync(moved, which === 'raiz' ? 0o2750 : 0o750);
+        if (which === 'raiz') fs.mkdirSync(auditDir);
+        fs.writeFileSync(path.join(auditDir, 'seal-0001.json'), canonicalText(first), { mode: 0o444 });
+      },
+    });
+    const run = await runReceiver(w, command, text, { fs: restoring });
+    assert.equal(run.outcome.exitCode, 34, which);
+    assert.equal(stderrOf(run), 'ERRO E_UNSAFE_PATH', which);
+    assert.deepEqual(fs.readdirSync(auditDir), ['seal-0001.json'], `${which}: nada na pasta nova`);
+    const oldAuditDir = which === 'raiz' ? path.join(`${w.sealsRoot}.antiga`, AUD_A) : `${auditDir}.antiga`;
+    assert.ok(!fs.readdirSync(oldAuditDir).includes(sealRelpath(second).split('/')[1] as string), `${which}: nem na velha`);
+  }
 });
 
 test('log local real: 0600, uma linha JSON por evento, com o pedido (comando da gramática), o código e a nota; nunca o conteúdo do manifesto', async () => {
