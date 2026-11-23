@@ -10,10 +10,14 @@
 > no ambiente `homologacao` ou `producao`), os scripts do job em `deploy/ci/`, o `stack.yml` com os nomes do Traefik parametrizados e
 > os secrets em sintaxe longa, e a sobreposição de homologação `stack-hml.yml` (stack `gmn-hml`).
 >
-> **O que ainda não existe:** os **receptores** (deploy na P9.3a; manifestos na P9.3b), com o modelo do *wrapper* e o arquivo
-> `deploy/hostinger/receivers.sha256`; e a **entrega de manifestos** pelo CI (jobs `seals-verify` e `seals-deliver`, P9.5). Até a
-> P9.5, um dispatch com `acao = entregar-selos` não roda nenhum job. Os passos H-04 e o teste do P9-O03 dependem da P9.3a/P9.3b e
-> serão completados por elas.
+> **Receptor de deploy (P9.3a):** o artefato `gmn-deploy-receiver.cjs` (hash em `deploy/hostinger/receivers.sha256`, conferido pelo
+> job `receivers artifact (build, hash)` do `ci.yml`) e os modelos de *wrapper* `deploy/hostinger/receivers/gmn-deploy.modelo.sh` e
+> `gmn-hml-deploy.modelo.sh`; instalação no H-04.
+>
+> **O que ainda não existe:** o **receptor de manifestos** (P9.3b: `gmn-seal-receiver.cjs`, a linha dele no `receivers.sha256` e o
+> *wrapper* `gmn-hml-seals`); e a **entrega de manifestos** pelo CI (jobs `seals-verify` e `seals-deliver`, P9.5). Até a P9.5, um
+> dispatch com `acao = entregar-selos` não roda nenhum job. A parte do receptor de manifestos no H-04 e a recusa da chave de
+> manifestos no P9-O03 dependem da P9.3b.
 
 ## 0. Regras que valem em todo o runbook
 
@@ -131,12 +135,72 @@ O Node dos receptores é o oficial, a mesma versão do `Dockerfile` (`node:22.23
 
 Recomendado: conferir também a assinatura do `SHASUMS256.txt` (`SHASUMS256.txt.sig`) com as chaves públicas de release do Node.
 
-**Receptores:** os artefatos `gmn-deploy-receiver.cjs` e `gmn-seal-receiver.cjs`, o hash versionado `deploy/hostinger/receivers.sha256`
-e o modelo do *wrapper* (root, `0755`, que confere o sha256 do artefato a cada execução) chegam na **P9.3a** e na **P9.3b**, que
-completam este passo. A regra fica: instalar do clone limpo do commit, como root, `0444`, depois de `sha256sum -c` contra o hash
-do commit; o CI **nunca** atualiza receptor. Até lá, o `command=` do H-05 aponta para um *wrapper* que ainda não existe, e toda
-conexão falha fechada. Os caminhos `/opt/gmn-receivers/bin/gmn-hml-deploy` e `/opt/gmn-receivers/bin/gmn-hml-seals` abaixo são os
-sugeridos; use os que a P9.3a/P9.3b fixarem.
+**Receptor de deploy (P9.3a).** Regra: o artefato sai do **commit** que você escolheu (`<SHA40>`, a versão instalada), é instalado
+como root, `0444`, só depois do `sha256sum -c` contra o `deploy/hostinger/receivers.sha256` desse commit; o CI **nunca** atualiza
+receptor (spec §5.6, "Implementação (P9.3a)"). O receptor de manifestos (`gmn-seal-receiver.cjs` e o *wrapper* `gmn-hml-seals`) entra
+na P9.3b, pelo mesmo caminho; até lá, o `command=` da chave de manifestos aponta para um *wrapper* que ainda não existe, e toda
+conexão dela falha fechada.
+
+1. **Na estação**, sem segredo, num clone limpo do commit: o build é reprodutível (o mesmo do job do CI), e o `--check` e o
+   `sha256sum -c` param tudo se o hash não for o versionado:
+
+   ```bash
+   ( set -euo pipefail                                                           # para no primeiro erro
+     D="$(mktemp -d)"
+     git clone --quiet https://github.com/<DONO>/<REPO>.git "$D/repo"
+     git -C "$D/repo" checkout --quiet --detach <SHA40>
+     test -z "$(git -C "$D/repo" status --porcelain)"                            # árvore limpa
+     cd "$D/repo" && npm ci --no-audit --no-fund
+     npm run --silent deploy:receivers-artifact -- --out "$D/receptores" --check  # <sha256>  gmn-deploy-receiver.cjs
+     cp deploy/hostinger/receivers.sha256 deploy/hostinger/receivers/gmn-hml-deploy.modelo.sh deploy/hostinger/receivers/gmn-deploy.modelo.sh "$D/receptores/"
+     ( cd "$D/receptores" && sha256sum -c --strict receivers.sha256 )            # gmn-deploy-receiver.cjs: OK
+     echo "copie para a VPS: $D/receptores"
+   )
+   ```
+
+   Confira a linha do `receivers.sha256` com a do commit no GitHub
+   (`https://github.com/<DONO>/<REPO>/blob/<SHA40>/deploy/hostinger/receivers.sha256`). Leve a pasta `receptores` para a VPS pelo seu
+   canal de administração (ex.: `scp -r` para `/tmp/gmn-receptores`, com o seu usuário, nunca com as chaves do CI).
+
+2. **Na VPS**, artefato e hash em `/opt/gmn-receivers/<SHA40>/` (root, `0444`), conferidos de novo no lugar (**P9-O04**, registrar):
+
+   ```bash
+   ( set -euo pipefail
+     S=/tmp/gmn-receptores; V=<SHA40>
+     ( cd "$S" && sha256sum -c --strict receivers.sha256 )                       # gmn-deploy-receiver.cjs: OK
+     sudo install -d -m 0755 -o root -g root /opt/gmn-receivers/bin "/opt/gmn-receivers/$V"
+     sudo install -m 0444 -o root -g root "$S/gmn-deploy-receiver.cjs" "$S/receivers.sha256" "/opt/gmn-receivers/$V/"
+     ( cd "/opt/gmn-receivers/$V" && sha256sum -c --strict receivers.sha256 )      # P9-O04: OK
+   )
+   ```
+
+3. **Wrapper de homologação** (`/opt/gmn-receivers/bin/gmn-hml-deploy`, root, `0755`): o modelo preenchido com a versão, o hash do
+   artefato, o nome do arquivo de variáveis e a **impressão do projeto de produção** (`--forbid-supabase`, explicada abaixo). O
+   *wrapper* confere o sha256 do artefato a cada execução (`ERRO E_ARTIFACT`, saída 17), limpa o ambiente (`env -i`) e passa só o
+   PATH fixo e o comando pedido. No `sed`, os marcadores à esquerda são os do modelo e ficam como estão; troque só os de `V=` e `F=`:
+
+   ```bash
+   ( set -euo pipefail; set +x
+     S=/tmp/gmn-receptores; V=<SHA40>; F='<ARQUIVO_DE_VARIAVEIS>'                 # F: o nome real do arquivo do H-08
+     H="$(awk '$2 == "gmn-deploy-receiver.cjs" { print $1 }' "/opt/gmn-receivers/$V/receivers.sha256")"
+     read -rsp 'URL do Supabase de PRODUÇÃO: ' U; echo; FP="$(printf '%s' "$U" | sha256sum | cut -c1-12)"; unset U
+     [[ "$V" =~ ^[0-9a-f]{40}$ && "$H" =~ ^[0-9a-f]{64}$ && "$FP" =~ ^[0-9a-f]{12}$ && "$F" =~ ^[A-Za-z0-9._-]+$ ]]
+     sed -e "s|<VERSAO>|$V|g" -e "s|<SHA256_DO_ARTEFATO>|$H|g" -e "s|<ARQUIVO_DE_VARIAVEIS>|$F|g" -e "s|<IMPRESSAO_SUPABASE_PRODUCAO>|$FP|g" \
+       "$S/gmn-hml-deploy.modelo.sh" > "$S/gmn-hml-deploy"
+     if grep -n '<[A-Z_]*>' "$S/gmn-hml-deploy"; then echo "PARE: marcador sem preencher" >&2; exit 1; fi
+     sudo install -m 0755 -o root -g root "$S/gmn-hml-deploy" /opt/gmn-receivers/bin/gmn-hml-deploy
+     sha256sum /opt/gmn-receivers/bin/gmn-hml-deploy                             # registrar no relatório
+   )
+   ```
+
+   Produção (seção 3): o mesmo bloco com `gmn-deploy.modelo.sh`, destino `/opt/gmn-receivers/bin/gmn-deploy`, sem a impressão (o
+   modelo de produção não tem `--forbid-supabase`). Trocar de versão = repetir os passos 1 a 3 com o commit novo; a versão anterior
+   fica em `/opt/gmn-receivers/<SHA40 anterior>/` para voltar (seção 6, "Receptor com defeito").
+
+   Com um marcador sem preencher, o *wrapper* falha fechado: `E_ARTIFACT` (hash) ou `E_INTERNAL` (parâmetros). O receptor exige o
+   ambiente limpo (só `PATH` e `SSH_ORIGINAL_COMMAND`, senão `E_INTERNAL`), a pasta de estado do H-06 e o log `0600` do H-06; ele cria
+   sozinho a pasta de recebimento `<estado>/incoming` (`0700`) e a trava `<estado>/deploy.lock`. Uma trava que sobrou de um receptor
+   morto (por `SIGKILL`) é retirada sozinha; com o dono vivo, o deploy recusa com `E_LOCKED`.
 
 **Impressão do projeto de produção no *wrapper* de homologação (`--forbid-supabase`), agora, antes de habilitar a chave do CI (H-05) e
 do primeiro deploy de homologação.** É o que faz o receptor de homologação recusar o projeto Supabase de produção
@@ -149,9 +213,9 @@ read -rsp 'URL do Supabase de PRODUÇÃO: ' U; printf '%s' "$U" | sha256sum | cu
 read -rsp 'URL do LABORATÓRIO: ' U; printf '%s' "$U" | sha256sum | cut -c1-12; unset U             # tem de ser diferente
 ```
 
-Escreva a impressão de produção no *wrapper* de homologação, no lugar que o modelo da P9.3a indicar (`--forbid-supabase <12 hex>`),
-como root, e confira o sha256 do *wrapper* instalado. Se as duas impressões forem iguais, **pare**: a homologação estaria apontando
-para o projeto de produção.
+A impressão de produção entra no *wrapper* de homologação pelo passo 3 acima (`--forbid-supabase <12 hex>`, o marcador
+`<IMPRESSAO_SUPABASE_PRODUCAO>` do modelo), como root; confira o sha256 do *wrapper* instalado. Se as duas impressões forem iguais,
+**pare**: a homologação estaria apontando para o projeto de produção.
 
 ### H-05 Usuários, chaves e `sshd`
 

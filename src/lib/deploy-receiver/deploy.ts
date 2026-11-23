@@ -33,6 +33,8 @@ const fp12Of = (value: string): string => createHash('sha256').update(value, 'ut
 
 /** Passo 1: o pacote recebido existe com o mesmo `sha40` e o mesmo hash. Devolve o caminho e o tamanho. */
 async function stagedBundle(command: DeployCommand, config: ReceiverConfig, deps: ReceiverDeps): Promise<{ readonly file: string; readonly size: number }> {
+  const incoming = await deps.fs.lstat(nodePath.join(config.stateDir, INCOMING_DIR));
+  if (incoming === null || !incoming.isDirectory || incoming.isSymbolicLink) throw new ReceiverError('E_NOT_STAGED', null, 'no real incoming dir');
   const file = nodePath.join(config.stateDir, INCOMING_DIR, bundleFileName(command.sha40));
   const info = await deps.fs.lstat(file);
   if (info === null || !info.isFile || info.isSymbolicLink) throw new ReceiverError('E_NOT_STAGED', null, 'no staged bundle for this commit');

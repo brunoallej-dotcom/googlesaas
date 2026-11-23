@@ -3,8 +3,8 @@
 # Spec docs/specs/ci-deploy-and-seal-delivery.md §5.6 ("Instalação" e "Implementação (P9.3a)"), §5.11; instalação: RUNBOOK-DEPLOY-PELO-CI.md, H-04.
 # Só marcadores (<…>): o responsável instala uma cópia PREENCHIDA em /opt/gmn-receivers/bin/gmn-hml-deploy (root:root, 0755), aponta para ela o
 # `command=` do authorized_keys e o `ForceCommand` do sshd, e nunca versiona a cópia preenchida. Com qualquer marcador sem preencher, o wrapper
-# falha fechado (E_ARTIFACT ou E_INTERNAL). <IMPRESSAO_SUPABASE_PRODUCAO> = os 12 primeiros hex do sha256 dos bytes da URL do projeto Supabase de
-# PRODUÇÃO, sem quebra de linha (H-04): o receptor de homologação recusa esse projeto (E_HML_PRODUCTION_PROJECT). O que ele faz, a cada execução:
+# falha fechado (E_ARTIFACT ou E_INTERNAL). A impressão do --forbid-supabase = os 12 primeiros hex do sha256 dos bytes da URL do projeto Supabase
+# de PRODUÇÃO, sem quebra de linha (H-04): o receptor de homologação recusa esse projeto (E_HML_PRODUCTION_PROJECT). O que ele faz, a cada execução:
 #  1. confere o sha256 do artefato instalado contra o fixado aqui (o de deploy/hostinger/receivers.sha256 no commit); diferente ou ilegível ⇒
 #     `ERRO E_ARTIFACT` no stderr e saída 17, sem rodar o Node;
 #  2. limpa o ambiente (`env -i`) e repassa só o PATH fixo e o comando pedido pelo CI (SSH_ORIGINAL_COMMAND, que o receptor confere pela
