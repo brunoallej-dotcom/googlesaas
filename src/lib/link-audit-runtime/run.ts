@@ -10,7 +10,7 @@ import type { SiteCheckOutcome } from '../link-audit/collector/site-access';
 import type { SiteProvider } from '../link-audit/collector/types';
 import type { FsOps } from '../link-audit/snapshot-store';
 import { containsSecret } from '../link-audit-evidence/secrets';
-import { checkStorage, readCapture, writeCapture, writeReport, writeSiteObservation } from '../link-audit-evidence/store';
+import { checkStorage, readCapture, reserveAuditMode, writeCapture, writeReport, writeSiteObservation } from '../link-audit-evidence/store';
 import { AUDIT_ID_PATTERN, captureName } from '../link-audit-evidence/types';
 import type { ProviderCaptureInfo } from './serper-maps-provider';
 import { buildExpectedIdentity } from '../link-audit/identifiers';
@@ -289,6 +289,9 @@ async function prepareEvidence(
   }
   const storage = await checkStorage(evidence.baseDir, { ...storageOptions, auditId: auditIdCandidate, simulated });
   if (!storage.ok) return { ok: false, code: 'STORAGE_NOT_READY', reason: `Armazenamento de evidências indisponível: ${storage.issues.join(' ')} ${untouched}` };
+  // W5.2b (revisão do PR #62): o MODO da auditoria é reservado com exclusividade AQUI, antes de consumir a autorização e de pagar
+  const reserved = await reserveAuditMode(evidence.baseDir, auditIdCandidate, simulated ? 'SIMULATED' : 'LIVE', storageOptions);
+  if (!reserved.ok) return { ok: false, code: 'STORAGE_NOT_READY', reason: `${reserved.issues.join(' ')} ${untouched}` };
   return { ok: true, auditId: auditIdCandidate, storageOptions };
 }
 
@@ -315,10 +318,41 @@ function captureHook(params: { base: string; auditId: string; request: RunReques
     if (written.ok) {
       live.captureNumber = written.value.captureNumber;
       live.files.capture = written.value.filePath;
+    } else if (!simulated && written.code === 'MODE_CONFLICT') {
+      live.errors.push(await rescuePaidResponse(base, auditId, request, info, storageOptions));
     } else {
       live.errors.push(`${simulated ? 'A resposta SIMULADA' : 'A resposta paga'} NÃO foi persistida (${written.code}): ${written.issues.join(' ')}`);
     }
   };
+}
+
+/** Sufixo da auditoria de RESGATE da resposta paga (W5.2b, spec do P1 §5.7): a auditoria pedida estava reservada como SIMULADA na hora de gravar. */
+export const RESCUE_AUDIT_SUFFIX = '-resgate-live';
+const MAX_AUDIT_ID_LENGTH = 64;
+export const rescueAuditIdOf = (auditId: string): string => `${auditId.slice(0, MAX_AUDIT_ID_LENGTH - RESCUE_AUDIT_SUFFIX.length)}${RESCUE_AUDIT_SUFFIX}`;
+
+/**
+ * A resposta PAGA nunca é descartada (W5.2b, revisão do PR #62): o pré-voo reserva o modo antes de pagar, mas se ainda assim a auditoria aparecer
+ * reservada como SIMULADA na gravação (corrida ou adulteração do marcador), a resposta vai para a auditoria de resgate `<auditId>-resgate-live`
+ * (modo LIVE), com o MESMO conteúdo. Nada entra na auditoria simulada, nenhum relatório é gerado e o caso sai como erro (código 5 no CLI).
+ */
+async function rescuePaidResponse(base: string, auditId: string, request: RunRequest, info: ProviderCaptureInfo, storageOptions: StorageOptionsOf): Promise<string> {
+  const rescueId = rescueAuditIdOf(auditId);
+  const rescued = await writeCapture(
+    base,
+    {
+      auditId: rescueId,
+      collectedAt: info.capturedAt,
+      request: { url: info.url, body: info.requestBody },
+      response: { httpStatus: info.httpStatus, attempts: info.attempts, bodyText: info.bodyText, failure: info.failure },
+      input: { snapshotId: request.input.snapshotId, originalLink: sanitizeUrl(request.input.link.originalLink), identity: { ...(JSON.parse(JSON.stringify(request.input.identity)) as Record<string, unknown>), originalLink: sanitizeUrl(request.input.identity.originalLink) } },
+    },
+    storageOptions,
+  );
+  if (rescued.ok) {
+    return `A resposta paga NÃO foi gravada na auditoria ${auditId}, que estava reservada como SIMULADA na hora de gravar (corrida ou marcador alterado): foi PRESERVADA na auditoria de resgate ${rescueId} (captura ${rescued.value.captureNumber}). Nenhum relatório foi gerado; trate o caso antes de qualquer atestação.`;
+  }
+  return `A resposta paga NÃO foi persistida: a auditoria ${auditId} estava reservada como SIMULADA e a auditoria de resgate ${rescueId} também recusou (${rescued.code}): ${rescued.issues.join(' ')}`;
 }
 
 /** Grava a observação do site e o relatório (mesmo `buildReportFromCapture` do replay offline) depois da captura. */

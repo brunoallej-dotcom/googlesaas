@@ -96,7 +96,7 @@ test('falha ao gravar a resposta paga é EXPLÍCITA (nunca silenciosa) e o armaz
   const brokenAfterPreflight = faulty({
     writeExclusive: async (...args) => {
       writes += 1;
-      if (writes > 1) throw errno('EIO', 'falha de disco'); // 1ª = sonda do pré-voo; depois, falha
+      if (writes > 2) throw errno('EIO', 'falha de disco'); // 1ª = sonda do pré-voo; 2ª = reserva do modo da auditoria (W5.2b); depois, falha
       return (await import('../src/lib/link-audit/snapshot-store')).nodeFsOps.writeExclusive(...args);
     },
   });
@@ -107,7 +107,7 @@ test('falha ao gravar a resposta paga é EXPLÍCITA (nunca silenciosa) e o armaz
   assert.equal(r.persisted?.captureNumber, null);
   assert.equal(r.persisted?.storedReport, null);
   const afterFailure = writes;
-  assert.ok(afterFailure <= 3, 'poucas tentativas de escrita e nenhuma depois do erro fatal');
+  assert.ok(afterFailure <= 4, 'poucas tentativas de escrita e nenhuma depois do erro fatal');
   clearStorageFatal(base);
 });
 
@@ -146,7 +146,8 @@ test('CLI LIVE: exige --evidence-dir, imprime o relatório armazenado e sai com 
   fs.rmSync(path.join(usedDir, `${AUDIT_ID}.json`));
   const ev2 = tmpDir();
   let writes = 0;
-  const failing = faulty({ writeExclusive: async (...args) => { writes += 1; if (writes > 1) throw errno('ENOSPC', 'sem espaço'); return (await import('../src/lib/link-audit/snapshot-store')).nodeFsOps.writeExclusive(...args); } });
+  // 1ª escrita = sonda do pré-voo; 2ª = reserva do modo da auditoria (W5.2b, antes de pagar); depois, falha
+  const failing = faulty({ writeExclusive: async (...args) => { writes += 1; if (writes > 2) throw errno('ENOSPC', 'sem espaço'); return (await import('../src/lib/link-audit/snapshot-store')).nodeFsOps.writeExclusive(...args); } });
   const bad = mk(failing);
   assert.equal(await runCli([...BASE, ...LIVE, '--evidence-dir', ev2], bad.deps), 5);
   assert.match(bad.err.join('\n'), /ATENÇÃO: A resposta paga NÃO foi persistida/);

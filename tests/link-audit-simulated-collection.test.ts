@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import dns from 'node:dns';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -9,10 +10,12 @@ import test, { mock } from 'node:test';
 import { runCli as runCollectorCli } from '../scripts/link-audit-collect';
 import { canonicalJson, sha256Hex } from '../src/lib/link-audit/canonical';
 import { buildReportFromCapture } from '../src/lib/link-audit/collector/capture-report';
-import { checkStorage, readCapture, writeCapture } from '../src/lib/link-audit-evidence/store';
+import { checkStorage, readCapture, reserveAuditMode, writeCapture } from '../src/lib/link-audit-evidence/store';
 import { captureSchema } from '../src/lib/link-audit-evidence/types';
 import { parseGoogleMapsLink } from '../src/lib/link-audit/maps-link';
-import { runLinkAuditCollection } from '../src/lib/link-audit-runtime/run';
+import { rescueAuditIdOf, runLinkAuditCollection } from '../src/lib/link-audit-runtime/run';
+import { createMemoryUsedStore } from '../src/lib/link-audit-runtime/used-authorizations';
+import { identifiersFingerprint, type ConsumptionAuthorization } from '../src/lib/link-audit/collector/budget';
 import {
   createSimulatedMapsProvider,
   isSyntheticIdentity,
@@ -24,7 +27,7 @@ import {
   simulatedCollectionInput,
   simulatedMapsBody,
 } from '../src/lib/link-audit-runtime/simulated-provider';
-import { inputFor, T_NOW } from './helpers/link-audit-collect-fixtures';
+import { CID, clock, FID, inputFor, NAMED, PLACE, T_NOW } from './helpers/link-audit-collect-fixtures';
 import { AUDIT, bodyText, captureInput, COLLECTED_AT, errno, faulty, identity, registerCleanup, tmpDir } from './helpers/link-audit-evidence-fixtures';
 import { nodeFsOps } from '../src/lib/link-audit/snapshot-store';
 import { collectSimulated, HOMOLOGATION_ENV, SIM_AUDIT_ID, simArgs, simHarness } from './helpers/link-audit-simulated-fixtures';
@@ -82,8 +85,8 @@ test('marca (2b): captura simulada e captura real NÃO se misturam na mesma audi
   assert.ok((await writeCapture(realFirst, captureInput())).ok);
   const mixed = await writeCapture(realFirst, { ...captureInput({ body: bodyText({ fixtureIndex: 2 }) }), simulated: true });
   assert.ok(!mixed.ok);
-  assert.equal(mixed.code, 'INVALID');
-  assert.match(mixed.issues.join(' '), /simulad/i);
+  assert.equal(mixed.code, 'MODE_CONFLICT', 'a reserva de modo (LIVE) recusa a simulada');
+  assert.match(mixed.issues.join(' '), /reservada como LIVE/);
   assert.ok(!fs.existsSync(path.join(realFirst, AUDIT, 'c0002.capture.json')), 'nada gravado');
   const preflightSimulated = await checkStorage(realFirst, { auditId: AUDIT, simulated: true });
   assert.ok(!preflightSimulated.ok && preflightSimulated.code === 'STORAGE_NOT_READY');
@@ -95,9 +98,11 @@ test('marca (2b): captura simulada e captura real NÃO se misturam na mesma audi
   assert.ok(!preflightReal.ok && preflightReal.code === 'STORAGE_NOT_READY', 'a coleta real (paga) é recusada ANTES de pagar numa auditoria simulada');
   assert.match(preflightReal.issues.join(' '), /SIMULADA/);
   assert.ok((await checkStorage(simulatedFirst, { auditId: AUDIT, simulated: true })).ok, 'nova captura simulada numa auditoria simulada segue');
-  // depois de pago, a resposta real NUNCA é descartada (mesma regra do armazenamento): a gravação não a recusa; a auditoria continua marcada
-  const paid = await writeCapture(simulatedFirst, captureInput({ body: bodyText({ fixtureIndex: 3 }) }));
-  assert.ok(paid.ok, 'resposta paga preservada mesmo numa corrida com o pré-voo');
+  // revisão do PR #62 (BLOQUEADOR): a gravação também recusa a captura REAL numa auditoria reservada como SIMULADA (a resposta paga é
+  // preservada pelo runtime numa auditoria de resgate; aqui, no armazenamento, nada entra na auditoria simulada)
+  const real = await writeCapture(simulatedFirst, captureInput({ body: bodyText({ fixtureIndex: 3 }) }));
+  assert.ok(!real.ok && real.code === 'MODE_CONFLICT', JSON.stringify(real));
+  assert.ok(!fs.existsSync(path.join(simulatedFirst, AUDIT, 'c0002.capture.json')), 'nada gravado na auditoria simulada');
 });
 
 test('marca (2b): o relatório da captura simulada leva source.provider SIMULATED, source.simulated:true e a limitação explícita; o real não muda', async () => {
@@ -253,7 +258,8 @@ test('CLI (S-02): com a trava, --json imprime UM objeto com a marca e o source.c
   assert.equal(capture.value.simulated, true);
   assert.equal(collectorHash, capture.value.contentSha256);
   assert.equal((capture.value.input.identity as { name?: string }).name, 'Empresa de Ensaio');
-  assert.deepEqual(fs.readdirSync(path.join(evidence, SIM_AUDIT_ID)).sort(), ['c0001.capture.json', 'c0001.report-r0001.json']);
+  assert.deepEqual(fs.readdirSync(path.join(evidence, SIM_AUDIT_ID)).sort(), ['audit-mode.json', 'c0001.capture.json', 'c0001.report-r0001.json']);
+  assert.equal((JSON.parse(fs.readFileSync(path.join(evidence, SIM_AUDIT_ID, 'audit-mode.json'), 'utf8')) as { mode: string }).mode, 'SIMULATED', 'o modo foi reservado antes da captura');
 });
 
 test('CLI: a saída legível diz "SIMULADA — ensaio" e que nenhuma consulta foi feita', async () => {
@@ -323,6 +329,7 @@ test('origem (PR #62, item 2): o relatório SIMULADO diz que a fonte é o gerado
 test('mistura (PR #62, item 3): captura existente ILEGÍVEL (corrompida ou erro de leitura) ⇒ o pré-voo recusa nos dois sentidos, e a gravação simulada também', async () => {
   const corrupt = tmpDir('lasim-mix-');
   assert.ok((await writeCapture(corrupt, captureInput())).ok);
+  fs.rmSync(path.join(corrupt, AUDIT, 'audit-mode.json')); // auditoria anterior à reserva de modo: decide pelas capturas
   const file = path.join(corrupt, AUDIT, 'c0001.capture.json');
   fs.chmodSync(file, 0o644);
   fs.writeFileSync(file, '{ não é json');
@@ -332,10 +339,11 @@ test('mistura (PR #62, item 3): captura existente ILEGÍVEL (corrompida ou erro 
     assert.match(refused.issues.join(' '), /não pôde ser lida/);
   }
   const written = await writeCapture(corrupt, { ...captureInput({ body: bodyText({ fixtureIndex: 4 }) }), simulated: true });
-  assert.ok(!written.ok && written.code === 'INVALID', 'nunca grava a simulada ao lado de uma captura que não se lê');
+  assert.ok(!written.ok && ['INVALID', 'CORRUPT'].includes(written.code), 'nunca grava a simulada ao lado de uma captura que não se lê');
 
   const unreadable = tmpDir('lasim-mix-');
   assert.ok((await writeCapture(unreadable, captureInput())).ok);
+  fs.rmSync(path.join(unreadable, AUDIT, 'audit-mode.json'));
   const denyCapture = faulty({ readFile: async (target: string, max: number) => (target.endsWith('.capture.json') ? Promise.reject(errno('EACCES')) : nodeFsOps.readFile(target, max)) });
   const denied = await checkStorage(unreadable, { auditId: AUDIT, simulated: true, fs: denyCapture });
   assert.ok(!denied.ok && denied.code === 'STORAGE_NOT_READY');
@@ -344,6 +352,7 @@ test('mistura (PR #62, item 3): captura existente ILEGÍVEL (corrompida ou erro 
 test('mistura (PR #62, item 3): listagem da pasta da auditoria que FALHA (não ENOENT) ⇒ recusa; só a pasta comprovadamente inexistente conta como vazia', async () => {
   const base = tmpDir('lasim-mix-');
   assert.ok((await writeCapture(base, captureInput())).ok);
+  fs.rmSync(path.join(base, AUDIT, 'audit-mode.json')); // auditoria anterior à reserva de modo
   const auditDir = path.join(base, AUDIT);
   for (const code of ['EACCES', 'EIO', 'ENOTDIR']) {
     const failingList = faulty({ readdir: async (dir: string) => (path.resolve(dir) === path.resolve(auditDir) ? Promise.reject(errno(code)) : nodeFsOps.readdir(dir)) });
@@ -356,4 +365,153 @@ test('mistura (PR #62, item 3): listagem da pasta da auditoria que FALHA (não E
   // controle: a pasta da auditoria que não existe (ENOENT) é o caso normal de uma coleta nova
   assert.ok((await checkStorage(tmpDir('lasim-mix-'), { auditId: AUDIT })).ok);
   assert.ok((await checkStorage(tmpDir('lasim-mix-'), { auditId: AUDIT, simulated: true })).ok);
+});
+
+/* ------------------------------------------------------------------ revisão do PR #62 (confirmação), item 1: reserva EXCLUSIVA do modo */
+
+const modeFile = (base: string, auditId = AUDIT): string => path.join(base, auditId, 'audit-mode.json');
+const readMode = (base: string, auditId = AUDIT): string => (JSON.parse(fs.readFileSync(modeFile(base, auditId), 'utf8')) as { mode: string }).mode;
+
+test('modo (item 1): a primeira captura reserva o modo da auditoria num marcador criado com exclusividade (LIVE ou SIMULATED), conferido nos dois sentidos pela gravação e pelo pré-voo', async () => {
+  const live = tmpDir('lasim-mode-');
+  assert.ok((await writeCapture(live, captureInput())).ok);
+  assert.equal(readMode(live), 'LIVE');
+  assert.equal(fs.statSync(modeFile(live)).mode & 0o222, 0, 'marcador somente leitura (publicação exclusiva)');
+  const intoLive = await writeCapture(live, { ...captureInput({ body: bodyText({ fixtureIndex: 5 }) }), simulated: true });
+  assert.ok(!intoLive.ok && ['MODE_CONFLICT', 'INVALID'].includes(intoLive.code));
+  const simulated = tmpDir('lasim-mode-');
+  assert.ok((await writeCapture(simulated, { ...captureInput(), simulated: true })).ok);
+  assert.equal(readMode(simulated), 'SIMULATED');
+  const intoSimulated = await writeCapture(simulated, captureInput({ body: bodyText({ fixtureIndex: 6 }) }));
+  assert.ok(!intoSimulated.ok && intoSimulated.code === 'MODE_CONFLICT');
+  // só o marcador, sem captura nenhuma, já decide (reserva antes da primeira captura)
+  const reservedOnly = tmpDir('lasim-mode-');
+  assert.ok((await reserveAuditMode(reservedOnly, AUDIT, 'SIMULATED')).ok);
+  assert.equal(readMode(reservedOnly), 'SIMULATED');
+  const preLive = await checkStorage(reservedOnly, { auditId: AUDIT });
+  assert.ok(!preLive.ok && preLive.code === 'STORAGE_NOT_READY' && /reservada como SIMULADA/.test(preLive.issues.join(' ')));
+  assert.ok((await checkStorage(reservedOnly, { auditId: AUDIT, simulated: true })).ok);
+  const again = await reserveAuditMode(reservedOnly, AUDIT, 'LIVE');
+  assert.ok(!again.ok && again.code === 'MODE_CONFLICT', 'a reserva nunca é trocada');
+  assert.equal(readMode(reservedOnly), 'SIMULATED');
+  // marcador ilegível ⇒ recusa (falha fechada), nos dois sentidos
+  fs.chmodSync(modeFile(reservedOnly), 0o644);
+  fs.writeFileSync(modeFile(reservedOnly), '{ lixo');
+  for (const flag of [false, true]) assert.ok(!(await checkStorage(reservedOnly, { auditId: AUDIT, simulated: flag })).ok);
+  assert.ok(!(await writeCapture(reservedOnly, { ...captureInput(), simulated: true })).ok);
+});
+
+test('modo (item 1): reservas CONCORRENTES no mesmo processo — exatamente uma vence, nos dois sentidos', async () => {
+  for (const order of [['LIVE', 'SIMULATED'], ['SIMULATED', 'LIVE']] as const) {
+    const base = tmpDir('lasim-race-');
+    const results = await Promise.all(order.map((mode) => reserveAuditMode(base, AUDIT, mode)));
+    assert.equal(results.filter((r) => r.ok).length, 1, order.join('→'));
+    const winner = order[results.findIndex((r) => r.ok)];
+    assert.equal(readMode(base), winner);
+    const writes = await Promise.all(order.map((mode, i) => writeCapture(base, { ...captureInput({ body: bodyText({ fixtureIndex: 10 + i }) }), ...(mode === 'SIMULATED' ? { simulated: true as const } : {}) })));
+    assert.deepEqual(writes.map((w) => w.ok), order.map((mode) => mode === winner));
+  }
+});
+
+test('modo (item 1): DOIS PROCESSOS gravando ao mesmo tempo (um real, um simulado) numa auditoria nova — exatamente um grava, o outro é recusado; nos dois sentidos', async () => {
+  const child = path.join(__dirname, 'helpers', 'link-audit-simulated-mode-child.ts');
+  const register = path.join(__dirname, 'register-typescript.cjs');
+  for (const order of [['LIVE', 'SIMULATED'], ['SIMULATED', 'LIVE']] as const) {
+    for (let round = 0; round < 3; round++) {
+      const base = tmpDir('lasim-proc-');
+      const go = path.join(tmpDir('lasim-go-'), 'largada');
+      const runs = order.map((mode, i) => new Promise<{ ok: boolean; code?: string }>((resolve, reject) => {
+        execFile(process.execPath, ['--require', register, child, base, AUDIT, mode, String(20 + i), go], { timeout: 30_000, encoding: 'utf8', env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '' } as unknown as NodeJS.ProcessEnv }, (error: Error | null, stdout: string) => (error ? reject(error) : resolve(JSON.parse(stdout.trim()) as { ok: boolean; code?: string })));
+      }));
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      fs.writeFileSync(go, '');
+      const results = await Promise.all(runs);
+      assert.equal(results.filter((r) => r.ok).length, 1, `${order.join('→')} rodada ${round}: ${JSON.stringify(results)}`);
+      const loser = results.find((r) => !r.ok);
+      assert.ok(loser && ['MODE_CONFLICT', 'INVALID'].includes(loser.code ?? ''), JSON.stringify(results));
+      const captures = fs.readdirSync(path.join(base, AUDIT)).filter((name) => name.endsWith('.capture.json'));
+      assert.equal(captures.length, 1, 'uma captura só, do modo reservado');
+      const kept = JSON.parse(fs.readFileSync(path.join(base, AUDIT, captures[0] as string), 'utf8')) as { simulated?: boolean };
+      assert.equal(kept.simulated === true ? 'SIMULATED' : 'LIVE', readMode(base));
+    }
+  }
+});
+
+/* runtime: o pré-voo reserva o modo ANTES de pagar; a corrida que ainda assim chega à gravação preserva a resposta paga no resgate */
+
+const LIVE_AUDIT = 'auth-teste-0001';
+const liveAuthorization = (): ConsumptionAuthorization => ({
+  authorizationId: LIVE_AUDIT, snapshotId: 'snap-exemplo-0001', identifiersFingerprint: identifiersFingerprint({ cid: CID, featureId: FID }),
+  maxMapsCalls: 1, maxSiteHttpRequests: 8, expiresAt: '2026-10-21T13:00:00.000Z', costAcknowledged: true, operator: 'ana@empresa.com',
+});
+const PAID_AT = '2026-10-21T12:10:00.000Z';
+function liveDeps(base: string, beforeCapture: () => Promise<void> = async () => undefined) {
+  const usedStore = createMemoryUsedStore();
+  const calls = { created: 0, searches: 0 };
+  return {
+    usedStore, calls,
+    deps: {
+      now: clock, liveEnabled: true, usedStore, evidence: { baseDir: base },
+      createLiveProviders: (hooks: { onCapture: (info: never) => Promise<void> }) => {
+        calls.created += 1;
+        return {
+          maps: {
+            search: async () => {
+              calls.searches += 1;
+              await beforeCapture();
+              await hooks.onCapture({ url: 'https://google.serper.dev/maps', requestBody: { q: 'Padaria Exemplo' }, httpStatus: 200, bodyText: bodyText(), attempts: 1, failure: null, capturedAt: PAID_AT } as never);
+              return { state: 'OK' as const, value: [PLACE], fetchedAt: PAID_AT };
+            },
+          },
+        };
+      },
+    },
+  };
+}
+
+test('modo (item 1), runtime: LIVE numa auditoria reservada como SIMULADA ⇒ recusado no pré-voo, ANTES de consumir a autorização e de criar provedores', async () => {
+  const base = tmpDir('lasim-rtm-');
+  assert.ok((await reserveAuditMode(base, LIVE_AUDIT, 'SIMULATED')).ok);
+  const s = liveDeps(base);
+  const outcome = await runLinkAuditCollection({ mode: 'LIVE', input: NAMED(), authorization: liveAuthorization() }, s.deps as never);
+  assert.ok(!outcome.ok && outcome.code === 'STORAGE_NOT_READY', JSON.stringify(outcome).slice(0, 200));
+  assert.match(outcome.reason, /reservada como SIMULADA/);
+  assert.equal(s.usedStore.isUsed(LIVE_AUDIT), false, 'a autorização não foi consumida');
+  assert.equal(s.calls.created + s.calls.searches, 0, 'nada pago');
+});
+
+test('modo (item 1), runtime: SIMULATED e LIVE CONCORRENTES na mesma auditoria nova — exatamente um passa o pré-voo; o outro é recusado antes de gravar ou pagar', async () => {
+  for (let round = 0; round < 3; round++) {
+    const base = tmpDir('lasim-rtc-');
+    const s = liveDeps(base);
+    const [live, simulated] = await Promise.all([
+      runLinkAuditCollection({ mode: 'LIVE', input: NAMED(), authorization: liveAuthorization() }, s.deps as never),
+      runLinkAuditCollection({ mode: 'SIMULATED', input: simInput(), auditId: LIVE_AUDIT }, { now: simClock, evidence: { baseDir: base }, homologation: true }),
+    ]);
+    assert.equal([live, simulated].filter((outcome) => outcome.ok).length, 1, `rodada ${round}`);
+    const loser = [live, simulated].find((outcome) => !outcome.ok);
+    assert.ok(loser && !loser.ok && loser.code === 'STORAGE_NOT_READY' && loser.persisted === undefined);
+    if (!live.ok) assert.equal(s.calls.searches, 0, 'o LIVE perdedor não pagou');
+    assert.equal(fs.readdirSync(path.join(base, LIVE_AUDIT)).filter((name) => name.endsWith('.capture.json')).length, 1);
+  }
+});
+
+test('modo (item 1), runtime: se a reserva muda entre o pré-voo e a gravação (corrida ou adulteração), a resposta PAGA vai para a auditoria de resgate, nada entra na simulada, e o caso sai como erro', async () => {
+  const base = tmpDir('lasim-rtr-');
+  const s = liveDeps(base, async () => {
+    // adulteração/corrida simulada: o marcador LIVE reservado no pré-voo vira SIMULATED antes de a resposta ser gravada
+    fs.rmSync(path.join(base, LIVE_AUDIT, 'audit-mode.json'));
+    assert.ok((await reserveAuditMode(base, LIVE_AUDIT, 'SIMULATED')).ok);
+  });
+  const outcome = await runLinkAuditCollection({ mode: 'LIVE', input: NAMED(), authorization: liveAuthorization() }, s.deps as never);
+  const persisted = 'persisted' in outcome ? outcome.persisted : undefined;
+  assert.ok(persisted && persisted.errors.some((error: string) => /resgate/.test(error) && /PRESERVADA/.test(error)), JSON.stringify(outcome).slice(0, 400));
+  assert.equal(persisted.captureNumber, null, 'nada na auditoria pedida');
+  assert.equal(fs.readdirSync(path.join(base, LIVE_AUDIT)).filter((name) => name.endsWith('.capture.json')).length, 0);
+  const rescueId = rescueAuditIdOf(LIVE_AUDIT);
+  const rescued = await readCapture(base, rescueId, 1);
+  assert.ok(rescued.ok, 'a resposta paga está preservada no resgate');
+  assert.equal(rescued.value.response.bodyText, bodyText(), 'o MESMO corpo pago');
+  assert.ok(!rescued.value.simulated);
+  assert.equal(readMode(base, rescueId), 'LIVE');
 });
