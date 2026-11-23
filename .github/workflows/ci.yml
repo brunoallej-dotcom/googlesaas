@@ -92,6 +92,45 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+  # P9.3a: artefatos únicos dos receptores do host (spec docs/specs/ci-deploy-and-seal-delivery.md §5.6 "Instalação"; P9.3b acrescenta o de
+  # manifestos). Mesmo padrão do sign-artifact: recompila com o esbuild travado (opções fixas e guardas sobre a saída), confere o SHA-256
+  # contra deploy/hostinger/receivers.sha256 (build reprodutível) e roda os testes do artefato em processo real (env -i, node absoluto,
+  # docker/tar/gzip FALSOS no PATH, os dois modelos de wrapper). DEPLOY_RECEIVER_ARTIFACT_STRICT=1: nada pode ser pulado. Sem segredo, sem
+  # Docker real. O upload é só para conferência: o responsável instala no host o que passou no sha256sum -c do commit; o CI nunca atualiza
+  # receptor.
+  receivers-artifact:
+    name: receivers artifact (build, hash)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: '22', cache: 'npm' }
+      - name: Install
+        run: npm ci
+      - name: Build dos artefatos (esbuild travado, opções fixas, guardas sobre a saída)
+        run: npm run deploy:receivers-artifact -- --out "$RUNNER_TEMP/receivers-artifact"
+      - name: Hash recompilado igual ao versionado
+        run: cd "$RUNNER_TEMP/receivers-artifact" && sha256sum -c --strict "$GITHUB_WORKSPACE/deploy/hostinger/receivers.sha256"
+      - name: Artefato em processo real (env -i, docker/tar/gzip falsos, wrappers)
+        env:
+          DEPLOY_RECEIVER_ARTIFACT_STRICT: '1'
+        run: node --require ./tests/register-typescript.cjs --test tests/deploy-receiver-artifact.test.ts
+      - name: Junta o hash versionado aos artefatos
+        run: cp deploy/hostinger/receivers.sha256 "$RUNNER_TEMP/receivers-artifact/"
+      - name: Upload dos artefatos e do hash versionado
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gmn-receivers-artifact
+          path: |
+            ${{ runner.temp }}/receivers-artifact/gmn-deploy-receiver.cjs
+            ${{ runner.temp }}/receivers-artifact/receivers.sha256
+          if-no-files-found: error
+          retention-days: 90
+
   # P9.2: verificação dos manifestos, fechos e listas de confiança ANTES do merge (spec docs/specs/ci-deploy-and-seal-delivery.md
   # §5.4, S-01 a S-14). Em todo pull_request e push na main, sem filtro de caminho (check obrigatório). Sem segredo; checkout sem
   # credencial e com o histórico completo. O código que verifica (preparo, dependências e comando) vem da revisão CONFIÁVEL, a base
