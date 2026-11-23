@@ -10,6 +10,15 @@ fail() {
   exit 78
 }
 
+# 0) Homologação (P9.4; spec do deploy pelo CI §5.11): com a trava ligada, a chave do Serper NUNCA é carregada. A trava só existe na
+#    sobreposição stack-hml.yml (produção nunca a declara: testes e receptor de deploy). A sobreposição não consegue esvaziar
+#    SERPER_API_KEY_FILE (a fusão de dois -c do Docker ignora valor vazio), então a regra fica aqui, antes da carga dos segredos.
+#    Só LÊ a trava; nada aqui a liga.
+if [ "${GMN_LINK_AUDIT_HOMOLOGATION:-}" = "1" ]; then
+  unset SERPER_API_KEY SERPER_API_KEY_FILE
+  echo "[gmn-entrypoint] homologação: chave do Serper não carregada" >&2
+fi
+
 # 1) Segredos por arquivo (lista fixa: nada de varrer o ambiente). Os da Fase 6 só são entregues ao web e NÃO são exigidos aqui:
 #    sem eles a aplicação já falha fechada (503 / NOT_CONFIGURED). As listas *_RETIRED_KEYS só existem durante uma rotação.
 #    Guarda externa (G1.b.2a): credencial, CA (PEM de várias linhas) e chave do pseudônimo, lidas só pelo módulo do livro.

@@ -1,0 +1,64 @@
+# Sobreposição de HOMOLOGAÇÃO da stack da GMN (stack gmn-hml; spec docs/specs/ci-deploy-and-seal-delivery.md §5.11; D-G0-12).
+# Só o receptor de deploy do ambiente `homologacao` a usa, depois da aprovação no workflow .github/workflows/deploy.yml:
+#   docker stack deploy --resolve-image never -c stack.yml -c stack-hml.yml gmn-hml
+# Instalada pelo responsável em /opt/gmn-hml/ a partir do commit (o receptor confere o sha256). Produção NUNCA a usa.
+#
+# Só acrescenta o permitido (tests/deploy-config.test.ts, P9-H02 e P9-H09): a trava de homologação no web, o Worker em 0 réplicas e os
+# nomes gmn-hml_* dos secrets. Nenhuma porta, bind, rede ou imagem nova. O resto (pastas sob /srv/gmn-hml/, GMN_TRAEFIK_NAME=gmn-hml,
+# GMN_HOST do domínio de homologação, laboratório Supabase) vem do arquivo de variáveis de homologação, conferido pelo receptor.
+#
+# Serper (decisão do manager, 23/11/2026): a fusão de dois `-c` do Docker NÃO sobrescreve uma variável com valor vazio (conferido com
+# `docker stack config` do Docker CLI 29.10, sem rede), então esta sobreposição não mexe em SERPER_API_KEY_FILE. A regra fica no código:
+# com GMN_LINK_AUDIT_HOMOLOGATION=1, o docker-entrypoint.sh apaga SERPER_API_KEY e SERPER_API_KEY_FILE antes de carregar os segredos e
+# nunca carrega a chave. O Worker fica em 0 réplicas (sem a trava, ele não roda). O secret gmn-hml_serper_api_key continua tendo de
+# existir (a lista de secrets do serviço não se remove por sobreposição) e guarda um texto fixo NÃO secreto: segunda barreira.
+# Secrets de topo: `external: true` repetido junto do `name:` de propósito, para o secret continuar externo mesmo se o Docker trocar a
+# entrada inteira em vez de fundir os campos. Conferido no mesmo `docker stack config` local: os 12 nomes gmn-hml_*, com o `target`
+# gmn_* mantido; no host, o responsável confere de novo (P9-H07). `replicas: 0` do Worker também vence a fusão.
+
+services:
+  gmn-web:
+    environment:
+      GMN_LINK_AUDIT_HOMOLOGATION: "1"
+
+  gmn-worker:
+    deploy:
+      replicas: 0
+
+secrets:
+  gmn_supabase_service_role:
+    external: true
+    name: gmn-hml_supabase_service_role
+  gmn_supabase_anon:
+    external: true
+    name: gmn-hml_supabase_anon
+  gmn_serper_api_key:
+    external: true
+    name: gmn-hml_serper_api_key
+  gmn_redis_url:
+    external: true
+    name: gmn-hml_redis_url
+  gmn_redis_password:
+    external: true
+    name: gmn-hml_redis_password
+  gmn_redis_conf:
+    external: true
+    name: gmn-hml_redis_conf
+  gmn_link_audit_origin_key:
+    external: true
+    name: gmn-hml_link_audit_origin_key
+  gmn_link_audit_ledger_key:
+    external: true
+    name: gmn-hml_link_audit_ledger_key
+  gmn_link_audit_log_key:
+    external: true
+    name: gmn-hml_link_audit_log_key
+  gmn_link_audit_guard_db_url:
+    external: true
+    name: gmn-hml_link_audit_guard_db_url
+  gmn_link_audit_guard_db_ca:
+    external: true
+    name: gmn-hml_link_audit_guard_db_ca
+  gmn_link_audit_guard_key:
+    external: true
+    name: gmn-hml_link_audit_guard_key

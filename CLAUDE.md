@@ -35,8 +35,8 @@ Living project memory — status, waves, hard rules — is in `NOTES.md`; read i
 - Isolated run (no external network, empty env): `scripts/run-isolated.sh <command>` — use it for tests/build
 - Diagnostics (no cost, read-only): `npm run db:check`, `npm run validate:recovery`, `npm run rls:probe`
 - Coverage: not configured
-- Deploy staging: not defined
-- Deploy prod: **CI only**. Local production deploys are forbidden; `deploy/hostinger/` holds the runbooks.
+- Deploy staging: `.github/workflows/deploy.yml`, manual dispatch on `main`, environment `homologacao` (owner approval; stack `gmn-hml` with overlay `deploy/hostinger/stack-hml.yml`). Owner runbook: `deploy/hostinger/RUNBOOK-DEPLOY-PELO-CI.md`
+- Deploy prod: **CI only**, the same `.github/workflows/deploy.yml`, environment `producao` (owner approval). Local production deploys are forbidden; `deploy/hostinger/` holds the runbooks.
 
 ## Folder structure
 
