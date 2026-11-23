@@ -4,7 +4,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { createEvidenceReader, toAuditDetailDto, toListItem, type AuditView } from '../src/lib/link-audit-evidence';
+import { deriveCidFromFeatureId } from '../src/lib/link-audit/identifiers';
 import { bodyText, registerCleanup, SENTINEL, tmpDir, writeFull } from './helpers/link-audit-evidence-fixtures';
+import { AUD001_AUDIT, AUD001_BASE, AUD001_DIR, aud001CapturePresent, readAud001Json } from './helpers/link-audit-aud001-real-capture';
 
 registerCleanup();
 const actor = { email: 'ana@empresa.com' };
@@ -71,34 +73,50 @@ test('DTO com visão hostil (tipos errados, textos enormes, listas gigantes) nã
 });
 
 /*
- * A captura REAL da TUVAPLAST (primeira consulta LIVE), lida somente para leitura. O caminho pode ser trocado com
- * GMN_TEST_TUVAPLAST_BASE; se a pasta não existir nesta máquina, o teste é ignorado.
+ * A captura REAL da AUD-001 (primeira consulta LIVE), lida somente para leitura. A pasta é localizada só por variáveis de
+ * ambiente (ver tests/helpers/link-audit-aud001-real-capture.ts); sem ela nesta máquina, o teste é ignorado. O repositório
+ * é público: nenhum dado da empresa fica escrito aqui. O que a interface exibirá é conferido contra os próprios arquivos da
+ * captura (corpo bruto do provedor e relatório) e contra a coerência CID ↔ FID, em vez de valores reais fixados no código.
  */
-const BASE = process.env.GMN_TEST_TUVAPLAST_BASE ?? '/mnt/d/gmn-evidencias-privadas/link-audit';
-const AUDIT = 'tuvaplast-20261022-maps01';
-const present = fs.existsSync(path.join(BASE, AUDIT, 'MANIFEST.json'));
+const BASE = AUD001_BASE;
+const AUDIT = AUD001_AUDIT;
+const present = aud001CapturePresent();
 const snapshot = (): Record<string, string> =>
-  Object.fromEntries(fs.readdirSync(path.join(BASE, AUDIT)).sort().map((n) => [n, `${crypto.createHash('sha256').update(fs.readFileSync(path.join(BASE, AUDIT, n))).digest('hex')}:${fs.statSync(path.join(BASE, AUDIT, n)).mtimeMs}`]));
+  Object.fromEntries(fs.readdirSync(AUD001_DIR).sort().map((n) => [n, `${crypto.createHash('sha256').update(fs.readFileSync(path.join(AUD001_DIR, n))).digest('hex')}:${fs.statSync(path.join(AUD001_DIR, n)).mtimeMs}`]));
 
-test('TUVAPLAST real: o que a interface exibirá (CID, HTTP 200, nota 5,0, 49 avaliações, 8 verificadas, 11 não verificadas), sem modificar a captura', { skip: !present && 'pasta da captura real ausente nesta máquina' }, async () => {
+type RawReport = {
+  identity: { operatorProvided: { name: string; city: string; stateCode: string } };
+  providerResult: { latitude: number; longitude: number };
+  data: { googleMaps: { name: string; address: string; phone: string; website: string; category: string; secondaryCategories: string[]; rating: number; ratingCount: number } };
+};
+
+test('AUD-001 real: o que a interface exibirá (CID, HTTP 200, nota e avaliações, 8 verificadas, 11 não verificadas), sem modificar a captura', { skip: !present && 'pasta da captura real ausente nesta máquina' }, async () => {
   const before = snapshot();
+  const place = readAud001Json<{ places: Array<{ cid: string; fid: string }> }>('serper-body.json').places[0]!;
+  const report = readAud001Json<RawReport>('report.json');
+  const given = report.identity.operatorProvided;
+  const maps = report.data.googleMaps;
   const reader = createEvidenceReader({ baseDir: BASE, authorize: allow });
   const item = toListItem((await reader.listAudits(actor)).find((a) => a.auditId === AUDIT)!);
-  assert.deepEqual([item.companyName, item.city, item.stateCode, item.confirmedCid, item.collectedAt, item.integrity.status], ['TUVAPLAST COMÉRCIO', 'Mogi Guaçu', 'SP', '4193491131727734142', '2026-10-22T12:54:48.079Z', 'OK']);
+  assert.deepEqual([item.companyName, item.city, item.stateCode, item.confirmedCid, item.collectedAt, item.integrity.status], [given.name, given.city, 'SP', place.cid, '2026-10-22T12:54:48.079Z', 'OK']);
   const dto = toAuditDetailDto((await reader.getAudit(actor, AUDIT))!);
   assert.deepEqual([dto.source.httpStatus, dto.source.httpAttempts, dto.source.creditsReportedByApi, dto.source.resultCount], [200, 1, 3, 1]);
-  assert.deepEqual([dto.establishment?.rating, dto.establishment?.ratingCount], [5, 49]);
-  assert.equal(dto.establishment?.name, 'TUVAPLAST COMERCIO');
-  assert.equal(dto.establishment?.address, 'Rua Pinhal, 371 - Jardim Santo Antonio, Mogi Guaçu - SP, 13847-176, Brasil');
-  assert.equal(dto.establishment?.phone, '+55 19 99836-1197');
-  assert.equal(dto.establishment?.website, 'https://www.tuvaplast.com.br/');
-  assert.equal(dto.establishment?.category, 'Fabricante de brinquedos');
-  assert.deepEqual(dto.establishment?.secondaryCategories, ['Loja de Brinquedos']);
+  assert.ok(maps.ratingCount >= 5, 'nota elegível (≥ 5 avaliações)');
+  assert.deepEqual([dto.establishment?.rating, dto.establishment?.ratingCount], [maps.rating, maps.ratingCount]);
+  assert.ok(maps.name.length > 0 && maps.address.length > 0 && maps.phone.length > 0 && maps.category.length > 0);
+  assert.deepEqual(
+    [dto.establishment?.name, dto.establishment?.address, dto.establishment?.phone, dto.establishment?.category, dto.establishment?.secondaryCategories],
+    [maps.name, maps.address, maps.phone, maps.category, maps.secondaryCategories.slice(0, 10)],
+  );
+  const site = new URL(dto.establishment?.website ?? '');
+  assert.deepEqual([site.protocol, site.host, site.pathname, site.search, site.hash], ['https:', new URL(maps.website).host, '/', '', ''], 'website só como esquema + host');
   assert.equal(dto.establishment?.openingHours.length, 7);
-  assert.deepEqual(dto.location, { latitude: -22.3471971, longitude: -46.9463052 });
+  assert.deepEqual(dto.location, { latitude: report.providerResult.latitude, longitude: report.providerResult.longitude });
   assert.deepEqual([dto.evidences.verified.length, dto.evidences.unverified.length, dto.evidences.other.length], [8, 11, 0]);
-  assert.deepEqual(dto.identifiers.confirmed.map((c) => [c.type, c.value, c.expectedOrigin]), [['cid', '4193491131727734142', 'DERIVED_FROM_FID']]);
-  assert.equal(dto.identifiers.returnedByProvider?.featureId, '0x94c8579e462460e3:0x3a3245f75b61e57e');
+  const fromLink = deriveCidFromFeatureId(dto.identifiers.fromLink.featureId);
+  assert.ok(fromLink.ok && fromLink.cid === place.cid, 'o CID derivado do FID do link é o devolvido pelo provedor');
+  assert.deepEqual(dto.identifiers.confirmed.map((c) => [c.type, c.value, c.expectedOrigin]), [['cid', place.cid, 'DERIVED_FROM_FID']]);
+  assert.equal(dto.identifiers.returnedByProvider?.featureId, place.fid);
   assert.equal(dto.site?.accessClass, 'RESTRICTED_RESPONSE_UNSPECIFIED');
   assert.deepEqual(dto.versions[0]?.reportRevisions.map((r) => [r.revision, r.superseded]), [[1, true], [2, false]]);
   assert.equal(dto.scoring, 'NOT_AVAILABLE_PENDING_D3');

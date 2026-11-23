@@ -238,7 +238,7 @@ test('guias: permissões de /srv/gmn, backup fora do original e hash agregado in
   assert.ok(!/(?<!LC_ALL=C )sort -z/.test(migration), 'sempre LC_ALL=C sort -z');
   assert.match(migration, /--rsync-path='sudo rsync'/);
   const backup = read('PLANO-DE-BACKUP-E-RESTAURACAO.md');
-  assert.ok(!/\/mnt\/d\/gmn-evidencias-privadas\/link-audit\/\s*$/m.test(backup), 'o backup nunca grava no diretório do original');
+  assert.ok(!/(gmn-evidencias-privadas|<EVIDENCIAS_PRIVADAS(_WSL)?>)[\\/]link-audit[\\/]\s*$/m.test(backup), 'o backup nunca grava no diretório do original');
   assert.match(backup, /\/mnt\/d\/gmn-backups\/vps\/evidence\//);
 });
 

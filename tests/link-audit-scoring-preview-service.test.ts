@@ -338,7 +338,7 @@ test('a evidência muda durante a leitura: troca por outra base válida ⇒ rel�
 
 /* ---------------------------------------------------------------- 7. identidade e alias */
 test('auditId com "_": o motor recebe o alias, a resposta mostra o id REAL e o alias; todas as leituras usam SÓ o id real', async () => {
-  const w = await world({ auditId: 'tuvaplast_20261022_maps01' });
+  const w = await world({ auditId: 'aud_001_autorizacao_01' });
   const seen: string[] = [];
   const spyBasis = createScoringBasisReader({ baseDir: w.evidenceDir, authorize: () => true });
   const payload = ok(
@@ -347,10 +347,10 @@ test('auditId com "_": o motor recebe o alias, a resposta mostra o id REAL e o a
       decisions: { list: (actor: { email: string }, id: string) => (seen.push(id), w.raw.list(actor, id)) } as never,
     }).preview(ANA, w.auditId),
   );
-  assert.equal(payload.auditId, 'tuvaplast_20261022_maps01');
-  assert.match(payload.scoringAuditId ?? '', /^tuvaplast-20261022-maps01-ux[0-9a-f]{32}$/);
+  assert.equal(payload.auditId, 'aud_001_autorizacao_01');
+  assert.match(payload.scoringAuditId ?? '', /^aud-001-autorizacao-01-ux[0-9a-f]{32}$/);
   assert.deepEqual(payload.auditIdAlias, { applied: true, rule: 'lumos-audit-id-alias-v1', reason: 'CONTAINS_UNDERSCORE' });
-  assert.deepEqual([...new Set(seen)], ['tuvaplast_20261022_maps01'], 'o alias nunca localiza dados');
+  assert.deepEqual([...new Set(seen)], ['aud_001_autorizacao_01'], 'o alias nunca localiza dados');
   assert.equal(seen.length, 4);
   assert.ok(ok(await previewOver(await world({ auditId: 'auditoria-teste-0001' })).preview(ANA, 'auditoria-teste-0001')).auditIdAlias?.applied === false);
 });

@@ -11,6 +11,7 @@ import { parseScoringInput } from '../src/lib/link-audit/scoring/input';
 import { ALL_KIND_EXAMPLES, ANA, BIA, clock, entryPath, hashTree, must, rec, registerCleanup, tmpDir, withAutoHead, world } from './helpers/link-audit-decisions-fixtures';
 import { evidence, richInput, run, scoreAudit, sub } from './helpers/link-audit-scoring-fixtures';
 import { TEST_ORIGIN } from './helpers/link-audit-origin-fixtures';
+import { AUD001_AUDIT, AUD001_BASE, aud001CapturePresent } from './helpers/link-audit-aud001-real-capture';
 
 registerCleanup();
 
@@ -477,11 +478,12 @@ test('COMPATIBILIDADE COM O MOTOR 6A: as decisões vigentes alimentam o scoreAud
 });
 
 /* ---------------------------------------------------------------------- dados reais (somente leitura) */
-const REAL_BASE = process.env.GMN_TEST_TUVAPLAST_BASE ?? '/mnt/d/gmn-evidencias-privadas/link-audit';
-const REAL_AUDIT = 'tuvaplast-20261022-maps01';
-const realPresent = fs.existsSync(path.join(REAL_BASE, REAL_AUDIT, 'MANIFEST.json'));
+/* Localização só por variáveis de ambiente (tests/helpers/link-audit-aud001-real-capture.ts); sem a pasta, o teste é ignorado. */
+const REAL_BASE = AUD001_BASE;
+const REAL_AUDIT = AUD001_AUDIT;
+const realPresent = aud001CapturePresent();
 
-test('layout LEGADO real (TUVAPLAST), SOMENTE LEITURA: os identificadores capture:c0001 e report:c0001-r0002 existem de verdade; nada é alterado', { skip: !realPresent && 'captura real ausente nesta máquina' }, async () => {
+test('layout LEGADO real (AUD-001), SOMENTE LEITURA: os identificadores capture:c0001 e report:c0001-r0002 existem de verdade; nada é alterado', { skip: !realPresent && 'captura real ausente nesta máquina' }, async () => {
   const before = hashTree(path.join(REAL_BASE, REAL_AUDIT));
   const reader = createEvidenceReader({ baseDir: REAL_BASE, authorize: (a) => a.email === ANA.email });
   const decisionsDir = tmpDir('lad-real-');

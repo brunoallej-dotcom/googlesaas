@@ -217,5 +217,5 @@ test('formatação: data de Brasília fixa, nota com vírgula, plural e valores 
   assert.equal(pluralize(1, 'versão', 'versões'), '1 versão');
   assert.equal(pluralize(2, 'versão', 'versões'), '2 versões');
   assert.equal(placeLine(null, null), '');
-  assert.equal(placeLine('Mogi Guaçu', 'SP'), 'Mogi Guaçu/SP');
+  assert.equal(placeLine('Cidade Fictícia Açu', 'SP'), 'Cidade Fictícia Açu/SP');
 });

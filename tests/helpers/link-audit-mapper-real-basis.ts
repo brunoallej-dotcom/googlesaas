@@ -7,7 +7,7 @@ import { writeCapture, writeReport } from '../../src/lib/link-audit-evidence/sto
 import { CID, clock, FID, LINK, PLACE_ID, T_NOW } from './link-audit-collect-fixtures';
 import { AUDIT, bodyText, captureInput, tmpDir, writeFull } from './link-audit-evidence-fixtures';
 
-/* Dados 100% FICTÍCIOS. As pastas são criadas em diretórios temporários; a pasta real da TUVAPLAST nunca é tocada. */
+/* Dados 100% FICTÍCIOS. As pastas são criadas em diretórios temporários; a pasta real da AUD-001 nunca é tocada. */
 export const OPERATOR = { email: 'ana@empresa.com' };
 const allow = (actor: { email: string }): boolean => actor.email === 'ana@empresa.com';
 
