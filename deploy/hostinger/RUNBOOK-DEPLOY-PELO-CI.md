@@ -206,7 +206,7 @@ instalada), são instalados como root, `0444`, só depois do `sha256sum -c` cont
      [[ "$V" =~ ^[0-9a-f]{40}$ && "$H" =~ ^[0-9a-f]{64}$ && "$FP" =~ ^[0-9a-f]{12}$ && "$F" =~ ^[A-Za-z0-9._-]+$ ]]
      sed -e "s|<VERSAO>|$V|g" -e "s|<SHA256_DO_ARTEFATO>|$H|g" -e "s|<ARQUIVO_DE_VARIAVEIS>|$F|g" -e "s|<IMPRESSAO_SUPABASE_PRODUCAO>|$FP|g" \
        "$K/gmn-hml-deploy.modelo.sh" > "$T/gmn-hml-deploy"
-     if grep -n '<[A-Z_]*>' "$T/gmn-hml-deploy"; then echo "PARE: marcador sem preencher" >&2; exit 1; fi
+     if grep -v '^[[:space:]]*#' "$T/gmn-hml-deploy" | grep -n '<[A-Z_]*>'; then echo "PARE: marcador sem preencher" >&2; exit 1; fi   # só código
      sudo install -m 0755 -o root -g root "$T/gmn-hml-deploy" /opt/gmn-receivers/bin/gmn-hml-deploy
      cmp "$T/gmn-hml-deploy" /opt/gmn-receivers/bin/gmn-hml-deploy               # instalado = preenchido
      sha256sum /opt/gmn-receivers/bin/gmn-hml-deploy                             # registrar no relatório (wrapper instalado)
@@ -217,6 +217,9 @@ instalada), são instalados como root, `0444`, só depois do `sha256sum -c` cont
    Produção (seção 3): o mesmo bloco com `gmn-deploy.modelo.sh`, destino `/opt/gmn-receivers/bin/gmn-deploy`, sem a impressão (o
    modelo de produção não tem `--forbid-supabase`), também com o sha256 do *wrapper* instalado registrado. Trocar de versão = repetir os passos 1 a 3 com o commit novo; a versão anterior
    fica em `/opt/gmn-receivers/<SHA40 anterior>/` para voltar (seção 6, "Receptor com defeito").
+
+   A conferência de marcadores olha só as linhas de código: os comentários dos modelos citam `ERRO E_<CÓDIGO>[ <DETALHE>]`, e um `grep`
+   no arquivo inteiro pararia com `PARE` mesmo com tudo preenchido (achado do H-04 de homologação, 27/11/2026).
 
    Com um marcador sem preencher, o *wrapper* falha fechado: `E_ARTIFACT` (hash) ou `E_INTERNAL` (parâmetros, Node ausente). O
    *wrapper* precisa do `/usr/bin/flock` (util-linux) e do arquivo de trava do root `/var/lib/gmn-receivers-locks/<amb>/deploy.flock` (H-06;
@@ -247,7 +250,7 @@ instalada), são instalados como root, `0444`, só depois do `sha256sum -c` cont
      H="$(awk '$2 == "gmn-seal-receiver.cjs" { print $1 }' "$K/receivers.sha256")"
      [[ "$V" =~ ^[0-9a-f]{40}$ && "$H" =~ ^[0-9a-f]{64}$ ]]
      sed -e "s|<VERSAO>|$V|g" -e "s|<SHA256_DO_ARTEFATO>|$H|g" "$K/gmn-hml-seals.modelo.sh" > "$T/gmn-hml-seals"
-     if grep -n '<[A-Z_]*>' "$T/gmn-hml-seals"; then echo "PARE: marcador sem preencher" >&2; exit 1; fi
+     if grep -v '^[[:space:]]*#' "$T/gmn-hml-seals" | grep -n '<[A-Z_]*>'; then echo "PARE: marcador sem preencher" >&2; exit 1; fi   # só código
      sudo install -m 0755 -o root -g root "$T/gmn-hml-seals" /opt/gmn-receivers/bin/gmn-hml-seals
      cmp "$T/gmn-hml-seals" /opt/gmn-receivers/bin/gmn-hml-seals                 # instalado = preenchido
      sha256sum /opt/gmn-receivers/bin/gmn-hml-seals                              # registrar no relatório (wrapper instalado)
@@ -305,14 +308,19 @@ se as duas recusas esperadas aparecerem, são apagadas com `shred -u`; a cópia 
 
 **Na VPS** (usuários com shell `/bin/sh`, porque o `sshd` roda o comando forçado pelo shell do usuário; `nologin` o impediria). O usuário
 de manifestos (`gmn-hml-seals`; em produção `gmn-seals`) tem uid próprio, diferente de `10001` e de `0`: ele é o **dono** da pasta de
-manifestos (H-06) e não entra no grupo `10001` (o do web), no `docker` nem no `sudo` (spec §5.10, P9.3b):
+manifestos (H-06) e não entra no grupo `10001` (o do web), no `docker` nem no `sudo` (spec §5.10, P9.3b). A pasta pessoal dos dois é `/`
+(existe e é do root, que eles não gravam): com uma pasta que não existe, o `sshd` escreve `Could not chdir to home directory …` no stderr
+de **toda** chamada, e a entrega de manifestos exige o stderr vazio na resposta de sucesso (`deploy/ci/seals-deliver.sh`); toda entrega
+sairia como resposta desconhecida (achado do H-05 de homologação, 27/11/2026). A chave fica em `/etc/ssh/authorized_keys/`, fora da pasta
+pessoal:
 
 ```bash
 ( set -euo pipefail
-  id -u gmn-hml-deploy >/dev/null 2>&1 || sudo useradd --system --shell /bin/sh --home-dir /nonexistent --no-create-home gmn-hml-deploy
-  id -u gmn-hml-seals >/dev/null 2>&1 || sudo useradd --system --shell /bin/sh --home-dir /nonexistent --no-create-home gmn-hml-seals
+  id -u gmn-hml-deploy >/dev/null 2>&1 || sudo useradd --system --shell /bin/sh --home-dir / --no-create-home gmn-hml-deploy
+  id -u gmn-hml-seals >/dev/null 2>&1 || sudo useradd --system --shell /bin/sh --home-dir / --no-create-home gmn-hml-seals
   sudo usermod -aG docker gmn-hml-deploy                 # só o de deploy; o de manifestos NUNCA no docker nem no sudo
   sudo usermod -p '*' gmn-hml-deploy && sudo usermod -p '*' gmn-hml-seals   # sem senha válida, sem conta "travada" para a chave
+  sudo usermod -d / gmn-hml-deploy && sudo usermod -d / gmn-hml-seals         # pasta pessoal "/" também em usuário já existente
   id gmn-hml-deploy; id gmn-hml-seals
   u="$(id -u gmn-hml-seals)"; [ "$u" != 10001 ] && [ "$u" != 0 ] || { echo "PARE: gmn-hml-seals com uid 10001 ou 0" >&2; exit 1; }
   if id -G gmn-hml-seals | tr ' ' '\n' | grep -qxE '0|10001' || id -nG gmn-hml-seals | tr ' ' '\n' | grep -qxE 'docker|sudo|wheel|adm'; then
@@ -381,6 +389,10 @@ O bloco pode ser repetido sem estrago (retomada depois de uma falha): cada image
 e log só é criado se **não** existir; o que já existe é conferido (tipo `ext4`, ponto de montagem, dono e modo), nunca recriado. O
 `mkfs.ext4 -F` só roda sobre uma imagem que o próprio bloco acabou de criar. `install -d` só ajusta dono e modo de pasta existente.
 
+As linhas do `/etc/fstab` levam `nofail`: a VPS é a mesma da produção, e sem ele uma imagem de homologação que falhe ao montar deixa o
+systemd em modo de emergência no boot, com a produção fora do ar. Sem a montagem, as subpastas de recibos e do livro não existem: o
+`verificar-pastas-fase6.sh` recusa e o Swarm não sobe a tarefa (bind de origem ausente), ou seja, a homologação falha fechada.
+
 ```bash
 ( set -euo pipefail
   sudo install -d -m 0755 -o root -g root /srv/gmn-hml /opt/gmn-hml
@@ -396,7 +408,7 @@ e log só é criado se **não** existir; o que já existe é conferido (tipo `ex
     fi
     [ "$(sudo blkid -o value -s TYPE "$img")" = ext4 ] || { echo "PARE: $img existe e não é ext4" >&2; exit 1; }
     sudo install -d -m 0755 -o root -g root "$mnt"
-    grep -qF " $mnt ext4 " /etc/fstab || printf '%s %s ext4 loop,nodev,nosuid,noexec 0 2\n' "$img" "$mnt" | sudo tee -a /etc/fstab >/dev/null
+    grep -qF " $mnt ext4 " /etc/fstab || printf '%s %s ext4 loop,nodev,nosuid,noexec,nofail 0 2\n' "$img" "$mnt" | sudo tee -a /etc/fstab >/dev/null
     mountpoint -q "$mnt" || sudo mount "$mnt"
     [ "$(findmnt -n -o FSTYPE --mountpoint "$mnt")" = ext4 ] || { echo "PARE: $mnt não está montado como ext4" >&2; exit 1; }
     sudo install -d -m 0755 -o root -g root "$mnt"                              # a raiz do sistema montado
@@ -567,13 +579,15 @@ Na estação, colete a chave de host; no **console da VPS** (terminal do painel 
 impressão digital, caractere por caractere:
 
 ```bash
-ssh-keyscan -p <PORTA_SSH> -t ed25519 <HOST_VPS> 2>/dev/null > <PASTA_FORA_DO_REPO>/known_hosts_gmn
+ssh-keyscan -p <PORTA_SSH> -t ed25519 <HOST_VPS> 2>/dev/null | grep -v '^#' > <PASTA_FORA_DO_REPO>/known_hosts_gmn
+wc -l < <PASTA_FORA_DO_REPO>/known_hosts_gmn                                    # 1
 ssh-keygen -lf <PASTA_FORA_DO_REPO>/known_hosts_gmn                            # estação: SHA256:…
 ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub                                 # console da VPS: o mesmo SHA256:…
 gh secret set GMN_SSH_KNOWN_HOSTS --env homologacao --repo <DONO>/<REPO> < <PASTA_FORA_DO_REPO>/known_hosts_gmn
 ```
 
-Com porta diferente de 22 a linha começa com `[<HOST_VPS>]:<PORTA_SSH>`. O host da linha tem de ser exatamente o `GMN_SSH_HOST`. O
+O `ssh-keyscan` recente grava no stdout uma linha de comentário (`# <host>:<porta> SSH-2.0-…`); o job a recusaria
+(`SSH_CONFIG_INVALID`), e o `grep -v '^#'` a tira (achado do H-09 de homologação, 27/11/2026). Com porta diferente de 22 a linha começa com `[<HOST_VPS>]:<PORTA_SSH>`. O host da linha tem de ser exatamente o `GMN_SSH_HOST`. O
 job recusa linhas com marcador (`@cert-authority`, `@revoked`) ou curinga, e nunca aceita chave nova sozinho
 (`StrictHostKeyChecking=yes`). A chave de host é a mesma para os dois ambientes (mesma VPS); grave o segredo em cada ambiente.
 
@@ -608,7 +622,7 @@ Host gmn-hml-*-teste
 EOF
 d="$(ssh -F <PASTA_FORA_DO_REPO>/ssh_config_gmn_hml gmn-hml-deploy-teste qualquer-coisa 2>&1 >/dev/null)"; dr=$?
 s="$(ssh -F <PASTA_FORA_DO_REPO>/ssh_config_gmn_hml gmn-hml-seals-teste qualquer-coisa 2>&1 >/dev/null)"; sr=$?
-if [ "$dr" -eq 10 ] && [ "$sr" -eq 10 ] && printf '%s\n' "$d" | grep -qx 'ERRO E_COMMAND' && printf '%s\n' "$s" | grep -qx 'ERRO E_COMMAND'; then
+if [ "$dr" -eq 10 ] && [ "$sr" -eq 10 ] && [ "$d" = 'ERRO E_COMMAND' ] && [ "$s" = 'ERRO E_COMMAND' ]; then
   echo "P9-O03 OK: as duas chaves só executam o receptor"
   shred -u <PASTA_FORA_DO_REPO>/gmn-hml-deploy <PASTA_FORA_DO_REPO>/gmn-hml-seals
 else
@@ -616,7 +630,8 @@ else
 fi
 ```
 
-Registre no relatório as duas recusas (P9-O03).
+A comparação é exata, a resposta inteira: qualquer outra linha no stderr (por exemplo o aviso de pasta pessoal do `sshd`) também quebraria
+a entrega de manifestos. Registre no relatório as duas recusas (P9-O03).
 
 ### H-10 Check obrigatório e CODEOWNERS
 
