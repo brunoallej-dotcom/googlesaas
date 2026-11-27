@@ -440,7 +440,17 @@ test('P9.4 runbook (revisão do PR #69): blocos privilegiados param no erro, o a
   assert.match(h06, /\[ -e "\$log" \] \|\| sudo install -m 0600/, 'log existente nunca truncado');
   const h09 = section('### H-09', '### H-10');
   assert.match(h09, /P9-O03[\s\S]*StrictHostKeyChecking yes[\s\S]*UserKnownHostsFile[\s\S]*ssh -F/, 'P9-O03 com as opções estritas, depois do H-09');
-  assert.match(h09, /if \[ "\$dr" -eq 10 \] && \[ "\$sr" -eq 10 \][^\n]*grep -qx 'ERRO E_COMMAND'[^\n]*grep -qx 'ERRO E_COMMAND'; then\n[^\n]*\n\s+shred -u/, 'shred só com as duas recusas');
+  assert.match(h09, /if \[ "\$dr" -eq 10 \] && \[ "\$sr" -eq 10 \] && \[ "\$d" = 'ERRO E_COMMAND' \] && \[ "\$s" = 'ERRO E_COMMAND' \]; then\n[^\n]*\n\s+shred -u/, 'shred só com as duas recusas EXATAS (nenhuma outra linha no stderr)');
+  // achados da preparação da homologação (27/11/2026)
+  assert.match(h09, /ssh-keyscan [^\n]*2>\/dev\/null \| grep -v '\^#' > /, 'a linha de comentário do ssh-keyscan nunca vai para o known_hosts fixado');
+  const h05code = (section('### H-05', '### H-06').match(/```bash[\s\S]*?```/g) ?? []).join('\n');
+  assert.ok(!h05code.includes('/nonexistent'), 'pasta pessoal inexistente faz o sshd escrever no stderr de toda chamada');
+  assert.equal((h05code.match(/useradd [^\n]*--home-dir \/ --no-create-home/g) ?? []).length, 2, 'os dois usuários com pasta pessoal "/"');
+  assert.match(h05code, /usermod -d \/ gmn-hml-deploy && sudo usermod -d \/ gmn-hml-seals/, 'também em usuário já existente');
+  assert.match(h06, /ext4 loop,nodev,nosuid,noexec,nofail 0 2/, 'falha da montagem de homologação nunca trava o boot da VPS');
+  const h04code = (h04.match(/```bash[\s\S]*?```/g) ?? []).join('\n');
+  assert.ok(!/if grep -n '<\[A-Z_\]\*>'/.test(h04code), 'a conferência de marcadores nunca olha os comentários do modelo');
+  assert.equal((h04code.match(/grep -v '\^\[\[:space:\]\]\*#' "\$T\/gmn-hml-(?:deploy|seals)" \| grep -n '<\[A-Z_\]\*>'/g) ?? []).length, 2);
   assert.ok(!(section('### H-05', '### H-06').match(/```bash[\s\S]*?```/g) ?? []).join('\n').includes('shred'), 'nenhum comando apaga a chave antes da prova');
   const rollback = section('## 6. Rollback', '## 7.');
   assert.match(rollback, /PreviousSpec/);
