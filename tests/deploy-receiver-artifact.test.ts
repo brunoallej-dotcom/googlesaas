@@ -428,7 +428,9 @@ test('wrapper em processo: Node ausente ou não executável, arquivo de trava au
 test('wrapper em processo: trava do kernel (flock -n) — com outra execução segurando o arquivo de trava, ERRO E_LOCKED (16) sem rodar o node; solta a trava, roda; a trava fica com o FILHO (herdada) mesmo se o flock morrer', { skip: !HAS_FLOCK && !STRICT ? 'sem /usr/bin/flock' : false, timeout: 60_000 }, async () => {
   const filled = fillWrapper(HML_WRAPPER, Buffer.from('artefato fictício'));
   // grupo de processos próprio: o flock (pai) e o filho que herda o descritor da trava
-  const holder = spawn(FLOCK, ['-n', filled.lock, process.execPath, '-e', 'setTimeout(() => {}, 20000)'], { stdio: 'ignore', detached: true });
+  // o dono da trava ESPERA (-w), nunca -n: a sondagem abaixo também pega a trava por um instante, e com -n o dono desistia se
+  // colidisse com ela (teste instável no CI da main em 27/11/2026: 'o processo de teste não pegou a trava')
+  const holder = spawn(FLOCK, ['-w', '10', filled.lock, process.execPath, '-e', 'setTimeout(() => {}, 20000)'], { stdio: 'ignore', detached: true });
   const command = { PATH: '/usr/bin:/bin', SSH_ORIGINAL_COMMAND: `upload ${SHA40} ${'0'.repeat(64)} 10` };
   const assertBusy = (label: string): void => {
     const busy = runWrapper(filled.file, command);

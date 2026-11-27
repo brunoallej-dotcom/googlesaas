@@ -341,7 +341,9 @@ test('wrapper em processo: trava do kernel (flock -n) ocupada por outra execuç�
   fs.writeFileSync(artifact, 'artefato fictício', { mode: 0o444 });
   const { node, record } = recordingNode(fakeDir);
   const filled = fillWrapper(HML_WRAPPER, w, artifact, sha256('artefato fictício'), node);
-  const holder = spawn(FLOCK, ['-n', filled.lock, process.execPath, '-e', 'setTimeout(() => {}, 20000)'], { stdio: 'ignore', detached: true });
+  // o dono da trava ESPERA (-w), nunca -n: a sondagem abaixo também pega a trava por um instante, e com -n o dono desistia se
+  // colidisse com ela (teste instável no CI da main em 27/11/2026: 'o processo de teste não pegou a trava')
+  const holder = spawn(FLOCK, ['-w', '10', filled.lock, process.execPath, '-e', 'setTimeout(() => {}, 20000)'], { stdio: 'ignore', detached: true });
   const command = { PATH: '/usr/bin:/bin', SSH_ORIGINAL_COMMAND: 'qualquer-coisa' };
   try {
     const deadline = Date.now() + 10_000;
