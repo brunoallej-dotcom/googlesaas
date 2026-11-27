@@ -1,0 +1,7 @@
+# Quem responde por estes caminhos (H-10 do deploy/hostinger/RUNBOOK-DEPLOY-PELO-CI.md, P9-O02).
+# Com uma só conta no GitHub, "Require review from Code Owners" fica DESLIGADO (o autor não aprova o próprio PR, e os PRs travariam);
+# até haver uma segunda pessoa (como na Q-4), este arquivo serve de pedido automático de revisão e de registro de responsabilidade.
+/.github/workflows/ @brunoallej-dotcom
+/deploy/hostinger/ @brunoallej-dotcom
+/deploy/ci/ @brunoallej-dotcom
+/link-audit-seals/**/trust-keys.txt @brunoallej-dotcom
