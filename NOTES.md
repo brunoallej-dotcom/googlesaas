@@ -314,6 +314,36 @@ Endurecimento de código (antes de expor): bypass `GMN_AUTH_DISABLED` desligado 
 - **P9.3b mesclada (#72) e P9.5 em revisão (23/11/2026):** receptor de manifestos com segunda verificação `v2` no host e gravação exclusiva com `fsync`; e os jobs `seals-verify` (sem segredo: o `seals-check` sobre o push e S-03 a S-08 em toda a árvore do ambiente) e `seals-deliver` (ambiente protegido, só git, sha256sum e ssh, `NOT_MAIN_HEAD` antes do primeiro `put`, um `put` por arquivo, para no primeiro erro; o resumo mostra `ALREADY_PRESENT` como "conteúdo idêntico já presente"). Com a P9.5, o código do P-9 está completo; o canal passa a valer depois das ações do responsável (runbook §8).
 - **Com o responsável:** depois da P9.4, as ações H-01 a H-10 do roteiro de deploy pelo CI (ambiente `homologacao` no GitHub, chaves, usuários restritos, pastas, secrets e DNS da pilha `gmn-hml`); terminar o PG-G08 do laboratório da VPS (§5 direto, §6, §7); definir as senhas e os secrets da guarda e começar a rotina da reconciliação (`producao-g1b-runbook-guarda.md`); trocar o domínio real no arquivo de ambiente de exemplo; a W6 roda depois do ensaio.
 
+## Rodada de 23 e 27/11/2026 — preparação da homologação (H-01 a H-10) e primeiros deploys pelo CI (Claude como manager)
+
+- **P9.5 mesclada** (#74, `8d4bbd6`): o código do P-9 ficou completo.
+- **Ações do responsável na VPS e no GitHub, guiadas pelo manager, comando a comando (23 e 27/11):** H-01 (recursos), Node 22.23.2 dos
+  receptores, SSH endurecido (só chave, `fail2ban`), H-05 (usuários `gmn-hml-deploy`/`gmn-hml-seals`, chaves restritas por
+  `restrict,command=` e blocos `Match` no `sshd`), H-04 (receptores do commit `8d4bbd6`, seis hashes conferidos no lugar: P9-O04; os dois
+  *wrappers* preenchidos, com a impressão do Supabase de produção diferente da do laboratório), H-06 (pastas, volumes *loop* de recibos e
+  livro), H-07 (12 secrets `gmn-hml_*`; a conferência recusa chave do Supabase que não seja do laboratório), H-08 (stack e sobreposição do
+  commit exato, arquivo de variáveis, DNS; P9-O05 e P9-H07 OK), H-09 (chave de host fixada), **P9-O03 OK** (as duas chaves só executam o
+  receptor: exatamente `ERRO E_COMMAND`, saída 10; as privadas locais foram destruídas) e H-10 (check obrigatório `seals (append-only,
+  v2)` no ruleset da `main`; `CODEOWNERS` em #76, com "Require review from Code Owners" desligado enquanto houver uma só conta, como na Q-4).
+- **Correções que a preparação revelou:** #75 (`c3d2ac9`), cinco no roteiro: conferência de marcadores que confundia um comentário do
+  modelo, pasta pessoal `/` (com `/nonexistent` o `sshd` escreve no stderr de toda chamada e a entrega de manifestos, que exige stderr
+  vazio no sucesso, falharia), `nofail` nas montagens *loop* (a VPS é a mesma da produção), linha de comentário do `ssh-keyscan` e P9-O03
+  com comparação exata. #77 (`3504f87`): `public/` vazia versionada, porque o Dockerfile a copia e ela nunca esteve no git (o primeiro build
+  do CI falhou com `"/public": not found`; nada chegou à VPS).
+- **Primeiros deploys de homologação:** #4 parou no build (`public/`). #6 subiu a stack `gmn-hml` (web 1/1, redis 1/1, worker 0/0) e foi
+  recusado na PD-02 por corrida: o receptor espera só o web convergir e confere o redis na hora, e no primeiro deploy o redis novo ainda não
+  estava saudável. #7 (mesmo commit) deu `E_CONVERGE_TIMEOUT`: o build não é reprodutível, a tag `homologacao-<sha>` é a mesma, o Swarm
+  não atualiza um serviço com especificação idêntica e o receptor espera a imagem nova. Redeploy exige commit novo (registrado no runbook §2).
+  Backlog do receptor (próxima versão, exige reinstalar pelo H-04): PD-02 com espera e prazo, e redeploy do mesmo commit recusado de saída
+  com código próprio (ou forçando a atualização). A produção não foi tocada em nenhum deles.
+- **Decisão do responsável (27/11/2026):** o repositório continua **público**. No plano gratuito, um repositório privado não tem
+  *environments*, e os segredos e a aprovação obrigatória do deploy seriam ignorados.
+- **Pendência de produção registrada:** `src/lib/pdf/serve.ts` ainda lê PDFs históricos de `public/audits` (só leitura, último recurso).
+  Antes do primeiro deploy de produção pelo CI, conferir se a imagem de produção atual guarda PDFs nessa pasta e se a migração para a pasta
+  privada e o bucket privado cobriu todos: a imagem do CI não os traz, e nada histórico some sem autorização.
+- **A seguir:** deploy de homologação num commit novo; P9-H06 e `VERIFICACAO-POS-DEPLOY.md` com a stack `gmn-hml`; §5 a §7 do PG-G08 a
+  partir da VPS; W5.3 (ensaio) e G2.
+
 ## Roadmap P1 (espelho de `docs/plan/implementation-waves.md`, que é a fonte da verdade)
 
 | Onda | Entrega | Status |
@@ -336,6 +366,6 @@ Endurecimento de código (antes de expor): bypass `GMN_AUTH_DISABLED` desligado 
 | G1.a | Volumes, segredos, chave de log, exportação dos logs e backups | ✅ #54 |
 | G1.b | Guarda no Supabase (adaptador, contrato R6-10, migração proposta, reconciliação, runbook) | ✅ no código: G1.b.1 (#56), G1.b.2a (#61), G1.b.2b (#64); com o responsável: laboratório, PG-G08, secrets e rotina da reconciliação |
 | G1.c | Papel administrativo: só o aceite formal do 403 (Q6 = 3) | ✅ aceite formal em 23/11/2026 |
-| P-9 | Deploy pelo CI e canal de manifestos (P9.1–P9.5; spec `ci-deploy-and-seal-delivery.md`) | 🟡 P9.1 (#66), P9.2 (#68), P9.4 (#69), P9.3a (#70) e P9.3b (#72) ✅; P9.5 (jobs `seals-verify` e `seals-deliver`) em revisão: com ela, o **código do P-9 fica completo**. A seguir: ações do responsável no VPS e no GitHub (runbook H-01 a H-10), primeiro deploy e primeira entrega em homologação (runbook §2 e §8) |
+| P-9 | Deploy pelo CI e canal de manifestos (P9.1–P9.5; spec `ci-deploy-and-seal-delivery.md`) | 🟡 código completo (P9.1 #66, P9.2 #68, P9.4 #69, P9.3a #70, P9.3b #72, P9.5 #74); H-01 a H-10 feitos em 23 e 27/11 (correções #75, #76, #77); stack `gmn-hml` de pé; falta um deploy aceito pelo receptor de ponta a ponta e a primeira entrega em homologação (runbook §2 e §8) |
 | G2 | Ensaio em homologação (16 ensaios, 2 atestações), depois do relatório da W5 | ⬜ |
 | G3 | Portão de produção ou piloto mínimo declarado | ⬜ |

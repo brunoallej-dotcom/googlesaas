@@ -664,6 +664,15 @@ Aprove em *Actions → a execução → Review deployments → homologacao*. O j
 imagens com a tag `homologacao-<SHA40>`, envia o pacote (`upload`), confere a cabeça da `main` de novo, chama o `deploy` (o receptor
 roda as verificações PD-01 a PD-08) e faz a verificação externa (EX-01 a EX-03). Copie a linha do resumo para o relatório.
 
+**Redeploy e primeiro deploy (achados de 27/11/2026):**
+
+- **Redeploy do mesmo commit não converge** (`E_CONVERGE_TIMEOUT` depois de 10 minutos): o build das imagens não é reprodutível, a tag
+  `<ambiente>-<SHA40>` é a mesma, o Swarm não atualiza um serviço com especificação idêntica e o receptor espera a tarefa rodando a imagem
+  que acabou de carregar. Para implantar de novo, use um commit novo na `main`. O serviço continua com a imagem anterior, sem estrago.
+- **No primeiro deploy, a PD-02 pode recusar por corrida:** o receptor espera a convergência só do web e confere o redis logo em seguida;
+  um redis recém-criado (ou com a especificação trocada) pode ainda não estar saudável. A stack fica de pé; confira com
+  `docker service ls --filter name=gmn-hml_` e implante de novo num commit novo.
+
 **P9-H06** (registrar no relatório do ensaio W5.3, junto do P9-H07):
 
 ```bash
