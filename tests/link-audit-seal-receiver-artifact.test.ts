@@ -457,7 +457,7 @@ test('runbook H-04/H-05/H-06 (P9.3b): artefato e modelos de manifestos instalado
   assert.match(seals, /T="\$\(mktemp -d\)"/, 'pasta privada');
   const recheck = seals.indexOf('( cd "$K" && sha256sum -c --strict receivers.sha256 )');
   const fill = seals.indexOf('"$K/gmn-hml-seals.modelo.sh" > "$T/gmn-hml-seals"');
-  const markers = seals.indexOf("grep -n '<[A-Z_]*>' \"$T/gmn-hml-seals\"");
+  const markers = seals.indexOf("grep -v '^[[:space:]]*#' \"$T/gmn-hml-seals\" | grep -n '<[A-Z_]*>'");
   const install = seals.indexOf('sudo install -m 0755 -o root -g root "$T/gmn-hml-seals" /opt/gmn-receivers/bin/gmn-hml-seals');
   assert.ok(recheck > 0 && recheck < fill && fill < markers && markers < install, 'modelo conferido de novo, preenchido, sem marcador, e só então instalado');
   assert.match(seals, /awk '\$2 == "gmn-seal-receiver\.cjs" \{ print \$1 \}' "\$K\/receivers\.sha256"/, 'o hash do artefato de manifestos vem do receivers.sha256 conferido');
